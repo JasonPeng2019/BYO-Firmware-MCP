@@ -1,0 +1,50 @@
+{
+  "excluded_tools": [
+    "_brain_sync_timeouts"
+  ],
+  "source_commit": "d73444f3b7288c286c1814ec1e63fdbd862616ec",
+  "tool_ast_sha256": {
+    "connect": "10834cd7fb170774cb94423e7d81f7ebd5b08829198eececf7c15da3812edb5d",
+    "disconnect": "1041a350aa444d4f9fd80ebe753b6114da4d3fef4085baad0189af5c4f3bc59b",
+    "flash_firmware": "64d2e80a7faa6cb0cb6fb023dbd521f1d116feabe89ef80837eea6ea74fe1a9f",
+    "get_board_info": "1c563dffa1e153d4be88d39f989cf8231eecf609b5c3410f67dfff97b78896a3",
+    "get_state": "16a6edb8fe1be441753a03132af53f161e4f1870781a866eb231d8e6371de83d",
+    "halt": "6f7d10a16a858a4d670b2d72c7817bafbedb155deaf77bfb53dd4a6151f2c7e1",
+    "read_core_register": "d7d349f7a4db3f5118992740d44a5484d5e389a1f2a73ce8e483af6449443446",
+    "read_memory": "73b2f108bed0a3e84fdd5171681d0da8d5ecb6fa6e4a86b0b3f20dff4bd1e41d",
+    "read_memory_block": "553fb8d9e85f7223c2deb88fee90e8a0b8fb6394313d33fae1d76e075472aad9",
+    "read_serial": "1026bd97c387828c5a360e4d1245c7e80c20cfb291ef7afdb275c092c31a9b46",
+    "read_symbol_u32": "1b7024f09dc55dc489f9caa46223b249561a8ebb1a2d0f9c4486512767eb19c8",
+    "remove_breakpoint": "b1af1391f249dc55fbeebb29ebc226d5e052047c8db1d5c0877af9f2fdb72664",
+    "reset": "a3814cfa4082ab947f272f6db22ed19eeb078b964b2f1720e4372cda7b8b2526",
+    "resume": "c5e33cbeb03eaf74f309567b99006ff58697f9679543132b6706c2d6c9d96b5e",
+    "set_breakpoint": "1824124aafe7a533ff6fd0a562312f344b63aa58a9edf99ea4c26124eae9b40c",
+    "step": "83acf1533a3e17050a71468c30259a76a09b84ea5752ef29f6f5ed469004a05e",
+    "unlock_recover": "ddc9a58d3cfad172bbf355d29ef9c8cdba4d619e92c9f70714215bcc25ea649e",
+    "write_core_register": "9356f5037794d34c3b4aad91fd1e2b2548da51b92eae0b3bbc59fbb9a6adc955",
+    "write_memory": "2cc5fc3c1d949be5d4a982dbbc759d3e4d1091270143c607640f365ade695764",
+    "write_serial": "45f2dea5ab2abe7e5b229483d0369942935785b11fe14df45545299a8138f0d2"
+  },
+  "tool_contract_sha256": {
+    "connect": "ef92f1ad0ba8daf5b90ab3f6b749a402b88e9543d919e378d3636a8d586c3df3",
+    "disconnect": "441188fbb69626ba6661f4664bb58f743929c3b370c58264c1bfe3c8748ad4d4",
+    "flash_firmware": "c82c661d3d24ea4ecfa4671c6b3d592c902ccdf3dd337aa457c1aaf94d91eb49",
+    "get_board_info": "80f47a136ce4c9958ad80bd39c165ed2c63766b8e7220f367102d0b856db3aba",
+    "get_state": "55f40018939dc493a070ed09417a574e43c2dc82fe4a3fd9085905dcc22cce4a",
+    "halt": "b150af3f05bffdeae76a37410bebbb019a3a5445819559c6d79fa52949b2f3f1",
+    "read_core_register": "b4dc667fd1416bd3d0e0166468177e1f6f9dad1bdb3c5719e01da0852aa5fd63",
+    "read_memory": "2421e50ab6dcb2a5537dea2404aae052e9f0f67f60c41961d4b10dfad5e8a7f3",
+    "read_memory_block": "00e7f213e755e6632531414500fe93bb5f86cc2e8b5459e913c690972d06334c",
+    "read_serial": "779469235a82ea1276c09b63392c38b1e06bfada4b44180344da7835ee36a9d7",
+    "read_symbol_u32": "b548126892ea864257f29f8a0f53dcfc3084bbce6f68ce3ff2a8c3add6e9035b",
+    "remove_breakpoint": "8603ebb383ef61d407895e686336f34ffba2dacb5d2034921721aa2259b3078e",
+    "reset": "bd105d504b4d69d68b823442ad2c79c7d30ccac09737caef98a432ea97169fde",
+    "resume": "672c9ba6e7b16efcfc60895a489a535e50fb18f71cbcfd47daf1ed5d95d49328",
+    "set_breakpoint": "31cf428de8bbebc295c3cc0ef74cb35fa14f9b77b8b699099ccee8d71a3a407f",
+    "step": "9c8ead32020c1fe8820aa7caba50d612a4435183f58caac7c504314b628a07c1",
+    "unlock_recover": "8fd85ee2dd30f89e91c4d6f2fe79e6a36c22763a964e4c3271e3e3f855bba19e",
+    "write_core_register": "5b51f19b299b19a051c399163d6959133f9a4a649a25ec6f103d5b0c6d11367f",
+    "write_memory": "3fb81e6a1018c286f08f9b3ec3af522e0509d88665186402575b4f6b2f16828c",
+    "write_serial": "aa8b379148ea8024706aede186eece75106968e72b55b43471b3793b96e7079c"
+  }
+}

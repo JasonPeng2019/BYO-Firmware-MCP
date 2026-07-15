@@ -1,0 +1,38 @@
+# Pinned CMSIS-Pack provisioning manifest.
+#
+# WHY THIS EXISTS: the shipped server must NOT depend on the live
+# cmsis-pack-manager index (`pyocd pack update` / `pyocd pack install`). That flow
+# bulk-fetches ~1500 vendor descriptors from many servers and silently skips any
+# that fail or time out, producing a partial index. On restrictive/slow networks
+# (reproduced on a Windows host here) whole families — e.g. STM32L4 — never make
+# it in, so `pyocd pack install stm32l476` reports "No matching devices" and the
+# board's exact target (stm32l476rgtx) is unavailable.
+#
+# Instead, each pack below is fetched DETERMINISTICALLY by one pinned URL and
+# verified by sha256 (see `pyocd_debug_mcp.pack_provision`, invoked by
+# `host_bootstrap.py --install-packs` / the setup scripts). pyOCD then loads the
+# local .pack files via its `pack` option in the shared backend, so stage0, the
+# MCP server, and the Stage 1 harness all resolve the exact target offline.
+#
+# The .pack files themselves are NOT committed (gitignored); only this manifest
+# is tracked. To update a pin: bump version + url, recompute sha256
+# (`Get-FileHash -Algorithm SHA256` / `shasum -a 256`), commit.
+
+packs:
+  - id: Keil.STM32L4xx_DFP
+    version: "3.1.0"
+    filename: Keil.STM32L4xx_DFP.3.1.0.pack
+    url: https://www.keil.com/pack/Keil.STM32L4xx_DFP.3.1.0.pack
+    sha256: 5672383c07fbdcee0e471a33f4f8beb2e1f3200bc999244dcd6858e0e8e8203f
+    provides_targets:
+      - stm32l476rgtx
+    needed_by_boards:
+      - nucleo_l476rg
+    note: >-
+      Provides the exact stm32l476rgtx target for the Nucleo-L476RG. Verified on a
+      real Windows host: pyOCD resolves stm32l476rgtx from this local pack and
+      reads the board, where the live index could not supply STM32L4 at all.
+
+# nRF52833 / nRF52840 targets are built into pyOCD on the verified hosts, so no
+# Nordic DFP is pinned here yet. Add one the same way if a host is found where the
+# built-in nRF targets are unavailable.

@@ -1,0 +1,32 @@
+{
+  "actions_taken": [
+    "connected to the board",
+    "read the known symbol",
+    "edited src/src/main.c",
+    "rebuilt the firmware",
+    "reflashed and rechecked UART"
+  ],
+  "board_id": "nrf52833dk",
+  "case_id": "nrf52833dk__b001_wrong_boot_text",
+  "classification": "code_bug",
+  "files_changed": [
+    "src/src/main.c"
+  ],
+  "final_status": "fixed",
+  "mcp_tools_used": [
+    "connect",
+    "read_serial",
+    "flash_firmware",
+    "read_core_register"
+  ],
+  "recover_used": false,
+  "root_cause": "The firmware printed the wrong boot string.",
+  "session_id": "20260618T000000Z-deadbeef",
+  "summary": "Fixed the wrong UART boot string and verified the board returned to green.",
+  "verification": {
+    "flash_ok": true,
+    "green_check_ok": true,
+    "symbol_ok": true,
+    "uart_ok": true
+  }
+}

@@ -1,0 +1,30 @@
+case_id: nrf52840dk__k001_reference_green
+title: Confirm the tracked nRF52840 DK reference baseline is healthy
+board_id: nrf52840dk
+kind: known_good
+workspace_mode: reference_read_only
+initial_prep:
+  flash_mode: reference
+  post_flash_state: running
+artifacts:
+  flash_artifact: build/firmware.hex
+  symbol_artifact: build/firmware.elf
+expected_observables:
+  uart_substring: boot ok
+  symbol_name: stage1_known_value
+  symbol_value_u32: 0x1234ABCD
+  test_read_address: 0x10000000
+allowed_actions:
+  code_edits_allowed: false
+  allowed_edit_roots: []
+  build_command: null
+  recover_allowed: false
+success_criteria:
+  expected_classification: healthy
+  requires_code_fix: false
+  requires_green_verification: true
+  expected_changed_files: []
+  forbidden_actions:
+    - unlock_recover
+    - edit_source
+scoring_profile: r11_default_v1

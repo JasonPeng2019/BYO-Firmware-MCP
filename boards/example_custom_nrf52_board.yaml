@@ -1,0 +1,22 @@
+board_id: my_nrf52_board  # PROJECT-DEFINED, UNVERIFIED (example canonical board id; rename for your board)
+display_name: "My Custom nRF52 Board"  # PROJECT-DEFINED, UNVERIFIED (example display name)
+mcu_family: nrf52832  # HW-FIXED, UNVERIFIED (confirm against the actual board BOM / datasheet)
+probe_family: jlink  # HW-FIXED, UNVERIFIED (confirm the actual attached probe family)
+pyocd_target: nrf52832  # VENDOR-FIXED, UNVERIFIED (confirm via `pyocd list --targets`)
+serial_baudrate: 115200  # PROJECT-DEFINED, UNVERIFIED (example reference-firmware UART default)
+test_read_address: 0x10000000  # HW-FIXED (nRF FICR base; safe readable smoke-test address)
+pack_name: nrf52832  # VENDOR-FIXED, UNVERIFIED (`pyocd pack install` search/install token)
+probe_hint_terms:  # PROJECT-DEFINED, UNVERIFIED (example host-side probe matching heuristics)
+  - j-link
+  - segger
+  - myboard
+serial_hint_terms:  # PROJECT-DEFINED, UNVERIFIED (example host-side serial-port matching heuristics)
+  - myboard
+  - usb serial
+  - virtual com
+reference_uart_patterns:  # PROJECT-DEFINED, UNVERIFIED (example expected UART validation text)
+  - "boot ok"
+requires_recover_validation: true  # PROJECT-DEFINED, UNVERIFIED (example Stage 0 recovery policy)
+recover_mode: nrf_pyocd_unlock  # PROJECT-DEFINED, UNVERIFIED (example recover backend selection for a Nordic board)
+# Do not add firmware paths, user project paths, build commands, or output artifact paths here.
+# Those are runtime/session inputs supplied by the host, not board metadata.

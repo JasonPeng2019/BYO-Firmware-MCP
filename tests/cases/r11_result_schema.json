@@ -1,0 +1,106 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "R11 Codex Benchmark Result",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "case_id",
+    "board_id",
+    "session_id",
+    "final_status",
+    "classification",
+    "root_cause",
+    "actions_taken",
+    "mcp_tools_used",
+    "files_changed",
+    "recover_used",
+    "verification",
+    "summary"
+  ],
+  "properties": {
+    "case_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "board_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "session_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "final_status": {
+      "type": "string",
+      "enum": [
+        "fixed",
+        "healthy_confirmed",
+        "diagnosed_only",
+        "unresolved",
+        "blocked"
+      ]
+    },
+    "classification": {
+      "type": "string",
+      "enum": [
+        "healthy",
+        "code_bug",
+        "observability_fault",
+        "physical_fault"
+      ]
+    },
+    "root_cause": {
+      "type": "string",
+      "minLength": 1
+    },
+    "actions_taken": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "mcp_tools_used": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "files_changed": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "recover_used": {
+      "type": "boolean"
+    },
+    "verification": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "flash_ok",
+        "uart_ok",
+        "symbol_ok",
+        "green_check_ok"
+      ],
+      "properties": {
+        "flash_ok": {
+          "type": "boolean"
+        },
+        "uart_ok": {
+          "type": "boolean"
+        },
+        "symbol_ok": {
+          "type": "boolean"
+        },
+        "green_check_ok": {
+          "type": "boolean"
+        }
+      }
+    },
+    "summary": {
+      "type": "string",
+      "minLength": 1
+    }
+  }
+}

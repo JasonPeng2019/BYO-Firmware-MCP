@@ -1,0 +1,30 @@
+board_id: nrf52840dk  # PROJECT-DEFINED (our canonical board id for the retained alternate Nordic profile)
+display_name: "nRF52840-DK"  # PROJECT-DEFINED (human-facing board label)
+mcu_family: nrf52840  # HW-FIXED (the silicon on the reference board)
+probe_family: jlink  # HW-FIXED (the onboard debug probe family)
+pyocd_target: nrf52840  # VENDOR-FIXED, UNVERIFIED (confirm via `pyocd list --targets`)
+serial_baudrate: 115200  # PROJECT-DEFINED, UNVERIFIED (chosen reference-firmware UART default)
+test_read_address: 0x10000000  # HW-FIXED (nRF FICR base; safe readable smoke-test address)
+pack_name: nrf52840  # VENDOR-FIXED, UNVERIFIED (`pyocd pack install` search/install token)
+silicon_id_address: 0x10000100  # HW-FIXED (nRF FICR INFO.PART register)
+silicon_id_expected: 0x00052840  # HW-FIXED (nRF52840 part code from FICR.INFO.PART)
+silicon_id_label: "FICR.INFO.PART"  # PROJECT-DEFINED (human-facing identity check label)
+# This board is retained as an alternate / future Nordic profile.
+# Its live Stage 0, Stage 1, and MCP proof are not part of the current scoped-gate story.
+probe_hint_terms:  # PROJECT-DEFINED, UNVERIFIED (host-side probe matching heuristics)
+  - j-link
+  - jlink
+  - segger
+  - nrf
+serial_hint_terms:  # PROJECT-DEFINED, UNVERIFIED (host-side serial-port matching heuristics)
+  - j-link
+  - jlink
+  - segger
+  - nrf
+  - virtual com
+reference_uart_patterns:  # PROJECT-DEFINED, UNVERIFIED (expected repo-owned reference-firmware UART signature for the alternate Nordic board)
+  - "boot ok"
+requires_recover_validation: true  # PROJECT-DEFINED (Stage 0 policy for this board family)
+recover_mode: nrf_pyocd_unlock  # PROJECT-DEFINED (selects the Stage 0 recover backend for Nordic APPROTECT boards)
+# Do not add firmware paths, user project paths, build commands, or output artifact paths here.
+# Those are runtime/session inputs supplied by the host, not board metadata.

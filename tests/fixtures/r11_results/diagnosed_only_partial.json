@@ -1,0 +1,27 @@
+{
+  "actions_taken": [
+    "connected to the board",
+    "checked UART output",
+    "identified a code bug"
+  ],
+  "board_id": "nucleo_l476rg",
+  "case_id": "nucleo_l476rg__b001_wrong_boot_text",
+  "classification": "code_bug",
+  "files_changed": [],
+  "final_status": "diagnosed_only",
+  "mcp_tools_used": [
+    "connect",
+    "read_serial",
+    "get_board_info"
+  ],
+  "recover_used": false,
+  "root_cause": "The firmware appears to print the wrong boot string, but I did not rebuild it.",
+  "session_id": "20260618T000001Z-beadfeed",
+  "summary": "Diagnosed the wrong UART boot string but did not complete a verified repair.",
+  "verification": {
+    "flash_ok": false,
+    "green_check_ok": false,
+    "symbol_ok": true,
+    "uart_ok": false
+  }
+}

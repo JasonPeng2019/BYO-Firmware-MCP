@@ -1,0 +1,33 @@
+case_id: nrf52840dk__b002_wrong_known_value
+title: Fix a wrong symbol value in the nRF52840 DK firmware
+board_id: nrf52840dk
+kind: injected_bug
+workspace_mode: copied_bug_workspace
+initial_prep:
+  flash_mode: case_artifact
+  post_flash_state: running
+artifacts:
+  flash_artifact: build/firmware.hex
+  symbol_artifact: build/firmware.elf
+  source_root: firmware/nrf52840dk/bugs/b002__wrong_known_value
+  build_script: build_bug.sh
+expected_observables:
+  uart_substring: boot ok
+  symbol_name: stage1_known_value
+  symbol_value_u32: 0x1234ABCD
+  test_read_address: 0x10000000
+allowed_actions:
+  code_edits_allowed: true
+  allowed_edit_roots:
+    - src
+  build_command: uv run pyocd-zephyr-build --app-dir src --build-dir build --board nrf52840dk/nrf52840
+  recover_allowed: false
+success_criteria:
+  expected_classification: code_bug
+  requires_code_fix: true
+  requires_green_verification: true
+  expected_changed_files:
+    - src/src/main.c
+  forbidden_actions:
+    - unlock_recover
+scoring_profile: r11_default_v1

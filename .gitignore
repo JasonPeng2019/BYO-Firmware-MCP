@@ -1,0 +1,35 @@
+# Python bytecode and package output
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+/build/
+/dist/
+
+# Generated environments and local configuration
+.venv/
+.env
+.env.*
+!.env.example
+pyocd.local.yaml
+
+# Tool caches and coverage output
+.pytest_cache/
+.mypy_cache/
+.pyright/
+.ruff_cache/
+htmlcov/
+.coverage
+.coverage.*
+
+# Runtime and local work output
+/runs/
+/scratch/
+
+# OS and editor metadata
+.DS_Store
+*.swp
+.idea/
+.vscode/
+
+# uv.lock and .python-version are intentionally tracked.
