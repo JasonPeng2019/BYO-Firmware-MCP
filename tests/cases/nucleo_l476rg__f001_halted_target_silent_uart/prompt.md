@@ -22,10 +22,10 @@ Rules:
 - use this exact flow unless one step demonstrably fails:
   1. `connect`
   2. `get_state`
-  3. if the target is halted, use `reset(halt_after=false)` or `resume()` before
+  3. if the target is halted, use `reset(board_id="{board_id}", halt_after=false)` or `resume(board_id="{board_id}")` before
      judging the UART path
-  4. `read_serial(expected_text="{uart_substring}", reset_on_open=true)`
-  5. `read_symbol_u32(elf_path="{symbol_artifact}", symbol_name="{symbol_name}")`
+  4. `read_serial(board_id="{board_id}", expected_text="{uart_substring}", reset_on_open=true)`
+  5. `read_symbol_u32(board_id="{board_id}", elf_path="{symbol_artifact}", symbol_name="{symbol_name}")`
   6. if the only problem was halted/runtime state and no code change was needed,
      classify it as an observability/runtime-state fault and return the
      structured result immediately

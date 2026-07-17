@@ -35,17 +35,34 @@ def open_session(
     unique_id: str | None = None,
     target: str | None = None,
     server_timeouts: ServerTimeoutConfig | None = None,
+    connect_mode: str | None = None,
 ) -> TargetSessionHandle:
     return _BACKEND.open(
         board=board,
         unique_id=unique_id,
         target=target,
         server_timeouts=server_timeouts,
+        connect_mode=connect_mode,
     )
 
 
 def close_session(handle: TargetSessionHandle) -> None:
     _BACKEND.close(handle)
+
+
+def connect_under_reset(
+    *,
+    board: BoardConfig | None,
+    unique_id: str | None = None,
+    target: str | None = None,
+    server_timeouts: ServerTimeoutConfig | None = None,
+) -> TargetSessionHandle:
+    return _BACKEND.connect_under_reset(
+        board=board,
+        unique_id=unique_id,
+        target=target,
+        server_timeouts=server_timeouts,
+    )
 
 
 def get_state(handle: TargetSessionHandle) -> str:
@@ -72,6 +89,10 @@ def read_core_register(handle: TargetSessionHandle, name: str) -> int:
 
 def write_core_register(handle: TargetSessionHandle, name: str, value: int) -> None:
     _BACKEND.write_core_register(handle, name, value)
+
+
+def supported_core_registers(handle: TargetSessionHandle) -> tuple[str, ...]:
+    return _BACKEND.supported_core_registers(handle)
 
 
 def halt(handle: TargetSessionHandle) -> None:
@@ -107,20 +128,33 @@ def flash_firmware(
     return path
 
 
-def recover_target(handle: TargetSessionHandle) -> str:
+def recover_target(
+    handle: TargetSessionHandle,
+    *,
+    recover_mode: str | None = None,
+) -> str:
+    """Run one typed vendor recovery primitive, never an arbitrary target write."""
+
     board = handle.board
-    if board is None:
-        raise RuntimeError("Recover requires a board config with a recover_mode.")
-    if not board.recover_mode:
-        raise RuntimeError(f"{board.display_name} does not define a recover mode.")
-    if board.recover_mode == RECOVER_MODE_MANUAL_ONLY:
+    configured = board.recover_mode if board is not None else None
+    if configured == RECOVER_MODE_MANUAL_ONLY:
+        display_name = board.display_name if board is not None else "This board"
         raise RuntimeError(
-            f"{board.display_name} requires a manual recover procedure for this family; this repo does not automate recover_mode=manual_only."
+            f"{display_name} requires a manual recover procedure for this family; this repo "
+            "does not automate recover_mode=manual_only."
         )
-    if board.recover_mode == RECOVER_MODE_NRF_PYOCD_UNLOCK:
+    selected = (recover_mode or configured or "").strip()
+    if not selected:
+        display_name = board.display_name if board is not None else "This target"
+        raise RuntimeError(f"{display_name} does not define a recover mode.")
+    if configured and configured != selected:
+        raise RuntimeError(
+            f"Requested recover mode {selected!r} does not match configured mode {configured!r}."
+        )
+    if selected == RECOVER_MODE_NRF_PYOCD_UNLOCK:
         _BACKEND.recover(handle)
         return "pyOCD API mass erase"
-    raise RuntimeError(f"Unsupported recover mode: {board.recover_mode}")
+    raise RuntimeError(f"Unsupported recover mode: {selected}")
 
 
 def set_breakpoint(handle: TargetSessionHandle, address: int) -> None:

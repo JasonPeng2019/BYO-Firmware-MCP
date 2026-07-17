@@ -19,6 +19,10 @@ class LockedTargetError(TargetConnectionError):
     """Raised when the target appears locked or access-protected."""
 
 
+class ResetLineUnavailableError(TargetConnectionError):
+    """Raised when connect-under-reset cannot control a physical reset line."""
+
+
 class UnsupportedArtifactError(TargetControlError):
     """Raised when a flash artifact type is not supported."""
 

@@ -10,9 +10,11 @@ for entry in (REPO_ROOT, SRC_ROOT):
         sys.path.insert(0, str(entry))
 
 import stage0_check  # noqa: E402
+from pyocd_debug_mcp import server  # noqa: E402
 from pyocd_debug_mcp.board_config import BoardConfig  # noqa: E402
 from pyocd_debug_mcp.services.session_runtime import PolicyRefusal  # noqa: E402
 from pyocd_debug_mcp.serial_resolver import SerialPortInfo  # noqa: E402
+from pyocd_debug_mcp.setup_flow.validate import BoardValidator  # noqa: E402
 from pyocd_debug_mcp.target_errors import LockedTargetError, TargetConnectionError  # noqa: E402
 
 
@@ -23,7 +25,6 @@ def make_board() -> BoardConfig:
         mcu_family="stm32l476",
         probe_family="stlink",
         pyocd_target="stm32l476rgtx",
-        pack_name="stm32l476",
         probe_type="ST-Link",
         probe_hint_terms=("stlink",),
         serial_hint_terms=("stlink",),
@@ -38,7 +39,6 @@ def make_nordic_board() -> BoardConfig:
         mcu_family="nrf52833",
         probe_family="jlink",
         pyocd_target="nrf52833",
-        pack_name="nrf52833",
         probe_type="SEGGER J-Link",
         probe_hint_terms=("jlink",),
         serial_hint_terms=("jlink",),
@@ -249,3 +249,41 @@ def test_check_target_packs_auto_install_uses_pinned_provisioning(
     captured = capsys.readouterr().out
     assert "Provisioning pinned packs" in captured
     assert "via pinned local pack" in captured
+
+
+def test_stage0_safe_validation_calls_shared_board_validator(
+    monkeypatch, tmp_path: Path
+) -> None:
+    board = make_board()
+    probe = stage0_check.ProbeInfo("123", "ST-Link", "raw")
+    handle = make_handle(board)
+    calls: list[tuple[object, ...]] = []
+    monkeypatch.setattr(
+        stage0_check.target_control,
+        "open_session",
+        lambda **kwargs: calls.append(("connect", kwargs["target"])) or handle,
+    )
+    monkeypatch.setattr(
+        stage0_check.target_control,
+        "read_memory",
+        lambda selected, address, width: calls.append(("read", address, width)) or 0x1234,
+    )
+    monkeypatch.setattr(
+        stage0_check.target_control,
+        "close_session",
+        lambda selected: calls.append(("close", selected.probe_uid)),
+    )
+
+    connection_ok, identity_ok = stage0_check.run_shared_safe_validation(
+        board, probe, True, artifact_root=tmp_path
+    )
+
+    assert connection_ok is True
+    assert identity_ok is None
+    assert [call[0] for call in calls] == ["connect", "read", "close"]
+    assert list((tmp_path / ".firm" / "validation").glob("*/report.json"))
+
+
+def test_stage0_and_mcp_share_the_board_validator_implementation() -> None:
+    assert stage0_check.BoardValidator is BoardValidator
+    assert isinstance(server._board_validator, BoardValidator)

@@ -63,7 +63,6 @@ def test_build_session_options_keeps_jlink_workaround() -> None:
         mcu_family="nrf52840",
         probe_family="jlink",
         pyocd_target="nrf52840",
-        pack_name="nrf52840",
         probe_type="SEGGER J-Link",
         probe_hint_terms=("segger",),
         serial_hint_terms=("segger",),
@@ -93,7 +92,6 @@ def test_build_session_options_adds_nucleo_under_reset_workaround() -> None:
         mcu_family="stm32l476",
         probe_family="stlink",
         pyocd_target="stm32l476rgtx",
-        pack_name="stm32l476",
         probe_type="ST-Link",
         probe_hint_terms=("stlink",),
         serial_hint_terms=("stlink",),
@@ -124,8 +122,9 @@ def test_pyocd_flash_matches_cli_reset_sequence(monkeypatch, tmp_path: Path) -> 
     firmware.write_text("placeholder", encoding="utf-8")
 
     class FakeProgrammer:
-        def __init__(self, provided_session) -> None:
+        def __init__(self, provided_session, *, chip_erase: str) -> None:
             assert provided_session is session
+            assert chip_erase == "sector"
 
         def program(self, path: str) -> None:
             calls.append(f"program:{Path(path).name}")
@@ -157,8 +156,9 @@ def test_pyocd_flash_can_leave_target_halted(monkeypatch, tmp_path: Path) -> Non
     firmware.write_text("placeholder", encoding="utf-8")
 
     class FakeProgrammer:
-        def __init__(self, provided_session) -> None:
+        def __init__(self, provided_session, *, chip_erase: str) -> None:
             assert provided_session is session
+            assert chip_erase == "sector"
 
         def program(self, path: str) -> None:
             calls.append(f"program:{Path(path).name}")
@@ -194,8 +194,9 @@ def test_pyocd_flash_suppresses_backend_stdout_progress(
     firmware.write_text("placeholder", encoding="utf-8")
 
     class FakeProgrammer:
-        def __init__(self, provided_session) -> None:
+        def __init__(self, provided_session, *, chip_erase: str) -> None:
             assert provided_session is session
+            assert chip_erase == "sector"
 
         def program(self, path: str) -> None:
             print("[---|---|---|---|---|---|---|---|---|----]")
@@ -223,7 +224,6 @@ def test_recover_target_rejects_manual_only_board() -> None:
         mcu_family="stm32f4",
         probe_family="stlink",
         pyocd_target="stm32f4x",
-        pack_name="stm32f4x",
         probe_type="ST-Link",
         probe_hint_terms=("stlink",),
         serial_hint_terms=("stlink",),
@@ -255,6 +255,55 @@ def test_adapter_open_raises_probe_not_found_when_no_probe_matches(monkeypatch) 
         adapter.open(board=None, unique_id="missing", target="stm32l476rgtx")
 
 
+def test_validation_attach_mode_overrides_board_under_reset_default(monkeypatch) -> None:
+    board = BoardConfig(
+        board_id="nucleo_l476rg",
+        display_name="Nucleo-L476RG",
+        mcu_family="stm32l476",
+        probe_family="stlink",
+        pyocd_target="stm32l476rgtx",
+        probe_type="ST-Link",
+        probe_hint_terms=("stlink",),
+        serial_hint_terms=("stlink",),
+        test_addr=0x08000000,
+    )
+
+    class FakeProbe:
+        unique_id = "probe-1"
+
+    class FakeSession:
+        probe = FakeProbe()
+
+        def open(self) -> None:
+            return None
+
+        def close(self) -> None:
+            return None
+
+    calls: list[dict[str, object]] = []
+
+    def choose(**kwargs):
+        calls.append(dict(kwargs))
+        return FakeSession()
+
+    monkeypatch.setattr(
+        swd_pyocd.ConnectHelper,
+        "session_with_chosen_probe",
+        staticmethod(choose),
+    )
+    monkeypatch.setattr(swd_pyocd, "discover_local_packs", lambda: [])
+
+    handle = swd_pyocd.PyOCDSWDInterface().open(
+        board=board,
+        unique_id="probe-1",
+        target=board.pyocd_target,
+        connect_mode="attach",
+    )
+
+    assert handle.probe_uid == "probe-1"
+    assert calls[0]["options"]["connect_mode"] == "attach"  # type: ignore[index]
+
+
 def test_adapter_open_retries_jlink_uidless_after_known_serial_open_failure(monkeypatch) -> None:
     board = BoardConfig(
         board_id="nrf52840dk",
@@ -262,7 +311,6 @@ def test_adapter_open_retries_jlink_uidless_after_known_serial_open_failure(monk
         mcu_family="nrf52840",
         probe_family="jlink",
         pyocd_target="nrf52840",
-        pack_name="nrf52840",
         probe_type="SEGGER J-Link",
         probe_hint_terms=("segger",),
         serial_hint_terms=("segger",),
@@ -373,7 +421,7 @@ def test_run_cmd_returns_timeout_code(monkeypatch) -> None:
     def fake_run(*args, **kwargs):
         raise swd_pyocd.subprocess.TimeoutExpired(cmd=kwargs.get("args", "pyocd"), timeout=3)
 
-    monkeypatch.setattr(swd_pyocd.subprocess, "run", fake_run)
+    monkeypatch.setattr(swd_pyocd, "run_owned", fake_run)
 
     rc, out, err = swd_pyocd._run_cmd(["pyocd", "list"], timeout_seconds=3)
 

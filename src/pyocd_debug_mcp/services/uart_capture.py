@@ -8,6 +8,7 @@ from typing import Callable
 
 from pyocd_debug_mcp.adapters.uart_interface import UARTInterface
 from pyocd_debug_mcp.adapters.uart_pyserial import PySerialUARTInterface
+from pyocd_debug_mcp.kernel.operations import cancellation_checkpoint
 
 _BACKEND: UARTInterface = PySerialUARTInterface()
 
@@ -51,6 +52,7 @@ def capture_uart_output(
     reopen_attempts: int = 1,
     reopen_delay_seconds: float = 0.15,
     per_open_window_seconds: float = 0.75,
+    max_bytes: int | None = None,
     adapter: UARTInterface | None = None,
 ) -> UARTCaptureResult:
     """Capture UART output with one optional reopen cycle after flash/reset.
@@ -70,6 +72,8 @@ def capture_uart_output(
         raise ValueError("reopen_delay_seconds must be >= 0")
     if per_open_window_seconds <= 0:
         raise ValueError("per_open_window_seconds must be > 0")
+    if max_bytes is not None and max_bytes <= 0:
+        raise ValueError("max_bytes must be > 0 when provided")
 
     backend = adapter or _BACKEND
     started = time.monotonic()
@@ -79,6 +83,7 @@ def capture_uart_output(
     reopen_count = 0
 
     for attempt in range(total_attempts):
+        cancellation_checkpoint()
         remaining = deadline - time.monotonic()
         if remaining <= 0:
             break
@@ -92,8 +97,11 @@ def capture_uart_output(
             if on_port_open is not None:
                 on_port_open()
             while time.monotonic() < open_deadline:
+                cancellation_checkpoint()
                 chunk = backend.read(port_handle, 256)
                 if chunk:
+                    if max_bytes is not None:
+                        chunk = chunk[: max(0, max_bytes - len(captured))]
                     captured.extend(chunk)
                     text = captured.decode("utf-8", errors="replace")
                     if expected_text is None and text.strip():
@@ -110,6 +118,13 @@ def capture_uart_output(
                             reopen_count=reopen_count,
                             duration_seconds=time.monotonic() - started,
                         )
+                    if max_bytes is not None and len(captured) >= max_bytes:
+                        return UARTCaptureResult(
+                            text=text,
+                            expected_text=expected_text,
+                            reopen_count=reopen_count,
+                            duration_seconds=time.monotonic() - started,
+                        )
         except Exception as exc:  # noqa: BLE001 - want the raw serial error
             raise RuntimeError(f"Unable to read {device} at {baudrate} baud: {exc}") from exc
         finally:
@@ -119,7 +134,12 @@ def capture_uart_output(
         if attempt < total_attempts - 1:
             reopen_count += 1
             if reopen_delay_seconds > 0:
-                time.sleep(min(reopen_delay_seconds, max(0.0, deadline - time.monotonic())))
+                sleep_until = time.monotonic() + min(
+                    reopen_delay_seconds, max(0.0, deadline - time.monotonic())
+                )
+                while time.monotonic() < sleep_until:
+                    cancellation_checkpoint()
+                    time.sleep(min(0.05, max(0.0, sleep_until - time.monotonic())))
 
     return UARTCaptureResult(
         text=captured.decode("utf-8", errors="replace"),
@@ -148,8 +168,11 @@ def write_uart_output(
     started = time.monotonic()
     port_handle = None
     try:
+        cancellation_checkpoint()
         port_handle = backend.open(device, baudrate=baudrate, timeout_seconds=timeout_seconds)
+        cancellation_checkpoint()
         bytes_written = backend.write(port_handle, payload)
+        cancellation_checkpoint()
     except Exception as exc:  # noqa: BLE001 - want the raw serial error
         raise RuntimeError(f"Unable to write {device} at {baudrate} baud: {exc}") from exc
     finally:

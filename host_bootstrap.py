@@ -27,6 +27,8 @@ import subprocess
 import sys
 from dataclasses import dataclass
 from pathlib import Path
+
+from pyocd_debug_mcp.kernel.processes import run_owned
 from typing import Callable
 
 SRC_DIR = Path(__file__).resolve().parent / "src"
@@ -125,7 +127,7 @@ def run(
     timeout_seconds: float = DEFAULT_EXTERNAL_COMMAND_TIMEOUT_SECONDS,
 ) -> tuple[int, str, str]:
     try:
-        result = subprocess.run(
+        result = run_owned(
             cmd,
             capture_output=capture,
             text=True,
@@ -282,9 +284,7 @@ def board_config_summary(boards: list[BoardConfig]):
 
     log(PASS, f"Loaded {len(boards)} board config(s)")
     for board in boards:
-        print(
-            f"    - {board.board_id} :: {board.display_name} :: target={board.pyocd_target} :: pack={board.pack_name}"
-        )
+        print(f"    - {board.board_id} :: {board.display_name} :: target={board.pyocd_target}")
 
 
 def target_pack_summary(
@@ -334,7 +334,7 @@ def target_pack_summary(
                 f"'{board.pyocd_target}'",
             )
             print(
-                f"      Fix: add a pinned entry for {board.pack_name} to packs/manifest.yaml "
+                f"      Fix: add a pinned entry providing {board.pyocd_target} to packs/manifest.yaml "
                 "(id/url/version/sha256), then rerun with --install-packs"
             )
         else:

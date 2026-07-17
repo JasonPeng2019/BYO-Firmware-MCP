@@ -11,9 +11,10 @@ from pyocd_debug_mcp.services.session_runtime import (
     WatcherBlocked,
 )
 
-FLASH_TOOL = "flash_firmware"
+FLASH_TOOL = "flash_application"
+FLASH_ACTIONS = frozenset({"flash_application", "flash_bootloader", "flash_firmware"})
 UART_TOOL = "read_serial"
-RECOVER_TOOL = "unlock_recover"
+RECOVER_TOOL = "target_unlock"
 
 
 @dataclass(frozen=True)
@@ -79,7 +80,10 @@ class ConvergenceWatcher:
     ) -> int:
         count = 0
         for event in reversed(session.events):
-            if event.tool_name != action_family:
+            if action_family == FLASH_TOOL:
+                if event.tool_name not in FLASH_ACTIONS:
+                    continue
+            elif event.tool_name != action_family:
                 continue
             if event.outcome_kind == ToolOutcome.SUCCESS:
                 break
@@ -93,7 +97,7 @@ class ConvergenceWatcher:
         return count
 
     def _signature(self, event: ToolEvent) -> tuple[object, ...] | None:
-        if event.tool_name == FLASH_TOOL:
+        if event.tool_name in FLASH_ACTIONS:
             if event.outcome_kind not in {ToolOutcome.FAILED, ToolOutcome.REFUSED}:
                 return None
             artifact_identity = event.normalized_args.get(
@@ -104,6 +108,7 @@ class ConvergenceWatcher:
             return (
                 FLASH_TOOL,
                 event.board_id,
+                event.tool_name,
                 artifact_identity,
                 event.error_code,
             )

@@ -1,0 +1,429 @@
+from __future__ import annotations
+
+import json
+import threading
+import time
+from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
+
+import pytest
+
+from pyocd_debug_mcp import server
+from pyocd_debug_mcp.kernel import registry as registry_module
+from pyocd_debug_mcp.adapters.swd_interface import TargetSessionHandle
+from pyocd_debug_mcp.guardrails.gate import GateManager
+from pyocd_debug_mcp.services.connections import (
+    BoardNotConnectedError,
+    ConnectionAssignmentError,
+    ConnectionManager,
+    stable_connection_identity,
+)
+from pyocd_debug_mcp.services.session_runtime import InMemorySessionStore
+
+
+BOARD_FACING_TOOL_ARGUMENTS: dict[str, dict[str, object]] = {
+    "action_batch": {
+        "board_id": "board-b",
+        "actions": [
+            {
+                "tool_name": "wait",
+                "arguments": {"board_id": "board-b", "ms": 1},
+            }
+        ],
+    },
+    "connect": {"board_id": "board-b"},
+    "disconnect": {"board_id": "board-b"},
+    "get_board_info": {"board_id": "board-b"},
+    "get_state": {"board_id": "board-b"},
+    "halt": {"board_id": "board-b"},
+    "resume": {"board_id": "board-b"},
+    "step": {"board_id": "board-b"},
+    "reset_and_run": {"board_id": "board-b"},
+    "reset_and_halt": {"board_id": "board-b"},
+    "connect_under_reset": {"board_id": "board-b"},
+    "connect_override": {"board_id": "board-b"},
+    "read_cpu_register": {"board_id": "board-b", "name": "r0"},
+    "read_execution_state": {"board_id": "board-b", "name": "pc"},
+    "write_cpu_register": {"board_id": "board-b", "name": "r0", "value": "1"},
+    "set_execution_state": {"board_id": "board-b", "name": "pc", "value": "1"},
+    "register_write": {
+        "board_id": "board-b",
+        "address": "0x40000000",
+        "mask": "0xff",
+        "value": "1",
+    },
+    "find_symbol": {"board_id": "board-b", "query": "value"},
+    "read_memory_symbol": {"board_id": "board-b", "symbol": "value", "width": 32},
+    "read_memory_address": {
+        "board_id": "board-b",
+        "address": "0x20000000",
+        "width": 8,
+        "length": 4,
+    },
+    "write_memory": {
+        "board_id": "board-b",
+        "symbol_or_address": "0x20000000",
+        "value": "1",
+        "width": 32,
+        "allow_address_fallback": True,
+        "reason": "The address is pointer-derived.",
+    },
+    "set_breakpoint": {"board_id": "board-b", "symbol_or_address": "0x08000000"},
+    "remove_breakpoint": {"board_id": "board-b", "address": "0x08000000"},
+    "flash_application": {
+        "board_id": "board-b",
+        "artifact": "firmware.hex",
+        "target_address": None,
+    },
+    "flash_bootloader": {
+        "board_id": "board-b",
+        "artifact": "bootloader.hex",
+        "target_address": None,
+    },
+    "read_serial": {"board_id": "board-b"},
+    "write_serial": {"board_id": "board-b", "text": "ping"},
+    "wait": {"board_id": "board-b", "ms": 1},
+    "target_unlock": {
+        "board_id": "board-b",
+        "recovery_mechanism": "nrf_pyocd_unlock",
+    },
+}
+
+
+def _handle(probe_uid: str, *, display_name: str = "Mutable label") -> TargetSessionHandle:
+    board = type("SessionBoard", (), {"name": display_name})()
+    session = type("Session", (), {"board": board})()
+    return TargetSessionHandle(
+        session=session,
+        board=None,
+        probe_uid=probe_uid,
+        route_used="fake",
+        target_override=None,
+    )
+
+
+def _attach(
+    manager: ConnectionManager,
+    store: InMemorySessionStore,
+    board_id: str,
+    handle: TargetSessionHandle,
+):
+    connection_id = stable_connection_identity(handle)
+    runtime = store.start_session(
+        board_id=board_id,
+        connection_id=connection_id,
+        probe_uid=handle.probe_uid,
+        route_used=handle.route_used,
+    )
+    return manager.assign(
+        board_id,
+        handle,
+        runtime,
+        connection_id=connection_id,
+    )
+
+
+def test_assign_enforces_one_board_per_connection_and_ignores_display_labels(
+    tmp_path: Path,
+) -> None:
+    manager = ConnectionManager()
+    store = InMemorySessionStore(tmp_path / "runs")
+    first = _handle("PROBE-ONE", display_name="same label")
+    second = _handle("PROBE-TWO", display_name="same label")
+
+    _attach(manager, store, "board-a", first)
+    _attach(manager, store, "board-b", second)
+
+    duplicate_wrapper = _handle("probe-one", display_name="renamed label")
+    runtime = store.start_session(
+        board_id="board-c",
+        connection_id=stable_connection_identity(duplicate_wrapper),
+        probe_uid=duplicate_wrapper.probe_uid,
+        route_used=duplicate_wrapper.route_used,
+    )
+    with pytest.raises(ConnectionAssignmentError, match="already assigned to board 'board-a'"):
+        manager.assign("board-c", duplicate_wrapper, runtime)
+
+    with pytest.raises(ConnectionAssignmentError, match="already has an active connection"):
+        manager.assign("board-a", _handle("PROBE-THREE"), runtime)
+
+
+def test_clear_is_board_scoped_and_fresh_manager_has_restart_defaults(tmp_path: Path) -> None:
+    manager = ConnectionManager()
+    store = InMemorySessionStore(tmp_path / "runs")
+    first = _attach(manager, store, "board-a", _handle("probe-a"))
+    second = _attach(manager, store, "board-b", _handle("probe-b"))
+
+    assert manager.clear("board-a") is first
+    with pytest.raises(BoardNotConnectedError, match="board-a"):
+        manager.handle_for("board-a")
+    assert manager.handle_for("board-b") is second.handle
+
+    restarted = ConnectionManager()
+    assert restarted.assigned_board_ids() == ()
+    with pytest.raises(BoardNotConnectedError, match="board-b"):
+        restarted.handle_for("board-b")
+
+
+@pytest.fixture
+def isolated_server(tmp_path: Path):
+    original_manager = server.connection_manager
+    original_store = server._session_store
+    server.connection_manager = ConnectionManager()
+    server._session_store = InMemorySessionStore(tmp_path / "runs")
+    try:
+        yield server.connection_manager, server._session_store
+    finally:
+        server.connection_manager = original_manager
+        server._session_store = original_store
+
+
+def test_two_fake_boards_route_to_the_named_handle(monkeypatch, isolated_server) -> None:
+    manager, store = isolated_server
+    handle_a = _handle("probe-a")
+    handle_b = _handle("probe-b")
+    connection_a = _attach(manager, store, "board-a", handle_a)
+    _attach(manager, store, "board-b", handle_b)
+    monkeypatch.setattr(
+        server.target_control,
+        "get_state",
+        lambda handle: f"state:{handle.probe_uid}",
+    )
+
+    assert server.get_state("board-a") == "state:probe-a"
+    assert server.get_state("board-b") == "state:probe-b"
+    assert connection_a.runtime_session.events[-1].board_id == "board-a"
+    assert connection_a.runtime_session.events[-1].normalized_args["board_id"] == "board-a"
+
+    with pytest.raises(BoardNotConnectedError, match="board-c"):
+        server.get_state("board-c")
+    assert store._global_event_count == 1
+    global_event = json.loads(store._global_events_path.read_text(encoding="utf-8"))
+    assert global_event["board_id"] == "board-c"
+    assert global_event["normalized_args"]["board_id"] == "board-c"
+
+
+def test_unconnected_board_b_cannot_fall_back_to_board_a(
+    monkeypatch,
+    isolated_server,
+) -> None:
+    manager, store = isolated_server
+    handle_a = _handle("probe-a")
+    _attach(manager, store, "board-a", handle_a)
+    reached: list[TargetSessionHandle] = []
+
+    def record_backend(handle: TargetSessionHandle) -> str:
+        reached.append(handle)
+        return "unexpected"
+
+    monkeypatch.setattr(server.target_control, "get_state", record_backend)
+
+    with pytest.raises(BoardNotConnectedError, match="board-b"):
+        server.get_state("board-b")
+
+    assert reached == []
+    assert manager.handle_for("board-a") is handle_a
+    event = json.loads(store._global_events_path.read_text(encoding="utf-8"))
+    assert event["board_id"] == "board-b"
+
+
+def test_disconnect_clears_only_the_named_board(monkeypatch, isolated_server) -> None:
+    manager, store = isolated_server
+    handle_a = _handle("probe-a")
+    handle_b = _handle("probe-b")
+    _attach(manager, store, "board-a", handle_a)
+    _attach(manager, store, "board-b", handle_b)
+    closed: list[TargetSessionHandle] = []
+    monkeypatch.setattr(server.target_control, "close_session", closed.append)
+
+    assert server.disconnect("board-a") == "Disconnected board 'board-a'."
+    assert closed == [handle_a]
+    assert manager.maybe_connection("board-a") is None
+    assert manager.handle_for("board-b") is handle_b
+
+
+def test_ac_13_3_disconnect_clears_only_named_assignment_stamp_and_gate(
+    monkeypatch, isolated_server
+) -> None:
+    manager, store = isolated_server
+    connection_a = _attach(manager, store, "board-a", _handle("probe-a"))
+    connection_b = _attach(manager, store, "board-b", _handle("probe-b"))
+    gates = GateManager()
+    monkeypatch.setattr(server, "gate_manager", gates)
+    monkeypatch.setattr(server.target_control, "close_session", lambda handle: None)
+    for connection, fingerprint in (
+        (connection_a, "aggregate-a"),
+        (connection_b, "aggregate-b"),
+    ):
+        gates.stamp_validation(
+            board_id=connection.board_id,
+            connection_id=connection.connection_id,
+            hardware_result="validation_passed",
+            probe_identity=connection.handle.probe_uid or connection.connection_id,
+            aggregate_fingerprint=fingerprint,
+        )
+
+    assert server.disconnect("board-a") == "Disconnected board 'board-a'."
+
+    assert manager.maybe_connection("board-a") is None
+    assert gates.snapshot("board-a") is None
+    assert manager.connection_for("board-b") == connection_b
+    assert gates.require_write("board-b", connection_b.connection_id, "aggregate-b")
+
+
+def test_a4_reads_require_validation_without_freshness_and_writes_require_both(
+    monkeypatch, isolated_server
+) -> None:
+    manager, store = isolated_server
+    connection = _attach(manager, store, "board-a", _handle("probe-a"))
+    calls: list[tuple[object, ...]] = []
+
+    class RecordingGate:
+        def require_validated(self, board_id: str, connection_id: str) -> None:
+            calls.append(("validated", board_id, connection_id))
+
+        def require_write(self, board_id: str, connection_id: str, aggregate: str) -> None:
+            calls.append(("write", board_id, connection_id, aggregate))
+
+    class RecordingSafety:
+        def current_aggregate(self, board_id: str) -> str:
+            calls.append(("freshness", board_id))
+            return "aggregate-a"
+
+    monkeypatch.setattr(server, "gate_manager", RecordingGate())
+    monkeypatch.setattr(server, "_safety_policy", RecordingSafety())
+
+    server._require_layer0("read_memory_address", "board-a")
+    server._require_layer0("read_serial", "board-a")
+    assert calls == [
+        ("validated", "board-a", connection.connection_id),
+        ("validated", "board-a", connection.connection_id),
+    ]
+
+    calls.clear()
+    server._require_layer0("write_memory", "board-a")
+    server._require_layer0("write_serial", "board-a")
+    assert calls == [
+        ("freshness", "board-a"),
+        ("write", "board-a", connection.connection_id, "aggregate-a"),
+        ("freshness", "board-a"),
+        ("write", "board-a", connection.connection_id, "aggregate-a"),
+    ]
+
+
+def test_same_board_serializes_while_cross_board_operations_overlap(
+    monkeypatch,
+    isolated_server,
+) -> None:
+    manager, store = isolated_server
+    _attach(manager, store, "board-a", _handle("probe-a"))
+    _attach(manager, store, "board-b", _handle("probe-b"))
+
+    active = 0
+    maximum = 0
+    counter_lock = threading.Lock()
+
+    def measured_state(handle: TargetSessionHandle) -> str:
+        nonlocal active, maximum
+        with counter_lock:
+            active += 1
+            maximum = max(maximum, active)
+        time.sleep(0.04)
+        with counter_lock:
+            active -= 1
+        return str(handle.probe_uid)
+
+    monkeypatch.setattr(server.target_control, "get_state", measured_state)
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        same = [executor.submit(server.get_state, "board-a") for _ in range(2)]
+        assert [future.result(timeout=1) for future in same] == ["probe-a", "probe-a"]
+    assert maximum == 1
+
+    maximum = 0
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        cross = [
+            executor.submit(server.get_state, "board-a"),
+            executor.submit(server.get_state, "board-b"),
+        ]
+        assert {future.result(timeout=1) for future in cross} == {"probe-a", "probe-b"}
+    assert maximum == 2
+
+
+def test_every_board_facing_tool_requires_board_id() -> None:
+    tools = {tool.name: tool for tool in server.mcp._tool_manager.list_tools()}
+
+    assert BOARD_FACING_TOOL_ARGUMENTS.keys() <= tools.keys()
+    for name in BOARD_FACING_TOOL_ARGUMENTS:
+        schema = tools[name].parameters
+        assert "board_id" in schema["properties"], name
+        assert "board_id" in schema["required"], name
+
+
+async def test_every_board_facing_tool_threads_board_id_into_dispatch(monkeypatch) -> None:
+    dispatched: list[tuple[str, str | None]] = []
+
+    async def capture_dispatch(
+        tool_name,
+        board_id,
+        operation,
+        timeout,
+        **dispatch_options,
+    ):
+        del operation, timeout, dispatch_options
+        dispatched.append((tool_name, board_id))
+        return "captured"
+
+    monkeypatch.setattr(registry_module, "dispatch", capture_dispatch)
+
+    try:
+        for tool_name, arguments in BOARD_FACING_TOOL_ARGUMENTS.items():
+            if tool_name in server.M5_GUARDED_ACTIONS + server.M8_GUARDED_ACTIONS:
+                server.tool_registry.unlock(tool_name, "board-b")
+            assert await server.mcp.call_tool(tool_name, arguments) == "captured"
+    finally:
+        for tool_name in server.M5_GUARDED_ACTIONS + server.M8_GUARDED_ACTIONS:
+            server.tool_registry.relock(tool_name, "board-b")
+
+    assert dispatched == [(name, "board-b") for name in BOARD_FACING_TOOL_ARGUMENTS]
+
+
+def test_modular_backend_surface_has_no_global_session_escape_path() -> None:
+    source_path = Path(server.__file__).resolve()
+    source_text = source_path.read_text(encoding="utf-8")
+
+    assert "global _session_handle" not in source_text
+    assert "global _runtime_session" not in source_text
+    assert "global _lock" not in source_text
+    assert set(server.M5_GUARDED_ACTIONS) <= set(server.mcp._guarded_dispatch)
+    assert set(server.session_tool_handlers) == {
+        "connect",
+        "disconnect",
+        "get_board_info",
+        "get_state",
+        "connect_override",
+    }
+    assert set(server.execution_tool_handlers) == {
+        "halt",
+        "resume",
+        "step",
+        "reset_and_run",
+        "reset_and_halt",
+        "connect_under_reset",
+    }
+    assert set(server.register_tool_handlers) == {
+        "read_cpu_register",
+        "read_execution_state",
+        "write_cpu_register",
+        "set_execution_state",
+        "register_write",
+    }
+    assert set(server.memory_tool_handlers) == {
+        "find_symbol",
+        "read_memory_symbol",
+        "read_memory_address",
+        "write_memory",
+    }
+    assert set(server.flash_tool_handlers) == {"flash_application", "flash_bootloader"}
+    assert set(server.serial_tool_handlers) == {"read_serial", "write_serial"}
+    assert set(server.breakpoint_tool_handlers) == {"set_breakpoint", "remove_breakpoint"}
+    assert set(server.misc_tool_handlers) == {"wait"}

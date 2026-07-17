@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import re
+import warnings
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable
@@ -39,6 +40,10 @@ class ConfigError(Exception):
     """Raised when a tracked board-config file is malformed."""
 
 
+class LegacyPackNameWarning(UserWarning):
+    """A legacy profile tried to own package metadata."""
+
+
 @dataclass(frozen=True)
 class BoardConfig:
     board_id: str
@@ -46,7 +51,6 @@ class BoardConfig:
     mcu_family: str
     probe_family: str
     pyocd_target: str
-    pack_name: str
     probe_type: str
     probe_hint_terms: tuple[str, ...]
     serial_hint_terms: tuple[str, ...]
@@ -152,7 +156,10 @@ def default_test_address(mcu_family: str) -> int:
 def load_board_config_document(path: Path) -> dict[str, object]:
     suffix = path.suffix.lower()
     if suffix == ".json":
-        data = json.loads(path.read_text(encoding="utf-8"))
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+            raise ConfigError(f"Could not parse board config {path}: {exc}") from exc
     elif suffix in BOARD_CONFIG_SUFFIXES:
         try:
             import yaml  # type: ignore[import-untyped]
@@ -160,7 +167,10 @@ def load_board_config_document(path: Path) -> dict[str, object]:
             raise ConfigError(
                 f"PyYAML is required to load {path.name}. Run 'uv sync' from the repo root or use JSON."
             ) from exc
-        data = yaml.safe_load(path.read_text(encoding="utf-8"))
+        try:
+            data = yaml.safe_load(path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeError, yaml.YAMLError) as exc:
+            raise ConfigError(f"Could not parse board config {path}: {exc}") from exc
     else:
         raise ConfigError(f"Unsupported board config format for {path}. Use .json, .yaml, or .yml.")
 
@@ -193,15 +203,25 @@ def make_board_config(raw: dict[str, object], source_path: Path | None) -> Board
     if missing:
         raise ConfigError(f"Missing required board config fields: {', '.join(missing)}")
 
-    board_id = str(raw["board_id"]).strip().lower()
-    if not re.fullmatch(r"[a-z0-9_]+", board_id):
-        raise ConfigError("board_id must contain only lowercase letters, numbers, and underscores")
+    board_id = str(raw["board_id"]).strip()
+    if not re.fullmatch(r"[a-z0-9_]{1,64}", board_id):
+        raise ConfigError("board_id must be 1-64 lowercase letters, numbers, or underscores")
 
     display_name = str(raw["display_name"]).strip()
+    if not display_name or len(display_name) > 100:
+        raise ConfigError("display_name must be a non-empty string of at most 100 characters")
     mcu_family = str(raw["mcu_family"]).strip().lower()
     probe_family = str(raw["probe_family"]).strip().lower()
     pyocd_target = str(raw["pyocd_target"]).strip()
-    pack_name = str(raw.get("pack_name") or pyocd_target).strip()
+    if "pack_name" in raw:
+        source = f" in {source_path}" if source_path is not None else ""
+        warnings.warn(
+            "Legacy field 'pack_name'"
+            f"{source} is deprecated and ignored; packs/manifest.yaml is the "
+            "authoritative owner of device-support package metadata.",
+            LegacyPackNameWarning,
+            stacklevel=2,
+        )
     probe_type = str(
         raw.get("probe_type") or PROBE_FAMILY_LABELS.get(probe_family, probe_family)
     ).strip()
@@ -284,7 +304,6 @@ def make_board_config(raw: dict[str, object], source_path: Path | None) -> Board
         mcu_family=mcu_family,
         probe_family=probe_family,
         pyocd_target=pyocd_target,
-        pack_name=pack_name,
         probe_type=probe_type,
         probe_hint_terms=tuple(sorted(term.lower() for term in probe_terms if term)),
         serial_hint_terms=tuple(sorted(term.lower() for term in serial_terms if term)),

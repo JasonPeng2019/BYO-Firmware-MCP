@@ -1,0 +1,45 @@
+{
+  "schema_version": 1,
+  "recorded_at": "2026-07-17T15:01:45.6213430+00:00",
+  "criterion": "Prompt 15.3 destructive M8 hardware recovery",
+  "status": "blocked_hardware_identity_mismatch",
+  "required_board_id": "nrf52833dk",
+  "required_part_register_value": "0x00052833",
+  "observed": {
+    "probe_uid": "683377322",
+    "uart_port": "COM11",
+    "uart_usb_serial": "000683377322",
+    "ficr_info_part": "0x00052840",
+    "ficr_info_variant": "0x41414430",
+    "variant_ascii": "AAD0",
+    "physical_board_classification": "nrf52840dk"
+  },
+  "versions": {
+    "python": "3.12.13",
+    "pyocd": "0.45.0",
+    "mcp": "1.28.1",
+    "pyocd_debug_mcp": "0.1.0"
+  },
+  "safety_stop": {
+    "firmware_backup_attempted": false,
+    "target_unlock_plan_called": false,
+    "permission_requested": false,
+    "permission_granted": false,
+    "typed_recovery_calls": 0,
+    "erase_calls": 0,
+    "flash_calls": 0,
+    "write_calls": 0,
+    "reset_calls": 0,
+    "profile_mutations": 0,
+    "safety_map_mutations": 0,
+    "gate_stamps": 0
+  },
+  "commands": [
+    "uv run pyocd list --probes",
+    "uv run python -c \"from serial.tools import list_ports; import json; print(json.dumps([{'device':p.device,'description':p.description,'serial_number':p.serial_number,'vid':p.vid,'pid':p.pid} for p in list_ports.comports()], indent=2))\"",
+    "read-only target_control session on probe 683377322 reading 0x10000100 and 0x10000104 as 32-bit values",
+    "uv run pyocd --version",
+    "uv run python -c \"import sys, pyocd, importlib.metadata as m; print versions\""
+  ],
+  "required_remedy": "Attach the designated recoverable nrf52833dk and positively confirm FICR.INFO.PART equals 0x00052833 before generating a recovery disclosure."
+}

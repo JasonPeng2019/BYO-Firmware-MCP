@@ -608,7 +608,8 @@ def test_render_prompt_pins_exact_case_and_board_identifiers() -> None:
         in prompt
     )
     assert (
-        'read_symbol_u32(elf_path="build/firmware.elf", symbol_name="stage1_known_value")' in prompt
+        'read_symbol_u32(board_id="nucleo_l476rg", elf_path="build/firmware.elf", '
+        'symbol_name="stage1_known_value")' in prompt
     )
     assert "`case_id` exactly as `nucleo_l476rg__k001_reference_green`" in prompt
     assert "`board_id` exactly as `nucleo_l476rg`" in prompt

@@ -1,0 +1,46 @@
+{
+  "host": {
+    "ci_environment": false,
+    "implementation": "CPython",
+    "logical_cpu_count": 16,
+    "package_versions": {
+      "mcp": "1.28.1",
+      "pyelftools": "0.33",
+      "pyocd": "0.45.0",
+      "pyserial": "3.5",
+      "pyyaml": "6.0.3"
+    },
+    "platform": "Windows-10-10.0.19045-SP0",
+    "processor": "Intel64 Family 6 Model 165 Stepping 2, GenuineIntel",
+    "python": "3.12.13"
+  },
+  "metrics": {
+    "enumerate_eight_devices": {
+      "max_seconds": 2.3499829694628716e-05,
+      "median_seconds": 1.8200138583779335e-05,
+      "p95_seconds": 1.8999911844730377e-05,
+      "sample_count": 25,
+      "target_seconds": 10.0,
+      "within_target": true
+    },
+    "gate_and_freshness": {
+      "max_seconds": 0.0046768998727202415,
+      "median_seconds": 0.002923100022599101,
+      "p95_seconds": 0.004210800165310502,
+      "sample_count": 25,
+      "target_seconds": 0.25,
+      "within_target": true
+    },
+    "null_plan_and_handshake": {
+      "max_seconds": 1.840014010667801e-05,
+      "median_seconds": 8.200062438845634e-06,
+      "p95_seconds": 9.600073099136353e-06,
+      "sample_count": 25,
+      "target_seconds": 2.0,
+      "within_target": true
+    }
+  },
+  "non_ci_gating": true,
+  "recorded_at_utc": "2026-07-17T17:02:29Z",
+  "schema_version": 1
+}

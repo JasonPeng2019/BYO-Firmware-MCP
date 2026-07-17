@@ -22,8 +22,10 @@ import re
 import subprocess
 import sys
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
+
+from pyocd_debug_mcp.kernel.processes import run_owned
 from typing import Callable
 
 SRC_DIR = Path(__file__).resolve().parent / "src"
@@ -42,6 +44,8 @@ from pyocd_debug_mcp.board_config import (  # noqa: E402
 )
 from pyocd_debug_mcp.guardrails.flash_gate import resolve_flash_request  # noqa: E402
 from pyocd_debug_mcp.guardrails.recover_gate import authorize_recover  # noqa: E402
+from pyocd_debug_mcp.firmstore.reports import ReportWriter  # noqa: E402
+from pyocd_debug_mcp.firmstore.store import FirmStore  # noqa: E402
 from pyocd_debug_mcp.local_env import load_local_env  # noqa: E402
 from pyocd_debug_mcp.pack_provision import (  # noqa: E402
     PackProvisionError,
@@ -63,6 +67,15 @@ from pyocd_debug_mcp.serial_resolver import (  # noqa: E402
 from pyocd_debug_mcp.services.session_runtime import ActionContext, PolicyRefusal  # noqa: E402
 from pyocd_debug_mcp.services import target_control  # noqa: E402
 from pyocd_debug_mcp.services.uart_capture import capture_uart_output  # noqa: E402
+from pyocd_debug_mcp.setup_flow.validate import (  # noqa: E402
+    BoardValidator,
+    ValidationBackend,
+    ValidationHooks,
+    ValidationInventory,
+    ValidationProbe,
+    ValidationRequest,
+    profile_from_board_config,
+)
 from pyocd_debug_mcp.adapters.swd_interface import TargetSessionHandle  # noqa: E402
 from pyocd_debug_mcp.target_errors import (  # noqa: E402
     LockedTargetError,
@@ -125,7 +138,7 @@ def run(
     timeout_seconds: float = DEFAULT_EXTERNAL_COMMAND_TIMEOUT_SECONDS,
 ) -> tuple[int, str, str]:
     try:
-        result = subprocess.run(
+        result = run_owned(
             cmd,
             capture_output=capture,
             text=True,
@@ -399,7 +412,7 @@ def check_target_packs(boards_to_check: list[BoardConfig], auto_install: bool) -
 
         check(False, f"{board.display_name}: target '{board.pyocd_target}' not found")
         if auto_install:
-            log(INFO, f"Provisioning pinned packs for {board.pack_name}...")
+            log(INFO, f"Provisioning pinned packs for target {board.pyocd_target}...")
             try:
                 provisioned = ensure_all()
             except PackProvisionError as exc:
@@ -422,7 +435,7 @@ def check_target_packs(boards_to_check: list[BoardConfig], auto_install: bool) -
         else:
             print("      Fix: re-run with --install-packs to provision pinned packs")
             print(
-                f"      If this board is not yet covered, add a pinned entry for {board.pack_name} to packs/manifest.yaml"
+                f"      If this board is not yet covered, add a pinned entry providing {board.pyocd_target} to packs/manifest.yaml"
             )
             results[board.board_id] = False
 
@@ -561,6 +574,93 @@ def check_silicon_identity(
     if result.stdout.strip():
         print(f"      Raw: {result.stdout.strip()[:300]}")
     return ok
+
+
+class _Stage0ProfileRepository:
+    """Read-only profile adapter used by the shared validation engine."""
+
+    def __init__(self, profile) -> None:
+        self._profile = profile
+
+    def load(self, board_id: str):
+        if board_id != self._profile.board_id:
+            raise ConfigError(f"Board profile not found: {board_id}")
+        return self._profile
+
+
+def run_shared_safe_validation(
+    board: BoardConfig,
+    probe: ProbeInfo | None,
+    target_ok: bool,
+    *,
+    artifact_root: Path | None = None,
+) -> tuple[bool, bool | None]:
+    """Run Stage 0 connection/identity checks through ``BoardValidator``.
+
+    Stage 0's opt-in flash and recovery checks remain separate. The shared path
+    intentionally disables UART here because the legacy CLI performs that check
+    only after its optional reference-firmware step.
+    """
+
+    board_without_uart = replace(board, expected_uart_substring=None)
+    source_path = board.source_path or Path(f"{board.board_id}.yaml")
+    profile = profile_from_board_config(board_without_uart, source_path)
+    profile_repository = _Stage0ProfileRepository(profile)
+    selected_probe = (
+        ValidationProbe(
+            probe.uid or f"stage0-{board.board_id}",
+            probe.description or probe.raw,
+            board.probe_family,
+            probe.uid or None,
+        )
+        if probe is not None
+        else None
+    )
+
+    def connect(_profile, selected: ValidationProbe, _timeout: float) -> object:
+        return target_control.open_session(
+            board=board_without_uart,
+            unique_id=selected.usb_serial,
+            target=board.pyocd_target,
+        )
+
+    validator = BoardValidator(
+        profile_repository,  # type: ignore[arg-type]
+        ReportWriter(FirmStore(artifact_root or Path(__file__).resolve().parent)),
+        ValidationBackend(
+            lambda: ValidationInventory(
+                probes=(selected_probe,) if selected_probe is not None else ()
+            ),
+            lambda _target: target_ok,
+            connect,
+            lambda connection, address, width, _timeout: target_control.read_memory(
+                connection, address, width  # type: ignore[arg-type]
+            ),
+            lambda _serial, _baudrate, _duration, _max_bytes: "",
+            lambda connection: target_control.close_session(connection),  # type: ignore[arg-type]
+        ),
+        hooks=ValidationHooks.closed_placeholders(),
+    )
+    result = validator.validate(ValidationRequest(board.board_id))
+    connection_ok = any(
+        step.number == 5 and step.outcome == "passed" for step in result.steps
+    )
+    if board.silicon_id_expected is None:
+        identity_ok: bool | None = None
+    else:
+        identity_ok = any(
+            step.number == 6 and step.outcome == "passed" for step in result.steps
+        )
+        if result.code == "validation/silicon-mismatch":
+            identity_ok = False
+
+    header(f"Shared non-destructive validation - {board.display_name}")
+    check(connection_ok, "Connected and completed the configured safe test-memory read")
+    if identity_ok is not None:
+        check(identity_ok, "Configured silicon identity matches the board profile")
+    log(INFO, f"Validation status: {result.status} ({result.code})")
+    log(INFO, f"Immutable report: {result.report_paths.report}")
+    return connection_ok, identity_ok
 
 
 def check_virtual_com_ports(
@@ -1082,8 +1182,9 @@ def main():
         expected_text = expect_overrides.get(board.board_id, board.expected_uart_substring)
         baudrate = baudrate_overrides.get(board.board_id, board.default_baudrate)
 
-        conn_ok = check_connection(board, probe, target_available)
-        identity_ok = check_silicon_identity(board, probe, target_available)
+        conn_ok, identity_ok = run_shared_safe_validation(
+            board, probe, target_available
+        )
         flash_result = flash_reference_firmware(
             board,
             probe,

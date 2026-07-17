@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import ast
 import tomllib
 from pathlib import Path
 
@@ -91,21 +90,23 @@ def test_required_byo_docs_state_checkout_and_proof_limits() -> None:
 
 
 def test_every_mcp_tool_contract_has_a_docstring() -> None:
-    server_path = PROJECT_ROOT / "src" / "pyocd_debug_mcp" / "server.py"
-    tree = ast.parse(server_path.read_text(encoding="utf-8"))
-    tools = []
-    for node in tree.body:
-        if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-            continue
-        if any(
-            isinstance(decorator, ast.Call)
-            and isinstance(decorator.func, ast.Attribute)
-            and isinstance(decorator.func.value, ast.Name)
-            and decorator.func.value.id == "mcp"
-            and decorator.func.attr == "tool"
-            for decorator in node.decorator_list
-        ):
-            tools.append(node)
+    from pyocd_debug_mcp import server
 
-    assert len(tools) == 20
-    assert all(ast.get_docstring(node) for node in tools)
+    tools = server.mcp._tool_manager.list_tools()
+    tool_names = {tool.name for tool in tools}
+
+    assert {"reset", "read_core_register", "write_core_register"}.isdisjoint(
+        tool_names
+    )
+    assert {
+        "connect_override",
+        "reset_and_run",
+        "reset_and_halt",
+        "connect_under_reset",
+        "read_cpu_register",
+        "read_execution_state",
+        "write_cpu_register",
+        "set_execution_state",
+        "register_write",
+    }.issubset(tool_names)
+    assert all(tool.description for tool in tools)

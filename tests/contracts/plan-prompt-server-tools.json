@@ -1,0 +1,39 @@
+{
+  "contract_version": 19,
+  "milestone": "post-M10-plan-prompt-contract",
+  "base_contract": {
+    "path": "source-server-tools.json",
+    "sha256": "7c210d772b08c5e047540ee4ec94fc2ac4ccf3a8f7a9891511f6e891aad40fe3"
+  },
+  "implementation_module_sha256_overrides": {
+    "src/pyocd_debug_mcp/guardrails/plan_defs.py": "de8e1b315b4b263ba3f7354b4fe709de424689a737267bdb04b1d2ee0321b0e3",
+    "src/pyocd_debug_mcp/guardrails/plan_engine.py": "4df75be23011cdc5f83bc97a72be841ebdb47530a29ed36075d2a3b169e55d54",
+    "src/pyocd_debug_mcp/server.py": "bbaefe3f002dda4bc07eea80f0cb6b16867336817db0eefb040ebacdb4c02aba",
+    "src/pyocd_debug_mcp/tools/plans.py": "bb2f7b13dbfc1048e58fe4ca6969cd8de480d71edf90470b4e159a473979f560",
+    "src/pyocd_debug_mcp/tools/setup.py": "fbc55c2bec57dc5c833cae0912892a482d7d7efc1a75aa2c670d2f65dd514862",
+    "src/pyocd_debug_mcp/tools/unlock.py": "eea37fe920ae54cedfcc7f155f5f131b38221b0ca5210d1967b46ec5b255ddab"
+  },
+  "plan_prompt_contents_spec_sha256": "e9bd346b6a1765633b703011a6c683205115ffd3fa4784b49b9a38f24ec6a08f",
+  "tool_contract_sha256_overrides": {
+    "board_setup-plan": "32ab21ab65300460d47087eb8f0f516e7e95fc8f14ac442270d08bebd993e805",
+    "connect_override-plan": "e3b911b43633aab6e8fdf6bcf8d05c5e1f27ed546565b6284be03f23cb785bb8",
+    "connect_under_reset-plan": "32c92fb0e2694549ba6645c23929a27c23c5cdea2827f28946cf73cc3699b5a4",
+    "flash_application-plan": "8d1861346c91d740a707f39ea10c934960976d899a13af4bd6842b9fdd101c60",
+    "flash_bootloader-plan": "3043d4b333026ef5bd1357b2ff95305117ec91e47e2b6285d99eb5d9e18c3322",
+    "read_memory_address-plan": "03ab013db1a5602e4b540c184913d21041954acd2727bd162e1dc4191495762d",
+    "read_serial-plan": "5c2c895abff6103bb673d64ee3e73a083db56dc08d649c7da5491e5d3f3c46ba",
+    "register_write-plan": "5bb12961315e878070097cbeb53cd80480f6a64505a3cd9c7756744bac46625c",
+    "reset_and_halt-plan": "d8b47bb1135d44fe4ba5acf1becb510f17a7df5ebb154b55146a5b796811a98f",
+    "set_breakpoint-plan": "870aca0e80c3cf55e74723afe5187e84210278327ea9dbcf6bf8a326a20af6f1",
+    "set_execution_state-plan": "ce9fee7d95db8a2383e87ab6a2af2a437dd328233e76a55f0c6a4765c5d3b8ba",
+    "target_unlock-plan": "c44d22311b6d3a18062df36baa325ab26a813f3199a209e2a40a96ddd3d03d50",
+    "write_cpu_register-plan": "eb3761c535e2cb0249115cee22a51355ea29d29ff6e303887256b207291dfcc2",
+    "write_memory-plan": "b394b3a945b92d3a1afcba2a77e2643e9904d17d79e5fe7f3688acd2473953f2",
+    "write_serial-plan": "395e5b355c2c282dfc33e48db6ac2fcb3f0c666f340964388bae56ac122f06d5"
+  },
+  "notes": [
+    "The M9 extraction-named baseline remains immutable historical evidence.",
+    "All plan tools now accept the exact common envelope with nested action_parameters.",
+    "The all-NULL teaching responses implement Plan_Prompt_Contents_Spec.md for all guarded actions."
+  ]
+}

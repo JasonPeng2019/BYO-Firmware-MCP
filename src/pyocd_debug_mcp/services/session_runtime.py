@@ -89,7 +89,7 @@ class ToolEvent:
     session_id: str | None
     timestamp: str
     tool_name: str
-    board_id: str | None
+    board_id: str
     probe_uid: str | None
     route_used: str | None
     normalized_args: dict[str, Any]
@@ -118,7 +118,8 @@ class ToolEvent:
 @dataclass
 class SessionRecord:
     session_id: str
-    board_id: str | None
+    board_id: str
+    connection_id: str
     probe_uid: str | None
     route_used: str | None
     created_at: str
@@ -139,7 +140,8 @@ class SessionStore(Protocol):
     def start_session(
         self,
         *,
-        board_id: str | None,
+        board_id: str,
+        connection_id: str,
         probe_uid: str | None,
         route_used: str | None,
     ) -> SessionRecord: ...
@@ -171,7 +173,8 @@ class InMemorySessionStore:
     def start_session(
         self,
         *,
-        board_id: str | None,
+        board_id: str,
+        connection_id: str,
         probe_uid: str | None,
         route_used: str | None,
     ) -> SessionRecord:
@@ -184,6 +187,7 @@ class InMemorySessionStore:
         record = SessionRecord(
             session_id=session_id,
             board_id=board_id,
+            connection_id=connection_id,
             probe_uid=probe_uid,
             route_used=route_used,
             created_at=utc_now_text(),
@@ -234,6 +238,7 @@ class InMemorySessionStore:
         summary = {
             "session_id": session.session_id,
             "board_id": session.board_id,
+            "connection_id": session.connection_id,
             "probe_uid": session.probe_uid,
             "route_used": session.route_used,
             "created_at": session.created_at,

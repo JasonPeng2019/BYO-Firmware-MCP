@@ -13,6 +13,8 @@ import tarfile
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
+
+from pyocd_debug_mcp.kernel.processes import run_owned
 from urllib.error import URLError
 from urllib.request import urlopen
 
@@ -252,7 +254,7 @@ def _run(
     location = f" (cwd={cwd})" if cwd is not None else ""
     _print_step(f"run: {rendered}{location}")
     try:
-        result = subprocess.run(
+        result = run_owned(
             cmd,
             cwd=cwd,
             env=env,
@@ -323,7 +325,7 @@ def _west_env(west_python: Path, sdk_dir: Path | None = None) -> dict[str, str]:
 
 def _can_run_west(python_path: Path) -> bool:
     try:
-        result = subprocess.run(
+        result = run_owned(
             [str(python_path), "-m", "west", "--version"],
             capture_output=True,
             text=True,
@@ -337,7 +339,7 @@ def _can_run_west(python_path: Path) -> bool:
 
 def _python_has_module(python_path: Path, module_name: str) -> bool:
     try:
-        result = subprocess.run(
+        result = run_owned(
             [str(python_path), "-c", f"import {module_name}"],
             capture_output=True,
             text=True,

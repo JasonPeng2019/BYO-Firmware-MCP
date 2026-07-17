@@ -8,8 +8,11 @@ import os
 import subprocess
 import sys
 import tempfile
+import time
 from collections.abc import Iterator
 from pathlib import Path
+
+from pyocd_debug_mcp.kernel.processes import run_owned
 from typing import Any, BinaryIO, TextIO, cast
 
 from pyocd.core.exceptions import TransferError  # type: ignore[import-untyped]
@@ -24,6 +27,7 @@ from pyocd_debug_mcp.probe_inventory import list_connected_probes
 from pyocd_debug_mcp.target_errors import (
     LockedTargetError,
     ProbeNotFoundError,
+    ResetLineUnavailableError,
     TargetConnectionError,
     UnsupportedArtifactError,
 )
@@ -43,7 +47,7 @@ def _run_cmd(
     timeout_seconds: float = DEFAULT_EXTERNAL_COMMAND_TIMEOUT_SECONDS,
 ) -> tuple[int, str, str]:
     try:
-        result = subprocess.run(
+        result = run_owned(
             cmd,
             capture_output=True,
             text=True,
@@ -205,6 +209,7 @@ class PyOCDSWDInterface(SWDInterface):
         unique_id: str | None,
         target: str | None,
         server_timeouts: ServerTimeoutConfig | None = None,
+        connect_mode: str | None = None,
     ) -> TargetSessionHandle:
         probe_uid = unique_id or os.environ.get("PYOCD_PROBE_UID") or None
         target_override = (
@@ -214,6 +219,11 @@ class PyOCDSWDInterface(SWDInterface):
             or None
         )
         options = build_session_options(board, target_override, server_timeouts)
+        if connect_mode is not None:
+            if connect_mode not in {"attach", "halt", "pre-reset", "under-reset"}:
+                raise ValueError(f"Unsupported pyOCD connect mode: {connect_mode}")
+            options = dict(options or {})
+            options["connect_mode"] = connect_mode
         # Load any locally-provisioned CMSIS-Packs (pinned + sha256-verified) so the
         # exact target resolves without depending on the live pyOCD pack index. This
         # is a runtime/filesystem concern, kept out of the pure build_session_options.
@@ -254,6 +264,84 @@ class PyOCDSWDInterface(SWDInterface):
     def close(self, handle: TargetSessionHandle) -> None:
         with _quiet_backend_streams():
             handle.session.close()
+
+    def connect_under_reset(
+        self,
+        *,
+        board: BoardConfig | None,
+        unique_id: str | None,
+        target: str | None,
+        server_timeouts: ServerTimeoutConfig | None = None,
+    ) -> TargetSessionHandle:
+        probe_uid = unique_id or os.environ.get("PYOCD_PROBE_UID") or None
+        target_override = (
+            target
+            or (board.pyocd_target if board else None)
+            or os.environ.get("PYOCD_TARGET")
+            or None
+        )
+        options = dict(build_session_options(board, target_override, server_timeouts) or {})
+        options["connect_mode"] = "under-reset"
+        local_packs = discover_local_packs()
+        if local_packs:
+            options["pack"] = [str(path) for path in local_packs]
+        session = self._choose_session(probe_uid=probe_uid, options=options)
+        if session is None:
+            raise ProbeNotFoundError("No matching debug probe found.")
+        assert_reset = getattr(session.probe, "assert_reset", None)
+        if not callable(assert_reset):
+            self._close_quietly(session)
+            raise ResetLineUnavailableError(
+                "The selected probe does not expose wired reset-line control; "
+                "connect_under_reset cannot degrade to an ordinary attach."
+            )
+        try:
+            with _quiet_backend_streams():
+                # pyOCD's under-reset init sequence owns assertion, reset catch,
+                # halt, and release. Calling assert_reset() before Session.open()
+                # is invalid for probes that have not been opened yet and would
+                # also duplicate pyOCD's reset sequence. Some real targets start
+                # running again as nRESET is released, so explicitly halt once
+                # more after open and verify the observable postcondition before
+                # returning. The bounded retry covers probes where the first halt
+                # command races reset release.
+                session.open()
+                halt_deadline = time.monotonic() + 0.5
+                while True:
+                    session.target.halt()
+                    state = str(session.target.get_state().name).casefold()
+                    if state == "halted":
+                        break
+                    if time.monotonic() >= halt_deadline:
+                        raise TargetConnectionError(
+                            "connect_under_reset released reset but could not leave "
+                            "the target halted"
+                        )
+                    time.sleep(0.01)
+        except Exception as exc:  # noqa: BLE001 - preserve backend context
+            # If initialisation failed after pyOCD asserted nRESET, release it
+            # best-effort before closing the partially opened session.
+            try:
+                with _quiet_backend_streams():
+                    assert_reset(False)
+            except Exception:
+                pass
+            self._close_quietly(session)
+            if isinstance(exc, ResetLineUnavailableError):
+                raise
+            if isinstance(exc, NotImplementedError):
+                raise ResetLineUnavailableError(
+                    "The selected probe does not support wired reset-line control; "
+                    "connect_under_reset cannot degrade to an ordinary attach."
+                ) from exc
+            raise _typed_backend_error(exc) from exc
+        return TargetSessionHandle(
+            session=session,
+            board=board,
+            probe_uid=session.probe.unique_id or probe_uid,
+            route_used=ROUTE_PYOCD_NATIVE,
+            target_override=target_override,
+        )
 
     def get_state(self, handle: TargetSessionHandle) -> str:
         try:
@@ -304,6 +392,13 @@ class PyOCDSWDInterface(SWDInterface):
         try:
             with _quiet_backend_streams():
                 handle.session.target.write_core_register(name, value)
+        except Exception as exc:  # noqa: BLE001 - preserve backend context
+            raise _typed_backend_error(exc) from exc
+
+    def supported_core_registers(self, handle: TargetSessionHandle) -> tuple[str, ...]:
+        try:
+            registers = handle.session.target.core_registers.by_name
+            return tuple(sorted(str(name).casefold() for name in registers))
         except Exception as exc:  # noqa: BLE001 - preserve backend context
             raise _typed_backend_error(exc) from exc
 
@@ -361,7 +456,10 @@ class PyOCDSWDInterface(SWDInterface):
         try:
             with _quiet_backend_streams():
                 target.reset_and_halt()
-                FileProgrammer(handle.session).program(str(firmware))
+                # M7 containment pre-computes and validates every implied erase sector.
+                # Force pyOCD to honor that sector scope even when a host/session option
+                # would otherwise select auto or whole-chip erase.
+                FileProgrammer(handle.session, chip_erase="sector").program(str(firmware))
                 if halt_after_reset:
                     target.reset_and_halt()
                 else:

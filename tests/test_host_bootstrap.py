@@ -17,7 +17,6 @@ def _board(board_id: str, *, probe_family: str = "jlink") -> BoardConfig:
         mcu_family="nrf52833" if probe_family == "jlink" else "stm32l476",
         probe_family=probe_family,
         pyocd_target="nrf52833" if probe_family == "jlink" else "stm32l476rgtx",
-        pack_name="nrf52833" if probe_family == "jlink" else "stm32l476rgtx",
         probe_type="SEGGER J-Link" if probe_family == "jlink" else "ST-Link",
         probe_hint_terms=("segger", "j-link") if probe_family == "jlink" else ("st-link",),
         serial_hint_terms=("virtual com",),

@@ -25,6 +25,8 @@ htmlcov/
 # Runtime and local work output
 /runs/
 /scratch/
+/.firm/cache/
+/.firm/packs/files/
 
 # OS and editor metadata
 .DS_Store

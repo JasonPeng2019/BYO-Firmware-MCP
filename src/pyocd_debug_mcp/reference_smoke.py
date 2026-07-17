@@ -8,6 +8,8 @@ import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 
+from pyocd_debug_mcp.kernel.processes import run_owned
+
 from pyocd_debug_mcp.board_config import (
     DEFAULT_BOARD_CONFIG_DIR,
     BoardConfig,
@@ -87,7 +89,7 @@ def run_cmd(
     timeout_seconds: float = DEFAULT_EXTERNAL_COMMAND_TIMEOUT_SECONDS,
 ) -> tuple[int, str, str]:
     try:
-        result = subprocess.run(
+        result = run_owned(
             cmd,
             capture_output=True,
             text=True,

@@ -11,6 +11,8 @@ import shutil
 import subprocess
 from dataclasses import asdict, dataclass
 from pathlib import Path
+
+from pyocd_debug_mcp.kernel.processes import run_owned
 import sys
 
 from pyocd_debug_mcp.board_config import (
@@ -242,7 +244,7 @@ def _run_cmd(
     timeout_seconds: float = DEFAULT_EXTERNAL_COMMAND_TIMEOUT_SECONDS,
 ) -> tuple[int, str, str]:
     try:
-        result = subprocess.run(
+        result = run_owned(
             cmd,
             cwd=cwd,
             capture_output=True,
@@ -635,9 +637,9 @@ def _render_prompt(case: BenchmarkCase) -> str:
         f"{phase_contract}"
         "Verification hints:\n\n"
         f"- symbol artifact path: `{case.artifacts.symbol_artifact}`\n"
-        "- prefer `read_serial(expected_text=..., reset_on_open=true)` when you need fresh boot text\n"
+        f'- prefer `read_serial(board_id="{case.board_id}", expected_text=..., reset_on_open=true)` when you need fresh boot text\n'
         "- verify the symbol directly with "
-        f'`read_symbol_u32(elf_path="{case.artifacts.symbol_artifact}", symbol_name="{case.expected_observables.symbol_name}")`\n\n'
+        f'`read_symbol_u32(board_id="{case.board_id}", elf_path="{case.artifacts.symbol_artifact}", symbol_name="{case.expected_observables.symbol_name}")`\n\n'
         "Structured result contract:\n\n"
         f"- return `case_id` exactly as `{case.case_id}`\n"
         f"- return `board_id` exactly as `{case.board_id}`\n"

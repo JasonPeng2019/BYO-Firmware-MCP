@@ -9,9 +9,15 @@ from pyocd_debug_mcp.adapters.swd_interface import TargetSessionHandle
 from pyocd_debug_mcp.board_config import BoardConfig
 from pyocd_debug_mcp.serial_resolver import SerialPortInfo
 from pyocd_debug_mcp.services.convergence_watcher import UART_TOOL
+from pyocd_debug_mcp.services.connections import (
+    ConnectionManager,
+    stable_connection_identity,
+)
 from pyocd_debug_mcp.services.session_runtime import InMemorySessionStore
 from pyocd_debug_mcp.services.symbols import ResolvedSymbol
 from pyocd_debug_mcp.services.uart_capture import UARTCaptureResult, UARTWriteResult
+
+BOARD_ID = "nrf52833dk"
 
 
 def make_board() -> BoardConfig:
@@ -21,7 +27,6 @@ def make_board() -> BoardConfig:
         mcu_family="nrf52833",
         probe_family="jlink",
         pyocd_target="nrf52833",
-        pack_name="nrf52833",
         probe_type="SEGGER J-Link",
         probe_hint_terms=("jlink", "segger"),
         serial_hint_terms=("jlink", "segger", "virtual com"),
@@ -51,19 +56,37 @@ def make_handle(board: BoardConfig | None) -> TargetSessionHandle:
 
 
 @pytest.fixture(autouse=True)
-def restore_session_handle(tmp_path: Path):
-    original_handle = server._session_handle
-    original_runtime = server._runtime_session
+def restore_connections(tmp_path: Path):
+    original_manager = server.connection_manager
     original_store = server._session_store
-    server._session_handle = None
-    server._runtime_session = None
+    server.connection_manager = ConnectionManager()
     server._session_store = InMemorySessionStore(tmp_path / "runs")
     try:
         yield
     finally:
-        server._session_handle = original_handle
-        server._runtime_session = original_runtime
+        server.connection_manager = original_manager
         server._session_store = original_store
+
+
+def attach_handle(
+    handle: TargetSessionHandle,
+    *,
+    board_id: str = BOARD_ID,
+):
+    connection_id = stable_connection_identity(handle)
+    runtime = server._session_store.start_session(
+        board_id=board_id,
+        connection_id=connection_id,
+        probe_uid=handle.probe_uid,
+        route_used=handle.route_used,
+    )
+    server.connection_manager.assign(
+        board_id,
+        handle,
+        runtime,
+        connection_id=connection_id,
+    )
+    return runtime
 
 
 def test_flash_firmware_uses_default_board_artifact(monkeypatch, tmp_path: Path) -> None:
@@ -73,7 +96,7 @@ def test_flash_firmware_uses_default_board_artifact(monkeypatch, tmp_path: Path)
     artifact.write_text("hex", encoding="utf-8")
     seen: dict[str, object] = {}
 
-    server._session_handle = handle
+    attach_handle(handle)
     monkeypatch.setattr(
         server,
         "resolve_flash_request",
@@ -109,7 +132,7 @@ def test_flash_firmware_uses_default_board_artifact(monkeypatch, tmp_path: Path)
 
     monkeypatch.setattr(server.target_control, "flash_firmware", fake_flash)
 
-    result = server.flash_firmware()
+    result = server.flash_firmware(BOARD_ID)
 
     assert seen["handle"] is handle
     assert seen["path"] == artifact
@@ -126,7 +149,7 @@ def test_flash_firmware_uses_explicit_path_without_board_config(
     artifact.write_text("elf", encoding="utf-8")
     seen: dict[str, object] = {}
 
-    server._session_handle = handle
+    attach_handle(handle)
 
     def fake_flash(handle_arg, path_arg, *, halt_after_reset: bool):
         seen["path"] = path_arg
@@ -135,7 +158,7 @@ def test_flash_firmware_uses_explicit_path_without_board_config(
 
     monkeypatch.setattr(server.target_control, "flash_firmware", fake_flash)
 
-    result = server.flash_firmware(str(artifact), halt_after_reset=True)
+    result = server.flash_firmware(BOARD_ID, str(artifact), halt_after_reset=True)
 
     assert seen["path"] == artifact.resolve()
     assert seen["halt_after_reset"] is True
@@ -143,17 +166,18 @@ def test_flash_firmware_uses_explicit_path_without_board_config(
 
 
 def test_flash_firmware_requires_loaded_board_for_default_artifact() -> None:
-    server._session_handle = make_handle(None)
+    attach_handle(make_handle(None))
 
-    assert (
-        server.flash_firmware()
-        == "Refused [flash/no-board-config]: Default flash resolution requires a loaded board config. session_id=(none)"
+    result = server.flash_firmware(BOARD_ID)
+    assert result.startswith(
+        "Refused [flash/no-board-config]: Default flash resolution requires a loaded "
+        "board config. session_id="
     )
 
 
 def test_flash_firmware_requires_active_session() -> None:
     assert (
-        server.flash_firmware()
+        server.flash_firmware(BOARD_ID)
         == "Refused [flash/no-session]: Flash requires an active connected session. session_id=(none)"
     )
 
@@ -171,7 +195,7 @@ def test_read_serial_without_expected_text_accepts_any_output(monkeypatch) -> No
     )
     seen: dict[str, object] = {}
 
-    server._session_handle = handle
+    attach_handle(handle)
 
     def fake_resolve(handle_arg, *, override: str | None):
         seen["override"] = override
@@ -193,7 +217,7 @@ def test_read_serial_without_expected_text_accepts_any_output(monkeypatch) -> No
     monkeypatch.setattr(server, "_resolve_serial_port_for_session", fake_resolve)
     monkeypatch.setattr(server, "capture_uart_output", fake_capture)
 
-    result = server.read_serial()
+    result = server.read_serial(BOARD_ID)
 
     assert seen["override"] is None
     assert seen["device"] == "/dev/cu.usbmodem0001"
@@ -220,7 +244,7 @@ def test_read_serial_uses_port_override(monkeypatch) -> None:
     )
     seen: dict[str, object] = {}
 
-    server._session_handle = handle
+    attach_handle(handle)
 
     def fake_resolve(handle_arg, *, override: str | None):
         seen["override"] = override
@@ -240,7 +264,7 @@ def test_read_serial_uses_port_override(monkeypatch) -> None:
         ),
     )
 
-    result = server.read_serial(port="COM99", read_seconds=1.5)
+    result = server.read_serial(BOARD_ID, port="COM99", read_seconds=1.5)
 
     assert seen["override"] == "COM99"
     assert "COM7" in result
@@ -260,7 +284,7 @@ def test_read_serial_uses_explicit_expected_text(monkeypatch) -> None:
     )
     seen: dict[str, object] = {}
 
-    server._session_handle = handle
+    attach_handle(handle)
 
     monkeypatch.setattr(
         server, "_resolve_serial_port_for_session", lambda handle_arg, *, override: port
@@ -277,7 +301,7 @@ def test_read_serial_uses_explicit_expected_text(monkeypatch) -> None:
 
     monkeypatch.setattr(server, "capture_uart_output", fake_capture)
 
-    result = server.read_serial(expected_text="boot ok")
+    result = server.read_serial(BOARD_ID, expected_text="boot ok")
 
     assert seen["expected_text"] == "boot ok"
     assert "expected='boot ok'" in result
@@ -286,7 +310,7 @@ def test_read_serial_uses_explicit_expected_text(monkeypatch) -> None:
 def test_read_serial_refuses_nonpositive_read_seconds(monkeypatch) -> None:
     board = make_board()
     handle = make_handle(board)
-    server._session_handle = handle
+    attach_handle(handle)
     called: dict[str, bool] = {"resolved": False, "captured": False}
 
     def fake_resolve(handle_arg, *, override: str | None):
@@ -301,10 +325,10 @@ def test_read_serial_refuses_nonpositive_read_seconds(monkeypatch) -> None:
     monkeypatch.setattr(server, "_resolve_serial_port_for_session", fake_resolve)
     monkeypatch.setattr(server, "capture_uart_output", fake_capture)
 
-    result = server.read_serial(read_seconds=0.0)
+    result = server.read_serial(BOARD_ID, read_seconds=0.0)
 
-    assert result == (
-        "Refused [uart/invalid-read-seconds]: read_seconds must be > 0. session_id=(none)"
+    assert result.startswith(
+        "Refused [uart/invalid-read-seconds]: read_seconds must be > 0. session_id="
     )
     assert called == {"resolved": False, "captured": False}
 
@@ -312,7 +336,7 @@ def test_read_serial_refuses_nonpositive_read_seconds(monkeypatch) -> None:
 def test_read_serial_refuses_nonpositive_baudrate(monkeypatch) -> None:
     board = make_board()
     handle = make_handle(board)
-    server._session_handle = handle
+    attach_handle(handle)
 
     monkeypatch.setattr(
         server,
@@ -322,9 +346,9 @@ def test_read_serial_refuses_nonpositive_baudrate(monkeypatch) -> None:
         ),
     )
 
-    result = server.read_serial(baudrate=0)
+    result = server.read_serial(BOARD_ID, baudrate=0)
 
-    assert result == ("Refused [uart/invalid-baudrate]: baudrate must be > 0. session_id=(none)")
+    assert result.startswith("Refused [uart/invalid-baudrate]: baudrate must be > 0. session_id=")
 
 
 def test_write_serial_uses_port_override_and_utf8_payload(monkeypatch) -> None:
@@ -340,7 +364,7 @@ def test_write_serial_uses_port_override_and_utf8_payload(monkeypatch) -> None:
     )
     seen: dict[str, object] = {}
 
-    server._session_handle = handle
+    attach_handle(handle)
 
     def fake_resolve(handle_arg, *, override: str | None):
         seen["override"] = override
@@ -356,7 +380,13 @@ def test_write_serial_uses_port_override_and_utf8_payload(monkeypatch) -> None:
     monkeypatch.setattr(server, "_resolve_serial_port_for_session", fake_resolve)
     monkeypatch.setattr(server, "write_uart_output", fake_write)
 
-    result = server.write_serial("hello", port="COM99", append_newline=True, timeout_seconds=0.5)
+    result = server.write_serial(
+        BOARD_ID,
+        "hello",
+        port="COM99",
+        append_newline=True,
+        timeout_seconds=0.5,
+    )
 
     assert seen == {
         "override": "COM99",
@@ -369,7 +399,7 @@ def test_write_serial_uses_port_override_and_utf8_payload(monkeypatch) -> None:
 
 
 def test_write_serial_refuses_invalid_timeout(monkeypatch) -> None:
-    server._session_handle = make_handle(make_board())
+    attach_handle(make_handle(make_board()))
     monkeypatch.setattr(
         server,
         "_resolve_serial_port_for_session",
@@ -378,10 +408,10 @@ def test_write_serial_refuses_invalid_timeout(monkeypatch) -> None:
         ),
     )
 
-    result = server.write_serial("hello", timeout_seconds=0)
+    result = server.write_serial(BOARD_ID, "hello", timeout_seconds=0)
 
-    assert result == (
-        "Refused [uart/invalid-timeout]: timeout_seconds must be > 0. session_id=(none)"
+    assert result.startswith(
+        "Refused [uart/invalid-timeout]: timeout_seconds must be > 0. session_id="
     )
 
 
@@ -391,7 +421,7 @@ def test_read_symbol_u32_returns_resolved_target_value(monkeypatch, tmp_path: Pa
     artifact = tmp_path / "firmware.elf"
     artifact.write_text("elf", encoding="utf-8")
 
-    server._session_handle = handle
+    attach_handle(handle)
     seen: dict[str, object] = {}
 
     def fake_read_symbol(handle_arg, elf_path_arg, symbol_name_arg):
@@ -408,7 +438,7 @@ def test_read_symbol_u32_returns_resolved_target_value(monkeypatch, tmp_path: Pa
 
     monkeypatch.setattr(server, "read_symbol_u32_from_elf", fake_read_symbol)
 
-    result = server.read_symbol_u32(str(artifact), "stage1_known_value")
+    result = server.read_symbol_u32(BOARD_ID, str(artifact), "stage1_known_value")
 
     assert seen["handle"] is handle
     assert seen["elf_path"] == str(artifact)
@@ -420,22 +450,22 @@ def test_read_symbol_u32_returns_resolved_target_value(monkeypatch, tmp_path: Pa
 
 
 def test_read_memory_refuses_invalid_word_size(monkeypatch) -> None:
-    server._session_handle = make_handle(make_board())
+    attach_handle(make_handle(make_board()))
     monkeypatch.setattr(
         server.target_control,
         "read_memory",
         lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("should not read memory")),
     )
 
-    result = server.read_memory("0x10000000", word_size=64)
+    result = server.read_memory(BOARD_ID, "0x10000000", word_size=64)
 
-    assert result == (
-        "Refused [memory/invalid-word-size]: word_size must be one of: 8, 16, 32. session_id=(none)"
+    assert result.startswith(
+        "Refused [memory/invalid-word-size]: word_size must be one of: 8, 16, 32. session_id="
     )
 
 
 def test_read_memory_block_refuses_invalid_length(monkeypatch) -> None:
-    server._session_handle = make_handle(make_board())
+    attach_handle(make_handle(make_board()))
     monkeypatch.setattr(
         server.target_control,
         "read_memory_block",
@@ -444,73 +474,45 @@ def test_read_memory_block_refuses_invalid_length(monkeypatch) -> None:
         ),
     )
 
-    result = server.read_memory_block("0x10000000", 0)
+    result = server.read_memory_block(BOARD_ID, "0x10000000", 0)
 
-    assert result == ("Refused [memory/invalid-length]: length must be > 0. session_id=(none)")
+    assert result.startswith("Refused [memory/invalid-length]: length must be > 0. session_id=")
 
 
-def test_write_memory_refuses_invalid_word_size(monkeypatch) -> None:
-    server._session_handle = make_handle(make_board())
+def test_write_memory_refuses_invalid_width(monkeypatch) -> None:
+    attach_handle(make_handle(make_board()))
     monkeypatch.setattr(
         server.target_control,
         "write_memory",
         lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("should not write memory")),
     )
 
-    result = server.write_memory("0x10000000", "0x1", word_size=64)
+    result = server.write_memory(
+        BOARD_ID,
+        "0x10000000",
+        "0x1",
+        width=64,
+        allow_address_fallback=True,
+        reason="The location is pointer-derived.",
+    )
 
-    assert result == (
-        "Refused [memory/invalid-word-size]: word_size must be one of: 8, 16, 32. session_id=(none)"
+    assert result.startswith(
+        "Refused [memory/invalid-width]: width must be one of: 8, 16, 32. session_id="
     )
 
 
 def test_read_serial_requires_loaded_board() -> None:
-    server._session_handle = make_handle(None)
+    attach_handle(make_handle(None))
 
-    assert server.read_serial() == server.NO_BOARD_CONFIG_MESSAGE
-
-
-def test_unlock_recover_refuses_without_confirmation() -> None:
-    server._session_handle = make_handle(make_board())
-
-    assert (
-        server.unlock_recover()
-        == "Refused [recover/confirmation-required]: Recover requires confirm=True. This operation may erase flash. session_id=(none)"
-    )
+    assert server.read_serial(BOARD_ID) == server.NO_BOARD_CONFIG_MESSAGE
 
 
-def test_unlock_recover_delegates_when_confirmed(monkeypatch) -> None:
-    board = make_board()
-    handle = make_handle(board)
-    server._session_handle = handle
-    seen: dict[str, object] = {}
+def test_legacy_unlock_recover_surface_is_removed() -> None:
+    registered = {tool.name for tool in server.mcp._tool_manager.list_tools()}
 
-    def fake_recover(handle_arg):
-        seen["handle"] = handle_arg
-        return "pyOCD API mass erase"
-
-    monkeypatch.setattr(server.target_control, "recover_target", fake_recover)
-
-    result = server.unlock_recover(confirm=True)
-
-    assert seen["handle"] is handle
-    assert result == "Recover completed via pyOCD API mass erase on nrf52833dk via pyocd-native."
-
-
-def test_unlock_recover_requires_loaded_board() -> None:
-    server._session_handle = make_handle(None)
-
-    assert (
-        server.unlock_recover(confirm=True)
-        == "Refused [recover/no-board-config]: Recover requires a loaded board config with a supported recover_mode. session_id=(none)"
-    )
-
-
-def test_unlock_recover_requires_active_session() -> None:
-    assert (
-        server.unlock_recover(confirm=True)
-        == "Refused [recover/no-session]: Recover requires an active connected session. session_id=(none)"
-    )
+    assert "unlock_recover" not in registered
+    assert not hasattr(server, "unlock_recover")
+    assert {"target_unlock-plan", "target_unlock"} <= registered
 
 
 def test_connect_autoresolves_jlink_probe_on_non_windows_when_uid_is_implicit(
@@ -557,7 +559,7 @@ def test_connect_autoresolves_jlink_probe_on_non_windows_when_uid_is_implicit(
     assert "probe jlink-123" in result
     assert "[board config: nrf52833dk]" in result
     assert "session_id=" in result
-    assert server._runtime_session is not None
+    assert server.connection_manager.runtime_for(BOARD_ID) is not None
 
 
 def test_connect_autoresolves_jlink_probe_on_windows_when_multiple_probes_are_attached(
@@ -605,12 +607,7 @@ def test_connect_autoresolves_jlink_probe_on_windows_when_multiple_probes_are_at
 
 
 def test_read_serial_returns_blocked_message_for_watcher_state() -> None:
-    runtime = server._session_store.start_session(
-        board_id="nrf52833dk",
-        probe_uid="probe-123",
-        route_used="pyocd-native",
-    )
-    server._runtime_session = runtime
+    runtime = attach_handle(make_handle(make_board()))
     server._session_store.set_block(
         runtime,
         UART_TOOL,
@@ -618,7 +615,7 @@ def test_read_serial_returns_blocked_message_for_watcher_state() -> None:
         "Repeated identical UART misses detected. Disconnect and reconnect before trying again.",
     )
 
-    result = server.read_serial()
+    result = server.read_serial(BOARD_ID)
 
     assert result == (
         "Blocked [watch/uart-miss-repetition]: Repeated identical UART misses detected. "

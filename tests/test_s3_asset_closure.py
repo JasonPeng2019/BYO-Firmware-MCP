@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import subprocess
 import tomllib
 from pathlib import Path
 
@@ -51,12 +52,19 @@ def test_only_canonical_tracked_outputs_exist_in_firmware_build_directories() ->
         assert {path.name for path in build_dir.iterdir()} <= allowed
 
 
-def test_pack_tree_contains_metadata_but_no_downloaded_pack_binary() -> None:
+def test_pack_tree_contains_metadata_but_no_tracked_pack_binary() -> None:
     packs_dir = PROJECT_ROOT / "packs"
     assert (packs_dir / "manifest.yaml").is_file()
     assert (packs_dir / "README.md").is_file()
     assert (packs_dir / "live_index_repair.md").is_file()
-    assert list(packs_dir.glob("*.pack")) == []
+    tracked = subprocess.run(
+        ["git", "ls-files", "--", "packs/*.pack"],
+        cwd=PROJECT_ROOT,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    assert tracked.stdout.strip() == ""
 
 
 def test_s3_console_commands_resolve_to_the_extracted_modules() -> None:

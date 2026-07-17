@@ -33,12 +33,24 @@ class SWDInterface(ABC):
         unique_id: str | None,
         target: str | None,
         server_timeouts: ServerTimeoutConfig | None = None,
+        connect_mode: str | None = None,
     ) -> TargetSessionHandle:
         """Open a live debug session for the requested board or raw target."""
 
     @abstractmethod
     def close(self, handle: TargetSessionHandle) -> None:
         """Close a previously opened session."""
+
+    @abstractmethod
+    def connect_under_reset(
+        self,
+        *,
+        board: BoardConfig | None,
+        unique_id: str | None,
+        target: str | None,
+        server_timeouts: ServerTimeoutConfig | None = None,
+    ) -> TargetSessionHandle:
+        """Assert physical reset, attach and halt, then release reset."""
 
     @abstractmethod
     def get_state(self, handle: TargetSessionHandle) -> str:
@@ -71,6 +83,10 @@ class SWDInterface(ABC):
     @abstractmethod
     def write_core_register(self, handle: TargetSessionHandle, name: str, value: int) -> None:
         """Write one core register."""
+
+    @abstractmethod
+    def supported_core_registers(self, handle: TargetSessionHandle) -> tuple[str, ...]:
+        """Return register names discovered from the connected core at runtime."""
 
     @abstractmethod
     def halt(self, handle: TargetSessionHandle) -> None:

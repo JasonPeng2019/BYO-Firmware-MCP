@@ -14,6 +14,10 @@ from pyocd_debug_mcp.pack_provision import (
     discover_local_packs,
     ensure_pack,
     load_manifest,
+    load_manifest_document,
+    pack_spec_document,
+    sha256_bytes,
+    sha256_file,
 )
 
 
@@ -113,6 +117,38 @@ def test_load_manifest_missing_required_field_raises(tmp_path: Path) -> None:
 
 def test_load_manifest_absent_returns_empty(tmp_path: Path) -> None:
     assert load_manifest(tmp_path / "none.yaml") == []
+
+
+def test_shared_manifest_document_parser_rejects_non_list_packs(tmp_path: Path) -> None:
+    manifest = tmp_path / "manifest.yaml"
+    manifest.write_text("packs: invalid\n", encoding="utf-8")
+    with pytest.raises(PackProvisionError, match="must be a list"):
+        load_manifest_document(manifest)
+
+
+def test_shared_pack_helpers_produce_canonical_metadata(tmp_path: Path) -> None:
+    path, expected = _write_pack(tmp_path, "shared.pack", b"shared-pack-content")
+    assert sha256_bytes(b"shared-pack-content") == expected
+    assert sha256_file(path) == expected
+    assert pack_spec_document(
+        PackSpec(
+            id="Vendor.Device_DFP",
+            version="1.0",
+            filename="shared.pack",
+            url="https://example.invalid/shared.pack",
+            sha256=expected.upper(),
+            provides_targets=("target_a",),
+            needed_by_boards=("board_a",),
+        )
+    ) == {
+        "id": "Vendor.Device_DFP",
+        "version": "1.0",
+        "filename": "shared.pack",
+        "url": "https://example.invalid/shared.pack",
+        "sha256": expected,
+        "provides_targets": ["target_a"],
+        "needed_by_boards": ["board_a"],
+    }
 
 
 def test_repo_manifest_is_valid_and_pinned() -> None:

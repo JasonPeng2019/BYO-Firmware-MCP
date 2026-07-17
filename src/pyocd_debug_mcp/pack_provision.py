@@ -17,6 +17,7 @@ from __future__ import annotations
 import hashlib
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 PACKS_DIR = REPO_ROOT / "packs"
@@ -35,15 +36,34 @@ class PackSpec:
     filename: str
     url: str
     sha256: str
+    provides_targets: tuple[str, ...] = ()
+    needed_by_boards: tuple[str, ...] = ()
 
     @property
     def is_pinned(self) -> bool:
         return bool(self.url and self.sha256)
 
 
-def load_manifest(manifest_path: Path = MANIFEST_PATH) -> list[PackSpec]:
+def _text_tuple(value: object, field_name: str) -> tuple[str, ...]:
+    if value is None:
+        return ()
+    if isinstance(value, str):
+        text = value.strip()
+        return (text,) if text else ()
+    if not isinstance(value, (list, tuple)):
+        raise PackProvisionError(f"Pack manifest field '{field_name}' must be a string or list")
+    return tuple(str(item).strip() for item in value if str(item).strip())
+
+
+def load_manifest_document(manifest_path: Path = MANIFEST_PATH) -> dict[str, Any]:
+    """Load and structurally validate the authoritative pack manifest.
+
+    Setup candidate promotion and ordinary pinned-pack provisioning deliberately
+    share this parser so there is only one manifest interpretation path.
+    """
+
     if not manifest_path.exists():
-        return []
+        return {"packs": []}
     try:
         import yaml  # type: ignore[import-untyped]
     except ImportError as exc:  # pragma: no cover - environment guard
@@ -51,7 +71,18 @@ def load_manifest(manifest_path: Path = MANIFEST_PATH) -> list[PackSpec]:
             f"PyYAML is required to read {manifest_path.name}. Run 'uv sync'."
         ) from exc
     data = yaml.safe_load(manifest_path.read_text(encoding="utf-8")) or {}
-    entries = data.get("packs", []) if isinstance(data, dict) else []
+    if not isinstance(data, dict):
+        raise PackProvisionError(f"Pack manifest root must be a mapping in {manifest_path}")
+    entries = data.get("packs", [])
+    if not isinstance(entries, list):
+        raise PackProvisionError(
+            f"Pack manifest field 'packs' must be a list in {manifest_path}"
+        )
+    return dict(data)
+
+
+def load_manifest(manifest_path: Path = MANIFEST_PATH) -> list[PackSpec]:
+    entries = load_manifest_document(manifest_path).get("packs", [])
     specs: list[PackSpec] = []
     for raw in entries:
         if not isinstance(raw, dict):
@@ -68,12 +99,39 @@ def load_manifest(manifest_path: Path = MANIFEST_PATH) -> list[PackSpec]:
                 filename=str(raw["filename"]).strip(),
                 url=str(raw["url"]).strip(),
                 sha256=str(raw["sha256"]).strip().lower(),
+                provides_targets=_text_tuple(raw.get("provides_targets"), "provides_targets"),
+                needed_by_boards=_text_tuple(raw.get("needed_by_boards"), "needed_by_boards"),
             )
         )
     return specs
 
 
-def _sha256(path: Path) -> str:
+def pack_spec_document(spec: PackSpec) -> dict[str, Any]:
+    """Return the canonical manifest representation of a validated pack spec."""
+
+    document: dict[str, Any] = {
+        "id": spec.id,
+        "version": spec.version,
+        "filename": spec.filename,
+        "url": spec.url,
+        "sha256": spec.sha256.lower(),
+    }
+    if spec.provides_targets:
+        document["provides_targets"] = list(spec.provides_targets)
+    if spec.needed_by_boards:
+        document["needed_by_boards"] = list(spec.needed_by_boards)
+    return document
+
+
+def sha256_bytes(payload: bytes) -> str:
+    """Return the lowercase SHA-256 digest used by every pack path."""
+
+    return hashlib.sha256(payload).hexdigest()
+
+
+def sha256_file(path: Path) -> str:
+    """Hash a pack file without loading the whole artifact into memory."""
+
     h = hashlib.sha256()
     with path.open("rb") as fh:
         for chunk in iter(lambda: fh.read(_CHUNK), b""):
@@ -82,7 +140,7 @@ def _sha256(path: Path) -> str:
 
 
 def _verify(path: Path, expected_sha256: str) -> bool:
-    return path.is_file() and _sha256(path) == expected_sha256.lower()
+    return path.is_file() and sha256_file(path) == expected_sha256.lower()
 
 
 def _download(url: str, dest: Path) -> None:
@@ -112,7 +170,7 @@ def ensure_pack(spec: PackSpec, packs_dir: Path = PACKS_DIR) -> Path:
             f"Pack {spec.id} is not pinned (needs url + sha256) and is absent at {dest}."
         )
     _download(spec.url, dest)
-    actual = _sha256(dest)
+    actual = sha256_file(dest)
     if actual != spec.sha256:
         dest.unlink(missing_ok=True)
         raise PackProvisionError(

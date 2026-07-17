@@ -31,7 +31,6 @@ def make_nordic_board() -> BoardConfig:
         mcu_family="nrf52833",
         probe_family="jlink",
         pyocd_target="nrf52833",
-        pack_name="nrf52833",
         probe_type="SEGGER J-Link",
         probe_hint_terms=("jlink", "segger"),
         serial_hint_terms=("jlink", "segger", "virtual com"),
@@ -53,7 +52,6 @@ def make_stm32_board() -> BoardConfig:
         mcu_family="stm32l476",
         probe_family="stlink",
         pyocd_target="stm32l476rgtx",
-        pack_name="stm32l476",
         probe_type="ST-Link",
         probe_hint_terms=("st-link", "stlink"),
         serial_hint_terms=("st-link", "stlink", "virtual com"),
@@ -115,6 +113,7 @@ def test_session_store_writes_jsonl_and_summary(tmp_path: Path) -> None:
     store = InMemorySessionStore(tmp_path / "runs")
     session = store.start_session(
         board_id="nrf52833dk",
+        connection_id="probe:probe-123",
         probe_uid="probe-123",
         route_used="pyocd-native",
     )
@@ -149,13 +148,19 @@ def test_session_store_writes_jsonl_and_summary(tmp_path: Path) -> None:
 def test_new_session_starts_without_prior_block_state(tmp_path: Path) -> None:
     store = InMemorySessionStore(tmp_path / "runs")
     first = store.start_session(
-        board_id="nrf52833dk", probe_uid="probe-123", route_used="pyocd-native"
+        board_id="nrf52833dk",
+        connection_id="probe:probe-123",
+        probe_uid="probe-123",
+        route_used="pyocd-native",
     )
     store.set_block(first, FLASH_TOOL, "watch/flash-repetition", "Repeated flash failures.")
     store.close_session(first)
 
     second = store.start_session(
-        board_id="nrf52833dk", probe_uid="probe-123", route_used="pyocd-native"
+        board_id="nrf52833dk",
+        connection_id="probe:probe-123",
+        probe_uid="probe-123",
+        route_used="pyocd-native",
     )
 
     assert second.blocked_actions == {}
@@ -318,7 +323,10 @@ def test_recover_gate_refuses_second_recover_in_same_session() -> None:
 def test_convergence_watcher_blocks_after_two_identical_flash_failures(tmp_path: Path) -> None:
     store = InMemorySessionStore(tmp_path / "runs")
     session = store.start_session(
-        board_id="nrf52833dk", probe_uid="probe-123", route_used="pyocd-native"
+        board_id="nrf52833dk",
+        connection_id="probe:probe-123",
+        probe_uid="probe-123",
+        route_used="pyocd-native",
     )
     watcher = ConvergenceWatcher()
 
@@ -350,7 +358,10 @@ def test_convergence_watcher_blocks_after_two_identical_flash_failures(tmp_path:
 def test_convergence_watcher_blocks_after_three_identical_uart_misses(tmp_path: Path) -> None:
     store = InMemorySessionStore(tmp_path / "runs")
     session = store.start_session(
-        board_id="nrf52833dk", probe_uid="probe-123", route_used="pyocd-native"
+        board_id="nrf52833dk",
+        connection_id="probe:probe-123",
+        probe_uid="probe-123",
+        route_used="pyocd-native",
     )
     watcher = ConvergenceWatcher()
 
@@ -391,7 +402,10 @@ def test_convergence_watcher_blocks_after_three_identical_uart_misses(tmp_path: 
 def test_convergence_watcher_blocks_after_two_identical_recover_failures(tmp_path: Path) -> None:
     store = InMemorySessionStore(tmp_path / "runs")
     session = store.start_session(
-        board_id="nrf52833dk", probe_uid="probe-123", route_used="pyocd-native"
+        board_id="nrf52833dk",
+        connection_id="probe:probe-123",
+        probe_uid="probe-123",
+        route_used="pyocd-native",
     )
     watcher = ConvergenceWatcher()
 
@@ -423,7 +437,10 @@ def test_convergence_watcher_blocks_after_two_identical_recover_failures(tmp_pat
 def test_convergence_watcher_never_blocks_read_only_tools(tmp_path: Path) -> None:
     store = InMemorySessionStore(tmp_path / "runs")
     session = store.start_session(
-        board_id="nrf52833dk", probe_uid="probe-123", route_used="pyocd-native"
+        board_id="nrf52833dk",
+        connection_id="probe:probe-123",
+        probe_uid="probe-123",
+        route_used="pyocd-native",
     )
     watcher = ConvergenceWatcher()
 

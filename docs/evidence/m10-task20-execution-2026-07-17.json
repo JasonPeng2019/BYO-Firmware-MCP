@@ -1,0 +1,2684 @@
+{
+  "destructive_operation_accounting": {
+    "new_application_flash_calls": 0,
+    "new_bootloader_flash_calls": 0,
+    "new_mass_erase_calls": 0,
+    "new_target_unlock_calls": 0,
+    "preserved_nucleo_m7_program_calls": 2,
+    "reason": "Task 20.1 required reuse of already-proven destructive evidence."
+  },
+  "hardware": {
+    "inventory": {
+      "observed": {
+        "exact_command": [
+          "C:\\Users\\Jason\\Documents\\Jason\\FirmCLI\\BYO-Server\\.venv\\Scripts\\python.exe",
+          "scripts/record_m10_remaining_hardware.py",
+          "--result-root",
+          "C:\\Users\\Jason\\Documents\\Jason\\FirmCLI\\M10-Final-Acceptance\\2026-07-17_run1",
+          "--required-nrf-board-id",
+          "nrf52833dk",
+          "--required-ficr-part",
+          "0x00052833",
+          "--observed-nordic-probe-id",
+          "683377322",
+          "--observed-nordic-target",
+          "nrf52840",
+          "--observed-nordic-uart",
+          "COM11",
+          "--nucleo-result",
+          "C:\\Users\\Jason\\Documents\\Jason\\FirmCLI\\M10-Final-Acceptance\\2026-07-17_run1\\boards\\nucleo_l476rg_attempt7\\acceptance.json"
+        ],
+        "observed_nordic": {
+          "ficr_info_part": "0x00052840",
+          "ficr_info_variant": "0x41414430",
+          "probe_id": "683377322",
+          "target_used_for_read_only_identification": "nrf52840",
+          "uart": "COM11",
+          "uart_usb_serial": "000683377322"
+        },
+        "probes": [
+          {
+            "description": "STM32 STLink NUCLEO-L476RG",
+            "raw": "STM32 STLink | 066FFF514988525067233337 | NUCLEO-L476RG | stm32l476rgtx",
+            "state": "",
+            "uid": "066FFF514988525067233337"
+          },
+          {
+            "description": "Segger J-Link OB-SAM3U128-V2-NordicSem",
+            "raw": "Segger J-Link OB-SAM3U128-V2-NordicSem | 683377322",
+            "state": "",
+            "uid": "683377322"
+          }
+        ],
+        "recorded_at": "2026-07-17T17:41:36.488272Z",
+        "schema_version": 1,
+        "serial_ports": [
+          {
+            "description": "STMicroelectronics STLink Virtual COM Port (COM12)",
+            "device": "COM12",
+            "hwid": "USB VID:PID=0483:374B SER=066FFF514988525067233337 LOCATION=1-3:x.2",
+            "interface": "",
+            "location": "1-3:x.2",
+            "manufacturer": "STMicroelectronics",
+            "pid": 14155,
+            "product": "",
+            "serial_number": "066FFF514988525067233337",
+            "vid": 1155
+          },
+          {
+            "description": "JLink CDC UART Port (COM11)",
+            "device": "COM11",
+            "hwid": "USB VID:PID=1366:1025 SER=000683377322 LOCATION=1-13:x.0",
+            "interface": "",
+            "location": "1-13:x.0",
+            "manufacturer": "SEGGER",
+            "pid": 4133,
+            "product": "",
+            "serial_number": "000683377322",
+            "vid": 4966
+          }
+        ],
+        "status": "inventory_complete"
+      },
+      "path": "C:\\Users\\Jason\\Documents\\Jason\\FirmCLI\\M10-Final-Acceptance\\2026-07-17_run1\\inventory.json",
+      "sha256": "d02c4094f899a43c3294d90476e602a2de0a8ce8c93bc93c739509660c8943c5"
+    },
+    "lifecycle": {
+      "result": {
+        "path": "C:\\Users\\Jason\\Documents\\Jason\\FirmCLI\\M10-Final-Acceptance\\2026-07-17_run1\\lifecycle\\acceptance.json",
+        "sha256": "d604a618bc0ab8c9f32332da63d3eba0dc44173572494ff2dd1b50832db3fb10"
+      },
+      "status": "pass_with_documented_client_gaps"
+    },
+    "nrf52833dk": {
+      "result": {
+        "path": "C:\\Users\\Jason\\Documents\\Jason\\FirmCLI\\M10-Final-Acceptance\\2026-07-17_run1\\boards\\nrf52833dk\\acceptance.json",
+        "sha256": "ba4906fa2163918644da234b474844194e3207787ec265475c4ce38a1e14a1aa"
+      },
+      "status": "blocked"
+    },
+    "nucleo_l476rg": {
+      "elapsed_seconds": 11.790441100019962,
+      "failed_harness_attempts_preserved": [
+        {
+          "error": "cannot import name 'GateStamp' from 'pyocd_debug_mcp.guardrails.gate' (C:\\Users\\Jason\\Documents\\Jason\\FirmCLI\\BYO-Server\\src\\pyocd_debug_mcp\\guardrails\\gate.py)",
+          "error_type": "ImportError",
+          "path": "C:\\Users\\Jason\\Documents\\Jason\\FirmCLI\\M10-Final-Acceptance\\2026-07-17_run1\\boards\\nucleo_l476rg\\acceptance.json",
+          "sha256": "398f173f9aeff57c368dff4f52d9ed2f69068d2cab9e740177745da9444c41c0",
+          "status": "fail"
+        },
+        {
+          "error": "'NoneType' object has no attribute 'strip'",
+          "error_type": "AttributeError",
+          "path": "C:\\Users\\Jason\\Documents\\Jason\\FirmCLI\\M10-Final-Acceptance\\2026-07-17_run1\\boards\\nucleo_l476rg_attempt2\\acceptance.json",
+          "sha256": "c857e932d225d69cf4052d213eb721cdd6f47ed6a164d771684f14dd1e9fe19a",
+          "status": "fail"
+        },
+        {
+          "error": "The active connection does not match the requested probe",
+          "error_type": "RuntimeError",
+          "path": "C:\\Users\\Jason\\Documents\\Jason\\FirmCLI\\M10-Final-Acceptance\\2026-07-17_run1\\boards\\nucleo_l476rg_attempt3\\acceptance.json",
+          "sha256": "163453dd90707696846f1db22c5194d8a889b25ecced8b0e6c8b581cef6d2458",
+          "status": "fail"
+        },
+        {
+          "error": "Error executing tool read_execution_state: CoreRegisterAccessError: cannot read register pc because core #0 is not halted\nSafe exit: leave the board in the intended run state, then disconnect when hardware work is complete.",
+          "error_type": "ToolError",
+          "path": "C:\\Users\\Jason\\Documents\\Jason\\FirmCLI\\M10-Final-Acceptance\\2026-07-17_run1\\boards\\nucleo_l476rg_attempt4\\acceptance.json",
+          "sha256": "f5c5164da9f55a266421b65e6e0cc6775f4647221eb735c5f7e6c4334c6e8d33",
+          "status": "fail"
+        },
+        {
+          "error": "Tool 'reset_and_halt' is locked for board 'nucleo_l476rg'. Call 'reset_and_halt-plan' first.\nSafe exit: leave the board in the intended run state, then disconnect when hardware work is complete.",
+          "error_type": "ToolError",
+          "path": "C:\\Users\\Jason\\Documents\\Jason\\FirmCLI\\M10-Final-Acceptance\\2026-07-17_run1\\boards\\nucleo_l476rg_attempt5\\acceptance.json",
+          "sha256": "0ec8ec6d27b8ba0871db61c21d05230deda08da0260c7b43e915360e5aa14dcf",
+          "status": "fail"
+        },
+        {
+          "error": "Error executing tool read_cpu_register: CoreRegisterAccessError: cannot read register r0 because core #0 is not halted\nSafe exit: leave the board in the intended run state, then disconnect when hardware work is complete.",
+          "error_type": "ToolError",
+          "path": "C:\\Users\\Jason\\Documents\\Jason\\FirmCLI\\M10-Final-Acceptance\\2026-07-17_run1\\boards\\nucleo_l476rg_attempt6\\acceptance.json",
+          "sha256": "6486ee909fbdfb464f48e01bc097f65c32f092e32b941a884cffc8bcd952d65a",
+          "status": "fail"
+        }
+      ],
+      "flash_execution": "not repeated; accepted M7 evidence reused",
+      "identity": {
+        "board_id": "nucleo_l476rg",
+        "probe_id": "066FFF514988525067233337",
+        "serial_id": "COM12",
+        "target": "stm32l476rgtx",
+        "uart_usb_serial": "066FFF514988525067233337"
+      },
+      "result": {
+        "path": "C:\\Users\\Jason\\Documents\\Jason\\FirmCLI\\M10-Final-Acceptance\\2026-07-17_run1\\boards\\nucleo_l476rg_attempt7\\acceptance.json",
+        "sha256": "fb56d780e09e1466e95d9c338d0c8bb354869006bd0f7254393cce9173b00414"
+      },
+      "status": "pass"
+    },
+    "recovery": {
+      "result": {
+        "path": "C:\\Users\\Jason\\Documents\\Jason\\FirmCLI\\M10-Final-Acceptance\\2026-07-17_run1\\recovery\\nrf52833dk\\acceptance.json",
+        "sha256": "ddfdf9e3084abfefc094fa1f5dd87d42ed9e1120a9c64c5c73c1aea67e8bc03a"
+      },
+      "status": "blocked"
+    },
+    "simultaneous_two_board": {
+      "result": {
+        "path": "C:\\Users\\Jason\\Documents\\Jason\\FirmCLI\\M10-Final-Acceptance\\2026-07-17_run1\\two-board\\acceptance.json",
+        "sha256": "ce25a962da709d6a56f056b5896c928bd69afbbe6126357f5e57b4b0e57b2912"
+      },
+      "status": "blocked"
+    }
+  },
+  "milestone": "M10",
+  "overall_status": "partial_blocked_hardware",
+  "prepared_plan": {
+    "path": "C:\\Users\\Jason\\Documents\\Jason\\FirmCLI\\BYO-Server\\docs\\evidence\\m10-task20-acceptance-plan-2026-07-17.json",
+    "sha256": "48aae6ff99480ad31c6cbc35576798d048c03e98f765a05961dd5a80597c58cf"
+  },
+  "procedure_results": {
+    "client_relay_conduct": {
+      "evidence": [
+        {
+          "path": "C:\\Users\\Jason\\Documents\\Jason\\FirmCLI\\BYO-Server\\docs\\evidence\\m10-software-boundary-2026-07-17.json",
+          "sha256": "dbfa8a437c11452c037b5fa4e45e4237de61d1430ae5fba40af3b3e19d221c88"
+        }
+      ],
+      "status": "manual_procedural_not_observed"
+    },
+    "human_approval_legitimacy": {
+      "evidence": [
+        {
+          "path": "C:\\Users\\Jason\\Documents\\Jason\\FirmCLI\\M10-Final-Acceptance\\2026-07-17_run1\\recovery\\nrf52833dk\\acceptance.json",
+          "sha256": "ddfdf9e3084abfefc094fa1f5dd87d42ed9e1120a9c64c5c73c1aea67e8bc03a"
+        }
+      ],
+      "status": "blocked_not_requested_after_identity_failure"
+    },
+    "lifecycle_and_cancellation": {
+      "evidence": [
+        {
+          "path": "C:\\Users\\Jason\\Documents\\Jason\\FirmCLI\\M10-Final-Acceptance\\2026-07-17_run1\\lifecycle\\acceptance.json",
+          "sha256": "d604a618bc0ab8c9f32332da63d3eba0dc44173572494ff2dd1b50832db3fb10"
+        }
+      ],
+      "status": "pass_with_q1_client_gaps"
+    },
+    "official_pair_end_to_end": {
+      "evidence": [
+        {
+          "path": "C:\\Users\\Jason\\Documents\\Jason\\FirmCLI\\M10-Final-Acceptance\\2026-07-17_run1\\boards\\nucleo_l476rg_attempt7\\acceptance.json",
+          "sha256": "fb56d780e09e1466e95d9c338d0c8bb354869006bd0f7254393cce9173b00414"
+        },
+        {
+          "path": "C:\\Users\\Jason\\Documents\\Jason\\FirmCLI\\M10-Final-Acceptance\\2026-07-17_run1\\boards\\nrf52833dk\\acceptance.json",
+          "sha256": "ba4906fa2163918644da234b474844194e3207787ec265475c4ce38a1e14a1aa"
+        }
+      ],
+      "status": "blocked_missing_nrf52833"
+    },
+    "real_map_flash_and_backend_containment": {
+      "evidence": [
+        {
+          "path": "C:\\Users\\Jason\\Documents\\Jason\\FirmCLI\\M10-Final-Acceptance\\2026-07-17_run1\\boards\\nucleo_l476rg_attempt7\\acceptance.json",
+          "sha256": "fb56d780e09e1466e95d9c338d0c8bb354869006bd0f7254393cce9173b00414"
+        },
+        {
+          "path": "C:\\Users\\Jason\\Documents\\Jason\\FirmCLI\\BYO-Server\\docs\\evidence\\m7-hardware-acceptance-2026-07-17.md",
+          "sha256": "5597cb0f1760c74cf8526f5cdffe85b1452000fc13acf5b979409ac3255f7cd3"
+        },
+        {
+          "path": "C:\\Users\\Jason\\Documents\\Jason\\FirmCLI\\M10-Final-Acceptance\\2026-07-17_run1\\boards\\nrf52833dk\\acceptance.json",
+          "sha256": "ba4906fa2163918644da234b474844194e3207787ec265475c4ce38a1e14a1aa"
+        }
+      ],
+      "status": "blocked_missing_nrf52833"
+    },
+    "single_designated_recovery_proof": {
+      "evidence": [
+        {
+          "path": "C:\\Users\\Jason\\Documents\\Jason\\FirmCLI\\M10-Final-Acceptance\\2026-07-17_run1\\recovery\\nrf52833dk\\acceptance.json",
+          "sha256": "ddfdf9e3084abfefc094fa1f5dd87d42ed9e1120a9c64c5c73c1aea67e8bc03a"
+        }
+      ],
+      "status": "blocked_identity_backup_map_and_permission"
+    },
+    "two_board_isolation": {
+      "evidence": [
+        {
+          "path": "C:\\Users\\Jason\\Documents\\Jason\\FirmCLI\\M10-Final-Acceptance\\2026-07-17_run1\\two-board\\acceptance.json",
+          "sha256": "ce25a962da709d6a56f056b5896c928bd69afbbe6126357f5e57b4b0e57b2912"
+        }
+      ],
+      "status": "blocked_missing_nrf52833"
+    }
+  },
+  "recorded_at": "2026-07-17T17:42:52.680883Z",
+  "result_root": "C:\\Users\\Jason\\Documents\\Jason\\FirmCLI\\M10-Final-Acceptance\\2026-07-17_run1",
+  "schema_version": 1,
+  "semantics_changed": false,
+  "software": {
+    "affected_only_reconciliation": {
+      "path": "C:\\Users\\Jason\\Documents\\Jason\\FirmCLI\\M10-Final-Acceptance\\2026-07-17_run1\\software\\affected-rerun-2\\result.json",
+      "sha256": "401528020c8b4e54549b715312411246c8c1696b5ad3487b69fd0d68c1c255d2"
+    },
+    "commands": [
+      {
+        "argv": [
+          "C:\\Users\\Jason\\AppData\\Local\\Programs\\Python\\Python314\\Scripts\\uv.EXE",
+          "run",
+          "--locked",
+          "pytest",
+          "-q"
+        ],
+        "cwd": "C:\\Users\\Jason\\Documents\\Jason\\FirmCLI\\BYO-Server",
+        "elapsed_seconds": 49.2650385000743,
+        "exit_code": 0,
+        "name": "pytest",
+        "started_at": "2026-07-17T17:29:12.026180Z",
+        "status": "pass",
+        "stderr_log": "C:\\Users\\Jason\\Documents\\Jason\\FirmCLI\\M10-Final-Acceptance\\2026-07-17_run1\\software\\pytest.stderr.log",
+        "stdout_log": "C:\\Users\\Jason\\Documents\\Jason\\FirmCLI\\M10-Final-Acceptance\\2026-07-17_run1\\software\\pytest.stdout.log",
+        "timed_out": false,
+        "timeout_seconds": 900.0
+      },
+      {
+        "argv": [
+          "C:\\Users\\Jason\\AppData\\Local\\Programs\\Python\\Python314\\Scripts\\uv.EXE",
+          "run",
+          "--locked",
+          "ruff",
+          "check",
+          "."
+        ],
+        "cwd": "C:\\Users\\Jason\\Documents\\Jason\\FirmCLI\\BYO-Server",
+        "elapsed_seconds": 0.13278550002723932,
+        "exit_code": 0,
+        "name": "ruff",
+        "started_at": "2026-07-17T17:30:01.292658Z",
+        "status": "pass",
+        "stderr_log": "C:\\Users\\Jason\\Documents\\Jason\\FirmCLI\\M10-Final-Acceptance\\2026-07-17_run1\\software\\ruff.stderr.log",
+        "stdout_log": "C:\\Users\\Jason\\Documents\\Jason\\FirmCLI\\M10-Final-Acceptance\\2026-07-17_run1\\software\\ruff.stdout.log",
+        "timed_out": false,
+        "timeout_seconds": 180.0
+      },
+      {
+        "argv": [
+          "C:\\Users\\Jason\\AppData\\Local\\Programs\\Python\\Python314\\Scripts\\uv.EXE",
+          "run",
+          "--locked",
+          "pyright"
+        ],
+        "cwd": "C:\\Users\\Jason\\Documents\\Jason\\FirmCLI\\BYO-Server",
+        "elapsed_seconds": 12.558448999887332,
+        "exit_code": 1,
+        "name": "pyright",
+        "started_at": "2026-07-17T17:30:01.427067Z",
+        "status": "fail",
+        "stderr_log": "C:\\Users\\Jason\\Documents\\Jason\\FirmCLI\\M10-Final-Acceptance\\2026-07-17_run1\\software\\pyright.stderr.log",
+        "stdout_log": "C:\\Users\\Jason\\Documents\\Jason\\FirmCLI\\M10-Final-Acceptance\\2026-07-17_run1\\software\\pyright.stdout.log",
+        "timed_out": false,
+        "timeout_seconds": 300.0
+      },
+      {
+        "argv": [
+          "C:\\Users\\Jason\\AppData\\Local\\Programs\\Python\\Python314\\Scripts\\uv.EXE",
+          "build",
+          "--out-dir",
+          "C:\\Users\\Jason\\Documents\\Jason\\FirmCLI\\M10-Final-Acceptance\\2026-07-17_run1\\software\\dist"
+        ],
+        "cwd": "C:\\Users\\Jason\\Documents\\Jason\\FirmCLI\\BYO-Server",
+        "elapsed_seconds": 3.0322958000469953,
+        "exit_code": 0,
+        "name": "package_build",
+        "started_at": "2026-07-17T17:30:13.986800Z",
+        "status": "pass",
+        "stderr_log": "C:\\Users\\Jason\\Documents\\Jason\\FirmCLI\\M10-Final-Acceptance\\2026-07-17_run1\\software\\package_build.stderr.log",
+        "stdout_log": "C:\\Users\\Jason\\Documents\\Jason\\FirmCLI\\M10-Final-Acceptance\\2026-07-17_run1\\software\\package_build.stdout.log",
+        "timed_out": false,
+        "timeout_seconds": 300.0
+      },
+      {
+        "argv": [
+          "C:\\Users\\Jason\\AppData\\Local\\Programs\\Python\\Python314\\Scripts\\uv.EXE",
+          "pip",
+          "check"
+        ],
+        "cwd": "C:\\Users\\Jason\\Documents\\Jason\\FirmCLI\\BYO-Server",
+        "elapsed_seconds": 0.06636779988184571,
+        "exit_code": 0,
+        "name": "dependency_check",
+        "started_at": "2026-07-17T17:30:17.019722Z",
+        "status": "pass",
+        "stderr_log": "C:\\Users\\Jason\\Documents\\Jason\\FirmCLI\\M10-Final-Acceptance\\2026-07-17_run1\\software\\dependency_check.stderr.log",
+        "stdout_log": "C:\\Users\\Jason\\Documents\\Jason\\FirmCLI\\M10-Final-Acceptance\\2026-07-17_run1\\software\\dependency_check.stdout.log",
+        "timed_out": false,
+        "timeout_seconds": 120.0
+      },
+      {
+        "argv": [
+          "C:\\Users\\Jason\\AppData\\Local\\Programs\\Python\\Python314\\Scripts\\uv.EXE",
+          "run",
+          "--locked",
+          "python",
+          "-c",
+          "import pyocd_debug_mcp\nimport pyocd_debug_mcp.server\nimport pyocd_debug_mcp.firmstore\nimport pyocd_debug_mcp.guardrails\nimport pyocd_debug_mcp.kernel\nimport pyocd_debug_mcp.safety\nimport pyocd_debug_mcp.setup_flow\nimport pyocd_debug_mcp.tools\nprint(\"import surface ok\")"
+        ],
+        "cwd": "C:\\Users\\Jason\\Documents\\Jason\\FirmCLI\\BYO-Server",
+        "elapsed_seconds": 2.4807575999293476,
+        "exit_code": 0,
+        "name": "import_check",
+        "started_at": "2026-07-17T17:30:17.087693Z",
+        "status": "pass",
+        "stderr_log": "C:\\Users\\Jason\\Documents\\Jason\\FirmCLI\\M10-Final-Acceptance\\2026-07-17_run1\\software\\import_check.stderr.log",
+        "stdout_log": "C:\\Users\\Jason\\Documents\\Jason\\FirmCLI\\M10-Final-Acceptance\\2026-07-17_run1\\software\\import_check.stdout.log",
+        "timed_out": false,
+        "timeout_seconds": 60.0
+      },
+      {
+        "argv": [
+          "C:\\Users\\Jason\\AppData\\Local\\Programs\\Python\\Python314\\Scripts\\uv.EXE",
+          "run",
+          "--locked",
+          "python",
+          "-c",
+          "import asyncio\nimport sys\nfrom mcp import ClientSession, StdioServerParameters\nfrom mcp.client.stdio import stdio_client\n\nasync def main():\n    parameters = StdioServerParameters(\n        command=sys.executable,\n        args=[\"-m\", \"pyocd_debug_mcp.server\"],\n    )\n    async with stdio_client(parameters) as streams:\n        async with ClientSession(*streams) as session:\n            await session.initialize()\n            tools = (await session.list_tools()).tools\n            names = {tool.name for tool in tools}\n            assert \"initialization_handshake\" in names\n            print(f\"stdio tool count: {len(names)}\")\n\nasyncio.run(main())"
+        ],
+        "cwd": "C:\\Users\\Jason\\Documents\\Jason\\FirmCLI\\BYO-Server",
+        "elapsed_seconds": 4.700555899878964,
+        "exit_code": 1,
+        "name": "stdio_boot_shutdown",
+        "started_at": "2026-07-17T17:30:19.569820Z",
+        "status": "fail",
+        "stderr_log": "C:\\Users\\Jason\\Documents\\Jason\\FirmCLI\\M10-Final-Acceptance\\2026-07-17_run1\\software\\stdio_boot_shutdown.stderr.log",
+        "stdout_log": "C:\\Users\\Jason\\Documents\\Jason\\FirmCLI\\M10-Final-Acceptance\\2026-07-17_run1\\software\\stdio_boot_shutdown.stdout.log",
+        "timed_out": false,
+        "timeout_seconds": 60.0
+      }
+    ],
+    "dependency_check": "pass",
+    "import_check": "pass",
+    "original_result": {
+      "path": "C:\\Users\\Jason\\Documents\\Jason\\FirmCLI\\M10-Final-Acceptance\\2026-07-17_run1\\software\\result.json",
+      "sha256": "6e2cb0ceed19a7b6fd7e2d6e85c8f7c3cef410e3f11f00cdcfebe11a432da9af"
+    },
+    "package_build": "pass",
+    "pyright": "0 errors, 0 warnings, 0 informations",
+    "ruff": "pass",
+    "status": "pass",
+    "stdio_boot_shutdown": "pass, 35 tools",
+    "suite": "717 passed with 63 legacy-profile deprecation warnings"
+  },
+  "task": "Prompt 20.2 final acceptance matrix execution",
+  "terminal_blockers": [
+    "The designated nRF52833 DK is not attached; the observed Nordic is an nRF52840.",
+    "No nRF52833 backup, live safety map, or fresh one-time recovery approval exists.",
+    "The official two-board simultaneous bench cannot run with only one official board.",
+    "Some real-client cancellation and relay-conduct rows remain procedural/Q-1 gaps."
+  ],
+  "traceability": {
+    "acceptance": [
+      {
+        "automated_assertions_inspected": 32,
+        "id": "AC-1.1",
+        "procedures": [],
+        "software_suite": "717 passed",
+        "status": "pass_software"
+      },
+      {
+        "automated_assertions_inspected": 32,
+        "id": "AC-1.2",
+        "procedures": [],
+        "software_suite": "717 passed",
+        "status": "pass_software"
+      },
+      {
+        "automated_assertions_inspected": 32,
+        "id": "AC-1.3",
+        "procedures": [],
+        "software_suite": "717 passed",
+        "status": "pass_software"
+      },
+      {
+        "automated_assertions_inspected": 32,
+        "id": "AC-1.4",
+        "procedures": [],
+        "software_suite": "717 passed",
+        "status": "pass_software"
+      },
+      {
+        "automated_assertions_inspected": 27,
+        "id": "AC-2.1",
+        "procedures": [
+          {
+            "evidence": [
+              {
+                "path": "C:\\Users\\Jason\\Documents\\Jason\\FirmCLI\\M10-Final-Acceptance\\2026-07-17_run1\\boards\\nucleo_l476rg_attempt7\\acceptance.json",
+                "sha256": "fb56d780e09e1466e95d9c338d0c8bb354869006bd0f7254393cce9173b00414"
+              },
+              {
+                "path": "C:\\Users\\Jason\\Documents\\Jason\\FirmCLI\\M10-Final-Acceptance\\2026-07-17_run1\\boards\\nrf52833dk\\acceptance.json",
+                "sha256": "ba4906fa2163918644da234b474844194e3207787ec265475c4ce38a1e14a1aa"
+              }
+            ],
+            "id": "official_pair_end_to_end",
+            "status": "blocked_missing_nrf52833"
+          }
+        ],
+        "software_suite": "717 passed",
+        "status": "blocked_external_prerequisite"
+      },
+      {
+        "automated_assertions_inspected": 27,
+        "id": "AC-2.2",
+        "procedures": [
+          {
+            "evidence": [
+              {
+                "path": "C:\\Users\\Jason\\Documents\\Jason\\FirmCLI\\M10-Final-Acceptance\\2026-07-17_run1\\boards\\nucleo_l476rg_attempt7\\acceptance.json",
+                "sha256": "fb56d780e09e1466e95d9c338d0c8bb354869006bd0f7254393cce9173b00414"
+              },
+              {
+                "path": "C:\\Users\\Jason\\Documents\\Jason\\FirmCLI\\M10-Final-Acceptance\\2026-07-17_run1\\boards\\nrf52833dk\\acceptance.json",
+                "sha256": "ba4906fa2163918644da234b474844194e3207787ec265475c4ce38a1e14a1aa"
+              }
+            ],
+            "id": "official_pair_end_to_end",
+            "status": "blocked_missing_nrf52833"
+          }
+        ],
+        "software_suite": "717 passed",
+        "status": "blocked_external_prerequisite"
+      },
+      {
+        "automated_assertions_inspected": 27,
+        "id": "AC-2.3",
+        "procedures": [
+          {
+            "evidence": [
+              {
+                "path": "C:\\Users\\Jason\\Documents\\Jason\\FirmCLI\\M10-Final-Acceptance\\2026-07-17_run1\\boards\\nucleo_l476rg_attempt7\\acceptance.json",
+                "sha256": "fb56d780e09e1466e95d9c338d0c8bb354869006bd0f7254393cce9173b00414"
+              },
+              {
+                "path": "C:\\Users\\Jason\\Documents\\Jason\\FirmCLI\\M10-Final-Acceptance\\2026-07-17_run1\\boards\\nrf52833dk\\acceptance.json",
+                "sha256": "ba4906fa2163918644da234b474844194e3207787ec265475c4ce38a1e14a1aa"
+              }
+            ],
+            "id": "official_pair_end_to_end",
+            "status": "blocked_missing_nrf52833"
+          }
+        ],
+        "software_suite": "717 passed",
+        "status": "blocked_external_prerequisite"
+      },
+      {
+        "automated_assertions_inspected": 27,
+        "id": "AC-2.4",
+        "procedures": [
+          {
+            "evidence": [
+              {
+                "path": "C:\\Users\\Jason\\Documents\\Jason\\FirmCLI\\M10-Final-Acceptance\\2026-07-17_run1\\boards\\nucleo_l476rg_attempt7\\acceptance.json",
+                "sha256": "fb56d780e09e1466e95d9c338d0c8bb354869006bd0f7254393cce9173b00414"
+              },
+              {
+                "path": "C:\\Users\\Jason\\Documents\\Jason\\FirmCLI\\M10-Final-Acceptance\\2026-07-17_run1\\boards\\nrf52833dk\\acceptance.json",
+                "sha256": "ba4906fa2163918644da234b474844194e3207787ec265475c4ce38a1e14a1aa"
+              }
+            ],
+            "id": "official_pair_end_to_end",
+            "status": "blocked_missing_nrf52833"
+          }
+        ],
+        "software_suite": "717 passed",
+        "status": "blocked_external_prerequisite"
+      },
+      {
+        "automated_assertions_inspected": 27,
+        "id": "AC-2.5",
+        "procedures": [
+          {
+            "evidence": [
+              {
+                "path": "C:\\Users\\Jason\\Documents\\Jason\\FirmCLI\\M10-Final-Acceptance\\2026-07-17_run1\\two-board\\acceptance.json",
+                "sha256": "ce25a962da709d6a56f056b5896c928bd69afbbe6126357f5e57b4b0e57b2912"
+              }
+            ],
+            "id": "two_board_isolation",
+            "status": "blocked_missing_nrf52833"
+          }
+        ],
+        "software_suite": "717 passed",
+        "status": "blocked_external_prerequisite"
+      },
+      {
+        "automated_assertions_inspected": 27,
+        "id": "AC-2.6",
+        "procedures": [
+          {
+            "evidence": [
+              {
+                "path": "C:\\Users\\Jason\\Documents\\Jason\\FirmCLI\\M10-Final-Acceptance\\2026-07-17_run1\\boards\\nucleo_l476rg_attempt7\\acceptance.json",
+                "sha256": "fb56d780e09e1466e95d9c338d0c8bb354869006bd0f7254393cce9173b00414"
+              },
+              {
+                "path": "C:\\Users\\Jason\\Documents\\Jason\\FirmCLI\\M10-Final-Acceptance\\2026-07-17_run1\\boards\\nrf52833dk\\acceptance.json",
+                "sha256": "ba4906fa2163918644da234b474844194e3207787ec265475c4ce38a1e14a1aa"
+              }
+            ],
+            "id": "official_pair_end_to_end",
+            "status": "blocked_missing_nrf52833"
+          }
+        ],
+        "software_suite": "717 passed",
+        "status": "blocked_external_prerequisite"
+      },
+      {
+        "automated_assertions_inspected": 27,
+        "id": "AC-2.7",
+        "procedures": [],
+        "software_suite": "717 passed",
+        "status": "pass_software"
+      },
+      {
+        "automated_assertions_inspected": 17,
+        "id": "AC-3.1",
+        "procedures": [],
+        "software_suite": "717 passed",
+        "status": "pass_software"
+      },
+      {
+        "automated_assertions_inspected": 17,
+        "id": "AC-3.2",
+        "procedures": [],
+        "software_suite": "717 passed",
+        "status": "pass_software"
+      },
+      {
+        "automated_assertions_inspected": 17,
+        "id": "AC-3.3",
+        "procedures": [],
+        "software_suite": "717 passed",
+        "status": "pass_software"
+      },
+      {
+        "automated_assertions_inspected": 17,
+        "id": "AC-3.4",
+        "procedures": [],
+        "software_suite": "717 passed",
+        "status": "pass_software"
+      },
+      {
+        "automated_assertions_inspected": 17,
+        "id": "AC-3.5",
+        "procedures": [],
+        "software_suite": "717 passed",
+        "status": "pass_software"
+      },
+      {
+        "automated_assertions_inspected": 17,
+        "id": "AC-3.6",
+        "procedures": [],
+        "software_suite": "717 passed",
+        "status": "pass_software"
+      },
+      {
+        "automated_assertions_inspected": 11,
+        "id": "AC-4.1",
+        "procedures": [],
+        "software_suite": "717 passed",
+        "status": "pass_software"
+      },
+      {
+        "automated_assertions_inspected": 11,
+        "id": "AC-4.2",
+        "procedures": [],
+        "software_suite": "717 passed",
+        "status": "pass_software"
+      },
+      {
+        "automated_assertions_inspected": 11,
+        "id": "AC-4.3",
+        "procedures": [],
+        "software_suite": "717 passed",
+        "status": "pass_software"
+      },
+      {
+        "automated_assertions_inspected": 11,
+        "id": "AC-4.4",
+        "procedures": [],
+        "software_suite": "717 passed",
+        "status": "pass_software"
+      },
+      {
+        "automated_assertions_inspected": 11,
+        "id": "AC-4.5",
+        "procedures": [],
+        "software_suite": "717 passed",
+        "status": "pass_software"
+      },
+      {
+        "automated_assertions_inspected": 11,
+        "id": "AC-4.6",
+        "procedures": [],
+        "software_suite": "717 passed",
+        "status": "pass_software"
+      },
+      {
+        "automated_assertions_inspected": 11,
+        "id": "AC-4.7",
+        "procedures": [],
+        "software_suite": "717 passed",
+        "status": "pass_software"
+      },
+      {
+        "automated_assertions_inspected": 11,
+        "id": "AC-4.8",
+        "procedures": [],
+        "software_suite": "717 passed",
+        "status": "pass_software"
+      },
+      {
+        "automated_assertions_inspected": 11,
+        "id": "AC-4.9",
+        "procedures": [],
+        "software_suite": "717 passed",
+        "status": "pass_software"
+      },
+      {
+        "automated_assertions_inspected": 11,
+        "id": "AC-4.10",
+        "procedures": [],
+        "software_suite": "717 passed",
+        "status": "pass_software"
+      },
+      {
+        "automated_assertions_inspected": 15,
+        "id": "AC-5.1",
+        "procedures": [
+          {
+            "evidence": [
+              {
+                "path": "C:\\Users\\Jason\\Documents\\Jason\\FirmCLI\\M10-Final-Acceptance\\2026-07-17_run1\\recovery\\nrf52833dk\\acceptance.json",
+                "sha256": "ddfdf9e3084abfefc094fa1f5dd87d42ed9e1120a9c64c5c73c1aea67e8bc03a"
+              }
+            ],
+            "id": "human_approval_legitimacy",
+            "status": "blocked_not_requested_after_identity_failure"
+          }
+        ],
+        "software_suite": "717 passed",
+        "status": "blocked_external_prerequisite"
+      },
+      {
+        "automated_assertions_inspected": 15,
+        "id": "AC-5.2",
+        "procedures": [
+          {
+            "evidence": [
+              {
+                "path": "C:\\Users\\Jason\\Documents\\Jason\\FirmCLI\\M10-Final-Acceptance\\2026-07-17_run1\\recovery\\nrf52833dk\\acceptance.json",
+                "sha256": "ddfdf9e3084abfefc094fa1f5dd87d42ed9e1120a9c64c5c73c1aea67e8bc03a"
+              }
+            ],
+            "id": "human_approval_legitimacy",
+            "status": "blocked_not_requested_after_identity_failure"
+          }
+        ],
+        "software_suite": "717 passed",
+        "status": "blocked_external_prerequisite"
+      },
+      {
+        "automated_assertions_inspected": 15,
+        "id": "AC-5.3",
+        "procedures": [
+          {
+            "evidence": [
+              {
+                "path": "C:\\Users\\Jason\\Documents\\Jason\\FirmCLI\\M10-Final-Acceptance\\2026-07-17_run1\\recovery\\nrf52833dk\\acceptance.json",
+                "sha256": "ddfdf9e3084abfefc094fa1f5dd87d42ed9e1120a9c64c5c73c1aea67e8bc03a"
+              }
+            ],
+            "id": "human_approval_legitimacy",
+            "status": "blocked_not_requested_after_identity_failure"
+          }
+        ],
+        "software_suite": "717 passed",
+        "status": "blocked_external_prerequisite"
+      },
+      {
+        "automated_assertions_inspected": 15,
+        "id": "AC-5.4",
+        "procedures": [
+          {
+            "evidence": [
+              {
+                "path": "C:\\Users\\Jason\\Documents\\Jason\\FirmCLI\\M10-Final-Acceptance\\2026-07-17_run1\\recovery\\nrf52833dk\\acceptance.json",
+                "sha256": "ddfdf9e3084abfefc094fa1f5dd87d42ed9e1120a9c64c5c73c1aea67e8bc03a"
+              }
+            ],
+            "id": "human_approval_legitimacy",
+            "status": "blocked_not_requested_after_identity_failure"
+          }
+        ],
+        "software_suite": "717 passed",
+        "status": "blocked_external_prerequisite"
+      },
+      {
+        "automated_assertions_inspected": 15,
+        "id": "AC-5.5",
+        "procedures": [
+          {
+            "evidence": [
+              {
+                "path": "C:\\Users\\Jason\\Documents\\Jason\\FirmCLI\\M10-Final-Acceptance\\2026-07-17_run1\\recovery\\nrf52833dk\\acceptance.json",
+                "sha256": "ddfdf9e3084abfefc094fa1f5dd87d42ed9e1120a9c64c5c73c1aea67e8bc03a"
+              }
+            ],
+            "id": "human_approval_legitimacy",
+            "status": "blocked_not_requested_after_identity_failure"
+          }
+        ],
+        "software_suite": "717 passed",
+        "status": "blocked_external_prerequisite"
+      },
+      {
+        "automated_assertions_inspected": 15,
+        "id": "AC-5.6",
+        "procedures": [
+          {
+            "evidence": [
+              {
+                "path": "C:\\Users\\Jason\\Documents\\Jason\\FirmCLI\\M10-Final-Acceptance\\2026-07-17_run1\\recovery\\nrf52833dk\\acceptance.json",
+                "sha256": "ddfdf9e3084abfefc094fa1f5dd87d42ed9e1120a9c64c5c73c1aea67e8bc03a"
+              }
+            ],
+            "id": "human_approval_legitimacy",
+            "status": "blocked_not_requested_after_identity_failure"
+          }
+        ],
+        "software_suite": "717 passed",
+        "status": "blocked_external_prerequisite"
+      },
+      {
+        "automated_assertions_inspected": 15,
+        "id": "AC-5.7",
+        "procedures": [
+          {
+            "evidence": [
+              {
+                "path": "C:\\Users\\Jason\\Documents\\Jason\\FirmCLI\\M10-Final-Acceptance\\2026-07-17_run1\\recovery\\nrf52833dk\\acceptance.json",
+                "sha256": "ddfdf9e3084abfefc094fa1f5dd87d42ed9e1120a9c64c5c73c1aea67e8bc03a"
+              }
+            ],
+            "id": "human_approval_legitimacy",
+            "status": "blocked_not_requested_after_identity_failure"
+          }
+        ],
+        "software_suite": "717 passed",
+        "status": "blocked_external_prerequisite"
+      },
+      {
+        "automated_assertions_inspected": 14,
+        "id": "AC-6.1",
+        "procedures": [],
+        "software_suite": "717 passed",
+        "status": "pass_software"
+      },
+      {
+        "automated_assertions_inspected": 14,
+        "id": "AC-6.2",
+        "procedures": [],
+        "software_suite": "717 passed",
+        "status": "pass_software"
+      },
+      {
+        "automated_assertions_inspected": 14,
+        "id": "AC-6.3",
+        "procedures": [
+          {
+            "evidence": [
+              {
+                "path": "C:\\Users\\Jason\\Documents\\Jason\\FirmCLI\\M10-Final-Acceptance\\2026-07-17_run1\\boards\\nucleo_l476rg_attempt7\\acceptance.json",
+                "sha256": "fb56d780e09e1466e95d9c338d0c8bb354869006bd0f7254393cce9173b00414"
+              },
+              {
+                "path": "C:\\Users\\Jason\\Documents\\Jason\\FirmCLI\\M10-Final-Acceptance\\2026-07-17_run1\\boards\\nrf52833dk\\acceptance.json",
+                "sha256": "ba4906fa2163918644da234b474844194e3207787ec265475c4ce38a1e14a1aa"
+              }
+            ],
+            "id": "official_pair_end_to_end",
+            "status": "blocked_missing_nrf52833"
+          }
+        ],
+        "software_suite": "717 passed",
+        "status": "blocked_external_prerequisite"
+      },
+      {
+        "automated_assertions_inspected": 14,
+        "id": "AC-6.4",
+        "procedures": [
+          {
+            "evidence": [
+              {
+                "path": "C:\\Users\\Jason\\Documents\\Jason\\FirmCLI\\M10-Final-Acceptance\\2026-07-17_run1\\boards\\nucleo_l476rg_attempt7\\acceptance.json",
+                "sha256": "fb56d780e09e1466e95d9c338d0c8bb354869006bd0f7254393cce9173b00414"
+              },
+              {
+                "path": "C:\\Users\\Jason\\Documents\\Jason\\FirmCLI\\M10-Final-Acceptance\\2026-07-17_run1\\boards\\nrf52833dk\\acceptance.json",
+                "sha256": "ba4906fa2163918644da234b474844194e3207787ec265475c4ce38a1e14a1aa"
+              }
+            ],
+            "id": "official_pair_end_to_end",
+            "status": "blocked_missing_nrf52833"
+          }
+        ],
+        "software_suite": "717 passed",
+        "status": "blocked_external_prerequisite"
+      },
+      {
+        "automated_assertions_inspected": 14,
+        "id": "AC-6.5",
+        "procedures": [],
+        "software_suite": "717 passed",
+        "status": "pass_software"
+      },
+      {
+        "automated_assertions_inspected": 14,
+        "id": "AC-6.6",
+        "procedures": [
+          {
+            "evidence": [
+              {
+                "path": "C:\\Users\\Jason\\Documents\\Jason\\FirmCLI\\M10-Final-Acceptance\\2026-07-17_run1\\boards\\nucleo_l476rg_attempt7\\acceptance.json",
+                "sha256": "fb56d780e09e1466e95d9c338d0c8bb354869006bd0f7254393cce9173b00414"
+              },
+              {
+                "path": "C:\\Users\\Jason\\Documents\\Jason\\FirmCLI\\M10-Final-Acceptance\\2026-07-17_run1\\boards\\nrf52833dk\\acceptance.json",
+                "sha256": "ba4906fa2163918644da234b474844194e3207787ec265475c4ce38a1e14a1aa"
+              }
+            ],
+            "id": "official_pair_end_to_end",
+            "status": "blocked_missing_nrf52833"
+          }
+        ],
+        "software_suite": "717 passed",
+        "status": "blocked_external_prerequisite"
+      },
+      {
+        "automated_assertions_inspected": 14,
+        "id": "AC-6.7",
+        "procedures": [],
+        "software_suite": "717 passed",
+        "status": "pass_software"
+      },
+      {
+        "automated_assertions_inspected": 29,
+        "id": "AC-7.1",
+        "procedures": [],
+        "software_suite": "717 passed",
+        "status": "pass_software"
+      },
+      {
+        "automated_assertions_inspected": 29,
+        "id": "AC-7.2",
+        "procedures": [
+          {
+            "evidence": [
+              {
+                "path": "C:\\Users\\Jason\\Documents\\Jason\\FirmCLI\\M10-Final-Acceptance\\2026-07-17_run1\\boards\\nucleo_l476rg_attempt7\\acceptance.json",
+                "sha256": "fb56d780e09e1466e95d9c338d0c8bb354869006bd0f7254393cce9173b00414"
+              },
+              {
+                "path": "C:\\Users\\Jason\\Documents\\Jason\\FirmCLI\\M10-Final-Acceptance\\2026-07-17_run1\\boards\\nrf52833dk\\acceptance.json",
+                "sha256": "ba4906fa2163918644da234b474844194e3207787ec265475c4ce38a1e14a1aa"
+              }
+            ],
+            "id": "official_pair_end_to_end",
+            "status": "blocked_missing_nrf52833"
+          }
+        ],
+        "software_suite": "717 passed",
+        "status": "blocked_external_prerequisite"
+      },
+      {
+        "automated_assertions_inspected": 29,
+        "id": "AC-7.3",
+        "procedures": [
+          {
+            "evidence": [
+              {
+                "path": "C:\\Users\\Jason\\Documents\\Jason\\FirmCLI\\M10-Final-Acceptance\\2026-07-17_run1\\boards\\nucleo_l476rg_attempt7\\acceptance.json",
+                "sha256": "fb56d780e09e1466e95d9c338d0c8bb354869006bd0f7254393cce9173b00414"
+              },
+              {
+                "path": "C:\\Users\\Jason\\Documents\\Jason\\FirmCLI\\M10-Final-Acceptance\\2026-07-17_run1\\boards\\nrf52833dk\\acceptance.json",
+                "sha256": "ba4906fa2163918644da234b474844194e3207787ec265475c4ce38a1e14a1aa"
+              }
+            ],
+            "id": "official_pair_end_to_end",
+            "status": "blocked_missing_nrf52833"
+          }
+        ],
+        "software_suite": "717 passed",
+        "status": "blocked_external_prerequisite"
+      },
+      {
+        "automated_assertions_inspected": 29,
+        "id": "AC-7.4",
+        "procedures": [],
+        "software_suite": "717 passed",
+        "status": "pass_software"
+      },
+      {
+        "automated_assertions_inspected": 29,
+        "id": "AC-7.5",
+        "procedures": [
+          {
+            "evidence": [
+              {
+                "path": "C:\\Users\\Jason\\Documents\\Jason\\FirmCLI\\M10-Final-Acceptance\\2026-07-17_run1\\boards\\nucleo_l476rg_attempt7\\acceptance.json",
+                "sha256": "fb56d780e09e1466e95d9c338d0c8bb354869006bd0f7254393cce9173b00414"
+              },
+              {
+                "path": "C:\\Users\\Jason\\Documents\\Jason\\FirmCLI\\M10-Final-Acceptance\\2026-07-17_run1\\boards\\nrf52833dk\\acceptance.json",
+                "sha256": "ba4906fa2163918644da234b474844194e3207787ec265475c4ce38a1e14a1aa"
+              }
+            ],
+            "id": "official_pair_end_to_end",
+            "status": "blocked_missing_nrf52833"
+          }
+        ],
+        "software_suite": "717 passed",
+        "status": "blocked_external_prerequisite"
+      },
+      {
+        "automated_assertions_inspected": 29,
+        "id": "AC-7.6",
+        "procedures": [],
+        "software_suite": "717 passed",
+        "status": "pass_software"
+      },
+      {
+        "automated_assertions_inspected": 29,
+        "id": "AC-7.7",
+        "procedures": [
+          {
+            "evidence": [
+              {
+                "path": "C:\\Users\\Jason\\Documents\\Jason\\FirmCLI\\M10-Final-Acceptance\\2026-07-17_run1\\boards\\nucleo_l476rg_attempt7\\acceptance.json",
+                "sha256": "fb56d780e09e1466e95d9c338d0c8bb354869006bd0f7254393cce9173b00414"
+              },
+              {
+                "path": "C:\\Users\\Jason\\Documents\\Jason\\FirmCLI\\M10-Final-Acceptance\\2026-07-17_run1\\boards\\nrf52833dk\\acceptance.json",
+                "sha256": "ba4906fa2163918644da234b474844194e3207787ec265475c4ce38a1e14a1aa"
+              }
+            ],
+            "id": "official_pair_end_to_end",
+            "status": "blocked_missing_nrf52833"
+          }
+        ],
+        "software_suite": "717 passed",
+        "status": "blocked_external_prerequisite"
+      },
+      {
+        "automated_assertions_inspected": 16,
+        "id": "AC-8.1",
+        "procedures": [],
+        "software_suite": "717 passed",
+        "status": "pass_software"
+      },
+      {
+        "automated_assertions_inspected": 16,
+        "id": "AC-8.2",
+        "procedures": [],
+        "software_suite": "717 passed",
+        "status": "pass_software"
+      },
+      {
+        "automated_assertions_inspected": 16,
+        "id": "AC-8.3",
+        "procedures": [],
+        "software_suite": "717 passed",
+        "status": "pass_software"
+      },
+      {
+        "automated_assertions_inspected": 16,
+        "id": "AC-8.4",
+        "procedures": [],
+        "software_suite": "717 passed",
+        "status": "pass_software"
+      },
+      {
+        "automated_assertions_inspected": 16,
+        "id": "AC-8.5",
+        "procedures": [],
+        "software_suite": "717 passed",
+        "status": "pass_software"
+      },
+      {
+        "automated_assertions_inspected": 16,
+        "id": "AC-8.6",
+        "procedures": [],
+        "software_suite": "717 passed",
+        "status": "pass_software"
+      },
+      {
+        "automated_assertions_inspected": 10,
+        "id": "AC-9.1",
+        "procedures": [],
+        "software_suite": "717 passed",
+        "status": "pass_software"
+      },
+      {
+        "automated_assertions_inspected": 10,
+        "id": "AC-9.2",
+        "procedures": [
+          {
+            "evidence": [
+              {
+                "path": "C:\\Users\\Jason\\Documents\\Jason\\FirmCLI\\M10-Final-Acceptance\\2026-07-17_run1\\boards\\nucleo_l476rg_attempt7\\acceptance.json",
+                "sha256": "fb56d780e09e1466e95d9c338d0c8bb354869006bd0f7254393cce9173b00414"
+              },
+              {
+                "path": "C:\\Users\\Jason\\Documents\\Jason\\FirmCLI\\M10-Final-Acceptance\\2026-07-17_run1\\boards\\nrf52833dk\\acceptance.json",
+                "sha256": "ba4906fa2163918644da234b474844194e3207787ec265475c4ce38a1e14a1aa"
+              }
+            ],
+            "id": "official_pair_end_to_end",
+            "status": "blocked_missing_nrf52833"
+          }
+        ],
+        "software_suite": "717 passed",
+        "status": "blocked_external_prerequisite"
+      },
+      {
+        "automated_assertions_inspected": 10,
+        "id": "AC-9.3",
+        "procedures": [],
+        "software_suite": "717 passed",
+        "status": "pass_software"
+      },
+      {
+        "automated_assertions_inspected": 10,
+        "id": "AC-9.4",
+        "procedures": [],
+        "software_suite": "717 passed",
+        "status": "pass_software"
+      },
+      {
+        "automated_assertions_inspected": 10,
+        "id": "AC-9.5",
+        "procedures": [],
+        "software_suite": "717 passed",
+        "status": "pass_software"
+      },
+      {
+        "automated_assertions_inspected": 10,
+        "id": "AC-9.6",
+        "procedures": [],
+        "software_suite": "717 passed",
+        "status": "pass_software"
+      },
+      {
+        "automated_assertions_inspected": 16,
+        "id": "AC-10.1",
+        "procedures": [
+          {
+            "evidence": [
+              {
+                "path": "C:\\Users\\Jason\\Documents\\Jason\\FirmCLI\\M10-Final-Acceptance\\2026-07-17_run1\\boards\\nucleo_l476rg_attempt7\\acceptance.json",
+                "sha256": "fb56d780e09e1466e95d9c338d0c8bb354869006bd0f7254393cce9173b00414"
+              },
+              {
+                "path": "C:\\Users\\Jason\\Documents\\Jason\\FirmCLI\\BYO-Server\\docs\\evidence\\m7-hardware-acceptance-2026-07-17.md",
+                "sha256": "5597cb0f1760c74cf8526f5cdffe85b1452000fc13acf5b979409ac3255f7cd3"
+              },
+              {
+                "path": "C:\\Users\\Jason\\Documents\\Jason\\FirmCLI\\M10-Final-Acceptance\\2026-07-17_run1\\boards\\nrf52833dk\\acceptance.json",
+                "sha256": "ba4906fa2163918644da234b474844194e3207787ec265475c4ce38a1e14a1aa"
+              }
+            ],
+            "id": "real_map_flash_and_backend_containment",
+            "status": "blocked_missing_nrf52833"
+          }
+        ],
+        "software_suite": "717 passed",
+        "status": "blocked_external_prerequisite"
+      },
+      {
+        "automated_assertions_inspected": 16,
+        "id": "AC-10.2",
+        "procedures": [
+          {
+            "evidence": [
+              {
+                "path": "C:\\Users\\Jason\\Documents\\Jason\\FirmCLI\\M10-Final-Acceptance\\2026-07-17_run1\\boards\\nucleo_l476rg_attempt7\\acceptance.json",
+                "sha256": "fb56d780e09e1466e95d9c338d0c8bb354869006bd0f7254393cce9173b00414"
+              },
+              {
+                "path": "C:\\Users\\Jason\\Documents\\Jason\\FirmCLI\\BYO-Server\\docs\\evidence\\m7-hardware-acceptance-2026-07-17.md",
+                "sha256": "5597cb0f1760c74cf8526f5cdffe85b1452000fc13acf5b979409ac3255f7cd3"
+              },
+              {
+                "path": "C:\\Users\\Jason\\Documents\\Jason\\FirmCLI\\M10-Final-Acceptance\\2026-07-17_run1\\boards\\nrf52833dk\\acceptance.json",
+                "sha256": "ba4906fa2163918644da234b474844194e3207787ec265475c4ce38a1e14a1aa"
+              }
+            ],
+            "id": "real_map_flash_and_backend_containment",
+            "status": "blocked_missing_nrf52833"
+          }
+        ],
+        "software_suite": "717 passed",
+        "status": "blocked_external_prerequisite"
+      },
+      {
+        "automated_assertions_inspected": 16,
+        "id": "AC-10.3",
+        "procedures": [
+          {
+            "evidence": [
+              {
+                "path": "C:\\Users\\Jason\\Documents\\Jason\\FirmCLI\\M10-Final-Acceptance\\2026-07-17_run1\\boards\\nucleo_l476rg_attempt7\\acceptance.json",
+                "sha256": "fb56d780e09e1466e95d9c338d0c8bb354869006bd0f7254393cce9173b00414"
+              },
+              {
+                "path": "C:\\Users\\Jason\\Documents\\Jason\\FirmCLI\\BYO-Server\\docs\\evidence\\m7-hardware-acceptance-2026-07-17.md",
+                "sha256": "5597cb0f1760c74cf8526f5cdffe85b1452000fc13acf5b979409ac3255f7cd3"
+              },
+              {
+                "path": "C:\\Users\\Jason\\Documents\\Jason\\FirmCLI\\M10-Final-Acceptance\\2026-07-17_run1\\boards\\nrf52833dk\\acceptance.json",
+                "sha256": "ba4906fa2163918644da234b474844194e3207787ec265475c4ce38a1e14a1aa"
+              }
+            ],
+            "id": "real_map_flash_and_backend_containment",
+            "status": "blocked_missing_nrf52833"
+          }
+        ],
+        "software_suite": "717 passed",
+        "status": "blocked_external_prerequisite"
+      },
+      {
+        "automated_assertions_inspected": 16,
+        "id": "AC-10.4",
+        "procedures": [
+          {
+            "evidence": [
+              {
+                "path": "C:\\Users\\Jason\\Documents\\Jason\\FirmCLI\\M10-Final-Acceptance\\2026-07-17_run1\\boards\\nucleo_l476rg_attempt7\\acceptance.json",
+                "sha256": "fb56d780e09e1466e95d9c338d0c8bb354869006bd0f7254393cce9173b00414"
+              },
+              {
+                "path": "C:\\Users\\Jason\\Documents\\Jason\\FirmCLI\\BYO-Server\\docs\\evidence\\m7-hardware-acceptance-2026-07-17.md",
+                "sha256": "5597cb0f1760c74cf8526f5cdffe85b1452000fc13acf5b979409ac3255f7cd3"
+              },
+              {
+                "path": "C:\\Users\\Jason\\Documents\\Jason\\FirmCLI\\M10-Final-Acceptance\\2026-07-17_run1\\boards\\nrf52833dk\\acceptance.json",
+                "sha256": "ba4906fa2163918644da234b474844194e3207787ec265475c4ce38a1e14a1aa"
+              }
+            ],
+            "id": "real_map_flash_and_backend_containment",
+            "status": "blocked_missing_nrf52833"
+          }
+        ],
+        "software_suite": "717 passed",
+        "status": "blocked_external_prerequisite"
+      },
+      {
+        "automated_assertions_inspected": 16,
+        "id": "AC-10.5",
+        "procedures": [
+          {
+            "evidence": [
+              {
+                "path": "C:\\Users\\Jason\\Documents\\Jason\\FirmCLI\\M10-Final-Acceptance\\2026-07-17_run1\\boards\\nucleo_l476rg_attempt7\\acceptance.json",
+                "sha256": "fb56d780e09e1466e95d9c338d0c8bb354869006bd0f7254393cce9173b00414"
+              },
+              {
+                "path": "C:\\Users\\Jason\\Documents\\Jason\\FirmCLI\\BYO-Server\\docs\\evidence\\m7-hardware-acceptance-2026-07-17.md",
+                "sha256": "5597cb0f1760c74cf8526f5cdffe85b1452000fc13acf5b979409ac3255f7cd3"
+              },
+              {
+                "path": "C:\\Users\\Jason\\Documents\\Jason\\FirmCLI\\M10-Final-Acceptance\\2026-07-17_run1\\boards\\nrf52833dk\\acceptance.json",
+                "sha256": "ba4906fa2163918644da234b474844194e3207787ec265475c4ce38a1e14a1aa"
+              }
+            ],
+            "id": "real_map_flash_and_backend_containment",
+            "status": "blocked_missing_nrf52833"
+          }
+        ],
+        "software_suite": "717 passed",
+        "status": "blocked_external_prerequisite"
+      },
+      {
+        "automated_assertions_inspected": 16,
+        "id": "AC-10.6",
+        "procedures": [
+          {
+            "evidence": [
+              {
+                "path": "C:\\Users\\Jason\\Documents\\Jason\\FirmCLI\\M10-Final-Acceptance\\2026-07-17_run1\\boards\\nucleo_l476rg_attempt7\\acceptance.json",
+                "sha256": "fb56d780e09e1466e95d9c338d0c8bb354869006bd0f7254393cce9173b00414"
+              },
+              {
+                "path": "C:\\Users\\Jason\\Documents\\Jason\\FirmCLI\\BYO-Server\\docs\\evidence\\m7-hardware-acceptance-2026-07-17.md",
+                "sha256": "5597cb0f1760c74cf8526f5cdffe85b1452000fc13acf5b979409ac3255f7cd3"
+              },
+              {
+                "path": "C:\\Users\\Jason\\Documents\\Jason\\FirmCLI\\M10-Final-Acceptance\\2026-07-17_run1\\boards\\nrf52833dk\\acceptance.json",
+                "sha256": "ba4906fa2163918644da234b474844194e3207787ec265475c4ce38a1e14a1aa"
+              }
+            ],
+            "id": "real_map_flash_and_backend_containment",
+            "status": "blocked_missing_nrf52833"
+          }
+        ],
+        "software_suite": "717 passed",
+        "status": "blocked_external_prerequisite"
+      },
+      {
+        "automated_assertions_inspected": 10,
+        "id": "AC-11.1",
+        "procedures": [
+          {
+            "evidence": [
+              {
+                "path": "C:\\Users\\Jason\\Documents\\Jason\\FirmCLI\\M10-Final-Acceptance\\2026-07-17_run1\\boards\\nucleo_l476rg_attempt7\\acceptance.json",
+                "sha256": "fb56d780e09e1466e95d9c338d0c8bb354869006bd0f7254393cce9173b00414"
+              },
+              {
+                "path": "C:\\Users\\Jason\\Documents\\Jason\\FirmCLI\\BYO-Server\\docs\\evidence\\m7-hardware-acceptance-2026-07-17.md",
+                "sha256": "5597cb0f1760c74cf8526f5cdffe85b1452000fc13acf5b979409ac3255f7cd3"
+              },
+              {
+                "path": "C:\\Users\\Jason\\Documents\\Jason\\FirmCLI\\M10-Final-Acceptance\\2026-07-17_run1\\boards\\nrf52833dk\\acceptance.json",
+                "sha256": "ba4906fa2163918644da234b474844194e3207787ec265475c4ce38a1e14a1aa"
+              }
+            ],
+            "id": "real_map_flash_and_backend_containment",
+            "status": "blocked_missing_nrf52833"
+          }
+        ],
+        "software_suite": "717 passed",
+        "status": "blocked_external_prerequisite"
+      },
+      {
+        "automated_assertions_inspected": 10,
+        "id": "AC-11.2",
+        "procedures": [
+          {
+            "evidence": [
+              {
+                "path": "C:\\Users\\Jason\\Documents\\Jason\\FirmCLI\\M10-Final-Acceptance\\2026-07-17_run1\\boards\\nucleo_l476rg_attempt7\\acceptance.json",
+                "sha256": "fb56d780e09e1466e95d9c338d0c8bb354869006bd0f7254393cce9173b00414"
+              },
+              {
+                "path": "C:\\Users\\Jason\\Documents\\Jason\\FirmCLI\\BYO-Server\\docs\\evidence\\m7-hardware-acceptance-2026-07-17.md",
+                "sha256": "5597cb0f1760c74cf8526f5cdffe85b1452000fc13acf5b979409ac3255f7cd3"
+              },
+              {
+                "path": "C:\\Users\\Jason\\Documents\\Jason\\FirmCLI\\M10-Final-Acceptance\\2026-07-17_run1\\boards\\nrf52833dk\\acceptance.json",
+                "sha256": "ba4906fa2163918644da234b474844194e3207787ec265475c4ce38a1e14a1aa"
+              }
+            ],
+            "id": "real_map_flash_and_backend_containment",
+            "status": "blocked_missing_nrf52833"
+          }
+        ],
+        "software_suite": "717 passed",
+        "status": "blocked_external_prerequisite"
+      },
+      {
+        "automated_assertions_inspected": 10,
+        "id": "AC-11.3",
+        "procedures": [
+          {
+            "evidence": [
+              {
+                "path": "C:\\Users\\Jason\\Documents\\Jason\\FirmCLI\\M10-Final-Acceptance\\2026-07-17_run1\\boards\\nucleo_l476rg_attempt7\\acceptance.json",
+                "sha256": "fb56d780e09e1466e95d9c338d0c8bb354869006bd0f7254393cce9173b00414"
+              },
+              {
+                "path": "C:\\Users\\Jason\\Documents\\Jason\\FirmCLI\\BYO-Server\\docs\\evidence\\m7-hardware-acceptance-2026-07-17.md",
+                "sha256": "5597cb0f1760c74cf8526f5cdffe85b1452000fc13acf5b979409ac3255f7cd3"
+              },
+              {
+                "path": "C:\\Users\\Jason\\Documents\\Jason\\FirmCLI\\M10-Final-Acceptance\\2026-07-17_run1\\boards\\nrf52833dk\\acceptance.json",
+                "sha256": "ba4906fa2163918644da234b474844194e3207787ec265475c4ce38a1e14a1aa"
+              }
+            ],
+            "id": "real_map_flash_and_backend_containment",
+            "status": "blocked_missing_nrf52833"
+          }
+        ],
+        "software_suite": "717 passed",
+        "status": "blocked_external_prerequisite"
+      },
+      {
+        "automated_assertions_inspected": 10,
+        "id": "AC-11.4",
+        "procedures": [
+          {
+            "evidence": [
+              {
+                "path": "C:\\Users\\Jason\\Documents\\Jason\\FirmCLI\\M10-Final-Acceptance\\2026-07-17_run1\\boards\\nucleo_l476rg_attempt7\\acceptance.json",
+                "sha256": "fb56d780e09e1466e95d9c338d0c8bb354869006bd0f7254393cce9173b00414"
+              },
+              {
+                "path": "C:\\Users\\Jason\\Documents\\Jason\\FirmCLI\\BYO-Server\\docs\\evidence\\m7-hardware-acceptance-2026-07-17.md",
+                "sha256": "5597cb0f1760c74cf8526f5cdffe85b1452000fc13acf5b979409ac3255f7cd3"
+              },
+              {
+                "path": "C:\\Users\\Jason\\Documents\\Jason\\FirmCLI\\M10-Final-Acceptance\\2026-07-17_run1\\boards\\nrf52833dk\\acceptance.json",
+                "sha256": "ba4906fa2163918644da234b474844194e3207787ec265475c4ce38a1e14a1aa"
+              }
+            ],
+            "id": "real_map_flash_and_backend_containment",
+            "status": "blocked_missing_nrf52833"
+          }
+        ],
+        "software_suite": "717 passed",
+        "status": "blocked_external_prerequisite"
+      },
+      {
+        "automated_assertions_inspected": 10,
+        "id": "AC-11.5",
+        "procedures": [
+          {
+            "evidence": [
+              {
+                "path": "C:\\Users\\Jason\\Documents\\Jason\\FirmCLI\\M10-Final-Acceptance\\2026-07-17_run1\\boards\\nucleo_l476rg_attempt7\\acceptance.json",
+                "sha256": "fb56d780e09e1466e95d9c338d0c8bb354869006bd0f7254393cce9173b00414"
+              },
+              {
+                "path": "C:\\Users\\Jason\\Documents\\Jason\\FirmCLI\\BYO-Server\\docs\\evidence\\m7-hardware-acceptance-2026-07-17.md",
+                "sha256": "5597cb0f1760c74cf8526f5cdffe85b1452000fc13acf5b979409ac3255f7cd3"
+              },
+              {
+                "path": "C:\\Users\\Jason\\Documents\\Jason\\FirmCLI\\M10-Final-Acceptance\\2026-07-17_run1\\boards\\nrf52833dk\\acceptance.json",
+                "sha256": "ba4906fa2163918644da234b474844194e3207787ec265475c4ce38a1e14a1aa"
+              }
+            ],
+            "id": "real_map_flash_and_backend_containment",
+            "status": "blocked_missing_nrf52833"
+          }
+        ],
+        "software_suite": "717 passed",
+        "status": "blocked_external_prerequisite"
+      },
+      {
+        "automated_assertions_inspected": 10,
+        "id": "AC-11.6",
+        "procedures": [
+          {
+            "evidence": [
+              {
+                "path": "C:\\Users\\Jason\\Documents\\Jason\\FirmCLI\\M10-Final-Acceptance\\2026-07-17_run1\\boards\\nucleo_l476rg_attempt7\\acceptance.json",
+                "sha256": "fb56d780e09e1466e95d9c338d0c8bb354869006bd0f7254393cce9173b00414"
+              },
+              {
+                "path": "C:\\Users\\Jason\\Documents\\Jason\\FirmCLI\\BYO-Server\\docs\\evidence\\m7-hardware-acceptance-2026-07-17.md",
+                "sha256": "5597cb0f1760c74cf8526f5cdffe85b1452000fc13acf5b979409ac3255f7cd3"
+              },
+              {
+                "path": "C:\\Users\\Jason\\Documents\\Jason\\FirmCLI\\M10-Final-Acceptance\\2026-07-17_run1\\boards\\nrf52833dk\\acceptance.json",
+                "sha256": "ba4906fa2163918644da234b474844194e3207787ec265475c4ce38a1e14a1aa"
+              }
+            ],
+            "id": "real_map_flash_and_backend_containment",
+            "status": "blocked_missing_nrf52833"
+          }
+        ],
+        "software_suite": "717 passed",
+        "status": "blocked_external_prerequisite"
+      },
+      {
+        "automated_assertions_inspected": 21,
+        "id": "AC-12.1",
+        "procedures": [
+          {
+            "evidence": [
+              {
+                "path": "C:\\Users\\Jason\\Documents\\Jason\\FirmCLI\\M10-Final-Acceptance\\2026-07-17_run1\\boards\\nucleo_l476rg_attempt7\\acceptance.json",
+                "sha256": "fb56d780e09e1466e95d9c338d0c8bb354869006bd0f7254393cce9173b00414"
+              },
+              {
+                "path": "C:\\Users\\Jason\\Documents\\Jason\\FirmCLI\\M10-Final-Acceptance\\2026-07-17_run1\\boards\\nrf52833dk\\acceptance.json",
+                "sha256": "ba4906fa2163918644da234b474844194e3207787ec265475c4ce38a1e14a1aa"
+              }
+            ],
+            "id": "official_pair_end_to_end",
+            "status": "blocked_missing_nrf52833"
+          }
+        ],
+        "software_suite": "717 passed",
+        "status": "blocked_external_prerequisite"
+      },
+      {
+        "automated_assertions_inspected": 21,
+        "id": "AC-12.2",
+        "procedures": [
+          {
+            "evidence": [
+              {
+                "path": "C:\\Users\\Jason\\Documents\\Jason\\FirmCLI\\M10-Final-Acceptance\\2026-07-17_run1\\boards\\nucleo_l476rg_attempt7\\acceptance.json",
+                "sha256": "fb56d780e09e1466e95d9c338d0c8bb354869006bd0f7254393cce9173b00414"
+              },
+              {
+                "path": "C:\\Users\\Jason\\Documents\\Jason\\FirmCLI\\M10-Final-Acceptance\\2026-07-17_run1\\boards\\nrf52833dk\\acceptance.json",
+                "sha256": "ba4906fa2163918644da234b474844194e3207787ec265475c4ce38a1e14a1aa"
+              }
+            ],
+            "id": "official_pair_end_to_end",
+            "status": "blocked_missing_nrf52833"
+          }
+        ],
+        "software_suite": "717 passed",
+        "status": "blocked_external_prerequisite"
+      },
+      {
+        "automated_assertions_inspected": 21,
+        "id": "AC-12.3",
+        "procedures": [
+          {
+            "evidence": [
+              {
+                "path": "C:\\Users\\Jason\\Documents\\Jason\\FirmCLI\\M10-Final-Acceptance\\2026-07-17_run1\\boards\\nucleo_l476rg_attempt7\\acceptance.json",
+                "sha256": "fb56d780e09e1466e95d9c338d0c8bb354869006bd0f7254393cce9173b00414"
+              },
+              {
+                "path": "C:\\Users\\Jason\\Documents\\Jason\\FirmCLI\\M10-Final-Acceptance\\2026-07-17_run1\\boards\\nrf52833dk\\acceptance.json",
+                "sha256": "ba4906fa2163918644da234b474844194e3207787ec265475c4ce38a1e14a1aa"
+              }
+            ],
+            "id": "official_pair_end_to_end",
+            "status": "blocked_missing_nrf52833"
+          }
+        ],
+        "software_suite": "717 passed",
+        "status": "blocked_external_prerequisite"
+      },
+      {
+        "automated_assertions_inspected": 21,
+        "id": "AC-12.4",
+        "procedures": [
+          {
+            "evidence": [
+              {
+                "path": "C:\\Users\\Jason\\Documents\\Jason\\FirmCLI\\M10-Final-Acceptance\\2026-07-17_run1\\boards\\nucleo_l476rg_attempt7\\acceptance.json",
+                "sha256": "fb56d780e09e1466e95d9c338d0c8bb354869006bd0f7254393cce9173b00414"
+              },
+              {
+                "path": "C:\\Users\\Jason\\Documents\\Jason\\FirmCLI\\M10-Final-Acceptance\\2026-07-17_run1\\boards\\nrf52833dk\\acceptance.json",
+                "sha256": "ba4906fa2163918644da234b474844194e3207787ec265475c4ce38a1e14a1aa"
+              }
+            ],
+            "id": "official_pair_end_to_end",
+            "status": "blocked_missing_nrf52833"
+          }
+        ],
+        "software_suite": "717 passed",
+        "status": "blocked_external_prerequisite"
+      },
+      {
+        "automated_assertions_inspected": 21,
+        "id": "AC-12.5",
+        "procedures": [
+          {
+            "evidence": [
+              {
+                "path": "C:\\Users\\Jason\\Documents\\Jason\\FirmCLI\\M10-Final-Acceptance\\2026-07-17_run1\\boards\\nucleo_l476rg_attempt7\\acceptance.json",
+                "sha256": "fb56d780e09e1466e95d9c338d0c8bb354869006bd0f7254393cce9173b00414"
+              },
+              {
+                "path": "C:\\Users\\Jason\\Documents\\Jason\\FirmCLI\\M10-Final-Acceptance\\2026-07-17_run1\\boards\\nrf52833dk\\acceptance.json",
+                "sha256": "ba4906fa2163918644da234b474844194e3207787ec265475c4ce38a1e14a1aa"
+              }
+            ],
+            "id": "official_pair_end_to_end",
+            "status": "blocked_missing_nrf52833"
+          }
+        ],
+        "software_suite": "717 passed",
+        "status": "blocked_external_prerequisite"
+      },
+      {
+        "automated_assertions_inspected": 14,
+        "id": "AC-13.1",
+        "procedures": [
+          {
+            "evidence": [
+              {
+                "path": "C:\\Users\\Jason\\Documents\\Jason\\FirmCLI\\M10-Final-Acceptance\\2026-07-17_run1\\boards\\nucleo_l476rg_attempt7\\acceptance.json",
+                "sha256": "fb56d780e09e1466e95d9c338d0c8bb354869006bd0f7254393cce9173b00414"
+              },
+              {
+                "path": "C:\\Users\\Jason\\Documents\\Jason\\FirmCLI\\BYO-Server\\docs\\evidence\\m7-hardware-acceptance-2026-07-17.md",
+                "sha256": "5597cb0f1760c74cf8526f5cdffe85b1452000fc13acf5b979409ac3255f7cd3"
+              },
+              {
+                "path": "C:\\Users\\Jason\\Documents\\Jason\\FirmCLI\\M10-Final-Acceptance\\2026-07-17_run1\\boards\\nrf52833dk\\acceptance.json",
+                "sha256": "ba4906fa2163918644da234b474844194e3207787ec265475c4ce38a1e14a1aa"
+              }
+            ],
+            "id": "real_map_flash_and_backend_containment",
+            "status": "blocked_missing_nrf52833"
+          }
+        ],
+        "software_suite": "717 passed",
+        "status": "blocked_external_prerequisite"
+      },
+      {
+        "automated_assertions_inspected": 14,
+        "id": "AC-13.2",
+        "procedures": [
+          {
+            "evidence": [
+              {
+                "path": "C:\\Users\\Jason\\Documents\\Jason\\FirmCLI\\M10-Final-Acceptance\\2026-07-17_run1\\boards\\nucleo_l476rg_attempt7\\acceptance.json",
+                "sha256": "fb56d780e09e1466e95d9c338d0c8bb354869006bd0f7254393cce9173b00414"
+              },
+              {
+                "path": "C:\\Users\\Jason\\Documents\\Jason\\FirmCLI\\BYO-Server\\docs\\evidence\\m7-hardware-acceptance-2026-07-17.md",
+                "sha256": "5597cb0f1760c74cf8526f5cdffe85b1452000fc13acf5b979409ac3255f7cd3"
+              },
+              {
+                "path": "C:\\Users\\Jason\\Documents\\Jason\\FirmCLI\\M10-Final-Acceptance\\2026-07-17_run1\\boards\\nrf52833dk\\acceptance.json",
+                "sha256": "ba4906fa2163918644da234b474844194e3207787ec265475c4ce38a1e14a1aa"
+              }
+            ],
+            "id": "real_map_flash_and_backend_containment",
+            "status": "blocked_missing_nrf52833"
+          }
+        ],
+        "software_suite": "717 passed",
+        "status": "blocked_external_prerequisite"
+      },
+      {
+        "automated_assertions_inspected": 14,
+        "id": "AC-13.3",
+        "procedures": [
+          {
+            "evidence": [
+              {
+                "path": "C:\\Users\\Jason\\Documents\\Jason\\FirmCLI\\M10-Final-Acceptance\\2026-07-17_run1\\boards\\nucleo_l476rg_attempt7\\acceptance.json",
+                "sha256": "fb56d780e09e1466e95d9c338d0c8bb354869006bd0f7254393cce9173b00414"
+              },
+              {
+                "path": "C:\\Users\\Jason\\Documents\\Jason\\FirmCLI\\BYO-Server\\docs\\evidence\\m7-hardware-acceptance-2026-07-17.md",
+                "sha256": "5597cb0f1760c74cf8526f5cdffe85b1452000fc13acf5b979409ac3255f7cd3"
+              },
+              {
+                "path": "C:\\Users\\Jason\\Documents\\Jason\\FirmCLI\\M10-Final-Acceptance\\2026-07-17_run1\\boards\\nrf52833dk\\acceptance.json",
+                "sha256": "ba4906fa2163918644da234b474844194e3207787ec265475c4ce38a1e14a1aa"
+              }
+            ],
+            "id": "real_map_flash_and_backend_containment",
+            "status": "blocked_missing_nrf52833"
+          }
+        ],
+        "software_suite": "717 passed",
+        "status": "blocked_external_prerequisite"
+      },
+      {
+        "automated_assertions_inspected": 14,
+        "id": "AC-13.4",
+        "procedures": [
+          {
+            "evidence": [
+              {
+                "path": "C:\\Users\\Jason\\Documents\\Jason\\FirmCLI\\M10-Final-Acceptance\\2026-07-17_run1\\boards\\nucleo_l476rg_attempt7\\acceptance.json",
+                "sha256": "fb56d780e09e1466e95d9c338d0c8bb354869006bd0f7254393cce9173b00414"
+              },
+              {
+                "path": "C:\\Users\\Jason\\Documents\\Jason\\FirmCLI\\BYO-Server\\docs\\evidence\\m7-hardware-acceptance-2026-07-17.md",
+                "sha256": "5597cb0f1760c74cf8526f5cdffe85b1452000fc13acf5b979409ac3255f7cd3"
+              },
+              {
+                "path": "C:\\Users\\Jason\\Documents\\Jason\\FirmCLI\\M10-Final-Acceptance\\2026-07-17_run1\\boards\\nrf52833dk\\acceptance.json",
+                "sha256": "ba4906fa2163918644da234b474844194e3207787ec265475c4ce38a1e14a1aa"
+              }
+            ],
+            "id": "real_map_flash_and_backend_containment",
+            "status": "blocked_missing_nrf52833"
+          }
+        ],
+        "software_suite": "717 passed",
+        "status": "blocked_external_prerequisite"
+      },
+      {
+        "automated_assertions_inspected": 14,
+        "id": "AC-13.5",
+        "procedures": [
+          {
+            "evidence": [
+              {
+                "path": "C:\\Users\\Jason\\Documents\\Jason\\FirmCLI\\M10-Final-Acceptance\\2026-07-17_run1\\boards\\nucleo_l476rg_attempt7\\acceptance.json",
+                "sha256": "fb56d780e09e1466e95d9c338d0c8bb354869006bd0f7254393cce9173b00414"
+              },
+              {
+                "path": "C:\\Users\\Jason\\Documents\\Jason\\FirmCLI\\BYO-Server\\docs\\evidence\\m7-hardware-acceptance-2026-07-17.md",
+                "sha256": "5597cb0f1760c74cf8526f5cdffe85b1452000fc13acf5b979409ac3255f7cd3"
+              },
+              {
+                "path": "C:\\Users\\Jason\\Documents\\Jason\\FirmCLI\\M10-Final-Acceptance\\2026-07-17_run1\\boards\\nrf52833dk\\acceptance.json",
+                "sha256": "ba4906fa2163918644da234b474844194e3207787ec265475c4ce38a1e14a1aa"
+              }
+            ],
+            "id": "real_map_flash_and_backend_containment",
+            "status": "blocked_missing_nrf52833"
+          }
+        ],
+        "software_suite": "717 passed",
+        "status": "blocked_external_prerequisite"
+      },
+      {
+        "automated_assertions_inspected": 17,
+        "id": "AC-14.1",
+        "procedures": [
+          {
+            "evidence": [
+              {
+                "path": "C:\\Users\\Jason\\Documents\\Jason\\FirmCLI\\M10-Final-Acceptance\\2026-07-17_run1\\boards\\nucleo_l476rg_attempt7\\acceptance.json",
+                "sha256": "fb56d780e09e1466e95d9c338d0c8bb354869006bd0f7254393cce9173b00414"
+              },
+              {
+                "path": "C:\\Users\\Jason\\Documents\\Jason\\FirmCLI\\BYO-Server\\docs\\evidence\\m7-hardware-acceptance-2026-07-17.md",
+                "sha256": "5597cb0f1760c74cf8526f5cdffe85b1452000fc13acf5b979409ac3255f7cd3"
+              },
+              {
+                "path": "C:\\Users\\Jason\\Documents\\Jason\\FirmCLI\\M10-Final-Acceptance\\2026-07-17_run1\\boards\\nrf52833dk\\acceptance.json",
+                "sha256": "ba4906fa2163918644da234b474844194e3207787ec265475c4ce38a1e14a1aa"
+              }
+            ],
+            "id": "real_map_flash_and_backend_containment",
+            "status": "blocked_missing_nrf52833"
+          }
+        ],
+        "software_suite": "717 passed",
+        "status": "blocked_external_prerequisite"
+      },
+      {
+        "automated_assertions_inspected": 17,
+        "id": "AC-14.2",
+        "procedures": [],
+        "software_suite": "717 passed",
+        "status": "pass_software"
+      },
+      {
+        "automated_assertions_inspected": 17,
+        "id": "AC-14.3",
+        "procedures": [
+          {
+            "evidence": [
+              {
+                "path": "C:\\Users\\Jason\\Documents\\Jason\\FirmCLI\\M10-Final-Acceptance\\2026-07-17_run1\\boards\\nucleo_l476rg_attempt7\\acceptance.json",
+                "sha256": "fb56d780e09e1466e95d9c338d0c8bb354869006bd0f7254393cce9173b00414"
+              },
+              {
+                "path": "C:\\Users\\Jason\\Documents\\Jason\\FirmCLI\\BYO-Server\\docs\\evidence\\m7-hardware-acceptance-2026-07-17.md",
+                "sha256": "5597cb0f1760c74cf8526f5cdffe85b1452000fc13acf5b979409ac3255f7cd3"
+              },
+              {
+                "path": "C:\\Users\\Jason\\Documents\\Jason\\FirmCLI\\M10-Final-Acceptance\\2026-07-17_run1\\boards\\nrf52833dk\\acceptance.json",
+                "sha256": "ba4906fa2163918644da234b474844194e3207787ec265475c4ce38a1e14a1aa"
+              }
+            ],
+            "id": "real_map_flash_and_backend_containment",
+            "status": "blocked_missing_nrf52833"
+          }
+        ],
+        "software_suite": "717 passed",
+        "status": "blocked_external_prerequisite"
+      },
+      {
+        "automated_assertions_inspected": 17,
+        "id": "AC-14.4",
+        "procedures": [
+          {
+            "evidence": [
+              {
+                "path": "C:\\Users\\Jason\\Documents\\Jason\\FirmCLI\\M10-Final-Acceptance\\2026-07-17_run1\\boards\\nucleo_l476rg_attempt7\\acceptance.json",
+                "sha256": "fb56d780e09e1466e95d9c338d0c8bb354869006bd0f7254393cce9173b00414"
+              },
+              {
+                "path": "C:\\Users\\Jason\\Documents\\Jason\\FirmCLI\\BYO-Server\\docs\\evidence\\m7-hardware-acceptance-2026-07-17.md",
+                "sha256": "5597cb0f1760c74cf8526f5cdffe85b1452000fc13acf5b979409ac3255f7cd3"
+              },
+              {
+                "path": "C:\\Users\\Jason\\Documents\\Jason\\FirmCLI\\M10-Final-Acceptance\\2026-07-17_run1\\boards\\nrf52833dk\\acceptance.json",
+                "sha256": "ba4906fa2163918644da234b474844194e3207787ec265475c4ce38a1e14a1aa"
+              }
+            ],
+            "id": "real_map_flash_and_backend_containment",
+            "status": "blocked_missing_nrf52833"
+          }
+        ],
+        "software_suite": "717 passed",
+        "status": "blocked_external_prerequisite"
+      },
+      {
+        "automated_assertions_inspected": 17,
+        "id": "AC-14.5",
+        "procedures": [],
+        "software_suite": "717 passed",
+        "status": "pass_software"
+      },
+      {
+        "automated_assertions_inspected": 17,
+        "id": "AC-14.6",
+        "procedures": [
+          {
+            "evidence": [
+              {
+                "path": "C:\\Users\\Jason\\Documents\\Jason\\FirmCLI\\M10-Final-Acceptance\\2026-07-17_run1\\boards\\nucleo_l476rg_attempt7\\acceptance.json",
+                "sha256": "fb56d780e09e1466e95d9c338d0c8bb354869006bd0f7254393cce9173b00414"
+              },
+              {
+                "path": "C:\\Users\\Jason\\Documents\\Jason\\FirmCLI\\BYO-Server\\docs\\evidence\\m7-hardware-acceptance-2026-07-17.md",
+                "sha256": "5597cb0f1760c74cf8526f5cdffe85b1452000fc13acf5b979409ac3255f7cd3"
+              },
+              {
+                "path": "C:\\Users\\Jason\\Documents\\Jason\\FirmCLI\\M10-Final-Acceptance\\2026-07-17_run1\\boards\\nrf52833dk\\acceptance.json",
+                "sha256": "ba4906fa2163918644da234b474844194e3207787ec265475c4ce38a1e14a1aa"
+              }
+            ],
+            "id": "real_map_flash_and_backend_containment",
+            "status": "blocked_missing_nrf52833"
+          }
+        ],
+        "software_suite": "717 passed",
+        "status": "blocked_external_prerequisite"
+      },
+      {
+        "automated_assertions_inspected": 17,
+        "id": "AC-14.7",
+        "procedures": [],
+        "software_suite": "717 passed",
+        "status": "pass_software"
+      },
+      {
+        "automated_assertions_inspected": 17,
+        "id": "AC-14.8",
+        "procedures": [
+          {
+            "evidence": [
+              {
+                "path": "C:\\Users\\Jason\\Documents\\Jason\\FirmCLI\\M10-Final-Acceptance\\2026-07-17_run1\\boards\\nucleo_l476rg_attempt7\\acceptance.json",
+                "sha256": "fb56d780e09e1466e95d9c338d0c8bb354869006bd0f7254393cce9173b00414"
+              },
+              {
+                "path": "C:\\Users\\Jason\\Documents\\Jason\\FirmCLI\\BYO-Server\\docs\\evidence\\m7-hardware-acceptance-2026-07-17.md",
+                "sha256": "5597cb0f1760c74cf8526f5cdffe85b1452000fc13acf5b979409ac3255f7cd3"
+              },
+              {
+                "path": "C:\\Users\\Jason\\Documents\\Jason\\FirmCLI\\M10-Final-Acceptance\\2026-07-17_run1\\boards\\nrf52833dk\\acceptance.json",
+                "sha256": "ba4906fa2163918644da234b474844194e3207787ec265475c4ce38a1e14a1aa"
+              }
+            ],
+            "id": "real_map_flash_and_backend_containment",
+            "status": "blocked_missing_nrf52833"
+          }
+        ],
+        "software_suite": "717 passed",
+        "status": "blocked_external_prerequisite"
+      },
+      {
+        "automated_assertions_inspected": 17,
+        "id": "AC-14.9",
+        "procedures": [],
+        "software_suite": "717 passed",
+        "status": "pass_software"
+      },
+      {
+        "automated_assertions_inspected": 17,
+        "id": "AC-14.10",
+        "procedures": [
+          {
+            "evidence": [
+              {
+                "path": "C:\\Users\\Jason\\Documents\\Jason\\FirmCLI\\M10-Final-Acceptance\\2026-07-17_run1\\boards\\nucleo_l476rg_attempt7\\acceptance.json",
+                "sha256": "fb56d780e09e1466e95d9c338d0c8bb354869006bd0f7254393cce9173b00414"
+              },
+              {
+                "path": "C:\\Users\\Jason\\Documents\\Jason\\FirmCLI\\BYO-Server\\docs\\evidence\\m7-hardware-acceptance-2026-07-17.md",
+                "sha256": "5597cb0f1760c74cf8526f5cdffe85b1452000fc13acf5b979409ac3255f7cd3"
+              },
+              {
+                "path": "C:\\Users\\Jason\\Documents\\Jason\\FirmCLI\\M10-Final-Acceptance\\2026-07-17_run1\\boards\\nrf52833dk\\acceptance.json",
+                "sha256": "ba4906fa2163918644da234b474844194e3207787ec265475c4ce38a1e14a1aa"
+              }
+            ],
+            "id": "real_map_flash_and_backend_containment",
+            "status": "blocked_missing_nrf52833"
+          }
+        ],
+        "software_suite": "717 passed",
+        "status": "blocked_external_prerequisite"
+      },
+      {
+        "automated_assertions_inspected": 17,
+        "id": "AC-14.11",
+        "procedures": [
+          {
+            "evidence": [
+              {
+                "path": "C:\\Users\\Jason\\Documents\\Jason\\FirmCLI\\M10-Final-Acceptance\\2026-07-17_run1\\boards\\nucleo_l476rg_attempt7\\acceptance.json",
+                "sha256": "fb56d780e09e1466e95d9c338d0c8bb354869006bd0f7254393cce9173b00414"
+              },
+              {
+                "path": "C:\\Users\\Jason\\Documents\\Jason\\FirmCLI\\BYO-Server\\docs\\evidence\\m7-hardware-acceptance-2026-07-17.md",
+                "sha256": "5597cb0f1760c74cf8526f5cdffe85b1452000fc13acf5b979409ac3255f7cd3"
+              },
+              {
+                "path": "C:\\Users\\Jason\\Documents\\Jason\\FirmCLI\\M10-Final-Acceptance\\2026-07-17_run1\\boards\\nrf52833dk\\acceptance.json",
+                "sha256": "ba4906fa2163918644da234b474844194e3207787ec265475c4ce38a1e14a1aa"
+              }
+            ],
+            "id": "real_map_flash_and_backend_containment",
+            "status": "blocked_missing_nrf52833"
+          }
+        ],
+        "software_suite": "717 passed",
+        "status": "blocked_external_prerequisite"
+      },
+      {
+        "automated_assertions_inspected": 32,
+        "id": "AC-15.1",
+        "procedures": [
+          {
+            "evidence": [
+              {
+                "path": "C:\\Users\\Jason\\Documents\\Jason\\FirmCLI\\M10-Final-Acceptance\\2026-07-17_run1\\recovery\\nrf52833dk\\acceptance.json",
+                "sha256": "ddfdf9e3084abfefc094fa1f5dd87d42ed9e1120a9c64c5c73c1aea67e8bc03a"
+              }
+            ],
+            "id": "single_designated_recovery_proof",
+            "status": "blocked_identity_backup_map_and_permission"
+          }
+        ],
+        "software_suite": "717 passed",
+        "status": "blocked_external_prerequisite"
+      },
+      {
+        "automated_assertions_inspected": 32,
+        "id": "AC-15.2",
+        "procedures": [
+          {
+            "evidence": [
+              {
+                "path": "C:\\Users\\Jason\\Documents\\Jason\\FirmCLI\\M10-Final-Acceptance\\2026-07-17_run1\\recovery\\nrf52833dk\\acceptance.json",
+                "sha256": "ddfdf9e3084abfefc094fa1f5dd87d42ed9e1120a9c64c5c73c1aea67e8bc03a"
+              }
+            ],
+            "id": "single_designated_recovery_proof",
+            "status": "blocked_identity_backup_map_and_permission"
+          },
+          {
+            "evidence": [
+              {
+                "path": "C:\\Users\\Jason\\Documents\\Jason\\FirmCLI\\M10-Final-Acceptance\\2026-07-17_run1\\recovery\\nrf52833dk\\acceptance.json",
+                "sha256": "ddfdf9e3084abfefc094fa1f5dd87d42ed9e1120a9c64c5c73c1aea67e8bc03a"
+              }
+            ],
+            "id": "human_approval_legitimacy",
+            "status": "blocked_not_requested_after_identity_failure"
+          }
+        ],
+        "software_suite": "717 passed",
+        "status": "blocked_external_prerequisite"
+      },
+      {
+        "automated_assertions_inspected": 32,
+        "id": "AC-15.3",
+        "procedures": [
+          {
+            "evidence": [
+              {
+                "path": "C:\\Users\\Jason\\Documents\\Jason\\FirmCLI\\M10-Final-Acceptance\\2026-07-17_run1\\recovery\\nrf52833dk\\acceptance.json",
+                "sha256": "ddfdf9e3084abfefc094fa1f5dd87d42ed9e1120a9c64c5c73c1aea67e8bc03a"
+              }
+            ],
+            "id": "single_designated_recovery_proof",
+            "status": "blocked_identity_backup_map_and_permission"
+          }
+        ],
+        "software_suite": "717 passed",
+        "status": "blocked_external_prerequisite"
+      },
+      {
+        "automated_assertions_inspected": 32,
+        "id": "AC-15.4",
+        "procedures": [
+          {
+            "evidence": [
+              {
+                "path": "C:\\Users\\Jason\\Documents\\Jason\\FirmCLI\\M10-Final-Acceptance\\2026-07-17_run1\\recovery\\nrf52833dk\\acceptance.json",
+                "sha256": "ddfdf9e3084abfefc094fa1f5dd87d42ed9e1120a9c64c5c73c1aea67e8bc03a"
+              }
+            ],
+            "id": "single_designated_recovery_proof",
+            "status": "blocked_identity_backup_map_and_permission"
+          }
+        ],
+        "software_suite": "717 passed",
+        "status": "blocked_external_prerequisite"
+      },
+      {
+        "automated_assertions_inspected": 32,
+        "id": "AC-15.5",
+        "procedures": [
+          {
+            "evidence": [
+              {
+                "path": "C:\\Users\\Jason\\Documents\\Jason\\FirmCLI\\M10-Final-Acceptance\\2026-07-17_run1\\recovery\\nrf52833dk\\acceptance.json",
+                "sha256": "ddfdf9e3084abfefc094fa1f5dd87d42ed9e1120a9c64c5c73c1aea67e8bc03a"
+              }
+            ],
+            "id": "single_designated_recovery_proof",
+            "status": "blocked_identity_backup_map_and_permission"
+          }
+        ],
+        "software_suite": "717 passed",
+        "status": "blocked_external_prerequisite"
+      },
+      {
+        "automated_assertions_inspected": 32,
+        "id": "AC-15.6",
+        "procedures": [
+          {
+            "evidence": [
+              {
+                "path": "C:\\Users\\Jason\\Documents\\Jason\\FirmCLI\\M10-Final-Acceptance\\2026-07-17_run1\\recovery\\nrf52833dk\\acceptance.json",
+                "sha256": "ddfdf9e3084abfefc094fa1f5dd87d42ed9e1120a9c64c5c73c1aea67e8bc03a"
+              }
+            ],
+            "id": "single_designated_recovery_proof",
+            "status": "blocked_identity_backup_map_and_permission"
+          }
+        ],
+        "software_suite": "717 passed",
+        "status": "blocked_external_prerequisite"
+      },
+      {
+        "automated_assertions_inspected": 32,
+        "id": "AC-15.7",
+        "procedures": [
+          {
+            "evidence": [
+              {
+                "path": "C:\\Users\\Jason\\Documents\\Jason\\FirmCLI\\M10-Final-Acceptance\\2026-07-17_run1\\recovery\\nrf52833dk\\acceptance.json",
+                "sha256": "ddfdf9e3084abfefc094fa1f5dd87d42ed9e1120a9c64c5c73c1aea67e8bc03a"
+              }
+            ],
+            "id": "single_designated_recovery_proof",
+            "status": "blocked_identity_backup_map_and_permission"
+          }
+        ],
+        "software_suite": "717 passed",
+        "status": "blocked_external_prerequisite"
+      },
+      {
+        "automated_assertions_inspected": 32,
+        "id": "AC-15.8",
+        "procedures": [
+          {
+            "evidence": [
+              {
+                "path": "C:\\Users\\Jason\\Documents\\Jason\\FirmCLI\\M10-Final-Acceptance\\2026-07-17_run1\\recovery\\nrf52833dk\\acceptance.json",
+                "sha256": "ddfdf9e3084abfefc094fa1f5dd87d42ed9e1120a9c64c5c73c1aea67e8bc03a"
+              }
+            ],
+            "id": "single_designated_recovery_proof",
+            "status": "blocked_identity_backup_map_and_permission"
+          }
+        ],
+        "software_suite": "717 passed",
+        "status": "blocked_external_prerequisite"
+      },
+      {
+        "automated_assertions_inspected": 14,
+        "id": "AC-16.1",
+        "procedures": [],
+        "software_suite": "717 passed",
+        "status": "pass_software"
+      },
+      {
+        "automated_assertions_inspected": 14,
+        "id": "AC-16.2",
+        "procedures": [],
+        "software_suite": "717 passed",
+        "status": "pass_software"
+      },
+      {
+        "automated_assertions_inspected": 14,
+        "id": "AC-16.3",
+        "procedures": [],
+        "software_suite": "717 passed",
+        "status": "pass_software"
+      },
+      {
+        "automated_assertions_inspected": 14,
+        "id": "AC-16.4",
+        "procedures": [],
+        "software_suite": "717 passed",
+        "status": "pass_software"
+      },
+      {
+        "automated_assertions_inspected": 14,
+        "id": "AC-16.5",
+        "procedures": [],
+        "software_suite": "717 passed",
+        "status": "pass_software"
+      },
+      {
+        "automated_assertions_inspected": 12,
+        "id": "AC-17.1",
+        "procedures": [
+          {
+            "evidence": [
+              {
+                "path": "C:\\Users\\Jason\\Documents\\Jason\\FirmCLI\\M10-Final-Acceptance\\2026-07-17_run1\\lifecycle\\acceptance.json",
+                "sha256": "d604a618bc0ab8c9f32332da63d3eba0dc44173572494ff2dd1b50832db3fb10"
+              }
+            ],
+            "id": "lifecycle_and_cancellation",
+            "status": "pass_with_q1_client_gaps"
+          }
+        ],
+        "software_suite": "717 passed",
+        "status": "partial_pass_client_matrix_gap"
+      },
+      {
+        "automated_assertions_inspected": 12,
+        "id": "AC-17.2",
+        "procedures": [
+          {
+            "evidence": [
+              {
+                "path": "C:\\Users\\Jason\\Documents\\Jason\\FirmCLI\\M10-Final-Acceptance\\2026-07-17_run1\\lifecycle\\acceptance.json",
+                "sha256": "d604a618bc0ab8c9f32332da63d3eba0dc44173572494ff2dd1b50832db3fb10"
+              }
+            ],
+            "id": "lifecycle_and_cancellation",
+            "status": "pass_with_q1_client_gaps"
+          }
+        ],
+        "software_suite": "717 passed",
+        "status": "partial_pass_client_matrix_gap"
+      },
+      {
+        "automated_assertions_inspected": 12,
+        "id": "AC-17.3",
+        "procedures": [
+          {
+            "evidence": [
+              {
+                "path": "C:\\Users\\Jason\\Documents\\Jason\\FirmCLI\\M10-Final-Acceptance\\2026-07-17_run1\\lifecycle\\acceptance.json",
+                "sha256": "d604a618bc0ab8c9f32332da63d3eba0dc44173572494ff2dd1b50832db3fb10"
+              }
+            ],
+            "id": "lifecycle_and_cancellation",
+            "status": "pass_with_q1_client_gaps"
+          }
+        ],
+        "software_suite": "717 passed",
+        "status": "partial_pass_client_matrix_gap"
+      },
+      {
+        "automated_assertions_inspected": 12,
+        "id": "AC-17.4",
+        "procedures": [
+          {
+            "evidence": [
+              {
+                "path": "C:\\Users\\Jason\\Documents\\Jason\\FirmCLI\\M10-Final-Acceptance\\2026-07-17_run1\\lifecycle\\acceptance.json",
+                "sha256": "d604a618bc0ab8c9f32332da63d3eba0dc44173572494ff2dd1b50832db3fb10"
+              }
+            ],
+            "id": "lifecycle_and_cancellation",
+            "status": "pass_with_q1_client_gaps"
+          }
+        ],
+        "software_suite": "717 passed",
+        "status": "partial_pass_client_matrix_gap"
+      },
+      {
+        "automated_assertions_inspected": 12,
+        "id": "AC-17.5",
+        "procedures": [
+          {
+            "evidence": [
+              {
+                "path": "C:\\Users\\Jason\\Documents\\Jason\\FirmCLI\\M10-Final-Acceptance\\2026-07-17_run1\\lifecycle\\acceptance.json",
+                "sha256": "d604a618bc0ab8c9f32332da63d3eba0dc44173572494ff2dd1b50832db3fb10"
+              }
+            ],
+            "id": "lifecycle_and_cancellation",
+            "status": "pass_with_q1_client_gaps"
+          }
+        ],
+        "software_suite": "717 passed",
+        "status": "partial_pass_client_matrix_gap"
+      },
+      {
+        "automated_assertions_inspected": 12,
+        "id": "AC-17.6",
+        "procedures": [],
+        "software_suite": "717 passed",
+        "status": "pass_software"
+      },
+      {
+        "automated_assertions_inspected": 12,
+        "id": "AC-17.7",
+        "procedures": [],
+        "software_suite": "717 passed",
+        "status": "pass_software"
+      },
+      {
+        "automated_assertions_inspected": 12,
+        "id": "AC-17.8",
+        "procedures": [],
+        "software_suite": "717 passed",
+        "status": "pass_software"
+      },
+      {
+        "automated_assertions_inspected": 12,
+        "id": "AC-18.1",
+        "procedures": [
+          {
+            "evidence": [
+              {
+                "path": "C:\\Users\\Jason\\Documents\\Jason\\FirmCLI\\M10-Final-Acceptance\\2026-07-17_run1\\boards\\nucleo_l476rg_attempt7\\acceptance.json",
+                "sha256": "fb56d780e09e1466e95d9c338d0c8bb354869006bd0f7254393cce9173b00414"
+              },
+              {
+                "path": "C:\\Users\\Jason\\Documents\\Jason\\FirmCLI\\M10-Final-Acceptance\\2026-07-17_run1\\boards\\nrf52833dk\\acceptance.json",
+                "sha256": "ba4906fa2163918644da234b474844194e3207787ec265475c4ce38a1e14a1aa"
+              }
+            ],
+            "id": "official_pair_end_to_end",
+            "status": "blocked_missing_nrf52833"
+          }
+        ],
+        "software_suite": "717 passed",
+        "status": "blocked_external_prerequisite"
+      },
+      {
+        "automated_assertions_inspected": 12,
+        "id": "AC-18.2",
+        "procedures": [
+          {
+            "evidence": [
+              {
+                "path": "C:\\Users\\Jason\\Documents\\Jason\\FirmCLI\\M10-Final-Acceptance\\2026-07-17_run1\\boards\\nucleo_l476rg_attempt7\\acceptance.json",
+                "sha256": "fb56d780e09e1466e95d9c338d0c8bb354869006bd0f7254393cce9173b00414"
+              },
+              {
+                "path": "C:\\Users\\Jason\\Documents\\Jason\\FirmCLI\\M10-Final-Acceptance\\2026-07-17_run1\\boards\\nrf52833dk\\acceptance.json",
+                "sha256": "ba4906fa2163918644da234b474844194e3207787ec265475c4ce38a1e14a1aa"
+              }
+            ],
+            "id": "official_pair_end_to_end",
+            "status": "blocked_missing_nrf52833"
+          }
+        ],
+        "software_suite": "717 passed",
+        "status": "blocked_external_prerequisite"
+      },
+      {
+        "automated_assertions_inspected": 12,
+        "id": "AC-18.3",
+        "procedures": [
+          {
+            "evidence": [
+              {
+                "path": "C:\\Users\\Jason\\Documents\\Jason\\FirmCLI\\M10-Final-Acceptance\\2026-07-17_run1\\boards\\nucleo_l476rg_attempt7\\acceptance.json",
+                "sha256": "fb56d780e09e1466e95d9c338d0c8bb354869006bd0f7254393cce9173b00414"
+              },
+              {
+                "path": "C:\\Users\\Jason\\Documents\\Jason\\FirmCLI\\M10-Final-Acceptance\\2026-07-17_run1\\boards\\nrf52833dk\\acceptance.json",
+                "sha256": "ba4906fa2163918644da234b474844194e3207787ec265475c4ce38a1e14a1aa"
+              }
+            ],
+            "id": "official_pair_end_to_end",
+            "status": "blocked_missing_nrf52833"
+          }
+        ],
+        "software_suite": "717 passed",
+        "status": "blocked_external_prerequisite"
+      },
+      {
+        "automated_assertions_inspected": 12,
+        "id": "AC-18.4",
+        "procedures": [],
+        "software_suite": "717 passed",
+        "status": "pass_software"
+      },
+      {
+        "automated_assertions_inspected": 16,
+        "id": "AC-19.1",
+        "procedures": [
+          {
+            "evidence": [
+              {
+                "path": "C:\\Users\\Jason\\Documents\\Jason\\FirmCLI\\M10-Final-Acceptance\\2026-07-17_run1\\two-board\\acceptance.json",
+                "sha256": "ce25a962da709d6a56f056b5896c928bd69afbbe6126357f5e57b4b0e57b2912"
+              }
+            ],
+            "id": "two_board_isolation",
+            "status": "blocked_missing_nrf52833"
+          }
+        ],
+        "software_suite": "717 passed",
+        "status": "blocked_external_prerequisite"
+      },
+      {
+        "automated_assertions_inspected": 16,
+        "id": "AC-19.2",
+        "procedures": [
+          {
+            "evidence": [
+              {
+                "path": "C:\\Users\\Jason\\Documents\\Jason\\FirmCLI\\M10-Final-Acceptance\\2026-07-17_run1\\two-board\\acceptance.json",
+                "sha256": "ce25a962da709d6a56f056b5896c928bd69afbbe6126357f5e57b4b0e57b2912"
+              }
+            ],
+            "id": "two_board_isolation",
+            "status": "blocked_missing_nrf52833"
+          }
+        ],
+        "software_suite": "717 passed",
+        "status": "blocked_external_prerequisite"
+      },
+      {
+        "automated_assertions_inspected": 16,
+        "id": "AC-19.3",
+        "procedures": [
+          {
+            "evidence": [
+              {
+                "path": "C:\\Users\\Jason\\Documents\\Jason\\FirmCLI\\M10-Final-Acceptance\\2026-07-17_run1\\two-board\\acceptance.json",
+                "sha256": "ce25a962da709d6a56f056b5896c928bd69afbbe6126357f5e57b4b0e57b2912"
+              }
+            ],
+            "id": "two_board_isolation",
+            "status": "blocked_missing_nrf52833"
+          }
+        ],
+        "software_suite": "717 passed",
+        "status": "blocked_external_prerequisite"
+      },
+      {
+        "automated_assertions_inspected": 16,
+        "id": "AC-19.4",
+        "procedures": [
+          {
+            "evidence": [
+              {
+                "path": "C:\\Users\\Jason\\Documents\\Jason\\FirmCLI\\M10-Final-Acceptance\\2026-07-17_run1\\two-board\\acceptance.json",
+                "sha256": "ce25a962da709d6a56f056b5896c928bd69afbbe6126357f5e57b4b0e57b2912"
+              }
+            ],
+            "id": "two_board_isolation",
+            "status": "blocked_missing_nrf52833"
+          }
+        ],
+        "software_suite": "717 passed",
+        "status": "blocked_external_prerequisite"
+      }
+    ],
+    "cross_cutting": [
+      {
+        "automated_assertions_inspected": 4,
+        "id": "CC-1",
+        "procedures": [],
+        "software_suite": "717 passed",
+        "status": "pass_software"
+      },
+      {
+        "automated_assertions_inspected": 6,
+        "id": "CC-2",
+        "procedures": [],
+        "software_suite": "717 passed",
+        "status": "pass_software"
+      },
+      {
+        "automated_assertions_inspected": 4,
+        "id": "CC-3",
+        "procedures": [
+          {
+            "evidence": [
+              {
+                "path": "C:\\Users\\Jason\\Documents\\Jason\\FirmCLI\\M10-Final-Acceptance\\2026-07-17_run1\\boards\\nucleo_l476rg_attempt7\\acceptance.json",
+                "sha256": "fb56d780e09e1466e95d9c338d0c8bb354869006bd0f7254393cce9173b00414"
+              },
+              {
+                "path": "C:\\Users\\Jason\\Documents\\Jason\\FirmCLI\\BYO-Server\\docs\\evidence\\m7-hardware-acceptance-2026-07-17.md",
+                "sha256": "5597cb0f1760c74cf8526f5cdffe85b1452000fc13acf5b979409ac3255f7cd3"
+              },
+              {
+                "path": "C:\\Users\\Jason\\Documents\\Jason\\FirmCLI\\M10-Final-Acceptance\\2026-07-17_run1\\boards\\nrf52833dk\\acceptance.json",
+                "sha256": "ba4906fa2163918644da234b474844194e3207787ec265475c4ce38a1e14a1aa"
+              }
+            ],
+            "id": "real_map_flash_and_backend_containment",
+            "status": "blocked_missing_nrf52833"
+          }
+        ],
+        "software_suite": "717 passed",
+        "status": "blocked_external_prerequisite"
+      },
+      {
+        "automated_assertions_inspected": 6,
+        "id": "CC-4",
+        "procedures": [],
+        "software_suite": "717 passed",
+        "status": "pass_software"
+      },
+      {
+        "automated_assertions_inspected": 1,
+        "id": "CC-5",
+        "procedures": [],
+        "software_suite": "717 passed",
+        "status": "pass_software"
+      },
+      {
+        "automated_assertions_inspected": 8,
+        "id": "CC-6",
+        "procedures": [
+          {
+            "evidence": [
+              {
+                "path": "C:\\Users\\Jason\\Documents\\Jason\\FirmCLI\\M10-Final-Acceptance\\2026-07-17_run1\\recovery\\nrf52833dk\\acceptance.json",
+                "sha256": "ddfdf9e3084abfefc094fa1f5dd87d42ed9e1120a9c64c5c73c1aea67e8bc03a"
+              }
+            ],
+            "id": "single_designated_recovery_proof",
+            "status": "blocked_identity_backup_map_and_permission"
+          }
+        ],
+        "software_suite": "717 passed",
+        "status": "blocked_external_prerequisite"
+      },
+      {
+        "automated_assertions_inspected": 3,
+        "id": "CC-7",
+        "procedures": [
+          {
+            "evidence": [
+              {
+                "path": "C:\\Users\\Jason\\Documents\\Jason\\FirmCLI\\BYO-Server\\docs\\evidence\\m10-software-boundary-2026-07-17.json",
+                "sha256": "dbfa8a437c11452c037b5fa4e45e4237de61d1430ae5fba40af3b3e19d221c88"
+              }
+            ],
+            "id": "client_relay_conduct",
+            "status": "manual_procedural_not_observed"
+          }
+        ],
+        "software_suite": "717 passed",
+        "status": "manual_procedural_unverified"
+      },
+      {
+        "automated_assertions_inspected": 7,
+        "id": "CC-8",
+        "procedures": [],
+        "software_suite": "717 passed",
+        "status": "pass_software"
+      },
+      {
+        "automated_assertions_inspected": 6,
+        "id": "CC-9",
+        "procedures": [
+          {
+            "evidence": [
+              {
+                "path": "C:\\Users\\Jason\\Documents\\Jason\\FirmCLI\\M10-Final-Acceptance\\2026-07-17_run1\\lifecycle\\acceptance.json",
+                "sha256": "d604a618bc0ab8c9f32332da63d3eba0dc44173572494ff2dd1b50832db3fb10"
+              }
+            ],
+            "id": "lifecycle_and_cancellation",
+            "status": "pass_with_q1_client_gaps"
+          }
+        ],
+        "software_suite": "717 passed",
+        "status": "partial_pass_client_matrix_gap"
+      },
+      {
+        "automated_assertions_inspected": 7,
+        "id": "CC-10",
+        "procedures": [],
+        "software_suite": "717 passed",
+        "status": "pass_software"
+      },
+      {
+        "automated_assertions_inspected": 7,
+        "id": "CC-11",
+        "procedures": [],
+        "software_suite": "717 passed",
+        "status": "pass_software"
+      },
+      {
+        "automated_assertions_inspected": 7,
+        "id": "CC-12",
+        "procedures": [],
+        "software_suite": "717 passed",
+        "status": "pass_software"
+      },
+      {
+        "automated_assertions_inspected": 3,
+        "id": "CC-13",
+        "procedures": [],
+        "software_suite": "717 passed",
+        "status": "pass_software"
+      },
+      {
+        "automated_assertions_inspected": 5,
+        "id": "CC-14",
+        "procedures": [
+          {
+            "evidence": [
+              {
+                "path": "C:\\Users\\Jason\\Documents\\Jason\\FirmCLI\\M10-Final-Acceptance\\2026-07-17_run1\\boards\\nucleo_l476rg_attempt7\\acceptance.json",
+                "sha256": "fb56d780e09e1466e95d9c338d0c8bb354869006bd0f7254393cce9173b00414"
+              },
+              {
+                "path": "C:\\Users\\Jason\\Documents\\Jason\\FirmCLI\\M10-Final-Acceptance\\2026-07-17_run1\\boards\\nrf52833dk\\acceptance.json",
+                "sha256": "ba4906fa2163918644da234b474844194e3207787ec265475c4ce38a1e14a1aa"
+              }
+            ],
+            "id": "official_pair_end_to_end",
+            "status": "blocked_missing_nrf52833"
+          },
+          {
+            "evidence": [
+              {
+                "path": "C:\\Users\\Jason\\Documents\\Jason\\FirmCLI\\M10-Final-Acceptance\\2026-07-17_run1\\boards\\nucleo_l476rg_attempt7\\acceptance.json",
+                "sha256": "fb56d780e09e1466e95d9c338d0c8bb354869006bd0f7254393cce9173b00414"
+              },
+              {
+                "path": "C:\\Users\\Jason\\Documents\\Jason\\FirmCLI\\BYO-Server\\docs\\evidence\\m7-hardware-acceptance-2026-07-17.md",
+                "sha256": "5597cb0f1760c74cf8526f5cdffe85b1452000fc13acf5b979409ac3255f7cd3"
+              },
+              {
+                "path": "C:\\Users\\Jason\\Documents\\Jason\\FirmCLI\\M10-Final-Acceptance\\2026-07-17_run1\\boards\\nrf52833dk\\acceptance.json",
+                "sha256": "ba4906fa2163918644da234b474844194e3207787ec265475c4ce38a1e14a1aa"
+              }
+            ],
+            "id": "real_map_flash_and_backend_containment",
+            "status": "blocked_missing_nrf52833"
+          },
+          {
+            "evidence": [
+              {
+                "path": "C:\\Users\\Jason\\Documents\\Jason\\FirmCLI\\M10-Final-Acceptance\\2026-07-17_run1\\recovery\\nrf52833dk\\acceptance.json",
+                "sha256": "ddfdf9e3084abfefc094fa1f5dd87d42ed9e1120a9c64c5c73c1aea67e8bc03a"
+              }
+            ],
+            "id": "single_designated_recovery_proof",
+            "status": "blocked_identity_backup_map_and_permission"
+          }
+        ],
+        "software_suite": "717 passed",
+        "status": "blocked_external_prerequisite"
+      },
+      {
+        "automated_assertions_inspected": 3,
+        "id": "CC-15",
+        "procedures": [
+          {
+            "evidence": [
+              {
+                "path": "C:\\Users\\Jason\\Documents\\Jason\\FirmCLI\\M10-Final-Acceptance\\2026-07-17_run1\\boards\\nucleo_l476rg_attempt7\\acceptance.json",
+                "sha256": "fb56d780e09e1466e95d9c338d0c8bb354869006bd0f7254393cce9173b00414"
+              },
+              {
+                "path": "C:\\Users\\Jason\\Documents\\Jason\\FirmCLI\\M10-Final-Acceptance\\2026-07-17_run1\\boards\\nrf52833dk\\acceptance.json",
+                "sha256": "ba4906fa2163918644da234b474844194e3207787ec265475c4ce38a1e14a1aa"
+              }
+            ],
+            "id": "official_pair_end_to_end",
+            "status": "blocked_missing_nrf52833"
+          },
+          {
+            "evidence": [
+              {
+                "path": "C:\\Users\\Jason\\Documents\\Jason\\FirmCLI\\M10-Final-Acceptance\\2026-07-17_run1\\lifecycle\\acceptance.json",
+                "sha256": "d604a618bc0ab8c9f32332da63d3eba0dc44173572494ff2dd1b50832db3fb10"
+              }
+            ],
+            "id": "lifecycle_and_cancellation",
+            "status": "pass_with_q1_client_gaps"
+          }
+        ],
+        "software_suite": "717 passed",
+        "status": "blocked_external_prerequisite"
+      },
+      {
+        "automated_assertions_inspected": 8,
+        "id": "CC-16",
+        "procedures": [
+          {
+            "evidence": [
+              {
+                "path": "C:\\Users\\Jason\\Documents\\Jason\\FirmCLI\\M10-Final-Acceptance\\2026-07-17_run1\\boards\\nucleo_l476rg_attempt7\\acceptance.json",
+                "sha256": "fb56d780e09e1466e95d9c338d0c8bb354869006bd0f7254393cce9173b00414"
+              },
+              {
+                "path": "C:\\Users\\Jason\\Documents\\Jason\\FirmCLI\\M10-Final-Acceptance\\2026-07-17_run1\\boards\\nrf52833dk\\acceptance.json",
+                "sha256": "ba4906fa2163918644da234b474844194e3207787ec265475c4ce38a1e14a1aa"
+              }
+            ],
+            "id": "official_pair_end_to_end",
+            "status": "blocked_missing_nrf52833"
+          }
+        ],
+        "software_suite": "717 passed",
+        "status": "blocked_external_prerequisite"
+      },
+      {
+        "automated_assertions_inspected": 7,
+        "id": "CC-17",
+        "procedures": [
+          {
+            "evidence": [
+              {
+                "path": "C:\\Users\\Jason\\Documents\\Jason\\FirmCLI\\M10-Final-Acceptance\\2026-07-17_run1\\boards\\nucleo_l476rg_attempt7\\acceptance.json",
+                "sha256": "fb56d780e09e1466e95d9c338d0c8bb354869006bd0f7254393cce9173b00414"
+              },
+              {
+                "path": "C:\\Users\\Jason\\Documents\\Jason\\FirmCLI\\M10-Final-Acceptance\\2026-07-17_run1\\boards\\nrf52833dk\\acceptance.json",
+                "sha256": "ba4906fa2163918644da234b474844194e3207787ec265475c4ce38a1e14a1aa"
+              }
+            ],
+            "id": "official_pair_end_to_end",
+            "status": "blocked_missing_nrf52833"
+          }
+        ],
+        "software_suite": "717 passed",
+        "status": "blocked_external_prerequisite"
+      },
+      {
+        "automated_assertions_inspected": 4,
+        "id": "CC-18",
+        "procedures": [
+          {
+            "evidence": [
+              {
+                "path": "C:\\Users\\Jason\\Documents\\Jason\\FirmCLI\\M10-Final-Acceptance\\2026-07-17_run1\\boards\\nucleo_l476rg_attempt7\\acceptance.json",
+                "sha256": "fb56d780e09e1466e95d9c338d0c8bb354869006bd0f7254393cce9173b00414"
+              },
+              {
+                "path": "C:\\Users\\Jason\\Documents\\Jason\\FirmCLI\\M10-Final-Acceptance\\2026-07-17_run1\\boards\\nrf52833dk\\acceptance.json",
+                "sha256": "ba4906fa2163918644da234b474844194e3207787ec265475c4ce38a1e14a1aa"
+              }
+            ],
+            "id": "official_pair_end_to_end",
+            "status": "blocked_missing_nrf52833"
+          }
+        ],
+        "software_suite": "717 passed",
+        "status": "blocked_external_prerequisite"
+      },
+      {
+        "automated_assertions_inspected": 2,
+        "id": "CC-19",
+        "procedures": [],
+        "software_suite": "717 passed",
+        "status": "pass_software"
+      },
+      {
+        "automated_assertions_inspected": 3,
+        "id": "CC-20",
+        "procedures": [
+          {
+            "evidence": [
+              {
+                "path": "C:\\Users\\Jason\\Documents\\Jason\\FirmCLI\\BYO-Server\\docs\\evidence\\m10-software-boundary-2026-07-17.json",
+                "sha256": "dbfa8a437c11452c037b5fa4e45e4237de61d1430ae5fba40af3b3e19d221c88"
+              }
+            ],
+            "id": "client_relay_conduct",
+            "status": "manual_procedural_not_observed"
+          }
+        ],
+        "software_suite": "717 passed",
+        "status": "manual_procedural_unverified"
+      },
+      {
+        "automated_assertions_inspected": 10,
+        "id": "CC-21",
+        "procedures": [
+          {
+            "evidence": [
+              {
+                "path": "C:\\Users\\Jason\\Documents\\Jason\\FirmCLI\\BYO-Server\\docs\\evidence\\m10-software-boundary-2026-07-17.json",
+                "sha256": "dbfa8a437c11452c037b5fa4e45e4237de61d1430ae5fba40af3b3e19d221c88"
+              }
+            ],
+            "id": "client_relay_conduct",
+            "status": "manual_procedural_not_observed"
+          }
+        ],
+        "software_suite": "717 passed",
+        "status": "manual_procedural_unverified"
+      },
+      {
+        "automated_assertions_inspected": 3,
+        "id": "CC-22",
+        "procedures": [],
+        "software_suite": "717 passed",
+        "status": "pass_software"
+      }
+    ],
+    "status_counts": {
+      "blocked_external_prerequisite": 72,
+      "manual_procedural_unverified": 3,
+      "partial_pass_client_matrix_gap": 6,
+      "pass_software": 63
+    }
+  }
+}

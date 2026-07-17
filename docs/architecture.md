@@ -1,103 +1,233 @@
 # BYO Server architecture
 
-## Boundary
+## Product boundary
+
+BYO Server is a local, checkout-operated MCP server for board setup, debug,
+flash, serial, and recovery through pyOCD and pyserial. The only server
+transport is stdio. It does not listen on a socket, embed an agent, or trust an
+MCP client as a safety authority.
 
 ```text
-compatible MCP client
+MCP client over stdio
         |
-        | local stdio MCP
         v
-server.py (tool schemas, validation, logging)
+server.py composition root
         |
-        +--> guardrails (flash, recover, convergence)
+        +-- kernel: registry, managed dispatch, lifecycle, process ownership
+        +-- guardrails: plans, permissions, validation gate
+        +-- safety: evidence, regions, fingerprints, containment
+        +-- setup_flow: inventory, research, setup, validation
+        +-- tools: schemas and board-facing handlers
+        +-- services/adapters: board routing, pyOCD, serial, symbols
         |
-        +--> shared services (target, UART, symbols, sessions)
-                    |
-                    v
-             pyOCD / pyserial adapters
-                    |
-                    v
-                 one board
-
-optional R11 wrapper --> codex exec --> the same MCP server and guardrails
+        +-- FirmStore: durable evidence under .firm (never live authority)
 ```
 
-The client decides what to request; the server decides whether a board-facing
-operation is valid and permitted. Keeping flash, recover, mutation validation,
-event recording, and convergence blocking below the client means every MCP
-client receives the same safety contract. The extracted product has no turnkey
-brain, UX shell, provider-memory system, or Codex app-server bridge.
+The client chooses what to request. The server independently checks whether
+the named operation is visible, planned, permitted, scoped to the live board,
+safe for the current map, and still fresh. Discovery is guidance, not
+authorization: hidden tools remain registered so a stale direct call reaches a
+physical handler lock and receives the same prerequisite refusal.
 
-The server is local stdio and blocking-v1. It keeps one active target handle in
-the process. Ordinary use is model-agnostic. R11 is an optional Codex-specific
-evaluation layer that launches `codex exec`; it neither changes nor replaces
-the ordinary server boundary.
+## Layers and ownership
 
-## State and artifacts
+`server.py` is the composition root. It creates one process-local
+`ServerRun`, `ConnectionManager`, `ToolRegistry`, `PlanEngine`,
+`PermissionStore`, `GateManager`, safety policy, setup services, and board
+adapters. Business rules live in their owning modules rather than in the
+composition root.
 
-The current implementation creates one process-local `InMemorySessionStore`.
-It writes global events to `runs/server-events.jsonl` and per-session data under
-`runs/<session-id>/`, including `logs/events.jsonl`,
-`run-metadata/session.json`, `captured-serial/`, and `applied-patches/`.
+The kernel provides the protocol and lifecycle boundary:
 
-This is not Redis-backed. Restarting the server discards the in-memory session
-map and watcher state; durable files remain evidence, but they are not reloaded
-as live sessions. Copying current behavior was the extraction requirement, so
-the older Redis architecture target remains an explicit product conflict rather
-than a silent S5 change.
+- `kernel/registry.py` filters dynamic tool discovery, sends
+  `tools/list_changed`, rechecks handler locks, and routes every call through
+  managed dispatch.
+- `kernel/operations.py` assigns a finite timeout and operation identity,
+  serializes one board while preserving cross-board concurrency, connects MCP
+  cancellation to cooperative cancellation, and owns one idempotent cleanup
+  path.
+- `kernel/finalizers.py` accepts only the structured `uart_write` and
+  `reset_and_run` finalizers on eligible serial tools. Finalizers are
+  best-effort and run before mandatory cleanup.
+- `kernel/processes.py` owns validated argv, finite subprocess bounds, process
+  groups, and identity markers. `kernel/hygiene.py` performs bounded startup
+  cleanup only when the live process identity still matches.
 
-R11 additionally uses `runs/_r11_workspaces/` for copied bug workspaces and
-writes benchmark result/artifact records under `runs/`. Its case manifests and
-firmware sources remain under the checkout.
+`ConnectionManager` is the only owner of live board handles. It enforces one
+active connection per logical board and one logical board per stable
+connection identity. Calls on one board serialize; different boards can run
+concurrently. Disconnect clears only the named board's connection and
+run-scoped authority.
 
-## Checkout and package boundary
+## Plans and permissions
 
-Runtime roots are derived from files inside this project:
+`guardrails/plan_defs.py` is the declarative source for each plan tool's
+purpose, fields, exact action schema, budget, permission mode, safety mode,
+timeout, and all-NULL guidance. Clients must initialize a plan tool by sending
+the universal envelope with every field NULL, then submit only a complete JSON
+envelope whose `action_parameters` member is one nested object binding exactly
+to the eventual call. Flattened action fields, prose/wrapper payloads, missing
+or extra fields, and permission fields on non-permission populated plans are
+rejected atomically. Each all-NULL response renders the mechanism, purpose,
+use/not-use cases, fields, validation, budget, permission, preconditions,
+warnings, soft guardrails, exit state, and a complete example from
+`Plan_Prompt_Contents_Spec.md`.
 
-- `boards/` supplies board facts;
-- `firmware/` supplies reference and bug fixtures;
-- `packs/` supplies pinned pack metadata and downloaded local packs;
-- `tests/cases/` supplies the frozen R11 corpus; and
-- `runs/` receives session and benchmark output.
+The pinned FastMCP SDK normally ignores unknown function arguments while
+building its Pydantic call model. Plan-tool registration deliberately rebuilds
+only those generated argument models with `extra="forbid"`, publishing
+`additionalProperties: false`, so unknown inputs reach neither normalization
+nor plan activation. The engine independently repeats exact-envelope and
+nested-action validation; SDK visibility never substitutes for the handler
+lock or policy checks.
 
-These resources are intentionally not wheel package data. The wheel contains
-the `pyocd_debug_mcp` Python package only and is validated as a metadata,
-entrypoint, and import artifact. Operational server, bootstrap, board, pack,
-firmware, Stage 1, and R11 use is supported only from the full checkout. An
-sdist or wheel unpack is not a substitute for that checkout.
+`PlanEngine` scopes a plan to the current run, tool, board, session, canonical
+parameters, and call budget. It atomically decrements once at execution start.
+Pre-start refusals do not consume a call; failure, timeout, or cancellation
+after start does. Replacement, exhaustion, invalidation, disconnect, and run
+closure relock the action.
 
-## Safety and cleanup limits
+`PermissionStore` provides structured `one-time` and `full-session` grants.
+One-time permission is consumed at execution start. Full-session permission
+removes repeated prompting only where the plan definition allows it; it never
+authorizes mass erase. Plans and permissions live only in `ServerRun` and are
+empty after restart.
 
-The server validates board identity and arguments, gates firmware and recovery,
-logs outcomes, blocks repeated mutation families through its convergence
-watcher, closes target handles on explicit disconnect, and closes UART handles
-on normal/finally paths.
+## Validation gate and safety
 
-The current product does not prove full cleanup of descendant processes,
-provider children, interrupted MCP work, or every hardware-adjacent resource
-after timeouts/crashes. Some subprocess paths use bounded `subprocess.run`, but
-a timeout result is not process-tree cleanup evidence. Operators must disconnect
-normally and audit stale processes/probe ownership after interrupted or timed-
-out work. The broader cleanup guard remains open work.
+The write gate is default closed. Only a successful `board_validate` can stamp
+it, using the logical board, live connection, hardware result, stable probe
+identity, and current aggregate safety fingerprint. A stamp is in memory only.
+Disk artifacts, safety refresh, setup, planning, permission, or tool discovery
+cannot create one.
 
-## Public contract ownership
+Guarded dispatch applies the standard order before starting a handler:
 
-MCP tool descriptions, parameters, confirmation rules, and return/refusal/block
-contracts are maintained in `src/pyocd_debug_mcp/server.py` docstrings. Tests
-freeze the ordinary 20-tool schema against the source extraction commit, with
-the brain-only `_brain_sync_timeouts` tool as the sole planned omission. This
-document describes architecture and deliberately does not duplicate individual
-tool contracts.
+1. require the registered handler to be unlocked;
+2. validate the exact plan, board, run, session, and permission;
+3. resolve the named live connection and board lock;
+4. require validation for guarded reads;
+5. for writes, recompute source freshness and require a matching gate stamp;
+6. apply the action-specific containment rule;
+7. decrement the plan/permission budget exactly once at execution start; and
+8. call the bounded backend operation.
+
+`safety/regions.py` uses typed non-empty half-open ranges. Classification is
+UNKNOWN unless authoritative regions fully contain the request, and any
+prohibited overlap wins. `safety/linker.py` extracts build partitions,
+loadable segments, entry point, vector table, and configuration. It never
+accepts caller-provided allowed ranges. `safety/verify2.py` promotes only
+deterministically reconciled device-support and official-document facts.
+
+`safety/fingerprints.py` creates canonical per-source and aggregate SHA-256
+fingerprints. Map setup and refresh re-evaluate conflicts and overlaps before
+atomic promotion. Anchor changes require setup plus validation. Refreshable
+artifact drift can update the fingerprint on an already-valid live stamp but
+cannot open a closed gate.
+
+The resulting action policy is:
+
+- guarded address reads require a validated connection;
+- memory writes are fully contained in RAM;
+- peripheral register writes exclude prohibited ranges;
+- breakpoints require build-derived executable space;
+- application and bootloader flash require the exact target and fingerprinted
+  artifact, with segment, entry/vector, partition, and erase-sector
+  containment; and
+- target recovery uses a typed vendor mechanism, a fixed one-call plan, exact
+  live disclosure, and fresh one-time permission. Recovery leaves the gate
+  closed until validation succeeds again.
+
+Every refusal is before the corresponding backend mutation and names the
+required remedy.
+
+## Setup and agent relay boundary
+
+Setup deterministically inventories probes, serial ports, cache matches,
+targets, and builds before requesting research. Unknown facts are returned as
+strict research requests; blocked physical conditions are not mislabeled as
+research. Candidate replies must contain exactly the requested fields and
+cannot alter the exact user-supplied MCU part number.
+
+Setup and validation return structured control payloads for the agent plus an
+`agent_prompt` written as ordinary prose. The agent must relay only that prose
+and friendly choices, never structured payloads, continuation tokens, internal
+field names, or machine identifiers unless a destructive approval explicitly
+requires the exact live identity. See [agent-contract.md](agent-contract.md).
+
+The CLI `stage0_check.py` and MCP validation both adapt inputs into the same
+`setup_flow.validate.BoardValidator`; they do not maintain parallel validation
+implementations.
+
+## Durable `.firm` artifacts
+
+`FirmStore` is the single layout and low-level write owner:
+
+```text
+.firm/
+  boards/       schema-v2 board profiles
+  packs/        authoritative pack manifest and downloaded files
+  setup/        immutable setup attempts and append-only logs
+  safety/       maps, source manifests, fingerprints, safety reports
+  validation/   immutable validation and recovery attempts
+  cache/        revocable host attachment hints
+```
+
+Writes are project-local, atomic, and checked for authority-bearing keys.
+Profiles preserve the exact user-supplied MCU part number and Unicode display
+name. Pack identity belongs to `packs/manifest.yaml`, not profiles. Cache
+records contain only stable attachment hints.
+
+The following are deliberately never persisted: live connections and
+assignments, active plans and remaining budgets, permissions, unlocked tools,
+validation stamps, and open-gate state. Durable reports are evidence, never a
+way to restore authority after restart.
+
+## Batch and lifecycle behavior
+
+`action_batch` validates the entire bounded child list for one shared board and
+rejects recursion before starting. It does not pre-authorize or pre-consume
+children. Each child traverses the identical direct-call dispatch path and
+observes any plan, permission, gate, or freshness change caused by earlier
+children. Execution stops at the first failure.
+
+Managed cleanup owns stop-I/O, UART close, debug/session close when required,
+owned process-group termination, reset release, lock release, and the final
+board state. Flash becomes non-interruptible after its transaction starts, so
+cancellation waits for bounded safe completion before resources are released.
+Ordinary stateful work is cooperatively interruptible. Stdio EOF and normal
+shutdown use the same cleanup ownership.
+
+## Contracts, performance, and historical evidence
+
+The active MCP contract is `tests/contracts/product-server-tools.json`. It
+imports the frozen M9 schema/implementation baseline by digest and records M10
+hardening evidence. Extraction-era snapshots and
+`docs/extraction-manifest.json` remain immutable historical provenance; they
+are not the active product contract. The transition is documented in
+[contract-history.md](contract-history.md).
+
+`scripts/measure_m10_performance.py` measures gate/freshness, eight-device
+enumeration, and NULL-plan/handshake latency with host context. Tests validate
+the measurement and report target misses as warnings so host speed does not
+become a CI correctness gate. A dated local result is retained under
+`docs/evidence/`.
+
+The server is supported operationally from the complete checkout. Wheels and
+sdists prove metadata, entry points, and importability; they do not include the
+board, pack, firmware, or evidence roots needed for board control.
 
 ## Verified
 
-The headless import closure, ordinary MCP schemas, server-owned guardrails,
-in-memory/durable session behavior, checkout roots, and exclusion boundary are
-non-hardware verified in this extracted project.
+The software suite exercises the layers and invariants described here,
+including stdio discovery, handler locks, `InMemorySessionStore`, per-board
+dispatch, exact plans, permission consumption, safety freshness, cleanup,
+contract ownership, and M10 hardening assertions. This is checkout-only
+software evidence; the optional R11 harness remains a Codex-specific benchmark.
 
 ## Pending verification
 
-Independent R1-R3 review, full process-tree cleanup, Redis disposition, live
-MCP board/provider behavior, cross-host proof, and the long-term duplicated-
-tree maintenance model remain pending. S6 verified a board-free MCP stdio
-initialize/list-tools/shutdown connection but did not call a hardware tool.
+Bench evidence remains separately labeled in `docs/verification.md`. Exact
+official-board coverage (`nrf52833dk` and `nucleo_l476rg`), alternate
+`nrf52840dk` evidence, external-client behavior, cross-host process-tree
+cleanup, and destructive authorization are not inferred from software tests.

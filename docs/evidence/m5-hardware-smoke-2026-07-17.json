@@ -1,0 +1,89 @@
+{
+  "schema_version": 1,
+  "recorded_at": "2026-07-17T11:39:23.501849Z",
+  "overall_status": "partial_blocked_hardware",
+  "safety_scope": {
+    "bootloader_flash": "not_run",
+    "recovery": "not_run",
+    "raw_write": "not_run",
+    "application_flash": "not_run",
+    "write_serial": "skipped_no_established_application_protocol"
+  },
+  "inventory": {
+    "probes": [
+      {
+        "probe_uid": "066FFF514988525067233337",
+        "description": "STM32 STLink NUCLEO-L476RG",
+        "serial_port": "COM12",
+        "assigned_board": "nucleo_l476rg"
+      },
+      {
+        "probe_uid": "683377322",
+        "usb_serial": "000683377322",
+        "description": "Segger J-Link OB-SAM3U128-V2-NordicSem",
+        "serial_port": "COM11",
+        "observed_board": "nrf52840dk",
+        "required_board": "nrf52833dk",
+        "assignment_status": "not_substituted"
+      }
+    ]
+  },
+  "exact_host_commands": [
+    "uv run pyocd list --probes",
+    "uv run python host_bootstrap.py --board-id nucleo_l476rg --install-packs",
+    "uv run pytest -q tests/test_revised_session_execution_registers.py",
+    "uv run ruff check src/pyocd_debug_mcp/adapters/swd_pyocd.py tests/test_revised_session_execution_registers.py",
+    "uv run pyright src/pyocd_debug_mcp/adapters/swd_pyocd.py"
+  ],
+  "nucleo_l476rg": {
+    "status": "passed_with_safe_skip",
+    "probe_uid": "066FFF514988525067233337",
+    "serial_port": "COM12",
+    "mcp_calls": [
+      "connect(board_id='nucleo_l476rg', unique_id='066FFF514988525067233337')",
+      "get_board_info(board_id='nucleo_l476rg')",
+      "get_state(board_id='nucleo_l476rg')",
+      "halt(board_id='nucleo_l476rg')",
+      "step(board_id='nucleo_l476rg')",
+      "read_cpu_register(board_id='nucleo_l476rg', name='r0')",
+      "read_execution_state(board_id='nucleo_l476rg', name='pc')",
+      "find_symbol(board_id='nucleo_l476rg', query='stage1_known_value')",
+      "read_memory_symbol(board_id='nucleo_l476rg', symbol='stage1_known_value', width=32)",
+      "read_memory_address-plan(all fields NULL, then exact address='0x08000000', width=32, length=NULL, max_calls=1, max_calls_buffer=0)",
+      "read_memory_address(board_id='nucleo_l476rg', address='0x08000000', width=32, length=NULL)",
+      "reset_and_halt-plan(all fields NULL, then max_calls=1, max_calls_buffer=0)",
+      "reset_and_halt(board_id='nucleo_l476rg')",
+      "resume(board_id='nucleo_l476rg')",
+      "reset_and_run(board_id='nucleo_l476rg')",
+      "read_serial-plan(all fields NULL, then port='COM12', baudrate=115200, read_seconds=1.0, reset_on_open=false, max_calls=1, max_calls_buffer=0)",
+      "read_serial(board_id='nucleo_l476rg', port='COM12', baudrate=115200, read_seconds=1.0, reset_on_open=false)",
+      "disconnect(board_id='nucleo_l476rg')",
+      "connect_under_reset-plan(all fields NULL, then probe_uid='066FFF514988525067233337', target_override=NULL, max_calls=1, max_calls_buffer=0)",
+      "connect_under_reset(board_id='nucleo_l476rg', probe_uid='066FFF514988525067233337', target_override=NULL)",
+      "get_state(board_id='nucleo_l476rg')",
+      "disconnect(board_id='nucleo_l476rg')"
+    ],
+    "observations": {
+      "initial_state": "SLEEPING",
+      "halted_state": "HALTED",
+      "step_pc": "0x08002FB6",
+      "r0": "0x20000370",
+      "pc": "0x08002FB6",
+      "symbol_address": "0x08003EC8",
+      "symbol_value": "0x0800314B",
+      "address_read_value": "0x20001180",
+      "uart_excerpt": "boot ok",
+      "post_reset_line_state_after_fix": "HALTED"
+    },
+    "hardware_found_defect": {
+      "before_fix": "connect_under_reset returned success but immediate state was SLEEPING",
+      "fix": "Boundedly reissue halt after reset release and verify HALTED before returning",
+      "after_fix": "Immediate state was HALTED"
+    }
+  },
+  "nrf52833dk": {
+    "status": "blocked_hardware",
+    "reason": "The connected Nordic probe and COM11 belong to the alternate nrf52840dk; the required official nrf52833dk was not attached, so no result was simulated or substituted.",
+    "supporting_existing_run": "runs/20260717T105355Z-8cda30a7"
+  }
+}

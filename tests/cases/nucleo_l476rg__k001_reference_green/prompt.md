@@ -19,8 +19,8 @@ Rules:
 - use MCP tools rather than guessing from static files alone
 - use this exact verification flow unless one step demonstrably fails:
   1. `connect`
-  2. `read_serial(expected_text="{uart_substring}", reset_on_open=true)`
-  3. `read_symbol_u32(elf_path="{symbol_artifact}", symbol_name="{symbol_name}")`
+  2. `read_serial(board_id="{board_id}", expected_text="{uart_substring}", reset_on_open=true)`
+  3. `read_symbol_u32(board_id="{board_id}", elf_path="{symbol_artifact}", symbol_name="{symbol_name}")`
   4. return the structured result immediately
 
 Target observables to confirm:

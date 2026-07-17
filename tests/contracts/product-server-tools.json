@@ -1,0 +1,33 @@
+{
+  "contract_version": 19,
+  "status": "active",
+  "milestone": "post-M10-plan-prompt-contract",
+  "supersedes": "plan-prompt-server-tools.json",
+  "imported_baseline": {
+    "path": "plan-prompt-server-tools.json",
+    "sha256": "9474a4ac43a3879e6b230a502fc91868ec98437d60e1fb52b52fb896fbb0bc18"
+  },
+  "hardening_evidence": {
+    "performance": "docs/evidence/m10-performance-2026-07-17.json",
+    "software_boundary_report": "docs/evidence/m10-software-boundary-2026-07-17.json",
+    "task20_acceptance_plan": "docs/evidence/m10-task20-acceptance-plan-2026-07-17.json",
+    "task20_execution_report": "docs/evidence/m10-task20-execution-2026-07-17.json",
+    "task20_final_validation_json": "docs/evidence/m10-final-validation-2026-07-17.json",
+    "task20_final_validation_markdown": "docs/evidence/m10-final-validation-2026-07-17.md",
+    "task20_final_validation_test": "tests/test_m10_final_validation_report.py",
+    "prompt_audit_through_20_1": "docs/evidence/prompt-audit-through-20.1-2026-07-17.md",
+    "acceptance_plan_test": "tests/test_m10_acceptance_plan.py",
+    "coverage_report_test": "tests/test_m10_coverage_report.py",
+    "performance_test": "tests/test_m10_performance.py",
+    "security_test": "tests/test_m10_security.py",
+    "relay_text_test": "tests/test_m10_relay_text.py",
+    "unicode_profile_test": "tests/test_profiles_v2.py",
+    "plan_prompt_contents_spec": "Plan_Prompt_Contents_Spec.md",
+    "plan_prompt_contract_test": "tests/test_plan_prompt_contents.py"
+  },
+  "notes": [
+    "The M9 extraction-named baseline remains immutable historical evidence.",
+    "This intentional post-M10 revision changes every plan-tool schema to the exact nested plan envelope and expands all-NULL guidance.",
+    "The version-19 delta imports the historical source snapshot and overrides only changed plan contracts and implementation owners."
+  ]
+}
