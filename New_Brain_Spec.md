@@ -30,7 +30,7 @@ Normative tool names use lowercase `snake_case`; the `*-plan` suffix is retained
 #### Server B Layer 2
 
 * Hardware actions that affect the board directly (flash, register/memory writes, resets, etc.)
-* Every Layer 2 action is guarded by a Layer 1 action, and enforces its own L2 hardware-safety checks (immutable/locked bytes, prohibited regions, user permission for high-risk operations)
+* Write-capable and disruptive Layer 2 actions are guarded by corresponding Layer 1 plans. A small ordinary/read-only subset remains always visible. Every Layer 2 handler independently enforces its applicable L2 safety checks; visibility is never authorization.
 
 ### Structure
 
@@ -40,7 +40,7 @@ Server B (Guarded Hardware Server): This is a guardrail’d MCP server. It expos
 - **Layer 0 — Security Setup:** Confirm immutable or locked bytes that must never be changed and establish hardware security.
 - **Layer 1 — Guardrail Actions:** Require a reason, hypothesis, expected result, safety proof, and cleanup instructions before direct hardware actions are exposed.
 
-**Server B Layer 2 — Hardware Actions:** Actions that affect the board directly, then return the result to the agent with a reminder to exit the hardware layer safely. Every Layer 2 action is guarded by a Layer 1 action.
+**Server B Layer 2 - Hardware Actions:** Board-facing actions return results with safe-exit guidance. Write-capable and disruptive actions require Layer 1 plans; ordinary profile, read-only, resume/halt/step, breakpoint-removal, wait, and reset-and-run actions remain visible but still enforce handler-level scope and safety checks.
 
 ### Server B L2 Safety
 
@@ -142,23 +142,25 @@ The model can:
 3. Confirm that the register name, address, and field agree.
 4. Submit the exact address, mask, and value.
 
-For a compliant agent, this is a reasonable practical approach. Register writes involving flash security, option bytes, OTP, debug protection, or lifecycle configuration can simply require an explicit higher-risk task designation or be unavailable in ordinary workflows.
+The server validates the complete access against the stable map before target I/O. Flash security, option bytes, OTP, debug protection, provisioning, and lifecycle registers are unavailable to ordinary register writes; no plan can authorize them. `target_unlock` is limited to typed documented recovery and is not a general register-write escape hatch.
 
-##### Memory (RAM) Access
+##### Memory Access
 
-Memory access is split into distinct tools rather than one dispatcher: `find_symbol`, `read_memory_symbol`, `read_memory_address`, and `write_memory`. Symbol access is the default path; raw-address access requires an explicit override parameter and is limited to RAM.
+Memory access is split into distinct tools rather than one dispatcher: `find_symbol`, `read_memory_symbol`, `read_memory_address`, and `write_memory`. Symbol access is the default path. A planned raw-address read may inspect any completely mapped, non-prohibited region; raw-address writes remain an explicit RAM-only fallback.
 
 Behavior:
 
 1. Symbol tools (`find_symbol`, `read_memory_symbol`, and symbol-mode `write_memory`) resolve the symbol from the ELF/DWARF and access that variable.
-2. `read_memory_address` / `write_memory` reject a raw address supplied without `allow_address_fallback` with:
+2. `read_memory_address` is itself the explicit planned raw-read path. It requires no redundant fallback flag or reason. The server permits the complete requested access only when it fits within mapped, non-prohibited memory. Eligible mapped regions may include flash, RAM, peripherals, ROM, and system memory; unknown and prohibited ranges are denied. Peripheral reads must account for documented clear-on-read or other read side effects.
+
+3. Raw-address `write_memory` rejects a request without `allow_address_fallback` with:
 
    > “Try a symbol first. Provide a symbol name or explicitly request address fallback.”
 
-3. Raw-address access requires:
+4. Raw-address writes require:
    * `allow_address_fallback: true`
    * a brief reason symbols are unsuitable
-   * normal target-reported RAM bounds checking (address writes are RAM-only)
+   * stable-map RAM containment for the complete backend access width
 
 The tool descriptions should tell the model:
 
@@ -365,6 +367,13 @@ The public setup and readiness surface is:
 connections, server-generated IDs, and exact next-call templates. The agent never invents or asks
 the user for internal IDs.
 
+`display_name` is the user's familiar name for one physical board. Neither the user nor the agent
+provides, selects, or invents `board_type`. Setup resolves reviewed MCU/device support internally
+from the user's exact MCU part number and the server-computed digest of the supplied official
+datasheet. A custom PCB may reuse reviewed support for its MCU/device without a user-created hardware
+definition. Missing or ambiguous reviewed MCU/device support produces a typed support/evidence result;
+being a custom PCB by itself does not make the board non-writable.
+
 `continue_setup` accepts only the exact server-requested friendly choice or official-source research
 reply for one live continuation. It grants no plan, permission, safety authority, or gate state.
 
@@ -380,11 +389,14 @@ UART readiness separately without opening a connection or gate.
 `target_unlock-plan` and its underlying action remain separate. Setup and validation only report a
 locked target; destructive recovery requires exact live disclosure and fresh one-time permission.
 
-There is no separate research provider and no user-facing terminal-command layer.
+There is no separate research provider or arbitrary terminal-command layer. The server may return
+directly usable, host-appropriate advisory commands for builds, dependencies, and optional build
+helpers, but never executes them automatically. Advisory guidance grants no plan, permission, safety
+authority, gate state, or flash authority.
 
 #### Session Startup, Board Assignment, and Tool Choice
 
-At the start of every Server Run, before board-specific work, the agent asks the user conversationally which boards are connected. The user gives each board its unique familiar name, or says **“no board.”** The user never supplies board_id, connection IDs, permission enums, or JSON.
+At the start of every Server Run, before board-specific work, the agent asks the user conversationally which boards are connected. The user gives each board its unique familiar name, or says **“no board.”** The user never supplies `board_type`, board_id, connection IDs, permission enums, or JSON.
 
 The server enumerates every connection separately and returns friendly probe, port, and read-only board details. The agent maps the user-supplied names to profiles and connections. Exact attachment-cache matches may resolve silently; ambiguous assignments are presented conversationally. Names and active connections must match one-to-one before validation or setup proceeds.
 
@@ -510,6 +522,13 @@ performs no build, search, download, or hardware access, and its manifest contai
 ranges, plans, permissions, gates, or safety authority. Artifact paths are passed explicitly to the
 applicable flash plan; collection alone never authorizes deployment.
 
+The project's existing native IDE or CLI workflow and a compatible SDK/toolchain already available
+to that project are the primary build path. For example, an NCS project should prefer its installed
+NCS environment. When no suitable native workflow is available, the product may offer an appropriate
+Zephyr or vendor-specific helper as an optional fallback, never as a mandatory build path. It does
+not silently install, replace, upgrade, or reconfigure toolchains. Any returned build or dependency
+command is advisory and carries no authorization.
+
 Board YAML stores portable logical profile facts. Current connection assignments, validation stamps,
 map stamps, plans, and permissions remain in memory and reset with the Server Run. The host-local
 attachment cache is excluded from source control and is only an assignment hint.
@@ -522,16 +541,21 @@ Map facts retain explicit source ownership. The server must not treat user asser
 
 The user supplies only:
 
-- Board selection or custom board name.
+- Existing familiar profile name or a new familiar board name.
 
 - Exact MCU part number.
 
-- UART baud rate.
+- Local official datasheet PDF during initial setup or evidence repair. The server validates the
+  document and computes its SHA-256; the user does not supply the digest.
+
+- UART baud rate when UART is used.
 
 - Physical probe/UART selection when ambiguous.
 
 
-The user does not supply pyOCD targets, register ranges, flash geometry, or protected addresses.
+The user does not supply `board_type`, pyOCD targets, evidence hashes, register ranges, flash
+geometry, or protected addresses. The accepted MCU/datasheet association is persisted, so later
+connections normally require only the familiar board name.
 
 ##### Stable deployment partitions and per-build artifacts
 
@@ -563,8 +587,9 @@ missing role mean unavailable/unreviewed, not "accept any source."
 
 The agent may research an official target, pack, or document candidate only when the server requests
 it. Research can help maintainers acquire evidence but does not promote arbitrary address facts into
-safety authority. An unreviewed/custom board remains non-writable until maintainers add independent
-reviewed evidence. The user supplies neither hardware ranges nor evidence hashes.
+safety authority. A board whose MCU/device lacks independent reviewed evidence remains non-writable;
+a custom PCB using an already reviewed MCU/device does not require a user-created board definition.
+The user supplies neither hardware ranges nor evidence hashes.
 
 Prohibited classifications override broader peripheral, flash, or writable classifications. Unknown
 memory is denied by default.
@@ -575,10 +600,11 @@ memory is denied by default.
 | :--- | :--- | ---: | :--- |
 | board_id | Generated or selected logical profile ID; stable and filename-matching | No | Board YAML |
 | display_name | Unique user-facing board name | No | Board YAML |
-| mcu_part_number | Exact user input/known-board definition | No | Board YAML |
+| mcu_part_number | Exact user input or persisted profile | No | Board YAML |
 | mcu_family | Deterministic part derivation | No | Board YAML |
 | probe_family, probe_type | Selected probe inventory/mapping | No | Board YAML |
-| pyocd_target | Exact detection or validated candidate | If detection is not exact | Board YAML |
+| pyocd_target | Exact reviewed MCU/device-support mapping; a staged pack may supply but never redefine it | Research may locate official support, but cannot redefine identity | Board YAML |
+| Official datasheet digest | Server hash of the user-supplied official PDF, accepted against reviewed MCU/device evidence | No | Board YAML and reviewed setup evidence |
 | serial_baudrate | User input | No | Board YAML |
 | Probe/serial hints | Built-in rules | No | Board YAML |
 | test_read_address | Family default or validated candidate | Unsupported families only | Optional Board YAML |
@@ -598,8 +624,8 @@ The agent never writes Board YAML, manifests, maps, reports, or cache records di
 | Situation | User provides through normal conversation |
 | :--- | :--- |
 | Live Run startup | Unique names of all connected boards, or “no board” |
-| Known board | Existing profile name/board selection and UART baud rate |
-| Custom board | Board name, exact MCU part number, UART baud rate |
+| Known board | Existing familiar profile name; UART baud rate only when UART is used or changed |
+| Custom board | Familiar board name, exact MCU part number, local official datasheet PDF, and UART baud rate when UART is used |
 | Multiple probes/UARTs | Selection from friendly descriptions |
 | Unprovable external UART mapping | Confirmation that it is attached to the board |
 | L1-protected operation | Permission required by that action’s plan tool |
@@ -701,6 +727,8 @@ If pyOCD cannot resolve one exact target, the agent may return one official evid
 ```
 
 The server requires one syntactically valid, part-consistent target, verifies that built-in pyOCD or a pack exposes it, and requires a successful live connection before commit.
+
+For automatic writable setup, that target must also equal the exact reviewed MCU/device-support mapping for the supplied part and accepted datasheet. Research may locate support for the reviewed target but cannot infer a new part-to-target mapping by prefix, wildcard, package-name normalization, or agent assertion. A target that connects but lacks reviewed safety evidence remains non-writable.
 
 | Support state | Action |
 | :--- | :--- |
@@ -900,6 +928,8 @@ and ask the user what to do. Only an explicit user choice may enter a new-profil
 #### Acceptance Criteria
 
 - Startup uses familiar board names or the literal `no board` sentinel; users never handle JSON or internal IDs.
+- Neither users nor agents provide or select `board_type`; setup resolves reviewed MCU/device support from the exact MCU part and server-hashed official datasheet.
+- Custom PCB setup can reuse reviewed MCU/device support and does not require a user-created hardware definition.
 - `setup_overview` supplies exact server-owned routing and one-to-one board/connection assignments.
 - Profiles are logical and portable; live assignments, stamps, gates, plans, and permissions are run-scoped.
 - `memory_map.yaml` is the only persisted safety-authority file below each board safety directory.
@@ -991,17 +1021,27 @@ Unknown top-level fields, flattened action fields, unknown nested fields, and po
 non-permission plans are rejected.
 
 Plans are immutable and scoped to exact action, parameters, board, Server Run, gate/session state,
-budget, and permission. Replacing a plan atomically closes the old one. Fixed actions require
-`max_calls=1` and `max_calls_buffer=0`; flexible diagnostic actions may request bounded multiple
-calls. Accepted calls consume budget atomically at execution start; pre-start refusals do not.
+budget, and permission. Replacing a plan atomically closes the old one.
+
+Fixed `1,0` actions are `board_setup`, `board_fix_setup`, `write_cpu_register`,
+`set_execution_state`, `write_memory`, `set_breakpoint`, `flash_application`, `flash_bootloader`,
+`register_write`, and `target_unlock`. Flexible diagnostic actions are `connect_override`,
+`read_memory_address`, `reset_and_halt`, `connect_under_reset`, `read_serial`, `write_serial`, and
+`serial_exchange`; their NULL guidance supplies deterministic call and buffer bounds.
+
+Accepted calls consume budget atomically at execution start; pre-start refusals do not. A call that
+started and then failed, timed out, was cancelled, or returned inconclusive output consumes one call.
 
 One accepted `board_setup-plan` grants one `board_setup` plus its paired first `board_fix_setup`
 attempt. One-time permission applies once to each phase of that one workflow. Further attempts need a
 replacement plan and, under one-time permission, a fresh user prompt.
 
+`board_setup`, `set_execution_state`, and `flash_bootloader` accept either `one-time` or
+`full-session` permission. One-time permission is consumed by the accepted underlying call.
 Full-session permission only suppresses repeated user prompting for that permission-locked action and
-board during the current Server Run. Every use still needs a new valid plan. Destructive recovery is
-never eligible for reusable full-session permission.
+board during the current Server Run; every use still needs a new valid plan. Destructive
+`target_unlock` is never eligible for reusable full-session permission and always requires fresh
+one-time approval after exact loss disclosure.
 
 ### Accepted-plan execution transport
 
@@ -1047,10 +1087,11 @@ The agent then:
    follows the exact new-profile route.
 5. Uses `board_safety_refresh` only when the server reports a stable-map problem, never merely after a build.
 6. Uses profile-only `connect`; exceptional manual overrides require `connect_override-plan`.
-7. Builds with the project's native validated CLI/IDE, optionally calls `collect_build_artifacts`,
-   and proceeds to the applicable flash plan.
+7. Builds with the project's native validated CLI/IDE and compatible installed SDK/toolchain,
+   optionally uses an appropriate Zephyr/vendor helper only as a fallback, optionally calls
+   `collect_build_artifacts`, and proceeds to the applicable flash plan.
 
-#### Good example injection:
+### Good example injection:
 
 > This server intentionally hides some hardware-control tools at startup. Treat the current visible
 > tool list as authoritative. Do not invent hidden calls. A visible `*-plan` is a preparation tool:
@@ -1067,6 +1108,8 @@ The agent then:
 > `setup_overview` with the familiar names and copy its server-generated routing values into later
 > MCP calls. Existing profiles validate when live proof is absent; unknown profiles use the
 > authorized setup route; incomplete same-identity setup uses the returned repair route.
+> For new setup, ask for the exact MCU part and local official datasheet PDF, never `board_type` or a
+> datasheet digest; the server resolves reviewed support and hashes the document.
 >
 > Normal connection is profile-only. Manual probe, target, or external-config values require the
 > guarded override plan and never rewrite a profile. A live MCU mismatch is reported to the user and
@@ -1076,6 +1119,10 @@ The agent then:
 > `collect_build_artifacts`; collection is provenance only. An ordinary rebuild does not require
 > safety refresh. The applicable flash plan binds the selected artifact, and the server rechecks its
 > bytes and complete containment immediately before any erase or write.
+>
+> Prefer the project's compatible installed SDK/toolchain. A returned Zephyr or vendor helper is an
+> optional advisory fallback, never an automatically executed command or a reason to silently install,
+> replace, upgrade, or reconfigure the user's toolchain.
 >
 > Ordinary conversation is not permission. Ask clearly when a plan requires approval and pass only
 > the allowed structured permission value. Keep every board separate, and repeat validation after
