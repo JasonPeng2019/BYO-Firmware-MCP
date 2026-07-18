@@ -1914,7 +1914,7 @@ def _copy_artifacts(
     sources = _resolve_artifact_paths(work_build_dir)
     canonical_build_dir.mkdir(parents=True, exist_ok=True)
     staging_root = Path(
-        tempfile.mkdtemp(prefix=".firmware-artifacts-", dir=canonical_build_dir.parent)
+        tempfile.mkdtemp(prefix=".artifact-stage-", dir=canonical_build_dir.parent)
     )
     bundle_dir = staging_root / "bundle"
     temporary_exports: list[Path] = []

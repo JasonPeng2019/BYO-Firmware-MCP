@@ -123,3 +123,12 @@ Firmware adds `board-setup`, `verify-firmware-hil`, `implement-hil`,
 
 Run `py .agent-workspace\bin\doctor --mode firmware` after setup. For the full server reference,
 see [SERVER_GUIDE.md](SERVER_GUIDE.md).
+
+## Verified
+
+The checked-in software workflows and hardware evidence are identified in docs/verification.md.
+
+## Pending verification
+
+Hardware-dependent results remain bounded by the exact identities and blockers recorded in docs/verification.md.
+

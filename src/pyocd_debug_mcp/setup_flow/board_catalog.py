@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass
 from hashlib import sha256
+from importlib import resources
 from pathlib import Path
 
 from pyocd_debug_mcp.safety.regions import RegionKind
@@ -120,7 +121,7 @@ class CatalogBoard:
         )
 
 
-_CATALOG_RESOURCE = Path(__file__).with_name("reviewed_boards.json")
+_CATALOG_RESOURCE_NAME = "reviewed_boards.json"
 
 
 def _required_string(raw: dict[str, object], name: str) -> str:
@@ -163,13 +164,21 @@ def _string_tuple(raw: dict[str, object], name: str, *, required: bool = False) 
     return result
 
 
-def _load_catalog(path: Path = _CATALOG_RESOURCE) -> dict[str, CatalogBoard]:
+def _load_catalog(path: Path | None = None) -> dict[str, CatalogBoard]:
     """Load reviewed board facts from the packaged, server-owned data document."""
 
     try:
-        document = json.loads(path.read_text(encoding="utf-8"))
+        text = (
+            path.read_text(encoding="utf-8")
+            if path is not None
+            else resources.files(__package__).joinpath(_CATALOG_RESOURCE_NAME).read_text(
+                encoding="utf-8"
+            )
+        )
+        document = json.loads(text)
     except (OSError, json.JSONDecodeError) as exc:
-        raise BoardCatalogError(f"Reviewed board catalog is unreadable: {path}") from exc
+        source = str(path) if path is not None else _CATALOG_RESOURCE_NAME
+        raise BoardCatalogError(f"Reviewed board catalog is unreadable: {source}") from exc
     if not isinstance(document, dict) or document.get("schema_version") != 1:
         raise BoardCatalogError("Reviewed board catalog must use schema_version 1")
     rows = document.get("boards")

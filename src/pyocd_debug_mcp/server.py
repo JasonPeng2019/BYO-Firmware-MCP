@@ -58,7 +58,11 @@ from pyocd_debug_mcp.kernel.hygiene import cleanup_stale_owned_processes
 from pyocd_debug_mcp.kernel.processes import run_owned
 from pyocd_debug_mcp.kernel.run_state import create_server_run
 from pyocd_debug_mcp.pack_provision import load_manifest, pack_spec_document, sha256_file
-from pyocd_debug_mcp.probe_inventory import list_connected_probes, resolve_probe_for_board
+from pyocd_debug_mcp.probe_inventory import (
+    list_connected_probes,
+    probe_family_from_pyocd_probe,
+    resolve_probe_for_board,
+)
 from pyocd_debug_mcp.reference_artifacts import resolve_reference_artifacts
 from pyocd_debug_mcp.serial_resolver import (
     BoardLike,
@@ -1986,15 +1990,6 @@ plan_tool_handlers = register_plan_tools(
 )
 
 
-def _infer_probe_family(text: str) -> str:
-    normalized = text.casefold().replace("-", "")
-    if "stlink" in normalized:
-        return "stlink"
-    if "jlink" in normalized:
-        return "jlink"
-    return "cmsis-dap"
-
-
 def _target_names() -> tuple[str, ...]:
     # Use pyOCD's pinned in-process registry.  Parsing its human-formatted CLI
     # table was locale-dependent on Windows and could turn a supported target
@@ -2012,7 +2007,7 @@ def _validation_inventory() -> ValidationInventory:
         probe.uid: ValidationProbe(
             probe.uid,
             probe.description or probe.raw,
-            _infer_probe_family(f"{probe.description} {probe.raw}"),
+            probe.family,
             probe.uid or None,
         )
         for probe in list_connected_probes(_run_cmd)
@@ -2031,7 +2026,7 @@ def _validation_inventory() -> ValidationInventory:
         description = str(getattr(probe, "description", "") or "").strip()
         if not description:
             description = board.display_name if board is not None else f"Active probe {probe_uid}"
-        probe_family = board.probe_family if board is not None else _infer_probe_family(description)
+        probe_family = probe_family_from_pyocd_probe(probe)
         probes_by_id[probe_uid] = ValidationProbe(
             probe_uid,
             description,
@@ -3278,22 +3273,6 @@ def _connection_matches_probe(connection_id: str, probe: ProbeCandidate) -> bool
     )
 
 
-def _part_matches_target(mcu_part_number: str, target: str) -> bool:
-    """Accept only exact target identity or documented target wildcard/prefix forms."""
-
-    part = _normalized_target_identity(mcu_part_number)
-    normalized_target = _normalized_target_identity(target)
-    if part == normalized_target:
-        return True
-    if part.startswith(normalized_target):
-        return True
-    return (
-        normalized_target.endswith("x")
-        and len(part) == len(normalized_target)
-        and part[:-1] == normalized_target[:-1]
-    )
-
-
 _setup_research = ResearchTracker()
 _setup_target_overrides: dict[str, str] = {}
 _setup_selections_by_board: dict[str, PreflightSelections] = {}
@@ -3349,10 +3328,7 @@ def _setup_inventory(user_input: SetupUserInput) -> PreflightInventory:
             ],
         )
     targets = _target_names()
-    part_identity = _normalized_target_identity(user_input.mcu_part_number)
-    exact: tuple[str, ...] = tuple(
-        target for target in targets if _normalized_target_identity(target) == part_identity
-    )
+    exact: tuple[str, ...] = ()
     # A fresh profile has no board YAML yet, but a complete reviewed catalog entry is itself
     # authoritative for the exact pyOCD target. Package suffixes such as ``-QIAA`` must not
     # force an unnecessary agent research round trip when the exact built-in target is present.
@@ -3366,16 +3342,6 @@ def _setup_inventory(user_input: SetupUserInput) -> PreflightInventory:
         and catalog.pyocd_target.casefold() in targets
     ):
         exact = (catalog.pyocd_target.casefold(),)
-    try:
-        official_board = resolve_board_config(user_input.board_id, None)
-    except ConfigError:
-        official_board = None
-    if official_board is not None:
-        mapped_target = official_board.pyocd_target.casefold()
-        if mapped_target in targets and _part_matches_target(
-            user_input.mcu_part_number, mapped_target
-        ):
-            exact = (mapped_target,)
     manifest_targets = tuple(
         sorted(
             {
@@ -3388,9 +3354,8 @@ def _setup_inventory(user_input: SetupUserInput) -> PreflightInventory:
     target_override = _setup_target_overrides.get(user_input.board_id)
     if target_override is not None:
         supported = set(targets) | set(manifest_targets)
-        if target_override in supported and _part_matches_target(
-            user_input.mcu_part_number, target_override
-        ):
+        reviewed_target = catalog.pyocd_target.casefold() if catalog is not None else None
+        if target_override in supported and target_override == reviewed_target:
             exact = (target_override,)
     return PreflightInventory(
         probes=probes,
@@ -3446,11 +3411,21 @@ def _setup_connection_phase(context: SetupPhaseContext) -> SetupPhaseOutcome:
             "Target or probe resolution is incomplete; stop before committing a profile.",
         )
     if target.casefold() != catalog.pyocd_target or probe.probe_family != catalog.probe_family:
+        if probe.probe_family == "unknown":
+            remedy = (
+                "The debug probe provider could not be identified. Choose a probe whose provider "
+                f"is reported as '{catalog.probe_family}', or extend the reviewed probe-provider "
+                "compatibility data before retrying setup."
+            )
+        else:
+            remedy = (
+                "The selected target or probe provider does not match the reviewed board type. "
+                "Choose the matching reviewed target and probe before retrying setup."
+            )
         return SetupPhaseOutcome.stop(
             "setup_connection_failed",
             "setup/catalog-route-mismatch",
-            "The selected target or probe family does not match the reviewed board type; "
-            "stop before committing a profile.",
+            remedy,
             details={
                 "selected_target": target,
                 "expected_target": catalog.pyocd_target,
@@ -3516,7 +3491,7 @@ def _setup_connection_phase(context: SetupPhaseContext) -> SetupPhaseOutcome:
                             "silicon_id_address": catalog.silicon_id_address,
                             "silicon_id_expected": catalog.silicon_id_expected,
                             "silicon_id_mask": catalog.silicon_id_mask,
-                            "silicon_id_label": "FICR.INFO.PART",
+                            "silicon_id_label": "silicon_id",
                         }
                         if catalog.silicon_id_address is not None
                         else {}
@@ -4347,6 +4322,19 @@ def _setup_continue(
     if not isinstance(target, str) or not target.strip():
         raise ResearchError("research/target-required", "pyocd_target must be non-empty text")
     target = target.strip().casefold()
+    try:
+        reviewed_board = catalog_board(user_input.board_type)
+    except BoardCatalogError as exc:
+        raise ResearchError(
+            "target/reviewed-mapping-unavailable",
+            "Automatic setup has no reviewed part-to-target mapping for this board type.",
+        ) from exc
+    if user_input.mcu_part_number != reviewed_board.package_part_number:
+        raise ResearchError(
+            "target/reviewed-part-mismatch",
+            "The exact MCU part does not match the reviewed board mapping.",
+        )
+    reviewed_target = reviewed_board.pyocd_target.casefold()
 
     if fields == target_fields:
         request = make_research_request(
@@ -4369,8 +4357,7 @@ def _setup_continue(
             try:
                 TargetResolver.validate_candidate(
                     str(candidate["pyocd_target"]).casefold(),
-                    mcu_part_number=user_input.mcu_part_number,
-                    part_consistent=_part_matches_target,
+                    expected_target=reviewed_target,
                     built_in_targets=_target_names(),
                     staged_targets=tuple(
                         target_name
@@ -4411,9 +4398,10 @@ def _setup_continue(
         official_sha = response.get("official_sha256")
         if official_sha is not None and not isinstance(official_sha, str):
             raise ResearchError("package/checksum-shape", "official_sha256 must be text or null")
-        if not _part_matches_target(user_input.mcu_part_number, target):
+        if target != reviewed_target:
             raise ResearchError(
-                "target/part-mismatch", "pack target does not match the exact MCU part number"
+                "target/reviewed-mapping-mismatch",
+                "pack target does not match the exact reviewed board/part mapping",
             )
         probe_uid = user_input.connection_id.removeprefix("probe:")
         candidate = PackCandidate(

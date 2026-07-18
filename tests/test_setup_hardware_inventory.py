@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+import json
 from types import SimpleNamespace
 
+import mcp.types as types
 import pytest
+from mcp.shared.memory import create_connected_server_and_client_session
 
-from pyocd_debug_mcp import server
+from pyocd_debug_mcp import probe_inventory, server
 from pyocd_debug_mcp.firmstore.cache import CacheResolution
 from pyocd_debug_mcp.setup_flow.preflight import (
     FriendlyChoice,
@@ -16,6 +19,75 @@ from pyocd_debug_mcp.setup_flow.validate import (
     ValidationProbe,
     ValidationSerial,
 )
+
+
+def _tool_json(result: types.CallToolResult) -> dict[str, object]:
+    content = result.content[0]
+    assert isinstance(content, types.TextContent)
+    return json.loads(content.text)
+
+
+async def test_probe_provider_generic_and_cli_fallbacks_share_one_live_mcp_run(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class FutureProbe:
+        description = "Future Universal Probe"
+        unique_id = "FUTURE-API"
+        associated_board_info = None
+
+    class FakeConnectHelper:
+        phase = "api"
+
+        @classmethod
+        def get_all_connected_probes(
+            cls,
+            *,
+            blocking: bool,
+            print_wait_message: bool,
+        ) -> list[FutureProbe]:
+            assert blocking is False
+            assert print_wait_message is False
+            return [FutureProbe()] if cls.phase == "api" else []
+
+    seen_commands: list[list[str]] = []
+
+    def fake_run(command: list[str]) -> tuple[int, str, str]:
+        seen_commands.append(command)
+        if FakeConnectHelper.phase == "known_cli":
+            return 0, "  0   STM32 STLink    STLINK-CLI", ""
+        return 0, "  0   Future Universal Probe    FUTURE-CLI", ""
+
+    monkeypatch.setattr(server._profile_repository, "load_all", lambda **_kwargs: ())
+    monkeypatch.setattr(server, "list_serial_ports", lambda: [])
+    monkeypatch.setattr(server, "_run_cmd", fake_run)
+    monkeypatch.setattr(probe_inventory, "ConnectHelper", FakeConnectHelper)
+    monkeypatch.setitem(probe_inventory.PROBE_CLASSES, "futureprovider", FutureProbe)
+    monkeypatch.setattr(
+        probe_inventory,
+        "configured_probe_cli_commands",
+        lambda: (("configured-probe-cli", "inventory", "--machine-safe"),),
+    )
+
+    async with create_connected_server_and_client_session(server.mcp) as session:
+        generic = _tool_json(
+            await session.call_tool("setup_overview", {"board_names": ["Generic Provider"]})
+        )
+        FakeConnectHelper.phase = "known_cli"
+        configured_fallback = _tool_json(
+            await session.call_tool("setup_overview", {"board_names": ["Configured Fallback"]})
+        )
+        FakeConnectHelper.phase = "unknown_cli"
+        unknown_fallback = _tool_json(
+            await session.call_tool("setup_overview", {"board_names": ["Unknown Fallback"]})
+        )
+
+    assert generic["connections"][0]["probe_family"] == "futureprovider"  # type: ignore[index]
+    assert configured_fallback["connections"][0]["probe_family"] == "stlink"  # type: ignore[index]
+    assert unknown_fallback["connections"][0]["probe_family"] == "unknown"  # type: ignore[index]
+    assert seen_commands == [
+        ["configured-probe-cli", "inventory", "--machine-safe"],
+        ["configured-probe-cli", "inventory", "--machine-safe"],
+    ]
 
 
 def test_setup_inventory_scopes_probe_and_uart_by_stable_connection_identity(
@@ -54,9 +126,10 @@ def test_setup_inventory_scopes_probe_and_uart_by_stable_connection_identity(
             "nrf52833dk",
             "probe:000683377322",
             "nRF52833 DK",
-            "nRF52833-QIAA",
-            115200,
-        )
+                "nRF52833-QIAA",
+                115200,
+                board_type="nrf52833dk",
+            )
     )
 
     assert [probe.probe_id for probe in result.probes] == ["683377322"]
@@ -126,7 +199,7 @@ def test_setup_inventory_rejects_wrong_single_probe_and_port_path_as_uart_id(
     assert result.serial_ports == ()
 
 
-def test_official_target_mapping_requires_part_consistency(monkeypatch) -> None:
+def test_reviewed_catalog_mapping_ignores_legacy_profile_target_authority(monkeypatch) -> None:
     monkeypatch.setattr(server, "_validation_inventory", lambda: ValidationInventory())
     monkeypatch.setattr(server, "_target_names", lambda: ("stm32l476rgtx",))
     monkeypatch.setattr(server, "load_manifest", lambda *_args, **_kwargs: ())
@@ -143,6 +216,7 @@ def test_official_target_mapping_requires_part_consistency(monkeypatch) -> None:
             "Nucleo-L476RG",
             "STM32L476RGT6",
             115200,
+            board_type="nucleo_l476rg",
         )
     )
     mismatched = server._setup_inventory(
@@ -152,6 +226,7 @@ def test_official_target_mapping_requires_part_consistency(monkeypatch) -> None:
             "Nucleo-L476RG",
             "STM32F401RE",
             115200,
+            board_type="nucleo_l476rg",
         )
     )
 
@@ -203,8 +278,27 @@ def test_fresh_reviewed_catalog_maps_exact_package_to_builtin_target_without_res
     )
 
     assert exact.exact_detected_targets == ("nrf52840",)
-    assert family_only.exact_detected_targets == ("nrf52840",)
+    assert family_only.exact_detected_targets == ()
     assert wrong_suffix.exact_detected_targets == ()
+
+
+def test_broad_supported_prefix_is_not_part_target_evidence(monkeypatch) -> None:
+    monkeypatch.setattr(server, "_validation_inventory", lambda: ValidationInventory())
+    monkeypatch.setattr(server, "_target_names", lambda: ("nrf5",))
+    monkeypatch.setattr(server, "load_manifest", lambda *_args, **_kwargs: ())
+
+    result = server._setup_inventory(
+        SetupUserInput(
+            "nf_board",
+            "probe:missing",
+            "NF Board",
+            "nRF52840-QIAA",
+            115200,
+            board_type="nrf52840dk",
+        )
+    )
+
+    assert result.exact_detected_targets == ()
 
 
 def test_validation_inventory_includes_server_owned_active_probe(monkeypatch) -> None:
@@ -220,6 +314,7 @@ def test_validation_inventory_includes_server_owned_active_probe(monkeypatch) ->
     )
     monkeypatch.setattr(server, "connection_manager", manager)
     monkeypatch.setattr(server, "list_connected_probes", lambda _run: [])
+    monkeypatch.setattr(server, "probe_family_from_pyocd_probe", lambda _probe: "stlink")
     monkeypatch.setattr(server, "list_serial_ports", lambda: [])
 
     inventory = server._validation_inventory()
@@ -231,7 +326,7 @@ def test_validation_inventory_includes_server_owned_active_probe(monkeypatch) ->
 
 def test_public_setup_continuation_validates_and_routes_target_research(monkeypatch) -> None:
     user_input = SetupUserInput(
-        "nf_board", "probe:683377322", "NF Board", "nRF52840", 115200, board_type="nrf52840dk"
+        "nf_board", "probe:683377322", "NF Board", "nRF52840-QIAA", 115200, board_type="nrf52840dk"
     )
     monkeypatch.setattr(
         server._setup_workflow,

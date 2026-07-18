@@ -1,6 +1,6 @@
 # De-bias round 1 implementation plan
 
-Status: ready for adversarial review
+Status: implemented and verified
 
 ## Approach
 

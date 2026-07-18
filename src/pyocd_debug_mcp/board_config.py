@@ -9,22 +9,12 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable
 
+from pyocd_debug_mcp.probe_families import probe_family_hints, probe_family_label
+
 DEFAULT_BOARD_CONFIG_DIR = (
     Path(__file__).resolve().parents[2] / "boards"
 )  # PROJECT-DEFINED (repo layout)
 BOARD_CONFIG_SUFFIXES = frozenset({".json", ".yaml", ".yml"})  # PROJECT-DEFINED (supported formats)
-
-PROBE_FAMILY_LABELS = {
-    "jlink": "SEGGER J-Link",
-    "stlink": "ST-Link",
-    "cmsisdap": "CMSIS-DAP",
-}
-
-PROBE_FAMILY_HINTS = {
-    "jlink": {"j-link", "jlink", "segger"},
-    "stlink": {"st-link", "stlink"},
-    "cmsisdap": {"cmsis-dap", "cmsisdap", "daplink"},
-}
 
 # Typed recover-mode selector — board YAML names a backend, never a raw shell command.
 # PROJECT-DEFINED (the recover policy vocabulary for board configs).
@@ -223,7 +213,7 @@ def make_board_config(raw: dict[str, object], source_path: Path | None) -> Board
             stacklevel=2,
         )
     probe_type = str(
-        raw.get("probe_type") or PROBE_FAMILY_LABELS.get(probe_family, probe_family)
+        raw.get("probe_type") or probe_family_label(probe_family)
     ).strip()
 
     test_addr = None
@@ -258,8 +248,8 @@ def make_board_config(raw: dict[str, object], source_path: Path | None) -> Board
     default_terms = tokenize_hint_text(board_id, display_name, mcu_family, pyocd_target)
     probe_terms.update(default_terms)
     serial_terms.update(default_terms)
-    probe_terms.update(PROBE_FAMILY_HINTS.get(probe_family, set()))
-    serial_terms.update(PROBE_FAMILY_HINTS.get(probe_family, set()))
+    probe_terms.update(probe_family_hints(probe_family))
+    serial_terms.update(probe_family_hints(probe_family))
     serial_terms.add("virtual com")
 
     expected_uart_substring = None

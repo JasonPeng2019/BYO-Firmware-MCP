@@ -62,12 +62,11 @@ def test_exact_auto_detection_skips_research_and_unknown_requests_it() -> None:
     assert unknown.agent_prompt is not None
 
 
-def test_target_candidate_checks_syntax_part_and_support() -> None:
+def test_target_candidate_requires_exact_reviewed_mapping_and_support() -> None:
     assert (
         TargetResolver.validate_candidate(
             "stm32l476rgtx",
-            mcu_part_number="STM32L476RGT6-Exact",
-            part_consistent=lambda part, target: part.startswith("STM32L476") and "l476" in target,
+            expected_target="stm32l476rgtx",
             built_in_targets=("stm32l476rgtx",),
         )
         == "built_in"
@@ -75,11 +74,10 @@ def test_target_candidate_checks_syntax_part_and_support() -> None:
     with pytest.raises(TargetResolutionError) as mismatch:
         TargetResolver.validate_candidate(
             "nrf52840",
-            mcu_part_number="STM32L476RGT6-Exact",
-            part_consistent=lambda _part, _target: False,
+            expected_target="opaque-reviewed-alias",
             built_in_targets=("nrf52840",),
         )
-    assert mismatch.value.code == "target/part-mismatch"
+    assert mismatch.value.code == "target/reviewed-mapping-mismatch"
 
 
 def test_live_connect_failure_occurs_before_core_profile_commit(tmp_path: Path) -> None:

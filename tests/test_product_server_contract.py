@@ -57,7 +57,7 @@ def test_m10_active_contract_formally_supersedes_the_extraction_named_baseline()
     contract = _active_contract()
 
     assert contract["status"] == "active"
-    assert contract["milestone"] == "post-M10-artifact-collector-mcp"
+    assert contract["milestone"] == "post-M10-debiased-runtime-round-2"
     assert contract["supersedes"] == contract["imported_baseline"]["path"]
     assert (CONTRACT_PATH.parent / contract["supersedes"]).is_file()
     for relative_path in contract["hardening_evidence"].values():

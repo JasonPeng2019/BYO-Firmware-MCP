@@ -11,6 +11,8 @@ from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Any
 
+FIRMSTORE_DIRNAME = ".firm"
+
 
 class FirmStoreError(RuntimeError):
     """The requested artifact operation violates the FirmStore contract."""

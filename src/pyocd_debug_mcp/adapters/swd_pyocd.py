@@ -21,7 +21,7 @@ from pyocd.flash.eraser import FlashEraser  # type: ignore[import-untyped]
 from pyocd.flash.file_programmer import FileProgrammer  # type: ignore[import-untyped]
 
 from pyocd_debug_mcp.adapters.swd_interface import SWDInterface, TargetSessionHandle
-from pyocd_debug_mcp.board_config import BoardConfig, PROBE_FAMILY_HINTS
+from pyocd_debug_mcp.board_config import BoardConfig
 from pyocd_debug_mcp.pack_provision import discover_local_packs
 from pyocd_debug_mcp.probe_inventory import list_connected_probes
 from pyocd_debug_mcp.target_errors import (
@@ -130,12 +130,7 @@ def _looks_like_jlink_serial_open_failure(exc: Exception) -> bool:
 
 def _single_matching_probe_visible_for_board_family(board: BoardConfig) -> bool:
     probes = list_connected_probes(_run_cmd)
-    family_terms = PROBE_FAMILY_HINTS.get(board.probe_family, set())
-    if not family_terms:
-        return False
-    matching = [
-        probe for probe in probes if any(term in probe.searchable_text for term in family_terms)
-    ]
+    matching = [probe for probe in probes if probe.family == board.probe_family]
     return len(matching) == 1
 
 

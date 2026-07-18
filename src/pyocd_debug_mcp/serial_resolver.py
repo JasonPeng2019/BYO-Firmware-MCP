@@ -6,6 +6,7 @@ import re
 import shutil
 import sys
 from dataclasses import dataclass
+from importlib import resources
 from pathlib import Path
 from typing import Callable, Protocol
 
@@ -136,15 +137,23 @@ class SerialFallbackSpec:
     preferred_label: str | None = None
 
 
-_FALLBACK_RESOURCE = Path(__file__).with_name("serial_fallbacks.json")
+_FALLBACK_RESOURCE_NAME = "serial_fallbacks.json"
 _SUPPORTED_FALLBACK_PARSERS = frozenset({"nrfjprog_com", "stm32_programmer_list"})
 
 
-def _load_serial_fallbacks(path: Path = _FALLBACK_RESOURCE) -> tuple[SerialFallbackSpec, ...]:
+def _load_serial_fallbacks(path: Path | None = None) -> tuple[SerialFallbackSpec, ...]:
     try:
-        document = json.loads(path.read_text(encoding="utf-8"))
+        text = (
+            path.read_text(encoding="utf-8")
+            if path is not None
+            else resources.files(__package__).joinpath(_FALLBACK_RESOURCE_NAME).read_text(
+                encoding="utf-8"
+            )
+        )
+        document = json.loads(text)
     except (OSError, json.JSONDecodeError) as exc:
-        raise RuntimeError(f"Serial fallback registry is unreadable: {path}") from exc
+        source = str(path) if path is not None else _FALLBACK_RESOURCE_NAME
+        raise RuntimeError(f"Serial fallback registry is unreadable: {source}") from exc
     if not isinstance(document, dict) or document.get("schema_version") != 1:
         raise RuntimeError("Serial fallback registry must use schema_version 1")
     rows = document.get("providers")

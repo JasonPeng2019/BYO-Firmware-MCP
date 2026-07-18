@@ -14,6 +14,8 @@ from enum import Enum
 from pathlib import Path
 from typing import Mapping, Sequence
 
+from pyocd_debug_mcp.firmstore.store import FIRMSTORE_DIRNAME
+
 
 MANIFEST_NAME = "build-manifest.json"
 MANIFEST_OWNER = "pyocd-debug-mcp-artifact-collector"
@@ -108,8 +110,8 @@ def _validate_destination(destination: Path, sources: Mapping[ArtifactRole, Path
     resolved = requested.resolve()
     if resolved == Path(resolved.anchor).resolve() or resolved == Path.home().resolve():
         raise ValueError("Output directory must not be a filesystem root or the user's home.")
-    if any(part.casefold() == ".firm" for part in resolved.parts):
-        raise ValueError("Artifact bundles must not be written inside the FirmStore .firm tree.")
+    if any(part.casefold() == FIRMSTORE_DIRNAME for part in resolved.parts):
+        raise ValueError("Artifact bundles must not be written inside the FirmStore tree.")
     if resolved.exists():
         if not resolved.is_dir():
             raise ValueError(f"Output path is not a directory: {resolved}")

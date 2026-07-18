@@ -88,8 +88,7 @@ class TargetResolver:
     def validate_candidate(
         candidate: str,
         *,
-        mcu_part_number: str,
-        part_consistent: Callable[[str, str], bool],
+        expected_target: str,
         built_in_targets: Sequence[str],
         staged_targets: Sequence[str] = (),
     ) -> Literal["built_in", "staged_pack"]:
@@ -97,10 +96,10 @@ class TargetResolver:
             raise TargetResolutionError(
                 "target/invalid-syntax", "Target must be a valid pyOCD target identifier"
             )
-        if not part_consistent(mcu_part_number, candidate):
+        if candidate != expected_target:
             raise TargetResolutionError(
-                "target/part-mismatch",
-                "Target candidate is not consistent with the exact MCU part number",
+                "target/reviewed-mapping-mismatch",
+                "Target candidate does not match the exact reviewed board/part mapping",
             )
         if candidate in built_in_targets:
             return "built_in"

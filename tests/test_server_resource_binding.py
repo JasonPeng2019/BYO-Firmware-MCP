@@ -1,21 +1,41 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
+import json
 import subprocess
 from types import SimpleNamespace
 from pathlib import Path
 from typing import cast
 
+import mcp.types as types
 import pytest
+from mcp.shared.memory import create_connected_server_and_client_session
 
 from pyocd_debug_mcp import server
 from pyocd_debug_mcp.firmstore.cache import CacheResolution
+from pyocd_debug_mcp.firmstore.profiles import ProfileRepository
+from pyocd_debug_mcp.firmstore.reports import ReportWriter
+from pyocd_debug_mcp.firmstore.store import FirmStore
+from pyocd_debug_mcp.guardrails.plan_defs import PLAN_DEFINITIONS
 from pyocd_debug_mcp.kernel.operations import ManagedOperation, OperationState
+from pyocd_debug_mcp.setup_flow.preflight import (
+    PreflightDecision,
+    PreflightInventory,
+    ProbeCandidate,
+    SerialCandidate,
+    SetupUserInput,
+)
+from pyocd_debug_mcp.setup_flow.setup import SetupPhase, SetupPhaseContext, SetupPhaseOutcome
 from pyocd_debug_mcp.setup_flow.validate import ValidationInventory, ValidationSerial
-from pyocd_debug_mcp.setup_flow.setup import SetupPhaseContext
 from pyocd_debug_mcp.safety.fingerprints import FingerprintSource
 from pyocd_debug_mcp.safety.regions import SourceAuthority
 from pyocd_debug_mcp.safety.map_build import SafetySetupRequest
+
+
+def _call_payload(result: types.CallToolResult) -> dict[str, object]:
+    content = result.content[0]
+    assert isinstance(content, types.TextContent)
+    return json.loads(content.text)
 
 
 def test_successful_ordinary_operation_releases_reset_without_rebooting(monkeypatch) -> None:
@@ -335,3 +355,196 @@ def test_fresh_setup_rejects_family_only_mcu_before_profile_commit() -> None:
     assert result.code == "setup/catalog-evidence-mismatch"
     assert "exact reviewed package" in result.agent_prompt
     assert "do not guess" in result.agent_prompt.casefold()
+
+
+def test_fresh_setup_rejects_unknown_probe_provider_before_connect_or_profile_commit(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    profiles = ProfileRepository(FirmStore(tmp_path), legacy_board_dir=tmp_path / "legacy")
+    monkeypatch.setattr(server, "_profile_repository", profiles)
+    monkeypatch.setattr(
+        server.target_control,
+        "open_session",
+        lambda **_kwargs: pytest.fail("unknown provider must be rejected before connect"),
+    )
+    datasheet = Path("Nano_BLE_MCU-nRF52840_PS_v1.1.pdf").resolve()
+    user_input = SetupUserInput(
+        "unknown_probe_board",
+        "probe:future-probe",
+        "Unknown Probe Board",
+        "nRF52840-QIAA",
+        115200,
+        requires_uart=False,
+        board_type="nrf52840dk",
+        datasheet_path=str(datasheet),
+    )
+    preflight = PreflightDecision(
+        "preflight_ready",
+        "setup/preflight-ready",
+        "ready",
+        selected_probe=ProbeCandidate(
+            "future-probe", "Future Universal Probe", "unknown", "future-probe"
+        ),
+        selected_target="nrf52840",
+    )
+    context = cast(
+        SetupPhaseContext,
+        SimpleNamespace(user_input=user_input, preflight=preflight),
+    )
+
+    result = server._setup_connection_phase(context)
+
+    assert result.verified is False
+    assert result.code == "setup/catalog-route-mismatch"
+    assert "could not be identified" in result.agent_prompt
+    assert not profiles.store.layout.board_profile("unknown_probe_board").exists()
+
+
+def test_reviewed_opaque_target_reaches_live_connect_before_profile_commit(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    profiles = ProfileRepository(FirmStore(tmp_path), legacy_board_dir=tmp_path / "legacy")
+    monkeypatch.setattr(server, "_profile_repository", profiles)
+    events: list[str] = []
+    handle = SimpleNamespace()
+
+    def open_session(**kwargs: object) -> object:
+        assert kwargs["target"] == "nrf52840"
+        events.append("connect")
+        assert not profiles.store.layout.board_profile("reviewed_board").exists()
+        return handle
+
+    def read_memory(_handle: object, address: int, _width: int) -> int:
+        return 0x00052840 if address == 0x10000100 else 0x12345678
+
+    monkeypatch.setattr(server.target_control, "open_session", open_session)
+    monkeypatch.setattr(server.target_control, "read_memory", read_memory)
+    monkeypatch.setattr(server.target_control, "close_session", lambda _handle: None)
+    datasheet = Path("Nano_BLE_MCU-nRF52840_PS_v1.1.pdf").resolve()
+    user_input = SetupUserInput(
+        "reviewed_board",
+        "probe:opaque-probe",
+        "Reviewed Board",
+        "nRF52840-QIAA",
+        115200,
+        requires_uart=False,
+        board_type="nrf52840dk",
+        datasheet_path=str(datasheet),
+    )
+    preflight = PreflightDecision(
+        "preflight_ready",
+        "setup/preflight-ready",
+        "ready",
+        selected_probe=ProbeCandidate("opaque-probe", "Probe", "jlink", "opaque-probe"),
+        selected_target="nrf52840",
+    )
+    context = cast(
+        SetupPhaseContext,
+        SimpleNamespace(user_input=user_input, preflight=preflight),
+    )
+
+    result = server._setup_connection_phase(context)
+
+    assert result.verified is True
+    assert events == ["connect"]
+    committed = profiles.load("reviewed_board", include_legacy=False)
+    assert committed.mcu_part_number == "nRF52840-QIAA"
+    assert committed.board.pyocd_target == "nrf52840"
+    assert committed.board.silicon_id_label == "silicon_id"
+    assert committed.board.silicon_id_addr == 0x10000100
+    assert committed.board.silicon_id_expected == 0x00052840
+    assert committed.board.silicon_id_mask == 0xFFFFFFFF
+
+
+async def test_live_mcp_board_setup_commits_target_neutral_silicon_identity_label(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    board_id = "debias_mcp_board"
+    store = FirmStore(tmp_path)
+    profiles = ProfileRepository(store, legacy_board_dir=tmp_path / "legacy")
+    reports = ReportWriter(store)
+    inventory = PreflightInventory(
+        probes=(ProbeCandidate("probe-a", "Reviewed J-Link", "jlink", "PROBE-001"),),
+        serial_ports=(
+            SerialCandidate("UART-001", "COM-test", "Reviewed UART", "UART-001", 1, 2),
+        ),
+        built_in_targets=("nrf52840",),
+        exact_detected_targets=("nrf52840",),
+    )
+    phase_handlers = {
+        SetupPhase.TARGET_SUPPORT: lambda _context: SetupPhaseOutcome.success(
+            "test/target-supported"
+        ),
+        SetupPhase.CONNECTION: server._setup_connection_phase,
+        SetupPhase.VALIDATION: lambda _context: SetupPhaseOutcome.success(
+            "test/validation-complete"
+        ),
+        SetupPhase.SAFETY_RESEARCH: lambda _context: SetupPhaseOutcome.success(
+            "test/safety-reviewed"
+        ),
+        SetupPhase.SAFETY_MAP: lambda _context: SetupPhaseOutcome.success(
+            "test/safety-map-complete"
+        ),
+        SetupPhase.COMMIT: lambda _context: SetupPhaseOutcome.success("test/commit-complete"),
+    }
+    monkeypatch.setattr(server, "_profile_repository", profiles)
+    monkeypatch.setattr(server._setup_workflow, "reports", reports)
+    monkeypatch.setattr(server._setup_workflow, "inventory_provider", lambda _input: inventory)
+    monkeypatch.setattr(server._setup_workflow, "phase_handlers", phase_handlers)
+    monkeypatch.setattr(server._setup_workflow, "on_cache_confirmation", lambda *_args: None)
+    handle = SimpleNamespace()
+    monkeypatch.setattr(server.target_control, "open_session", lambda **_kwargs: handle)
+    monkeypatch.setattr(
+        server.target_control,
+        "read_memory",
+        lambda _handle, address, _width: 0x00052840 if address == 0x10000100 else 0,
+    )
+    monkeypatch.setattr(server.target_control, "close_session", lambda _handle: None)
+    datasheet = str(Path("Nano_BLE_MCU-nRF52840_PS_v1.1.pdf").resolve())
+    action_parameters = {
+        "mode": "setup",
+        "connection_id": "probe:PROBE-001",
+        "display_name": "De-bias MCP Board",
+        "board_type": "nrf52840dk",
+        "mcu_part_number": "nRF52840-QIAA",
+        "serial_baudrate": 115200,
+        "serial_id": "UART-001",
+        "datasheet_path": datasheet,
+        "datasheet_sha256": None,
+    }
+    plan = {
+        "board_id": board_id,
+        "hypothesis": "The reviewed live identity matches the selected board and package.",
+        "hypothesis_made": True,
+        "strategy": "Complete one bounded setup and inspect the committed identity evidence.",
+        "strategy_evaluated": True,
+        "expected_fail_return": "A setup status naming the exact failed evidence check.",
+        "expected_success_return": "A completed setup report and one schema-v2 profile.",
+        "max_calls": 1,
+        "max_calls_buffer": 0,
+        "action_parameters": action_parameters,
+        "user_permission": "one-time",
+    }
+    null_plan = {name: None for name in PLAN_DEFINITIONS["board_setup"].null_field_names}
+
+    async with create_connected_server_and_client_session(server.mcp) as session:
+        initialized = await session.call_tool("board_setup-plan", null_plan)
+        assert initialized.isError is not True
+        await session.call_tool(
+            "load_setup_tool", {"board_id": board_id, "tool_name": "board_setup-plan"}
+        )
+        accepted = await session.call_tool("board_setup-plan", plan)
+        assert accepted.isError is not True
+        visible = {tool.name for tool in (await session.list_tools()).tools}
+        assert "board_setup" in visible
+        completed = await session.call_tool(
+            "board_setup", {"board_id": board_id, **action_parameters}
+        )
+
+    payload = _call_payload(completed)
+    assert payload["status"] == "setup_completed"
+    committed = profiles.load(board_id, include_legacy=False)
+    assert committed.board.silicon_id_label == "silicon_id"
+    assert committed.board.silicon_id_addr == 0x10000100
+    assert committed.board.silicon_id_expected == 0x00052840
+    assert committed.board.silicon_id_mask == 0xFFFFFFFF

@@ -7,8 +7,14 @@ from dataclasses import dataclass
 from typing import Any, Callable
 
 from pyocd.core.helpers import ConnectHelper  # type: ignore[import-untyped]
+from pyocd.probe.aggregator import PROBE_CLASSES  # type: ignore[import-untyped]
 
-from pyocd_debug_mcp.board_config import BoardConfig, PROBE_FAMILY_HINTS
+from pyocd_debug_mcp.board_config import BoardConfig
+from pyocd_debug_mcp.probe_families import (
+    configured_probe_cli_commands,
+    match_probe_family_text,
+    provider_qualified_family,
+)
 
 RunCommand = Callable[[list[str]], tuple[int, str, str]]
 
@@ -24,6 +30,8 @@ class ProbeInfo:
     description: str
     raw: str
     state: str = ""
+    family: str = "unknown"
+    family_source: str = "unknown"
 
     @property
     def searchable_text(self) -> str:
@@ -47,6 +55,15 @@ def _append_unique_text(parts: list[str], value: object) -> None:
         parts.append(text)
 
 
+def probe_family_from_pyocd_probe(probe: Any) -> str:
+    """Return pyOCD's registered provider key for a live probe object."""
+
+    for provider_id, probe_class in PROBE_CLASSES.items():
+        if isinstance(probe, probe_class):
+            return str(provider_id).casefold()
+    return "unknown"
+
+
 def _probe_info_from_pyocd_probe(probe: Any) -> ProbeInfo | None:
     uid = _normalize_text(getattr(probe, "unique_id", ""))
     description_parts: list[str] = []
@@ -68,7 +85,14 @@ def _probe_info_from_pyocd_probe(probe: Any) -> ProbeInfo | None:
     if not uid or not description:
         return None
 
-    return ProbeInfo(uid=uid, description=description, raw=raw)
+    family = probe_family_from_pyocd_probe(probe)
+    return ProbeInfo(
+        uid=uid,
+        description=description,
+        raw=raw,
+        family=family,
+        family_source="pyocd_api" if family != "unknown" else "unknown",
+    )
 
 
 def _list_connected_probes_via_pyocd_api() -> list[ProbeInfo]:
@@ -105,11 +129,20 @@ def parse_pyocd_probe_listing(output: str) -> list[ProbeInfo]:
 
         match = _ROW_RE.match(raw)
         if match:
+            uid = match.group("uid").strip()
+            family = provider_qualified_family(uid)
+            source = "provider_qualified_uid" if family is not None else "legacy_text_fallback"
+            if family is None:
+                family = match_probe_family_text(raw)
+                if family == "unknown":
+                    source = "unknown"
             probe = ProbeInfo(
-                uid=match.group("uid").strip(),
+                uid=uid,
                 description=match.group("description").strip(),
                 state=(match.group("state") or "").strip(),
                 raw=raw,
+                family=family,
+                family_source=source,
             )
             probes.append(probe)
             current_index = len(probes) - 1
@@ -121,11 +154,21 @@ def parse_pyocd_probe_listing(output: str) -> list[ProbeInfo]:
             uid = columns[2].strip()
             state = columns[3].strip() if len(columns) >= 4 else ""
             if description and uid:
+                family = provider_qualified_family(uid)
+                source = (
+                    "provider_qualified_uid" if family is not None else "legacy_text_fallback"
+                )
+                if family is None:
+                    family = match_probe_family_text(raw)
+                    if family == "unknown":
+                        source = "unknown"
                 probe = ProbeInfo(
                     uid=uid,
                     description=description,
                     state=state,
                     raw=raw,
+                    family=family,
+                    family_source=source,
                 )
                 probes.append(probe)
                 current_index = len(probes) - 1
@@ -133,11 +176,21 @@ def parse_pyocd_probe_listing(output: str) -> list[ProbeInfo]:
 
         if current_index is not None:
             current = probes[current_index]
+            combined_description = f"{current.description} {stripped}".strip()
+            combined_raw = f"{current.raw}\n{raw}"
+            family = provider_qualified_family(current.uid)
+            source = "provider_qualified_uid" if family is not None else "legacy_text_fallback"
+            if family is None:
+                family = match_probe_family_text(f"{combined_description} {combined_raw}")
+                if family == "unknown":
+                    source = "unknown"
             probes[current_index] = ProbeInfo(
                 uid=current.uid,
-                description=f"{current.description} {stripped}".strip(),
+                description=combined_description,
                 state=current.state,
-                raw=f"{current.raw}\n{raw}",
+                raw=combined_raw,
+                family=family,
+                family_source=source,
             )
 
     return probes
@@ -159,18 +212,14 @@ def list_connected_probes(
     if not allow_subprocess_fallback:
         return []
 
-    rc, out, err = run_cmd(["pyocd", "list", "--probes"])
-    primary_text = out if out.strip() else err
-    if primary_text.strip():
-        probes = parse_pyocd_probe_listing(primary_text)
-        if probes:
-            return probes
-
-    rc, out, err = run_cmd(["pyocd", "list"])
-    fallback_text = out if out.strip() else err
-    if not fallback_text.strip():
-        return []
-    return parse_pyocd_probe_listing(fallback_text)
+    for command in configured_probe_cli_commands():
+        _rc, out, err = run_cmd(list(command))
+        text = out if out.strip() else err
+        if text.strip():
+            probes = parse_pyocd_probe_listing(text)
+            if probes:
+                return probes
+    return []
 
 
 def _score_terms(text: str, terms: tuple[str, ...]) -> int:
@@ -188,8 +237,16 @@ def pick_probe_for_board(
     if not probes:
         return ProbeResolution(probe=None, note="no probes detected", probes=tuple())
 
+    family_matches = [probe for probe in probes if probe.family == board.probe_family]
+    if not family_matches:
+        return ProbeResolution(
+            probe=None,
+            note="no connected probe has the reviewed board's expected provider family",
+            probes=tuple(probes),
+        )
+
     scored: list[tuple[int, ProbeInfo]] = []
-    for probe in probes:
+    for probe in family_matches:
         score = _score_terms(probe.searchable_text, board.probe_hint_terms)
         if score > 0:
             scored.append((score, probe))
@@ -205,18 +262,10 @@ def pick_probe_for_board(
             probes=tuple(probes),
         )
 
-    if allow_single_fallback and len(probes) == 1:
-        probe = probes[0]
-        family_terms = tuple(PROBE_FAMILY_HINTS.get(board.probe_family, set()))
-        if family_terms and _score_terms(probe.searchable_text, family_terms) > 0:
-            return ProbeResolution(
-                probe=probe,
-                note="single connected probe assumed for this board",
-                probes=tuple(probes),
-            )
+    if allow_single_fallback and len(family_matches) == 1:
         return ProbeResolution(
-            probe=None,
-            note="single connected probe does not match the expected probe family",
+            probe=family_matches[0],
+            note="single connected probe matched the reviewed provider family",
             probes=tuple(probes),
         )
 

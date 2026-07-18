@@ -1,7 +1,7 @@
 {
-  "contract_version": 30,
+  "contract_version": 32,
   "status": "active",
-  "milestone": "post-M10-artifact-collector-mcp",
+  "milestone": "post-M10-debiased-runtime-round-2",
   "supersedes": "adversarial-usability-server-tools.json",
   "imported_baseline": {
     "path": "adversarial-usability-server-tools.json",
@@ -11,27 +11,33 @@
     "scripts/run_fresh_workspace_e2e.py": "64118edd67e72621119552a35e24aacc1ddb5c29085db3f225f664237da44bad",
     "scripts/validate_autonomous_acceptance.py": "ed6f560edd746a3f5387dfae427a58ec5f9723335ddab623c53081c102d5845e",
     "src/pyocd_debug_mcp/guardrails/plan_contract.py": "e7d6f13f76b7ba1a458924d5e19ba1b203ec8127f9c5860fb6cd4a5f11ea8545",
-    "src/pyocd_debug_mcp/guardrails/plan_defs.py": "6207af86ebe181e2978543f89f82d79fa644f4406ff20d2f03161e5313819329",
+    "src/pyocd_debug_mcp/guardrails/plan_defs.py": "2d88887de57cf7f339eb91b1a4189e5551417675bd6cc915df4eedc401af43f0",
     "src/pyocd_debug_mcp/safety/enforce.py": "af63f3e96518339b82dc67811acde833b53078e27cd4a24af9d0404a42d70f38",
     "src/pyocd_debug_mcp/safety/map_build.py": "79f8d4401ef53d9037d2d376ba69dcdcd5023eafc90667b497c17ebba5a08e4d",
     "src/pyocd_debug_mcp/safety/refresh.py": "2e60ccb3fa069b24e789d9cc5f1a2c621ae5641866bee0d134c2707f713fdb07",
-    "src/pyocd_debug_mcp/server.py": "b0a1f4a0ca81994666f66485154dcfc2d7bacd25d156742b1bf3e85f19141e8b",
+    "src/pyocd_debug_mcp/server.py": "eb27bf9497479b11515a4eb27cd46af9a619925d44db41d47bfb5dcfceafecd1",
     "src/pyocd_debug_mcp/services/uart_capture.py": "270a66d831212faec875080c2fb721eb5d2a04b73275ecfa39eea1fef8155f1f",
     "src/pyocd_debug_mcp/services/uart_exchange_schema.py": "99cc6b54313b5667f5ab3a59910dfdd586472719d23c33d735311c837f959770",
-    "src/pyocd_debug_mcp/setup_flow/board_catalog.py": "b363e45772ac98106b8412a7b74c54b03773368b4a4a716dc4ea21c1fa17b583",
+    "src/pyocd_debug_mcp/setup_flow/board_catalog.py": "5de0db6703613e01a0300467092956ce5348f6a9934f3f5336ffb5b485bda28a",
     "src/pyocd_debug_mcp/setup_flow/preflight.py": "696f52e06fc4868450028e457665ea222f96ff3f855063c1c88c8be193c90978",
     "src/pyocd_debug_mcp/setup_flow/reviewed_evidence.py": "ac59ae7186a09c2816840fb5e6f9f5c9c8696389de2d2c3a38f8881d2b800622",
     "src/pyocd_debug_mcp/tools/flash.py": "635c45614e465fb242a4d9a156587edf861c88b17d1e4269daeadfbc982a1b86",
-    "src/pyocd_debug_mcp/tools/setup.py": "837243dacf4ddb9110692c01aed22ef3605e71fc1a2f32224a334d248ffaa292",
+    "src/pyocd_debug_mcp/tools/setup.py": "fb5086492e211d8e9315f8dd9f967d84f77d07a0fe4e864513bbdac14791f016",
     "src/pyocd_debug_mcp/tools/registers.py": "4f597b8a1ac7f00ee013b85d37d11bffecd163b403aad003b565acee29bd8697",
-    "src/pyocd_debug_mcp/zephyr_build.py": "fd718a4d6e993a6b52e4504681cca423a011cdd258bc4b0e6f8510d2b501701c",
-    "src/pyocd_debug_mcp/tools/handshake.py": "39e5c9264108acb40300a86a8fd4242f0f9fe6d6128a53de232e67ff095426a7",
-    "src/pyocd_debug_mcp/setup_flow/validate.py": "d114b6227c779cc3766ba4904ad873a7c8aba8c032bdf6053a0a89a5dfe45a64",
+    "src/pyocd_debug_mcp/zephyr_build.py": "1b0297fca3b4ae7f52c0d20a38b2b553487cfe4bd3f1b62cedffd56d9056977e",
+    "src/pyocd_debug_mcp/tools/handshake.py": "8e2e372965ea20d575b51393066c5ff1031237dfd237359d89f3437d064ef028",
+    "src/pyocd_debug_mcp/setup_flow/validate.py": "e5409023ca4dd461cc58b88e5cbacd2d888e8ca22c99a5fd1b00aa0ecb3b4999",
     "src/pyocd_debug_mcp/tools/session.py": "b1733ba13fb4f5eb39ca454e5709d3120599a72a66822ea526dae1970aa4462e",
     "src/pyocd_debug_mcp/tools/memory.py": "fd1602dd812bb5aaf4a78aa4d12d18c38a4716b38ede8b28802d356a1476d5f8",
     "src/pyocd_debug_mcp/tools/artifacts.py": "c7592bb964e2cf4a687637b1d9d7e73f62d4adcc367c29f59e10b26bc045c2e6",
-    "src/pyocd_debug_mcp/artifact_collector.py": "1e76b3d0f3213e759404185507b60faa117d3b5650aeb7cd5d7b032b0f8ad4a8",
-    "src/pyocd_debug_mcp/guardrails/plan_engine.py": "be58bf6d021cfa5aa6c73ce6a2ec23906532528f702d19c8b908851c929d2ed8"
+    "src/pyocd_debug_mcp/artifact_collector.py": "a881c3a2a58b62244e51f9434d1f667031481ada8bd56735ca1b5f8d0f98942b",
+    "src/pyocd_debug_mcp/guardrails/plan_engine.py": "be58bf6d021cfa5aa6c73ce6a2ec23906532528f702d19c8b908851c929d2ed8",
+    "src/pyocd_debug_mcp/adapters/swd_interface.py": "91a876a0177cf93fbe1e213f48b8888e34c2ba030347144a9793229a14d95bc8",
+    "src/pyocd_debug_mcp/adapters/swd_pyocd.py": "8f787547452220c386088094e388813d5a15b15abef4b5400ef4176b186c7447",
+    "src/pyocd_debug_mcp/services/target_control.py": "d18b0dd02d0eb94b1c1bbf19d48653e4f95bbdecf89b834b837c5d36ceab8392",
+    "src/pyocd_debug_mcp/tools/unlock.py": "47ebe3486dc1eb1c3562ecf584a9edf9fb5cc5656a5d1c7b6a839f34c69c7bc6",
+    "stage0_check.py": "70a5d38c39a8493353f6508d8e0c1a66519bd03eaace7ae48d0655d7f63b14c2",
+    "src/pyocd_debug_mcp/setup_flow/targets.py": "aedd164d1fb7bef962e33546ccf704a634cc434b0fd8620b19c157ba58bcee81"
   },
   "tool_contract_sha256_overrides": {
     "board_fix_setup": "e671db692b1f73a38b98fa9e1c168504b7dd48ae13bfa4b82bd1a6c292bdbbb5",
@@ -46,7 +52,8 @@
     "read_memory_address": "3573cd633c765dc0dac74d48f68123cf35534607def12963cda21af2aa43d8c2",
     "read_memory_symbol": "096df2ebbd8b6673210ffaabc4898e1cc4e0f703066e447fb2bcdb0e69977b0d",
     "board_safety_refresh": "7f0bcec3253f52ebb14fa7485adbb59002bd49b8e5024c89faebe4dbf614183c",
-    "collect_build_artifacts": "db8f24a194d26c150398db676b09ef3ac44cf4ba106fd256b4dd46d8e60c805c"
+    "collect_build_artifacts": "db8f24a194d26c150398db676b09ef3ac44cf4ba106fd256b4dd46d8e60c805c",
+    "get_setup_status": "2f65af45c6ceadbb99762803ae837300e653ef143c9b22c150372bad2325907e"
   },
   "plan_tool_contract_sha256": "f4b29f5e9e5a956b760c7ce5d3b5a0fc7c7457989e48a84d53ff069a9212df81",
   "hardening_evidence": {
@@ -83,6 +90,8 @@
     "Version 27 separates profile-only connect from guarded connect_override, disables legacy environment overrides on the normal path, and applies the strict child schema through action_batch.",
     "Version 28 contains raw and symbol memory reads to their exact backend-access spans, allowing mapped regions while denying UNKNOWN and PROHIBITED before target I/O.",
     "Version 29 adds symmetric scoped bootloader refresh, stable drift classifications and remedies, honest unsupported-board safety setup, and removes unconsumable safety continuation IDs.",
-    "Version 30 deliberately adds the always-visible collect_build_artifacts MCP tool, its non-authorizing canonical artifact manifest/handoff, and coherent metadata-driven Zephyr ELF/linker-map export."
+    "Version 30 deliberately adds the always-visible collect_build_artifacts MCP tool, its non-authorizing canonical artifact manifest/handoff, and coherent metadata-driven Zephyr ELF/linker-map export.",
+    "Version 31 moves reviewed board and serial fallback selection into validated packaged data, removes MCU-derived address/attach/recovery defaults, makes native build plus artifact collection the generic MCP guidance, and retains Zephyr and vendor helpers only as labeled fallbacks.",
+    "Version 32 removes Python prefix/wildcard part-to-target inference; automatic setup accepts only the exact reviewed catalog mapping, while staged packs may provide but never redefine that target."
   ]
 }
