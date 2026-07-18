@@ -529,12 +529,11 @@ async def _run(args: argparse.Namespace) -> dict[str, Any]:
             "max_calls": 1,
             "max_calls_buffer": 0,
             "artifact": str(artifact),
-            "target_address": None,
         }
         plan_result = await call("flash_application-plan", plan)
         action_result = await call(
             "flash_application",
-            {"board_id": args.board_id, "artifact": str(artifact), "target_address": None},
+            {"board_id": args.board_id, "artifact": str(artifact)},
         )
         if "Flashed" not in action_result:
             raise RuntimeError(f"{label} flash did not succeed: {action_result}")

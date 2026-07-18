@@ -8,11 +8,20 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from typing import Any
 
+from pyocd_debug_mcp.guardrails.plan_defs import PLAN_DEFINITIONS
 from pyocd_debug_mcp.guardrails.plan_engine import PlanEngine
 from pyocd_debug_mcp.kernel.run_state import ServerRun
-from pyocd_debug_mcp.setup_flow.preflight import PreflightSelections, SetupUserInput
+from pyocd_debug_mcp.setup_flow.preflight import (
+    NO_INTERNALS_RELAY_INSTRUCTION,
+    PreflightSelections,
+    SetupUserInput,
+)
 from pyocd_debug_mcp.setup_flow.setup import SetupWorkflow
-from pyocd_debug_mcp.setup_flow.validate import BoardValidator, ValidationRequest
+from pyocd_debug_mcp.setup_flow.validate import (
+    VALIDATION_STATUSES,
+    BoardValidator,
+    ValidationRequest,
+)
 
 SETUP_LOADABLE_TOOLS = frozenset(
     {"board_setup-plan", "board_safety_setup", "board_safety_refresh", "board_validate"}
@@ -21,6 +30,154 @@ SETUP_LOADABLE_TOOLS = frozenset(
 
 def _json(document: Mapping[str, Any]) -> str:
     return json.dumps(document, ensure_ascii=False, sort_keys=True)
+
+
+def _load_guidance(board_id: str, tool_name: str) -> dict[str, Any]:
+    """Return one bounded, tool-specific route rather than the whole setup manual."""
+
+    relay_rule = (
+        f"{NO_INTERNALS_RELAY_INSTRUCTION} Ask only the ordinary-language question named by "
+        "the returned status; copy machine fields into the next MCP call without showing them."
+    )
+    if tool_name == "board_setup-plan":
+        definition = PLAN_DEFINITIONS["board_setup"]
+        return {
+            "next_call": {
+                "tool": definition.plan_tool_name,
+                "arguments": {name: None for name in definition.null_field_names},
+            },
+            "guidance": {
+                "purpose": "Plan one first-time setup or one validation-directed profile repair.",
+                "when_to_use": (
+                    "Use only for an unknown familiar board name, or when board_validate names "
+                    "setup or repair as the exact remedy."
+                ),
+                "when_not_to_use": (
+                    "Do not use when a matching profile has not yet been validated, or as a "
+                    "shortcut around validation, safety evidence, or a hardware mismatch."
+                ),
+                "expected_statuses": [
+                    "plan initialization guidance",
+                    "plan accepted",
+                    "setup_completed",
+                    "setup_needs_user_input",
+                    "setup_research_required",
+                    "setup_blocked",
+                    "setup_unresolved",
+                    "setup_connection_failed",
+                ],
+                "accepted_response_shape": (
+                    "First make the all-NULL next_call above. Then submit only one complete "
+                    "board_setup-plan JSON object. Copy board_id and server-known action fields "
+                    "from setup_overview.plan_action_parameters_template; obtain only its listed "
+                    "user facts conversationally. For a setup continuation, copy the exact "
+                    "accepted_response returned by board_setup into continue_setup."
+                ),
+                "common_remedies": [
+                    "For friendly probe or UART ambiguity, ask which friendly label belongs to the board.",
+                    "For official-source research, return only the fields requested by the continuation.",
+                    "After completion, load and call board_validate; setup alone does not open the gate.",
+                ],
+                "relay_rule": relay_rule,
+            },
+        }
+    if tool_name == "board_validate":
+        return {
+            "next_call": {"tool": tool_name, "arguments": {"board_id": board_id}},
+            "guidance": {
+                "purpose": "Non-destructively verify the profile, live board, UART, and safety evidence.",
+                "when_to_use": (
+                    "Use first for every matching familiar-name profile, after setup or safety "
+                    "work, and again after disconnect or restart."
+                ),
+                "when_not_to_use": (
+                    "Do not use as setup for an unknown name and do not treat an old report as a live gate."
+                ),
+                "expected_statuses": list(VALIDATION_STATUSES),
+                "accepted_response_shape": (
+                    "If validation_needs_user_input is returned, ask the one friendly choice "
+                    "question and copy its accepted_response object as the exact board_validate "
+                    "retry. Terminal statuses have accepted_response null."
+                ),
+                "common_remedies": [
+                    "Choose a returned friendly probe or UART label without exposing its choice_id.",
+                    "Use board_safety_setup or board_safety_refresh only when the validation code names it.",
+                    "Correct a physical mismatch rather than rewriting the profile.",
+                ],
+                "relay_rule": relay_rule,
+            },
+        }
+    if tool_name == "board_safety_setup":
+        return {
+            "next_call": {"tool": tool_name, "arguments": {"board_id": board_id}},
+            "guidance": {
+                "purpose": "Create or structurally rebuild authoritative safety-map evidence.",
+                "when_to_use": (
+                    "Use only when setup or validation reports a missing, incomplete, conflicting, "
+                    "or anchor-invalid safety map."
+                ),
+                "when_not_to_use": (
+                    "Do not use for routine application build drift; use board_safety_refresh for "
+                    "that named remedy. It never opens the live gate."
+                ),
+                "expected_statuses": [
+                    "safety_setup_completed",
+                    "safety_setup_needs_user_input",
+                    "safety_setup_research_required",
+                    "safety_setup_incomplete",
+                    "safety_setup_conflict",
+                    "safety_setup_blocked",
+                ],
+                "accepted_response_shape": (
+                    "Follow only the exact continuation or remedy in the returned status; this "
+                    "tool has no caller-supplied allowed ranges."
+                ),
+                "common_remedies": [
+                    "Supply the requested authoritative artifact or official evidence.",
+                    "Resolve conflicting evidence fail-closed.",
+                    "After completion, load and call board_validate.",
+                ],
+                "relay_rule": relay_rule,
+            },
+        }
+    return {
+        "next_call": {
+            "tool": tool_name,
+            "arguments": {
+                "board_id": board_id,
+                "application_elf": None,
+                "application_hex": None,
+                "application_map": None,
+            },
+        },
+        "guidance": {
+            "purpose": "Refresh an existing valid safety map after safely scoped artifact drift.",
+            "when_to_use": (
+                "Use when validation or a guarded action specifically reports refreshable "
+                "fingerprint drift, normally after rebuilding the application."
+            ),
+            "when_not_to_use": (
+                "Do not use for a missing or conflicting map or for board, MCU, target, probe, "
+                "geometry, or schema anchor changes. Refresh cannot reopen a disconnected gate."
+            ),
+            "expected_statuses": [
+                "safety_refresh_completed",
+                "refresh_scope_unclear",
+                "safety_conflict",
+                "safety_refresh_blocked",
+            ],
+            "accepted_response_shape": (
+                "Copy any application artifact paths named by the triggering remedy into the "
+                "matching optional next_call fields; leave unrelated fields null."
+            ),
+            "common_remedies": [
+                "Use full board_safety_setup when scope is unclear or anchors changed.",
+                "Resolve a safety conflict before retrying.",
+                "Run board_validate if a new live gate stamp is required.",
+            ],
+            "relay_rule": relay_rule,
+        },
+    }
 
 
 class SetupToolLoadState:
@@ -45,7 +202,7 @@ class SetupToolLoadState:
             "board_id": board,
             "tool_name": tool_name,
             "redirect": f"Continue by calling {tool_name} for board '{board}'.",
-        }
+        } | _load_guidance(board, tool_name)
 
     def is_loaded(self, board_id: str, tool_name: str) -> bool:
         with self._guard:
@@ -116,6 +273,8 @@ def build_setup_handlers(services: SetupToolServices) -> dict[str, Callable[...,
 
         Call after initialization_handshake and after asking which boards are connected. Pass the
         ordinary familiar names here; pass NULL only to inspect inventory before the user answers.
+        The normalized literal sentinel "no board" must be passed by itself and is never a board
+        name candidate. If it is mixed with names, re-ask the user conversationally.
         Every matching stored name, including an incomplete profile, routes to board_validate
         first. Unknown names receive a server-generated board_id plus setup questions. Use setup,
         repair, safety, attachment, or retry only when validation names that exact remedy. Relay
@@ -182,9 +341,8 @@ def build_setup_handlers(services: SetupToolServices) -> dict[str, Callable[...,
         mcu_part_number: str,
         serial_baudrate: int,
         serial_id: str,
-        serial_port: str,
         datasheet_path: str,
-        datasheet_sha256: str,
+        datasheet_sha256: str | None,
     ) -> SetupUserInput:
         return SetupUserInput(
             board_id,
@@ -195,9 +353,8 @@ def build_setup_handlers(services: SetupToolServices) -> dict[str, Callable[...,
             True,
             board_type,
             datasheet_path,
-            datasheet_sha256,
+            datasheet_sha256 or "",
             serial_id,
-            serial_port,
         )
 
     def board_setup(
@@ -209,9 +366,8 @@ def build_setup_handlers(services: SetupToolServices) -> dict[str, Callable[...,
         mcu_part_number: str,
         serial_baudrate: int,
         serial_id: str,
-        serial_port: str,
         datasheet_path: str,
-        datasheet_sha256: str,
+        datasheet_sha256: str | None,
     ) -> str:
         """Run the first setup attempt covered by the active setup plan."""
 
@@ -233,7 +389,6 @@ def build_setup_handlers(services: SetupToolServices) -> dict[str, Callable[...,
             mcu_part_number,
             serial_baudrate,
             serial_id,
-            serial_port,
             datasheet_path,
             datasheet_sha256,
         )
@@ -256,9 +411,8 @@ def build_setup_handlers(services: SetupToolServices) -> dict[str, Callable[...,
         mcu_part_number: str,
         serial_baudrate: int,
         serial_id: str,
-        serial_port: str,
         datasheet_path: str,
-        datasheet_sha256: str,
+        datasheet_sha256: str | None,
     ) -> str:
         """Use the setup plan's single paired repair allowance."""
 
@@ -270,7 +424,6 @@ def build_setup_handlers(services: SetupToolServices) -> dict[str, Callable[...,
             mcu_part_number,
             serial_baudrate,
             serial_id,
-            serial_port,
             datasheet_path,
             datasheet_sha256,
         )

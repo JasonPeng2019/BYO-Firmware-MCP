@@ -163,8 +163,15 @@ class ValidationResult:
     observed: Mapping[str, Any]
     steps: tuple[ValidationStep, ...]
     report_paths: ReportPaths
+    retry_arguments: Mapping[str, Any] | None = None
 
     def to_payload(self) -> dict[str, Any]:
+        accepted_response = None
+        if self.status == "validation_needs_user_input" and self.retry_arguments is not None:
+            accepted_response = {
+                "tool": "board_validate",
+                "arguments": copy.deepcopy(dict(self.retry_arguments)),
+            }
         return {
             "status": self.status,
             "code": self.code,
@@ -178,7 +185,7 @@ class ValidationResult:
                 "A successful result stamps only this board and connection in memory.",
             ],
             "rejected_candidates": [],
-            "accepted_response": None,
+            "accepted_response": accepted_response,
             "validation_plan": [f"{step.number}. {step.name}" for step in self.steps],
         }
 
@@ -227,6 +234,7 @@ class BoardValidator:
         profile_before: bytes | None = None
         selected_probe: ValidationProbe | None = None
         selected_serial: ValidationSerial | None = None
+        retry_arguments: dict[str, Any] | None = None
         hardware_result = "not_started"
         status: ValidationStatus
         code: str
@@ -271,6 +279,10 @@ class BoardValidator:
             selected_probe, probe_choices = self._select_probe(profile, inventory, request.probe_id)
             if probe_choices:
                 choices = probe_choices
+                retry_arguments = {"board_id": request.board_id}
+                if request.serial_id is not None:
+                    retry_arguments["serial_id"] = request.serial_id
+                retry_arguments["probe_id"] = "<one choice_id from choices>"
                 raise ValidationBackendError(
                     "validation_needs_user_input",
                     "validation/probe-selection-required",
@@ -287,6 +299,11 @@ class BoardValidator:
             observed["cache"] = {"reason": cache_reason}
             if serial_choices:
                 choices = serial_choices
+                retry_arguments = {
+                    "board_id": request.board_id,
+                    "probe_id": selected_probe.probe_id,
+                    "serial_id": "<one choice_id from choices>",
+                }
                 raise ValidationBackendError(
                     "validation_needs_user_input",
                     "validation/serial-selection-required",
@@ -499,6 +516,7 @@ class BoardValidator:
             observed,
             tuple(steps),
             report_paths,
+            retry_arguments,
         )
 
     def _select_probe(

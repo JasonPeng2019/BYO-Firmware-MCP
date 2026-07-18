@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import argparse
 import asyncio
-import hashlib
 import importlib.metadata
 import json
 import os
@@ -39,14 +38,6 @@ def _timestamp() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-def _sha256(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as stream:
-        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
-
-
 def _stable_identity_matches(expected: str, observed: object) -> bool:
     if not isinstance(observed, str) or not observed.strip():
         return False
@@ -68,7 +59,6 @@ class RunnerConfig:
     mcu_part_number: str
     probe_uid: str
     uart_id: str
-    uart_port: str
     baudrate: int
     datasheet_path: Path
     timeout_seconds: float = 320.0
@@ -85,7 +75,6 @@ class RunnerConfig:
             ("mcu_part_number", self.mcu_part_number),
             ("probe_uid", self.probe_uid),
             ("uart_id", self.uart_id),
-            ("uart_port", self.uart_port),
         ):
             if not value.strip():
                 raise ValueError(f"{name} must be non-empty")
@@ -105,7 +94,6 @@ class RunnerConfig:
             self.mcu_part_number.strip(),
             self.probe_uid.strip(),
             self.uart_id.strip(),
-            self.uart_port.strip(),
             self.baudrate,
             datasheet,
             self.timeout_seconds,
@@ -171,7 +159,6 @@ async def execute_setup_only(client: SetupClient, config: RunnerConfig) -> dict[
     """Drive the fixed setup barrier; there is intentionally no post-setup hook."""
 
     selected = config.validated()
-    datasheet_sha256 = _sha256(selected.datasheet_path)
     evidence: dict[str, Any] = {
         "schema_version": 1,
         "status": "running",
@@ -186,10 +173,8 @@ async def execute_setup_only(client: SetupClient, config: RunnerConfig) -> dict[
             "mcu_part_number": selected.mcu_part_number,
             "probe_uid": selected.probe_uid,
             "uart_id": selected.uart_id,
-            "uart_port": selected.uart_port,
             "baudrate": selected.baudrate,
             "datasheet_path": str(selected.datasheet_path),
-            "datasheet_sha256": datasheet_sha256,
         },
         "operations": [],
     }
@@ -247,9 +232,8 @@ async def execute_setup_only(client: SetupClient, config: RunnerConfig) -> dict[
             "mcu_part_number": selected.mcu_part_number,
             "serial_baudrate": selected.baudrate,
             "serial_id": selected.uart_id,
-            "serial_port": selected.uart_port,
             "datasheet_path": str(selected.datasheet_path),
-            "datasheet_sha256": datasheet_sha256,
+            "datasheet_sha256": None,
         }
         plan = {
             "board_id": selected.board_id,
@@ -282,17 +266,15 @@ async def execute_setup_only(client: SetupClient, config: RunnerConfig) -> dict[
             choices = setup.get("choices")
             if not isinstance(choices, list):
                 stop("setup requested a choice without friendly choices")
-            expected_ids = {selected.probe_uid, selected.uart_id, selected.uart_port}
+            expected_ids = {selected.probe_uid, selected.uart_id}
             matches = [
                 choice
                 for choice in choices
                 if isinstance(choice, Mapping)
                 and (
                     choice.get("choice_id") in expected_ids
-                    or any(
-                        token.casefold() in str(choice.get("label", "")).casefold()
-                        for token in (selected.uart_port, selected.uart_id)
-                    )
+                    or selected.uart_id.casefold()
+                    in str(choice.get("label", "")).casefold()
                 )
             ]
             if len(matches) != 1 or not isinstance(matches[0].get("choice_id"), str):
@@ -352,19 +334,18 @@ async def execute_setup_only(client: SetupClient, config: RunnerConfig) -> dict[
             stop("setup readiness did not disclose the resolved UART identity")
         stable_uart_matches = _stable_identity_matches(
             selected.uart_id, resolved_uart.get("usb_serial")
-        )
-        if (
-            not stable_uart_matches
-            or str(resolved_uart.get("port_path", "")).casefold()
-            != selected.uart_port.casefold()
-        ):
-            stop("resolved UART identity or current port does not match the explicit selection")
+        ) or _stable_identity_matches(selected.uart_id, resolved_uart.get("serial_id"))
+        if not stable_uart_matches:
+            stop("resolved UART identity does not match the explicit stable selection")
         resolved_probe = readiness.get("resolved_probe")
         if not isinstance(resolved_probe, Mapping) or not _stable_identity_matches(
             selected.probe_uid, resolved_probe.get("probe_uid")
         ):
             stop("resolved probe identity does not match the explicit selection")
 
+        identity = evidence["identity"]
+        assert isinstance(identity, dict)
+        identity["resolved_uart"] = dict(resolved_uart)
         evidence.update(
             status="pass",
             finished_at=_timestamp(),
@@ -420,7 +401,6 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--mcu-part-number", required=True)
     parser.add_argument("--probe-uid", required=True)
     parser.add_argument("--uart-id", required=True)
-    parser.add_argument("--uart-port", required=True)
     parser.add_argument("--baudrate", type=int, default=115200)
     parser.add_argument("--datasheet-path", type=Path, required=True)
     parser.add_argument("--timeout-seconds", type=float, default=320.0)
@@ -443,7 +423,6 @@ def main() -> None:
         args.mcu_part_number,
         args.probe_uid,
         args.uart_id,
-        args.uart_port,
         args.baudrate,
         args.datasheet_path,
         args.timeout_seconds,

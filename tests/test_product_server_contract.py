@@ -67,8 +67,8 @@ def test_m10_active_contract_formally_supersedes_the_extraction_named_baseline()
     for relative_path in contract["hardening_evidence"].values():
         assert (CONTRACT_PATH.parents[2] / relative_path).is_file(), relative_path
     assert _sha256_bytes(
-        (CONTRACT_PATH.parents[2] / "Plan_Prompt_Contents_Spec.md").read_bytes()
-    ) == contract["plan_prompt_contents_spec_sha256"]
+        (CONTRACT_PATH.parents[2] / "docs" / "plan-tool-contract.md").read_bytes()
+    ) == contract["plan_tool_contract_sha256"]
 
 
 def test_m10_live_tools_and_implementation_owners_match_the_imported_baseline() -> None:

@@ -292,3 +292,73 @@ def test_successful_hardware_validation_confirms_stable_attachment_cache(tmp_pat
     assert len(records) == 1
     assert records[0].board_id == "bench_board"
     assert records[0].probe_usb_serial == "PROBE-001"
+
+
+def test_validation_choice_retry_preserves_prior_selector_through_both_ambiguities(
+    tmp_path: Path,
+) -> None:
+    profiles = repository(tmp_path)
+    backend = FakeBackend()
+    backend.inventory_value = ValidationInventory(
+        probes=(
+            ValidationProbe("probe-a", "First probe", "stlink", "PROBE-001"),
+            ValidationProbe("probe-b", "Second probe", "stlink", "PROBE-B"),
+        ),
+        serial_ports=(
+            ValidationSerial("serial-a", "COM7", "First UART", "UART-A"),
+            ValidationSerial("serial-b", "COM8", "Second UART", "UART-B"),
+        ),
+    )
+    service = validator(tmp_path, profiles, backend, hooks=open_hooks())
+
+    choose_probe = service.validate(ValidationRequest("bench_board"))
+    assert choose_probe.status == "validation_needs_user_input"
+    assert choose_probe.to_payload()["accepted_response"] == {
+        "tool": "board_validate",
+        "arguments": {
+            "board_id": "bench_board",
+            "probe_id": "<one choice_id from choices>",
+        },
+    }
+
+    choose_serial = service.validate(ValidationRequest("bench_board", probe_id="probe-a"))
+    assert choose_serial.status == "validation_needs_user_input"
+    assert choose_serial.to_payload()["accepted_response"] == {
+        "tool": "board_validate",
+        "arguments": {
+            "board_id": "bench_board",
+            "probe_id": "probe-a",
+            "serial_id": "<one choice_id from choices>",
+        },
+    }
+
+    passed = service.validate(
+        ValidationRequest("bench_board", probe_id="probe-a", serial_id="serial-a")
+    )
+    assert passed.status == "validation_passed"
+    assert passed.to_payload()["accepted_response"] is None
+
+
+def test_probe_retry_preserves_a_preselected_serial_identity(tmp_path: Path) -> None:
+    profiles = repository(tmp_path)
+    backend = FakeBackend()
+    backend.inventory_value = ValidationInventory(
+        probes=(
+            ValidationProbe("probe-a", "First probe", "stlink", "PROBE-A"),
+            ValidationProbe("probe-b", "Second probe", "stlink", "PROBE-B"),
+        ),
+        serial_ports=(ValidationSerial("serial-a", "COM7", "UART", "UART-A"),),
+    )
+
+    result = validator(tmp_path, profiles, backend, hooks=open_hooks()).validate(
+        ValidationRequest("bench_board", serial_id="serial-a")
+    )
+
+    assert result.to_payload()["accepted_response"] == {
+        "tool": "board_validate",
+        "arguments": {
+            "board_id": "bench_board",
+            "serial_id": "serial-a",
+            "probe_id": "<one choice_id from choices>",
+        },
+    }

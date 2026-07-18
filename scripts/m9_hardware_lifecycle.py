@@ -482,7 +482,6 @@ async def _run(args: argparse.Namespace) -> dict[str, Any]:
                 initialized = _text(await call("flash_application-plan", {}))
                 payload = _common_plan(args.board_id, f"{label} application flash") | {
                     "artifact": str(artifact),
-                    "target_address": None,
                 }
                 accepted = _text(await call("flash_application-plan", payload))
                 return {"initialization": initialized, "accepted": accepted, "payload": payload}
@@ -512,7 +511,7 @@ async def _run(args: argparse.Namespace) -> dict[str, Any]:
             before_flash = len(_read_rows(backend_path))
             evidence["flash_cancellation"] = await cancel_started_call(
                 "flash_application",
-                {"board_id": args.board_id, "artifact": str(v2_elf), "target_address": None},
+                {"board_id": args.board_id, "artifact": str(v2_elf)},
                 "flash-program-start",
             )
             program_complete = await _wait_for_marker(

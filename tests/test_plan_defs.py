@@ -123,3 +123,16 @@ def test_action_schema_carries_format_constraints() -> None:
     }
     assert serial_fields["read_seconds"].exclusive_minimum is True
     assert serial_fields["baudrate"].minimum == 1
+
+    setup_fields = {
+        field.name: field for field in PLAN_DEFINITIONS["board_setup"].action_fields
+    }
+    assert "serial_port" not in setup_fields
+    assert setup_fields["serial_id"].nullable is False
+    assert setup_fields["datasheet_sha256"].nullable is True
+
+    for action_name in ("flash_application", "flash_bootloader"):
+        flash_fields = {
+            field.name: field for field in PLAN_DEFINITIONS[action_name].action_fields
+        }
+        assert set(flash_fields) == {"artifact"}

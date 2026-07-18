@@ -30,6 +30,9 @@ def assert_required_guidance(guidance: str) -> None:
     assert "every parameter set to NULL" in prose
     assert "one unique, familiar name for each connected board" in prose
     assert 'or "no board"' in prose
+    assert '"no board" is a literal sentinel' in prose
+    assert "pass it by itself" in prose
+    assert "never a candidate board name" in prose
     assert "Never ask the user for structured data" in prose
     assert "board IDs" in prose
     assert "connection IDs" in prose

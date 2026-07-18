@@ -18,11 +18,26 @@ or “no board.” Do not ask for board IDs, connection IDs, continuation tokens
 permission enum values, or structured payloads. Never silently select, rename,
 reassign, or rewrite a profile.
 
+`no board` is a normalized literal sentinel, not a candidate board name. Pass
+it to `setup_overview` by itself. If it is mixed with names, ask the user to
+clarify in ordinary language and do not route or access hardware.
+
 Pass those familiar names to `setup_overview`. Use its per-name route and
 server-generated board ID. Every matching profile, including an incomplete or
 previously failed profile, goes to `board_validate` first. Follow its exact
 attachment, retry, safety, or repair remedy. Unknown names go to setup. Do not
 make the user perform that profile or hardware-inventory matching.
+
+Copy each route's `load_call`, `next_call`, `plan_initialization_call`, and
+server-known `plan_action_parameters_template` values directly. Never ask the
+user for a board ID, connection ID, stable UART identity, current port path,
+datasheet hash, or validation retry field. Ask the user only for the listed
+ordinary-language facts and friendly ambiguous hardware choice. The diagnostic
+port path may change; the stable identity remains the plan input. After
+`load_setup_tool`, follow its bounded guidance for that requested tool only.
+For `validation_needs_user_input`, copy the returned `accepted_response` as the
+exact retry; it preserves any probe or UART selector already resolved. Terminal
+validation statuses deliberately have `accepted_response: null`.
 
 ## Plans
 
@@ -71,7 +86,9 @@ before loading it and before any other `*-plan` tool. Ask for the familiar
 board name and exact board/MCU identity. Every matching YAML routes first to
 `board_validate`; an absent profile or a specific validation remedy routes
 through `load_setup_tool` and setup/repair. Fresh setup also requires a local
-authoritative PDF datasheet and its SHA-256. The server
+authoritative PDF datasheet. Supply its digest only as an optional cross-check;
+the server computes and records the authoritative SHA-256. Select UART by the
+stable identity returned by inventory, not by a volatile COM/device path. The server
 inventories probes, serial ports, cache matches, targets, and builds before it
 requests research. Relay only the supplied `agent_prompt` and friendly
 `choices`; never expose the rest of the control payload.
@@ -88,6 +105,11 @@ For target/pack research it is the exact official-source schema. After an
 accepted continuation, call `board_fix_setup` under the still-active paired
 allowance. Never retry `board_setup` or bypass the continuation by editing
 `.firm`.
+
+The exact current plan fields, budgets, and permission modes are generated from
+the runtime source of truth in [`plan-tool-contract.md`](plan-tool-contract.md).
+Artifact load addresses for `flash_application` and `flash_bootloader` come
+only from the ELF/HEX; neither plan accepts a caller-provided target address.
 
 Setup and validation payloads use these common fields:
 

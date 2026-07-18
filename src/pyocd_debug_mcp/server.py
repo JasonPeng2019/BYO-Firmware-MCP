@@ -115,6 +115,7 @@ from pyocd_debug_mcp.setup_flow.board_catalog import (
     BoardCatalogError,
     catalog_board,
     catalog_board_for_mcu,
+    catalog_board_types,
     reviewed_setup_board_types,
 )
 from pyocd_debug_mcp.setup_flow.reviewed_evidence import load_reviewed_evidence
@@ -1985,7 +1986,7 @@ def _validation_inventory() -> ValidationInventory:
     serial_ports = list_serial_ports() or []
     serial = tuple(
         ValidationSerial(
-            port.device,
+            port.serial_number or port.device,
             port.device,
             port.description or port.product or "Serial connection",
             port.serial_number or None,
@@ -2834,13 +2835,11 @@ def _setup_inventory(user_input: SetupUserInput) -> PreflightInventory:
         )
         for port in validation_inventory.serial_ports
     )
-    if user_input.serial_id and user_input.serial_port:
+    if user_input.serial_id:
         serial = tuple(
             item
             for item in serial
-            if item.usb_serial is not None
-            and _stable_identity_equal(user_input.serial_id, item.usb_serial)
-            and item.port_path.casefold() == user_input.serial_port.casefold()
+            if _stable_identity_equal(user_input.serial_id, item.serial_id)
         )
     if len(probes) == 1 and probes[0].usb_serial:
         matching_serial = tuple(
@@ -2932,7 +2931,10 @@ def _setup_connection_phase(context: SetupPhaseContext) -> SetupPhaseOutcome:
             )
         datasheet = Path(context.user_input.datasheet_path).expanduser().resolve()
         actual_datasheet_hash = sha256_file(datasheet)
-        if actual_datasheet_hash.casefold() != context.user_input.datasheet_sha256.casefold():
+        supplied_datasheet_hash = context.user_input.datasheet_sha256.strip()
+        if supplied_datasheet_hash and (
+            actual_datasheet_hash.casefold() != supplied_datasheet_hash.casefold()
+        ):
             raise BoardCatalogError("The supplied datasheet SHA-256 does not match the PDF.")
         catalog.validate_datasheet(datasheet, actual_datasheet_hash)
     except (BoardCatalogError, OSError, ValueError) as exc:
@@ -3501,6 +3503,8 @@ def _setup_overview(board_names: list[str] | None) -> Mapping[str, object]:
                     port.vid,
                     port.pid,
                 ).friendly_label(),
+                "port_path": port.port_path,
+                "stable_usb_identity": port.usb_serial,
             }
             for port in inventory.serial_ports
         ]
@@ -3512,34 +3516,105 @@ def _setup_overview(board_names: list[str] | None) -> Mapping[str, object]:
         inventory_error = None
 
     routes: list[dict[str, object]] = []
+    validated_names: list[tuple[str, str]] = []
+    no_board_sentinel = False
     if board_names is not None:
         if len(board_names) > 8:
             raise ValueError("board_names is bounded to eight names")
         normalized_names: set[str] = set()
-        existing_ids = {profile.board_id for profile in profiles}
         for display_name in board_names:
             if not isinstance(display_name, str) or not display_name.strip():
                 raise ValueError("every board name must be non-empty text")
             name = display_name.strip()
             key = _profile_name_key(name)
+            if key == _profile_name_key("no board"):
+                no_board_sentinel = True
+                validated_names.append((name, key))
+                continue
             if key in normalized_names:
                 raise ValueError("board names must be unique after Unicode normalization")
             normalized_names.add(key)
+            validated_names.append((name, key))
+
+    if board_names is not None and not no_board_sentinel:
+        existing_ids = {profile.board_id for profile in profiles}
+        setup_definition = PLAN_DEFINITIONS["board_setup"]
+        for name, key in validated_names:
             match = by_name.get(key)
             if match is None:
                 board_id = _proposed_board_id(name, existing_ids)
                 existing_ids.add(board_id)
+                single_connection = (
+                    connection_rows[0]["connection_id"] if len(connection_rows) == 1 else None
+                )
+                single_serial = serial_rows[0]["choice_id"] if len(serial_rows) == 1 else None
+                known_parameters: dict[str, object] = {
+                    "mode": "setup",
+                    "connection_id": single_connection,
+                    "display_name": name,
+                    "board_type": None,
+                    "mcu_part_number": None,
+                    "serial_baudrate": None,
+                    "serial_id": single_serial,
+                    "datasheet_path": None,
+                    "datasheet_sha256": None,
+                }
+                parameter_template = {
+                    field.name: known_parameters.get(field.name)
+                    for field in setup_definition.action_fields
+                }
+                required_user_facts = [
+                    "exact board type",
+                    "exact package-level MCU part number (full package marking)",
+                    "authoritative local datasheet PDF",
+                    "UART baud rate used by this firmware",
+                    "explicit ordinary-language authorization to run bounded, non-destructive setup",
+                ]
+                accepted_response: dict[str, object] = {
+                    "copy_into": "plan_action_parameters_template"
+                }
+                if len(connection_rows) == 0:
+                    required_user_facts.append("attach and identify one compatible debug probe")
+                elif len(connection_rows) > 1:
+                    required_user_facts.append(
+                        "which friendly debug-probe choice belongs to this board"
+                    )
+                    accepted_response["connection_id"] = (
+                        "<one connections[].connection_id selected from its friendly_name>"
+                    )
+                if len(serial_rows) == 0:
+                    required_user_facts.append("attach and identify the board's UART connection")
+                elif len(serial_rows) > 1:
+                    required_user_facts.append(
+                        "which friendly UART choice belongs to this board"
+                    )
+                    accepted_response["serial_id"] = (
+                        "<one serial_choices[].choice_id selected from its friendly_name>"
+                    )
                 routes.append(
                     {
                         "display_name": name,
                         "board_id": board_id,
                         "route": "setup",
                         "next_tool": "board_setup-plan",
-                        "required_user_facts": [
-                            "exact board type",
-                            "exact package-level MCU part number (full package marking)",
-                            "authoritative local datasheet PDF",
-                        ],
+                        "load_call": {
+                            "tool": "load_setup_tool",
+                            "arguments": {
+                                "board_id": board_id,
+                                "tool_name": "board_setup-plan",
+                            },
+                        },
+                        "plan_initialization_call": {
+                            "tool": "board_setup-plan",
+                            "arguments": {
+                                field: None for field in setup_definition.null_field_names
+                            },
+                        },
+                        "plan_action_parameters_template": parameter_template,
+                        "required_user_facts": required_user_facts,
+                        "accepted_response": (
+                            accepted_response if len(accepted_response) > 1 else None
+                        ),
                     }
                 )
                 continue
@@ -3551,27 +3626,50 @@ def _setup_overview(board_names: list[str] | None) -> Mapping[str, object]:
                     "route": "validate",
                     "next_tool": "board_validate",
                     "reason": reason,
+                    "load_call": {
+                        "tool": "load_setup_tool",
+                        "arguments": {
+                            "board_id": profile.board_id,
+                            "tool_name": "board_validate",
+                        },
+                    },
+                    "next_call": {
+                        "tool": "board_validate",
+                        "arguments": {"board_id": profile.board_id},
+                    },
                 }
             )
 
-    if board_names == []:
+    if board_names == [] or (no_board_sentinel and len(validated_names) == 1):
         status = "setup_no_board"
-        prompt = "The user reported no connected boards. Do not begin setup or hardware access."
+        prompt = (
+            "The user reported no connected boards using the literal 'no board' sentinel. "
+            "Do not begin setup, validation, or hardware access."
+        )
+    elif no_board_sentinel:
+        status = "setup_names_clarification_required"
+        prompt = (
+            "The literal 'no board' sentinel was mixed with board names. Ask again in ordinary "
+            "language whether no board is connected or, instead, for the familiar name of each "
+            "connected board. Do not route or access hardware until the answer is unambiguous."
+        )
     elif board_names is None:
         status = "setup_names_required"
         prompt = (
             "Ask the user in ordinary language for one unique familiar name for every connected "
-            "board, or 'no board'. Then call setup_overview again with those names. Do not show "
-            "this JSON, board IDs, connection IDs, or machine identifiers."
+            "board, or the literal sentinel 'no board' by itself. Then call setup_overview again "
+            "with that answer. Do not show this JSON, board IDs, connection IDs, or machine "
+            "identifiers."
         )
     else:
         status = "setup_routes_ready"
         prompt = (
-            "Use each route independently. For validate, load board_validate and call it. For "
-            "any matching profile, always validate first and follow only its exact remedy. For an "
-            "unknown-name setup, first call board_setup-plan with every field NULL, obtain required "
-            "user facts/permission conversationally, then follow its exact redirect. Present only "
-            "friendly connection choices to the user; do not expose this JSON or internal IDs."
+            "Use each route's machine-readable calls without asking the user for their internal "
+            "values. For validate, copy load_call and next_call. For any matching profile, always "
+            "validate first and follow only its exact remedy. For unknown-name setup, copy "
+            "load_call and plan_initialization_call, ask only for required_user_facts and friendly "
+            "ambiguous choices, then copy them into plan_action_parameters_template. Present only "
+            "friendly choices to the user; do not expose this JSON or internal IDs."
         )
     return {
         "status": status,
@@ -3580,6 +3678,7 @@ def _setup_overview(board_names: list[str] | None) -> Mapping[str, object]:
         "connections": connection_rows,
         "serial_choices": serial_rows,
         "inventory_error": inventory_error,
+        "known_board_types": list(catalog_board_types()),
         "supported_reviewed_board_types": list(reviewed_setup_board_types()),
         "routes": routes,
     }

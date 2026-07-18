@@ -787,9 +787,8 @@ def test_a10_setup_plan_cycle_limit_relocks_after_three_replacements() -> None:
             "mcu_part_number": "STM32L476RGT6",
             "serial_baudrate": 115200,
             "serial_id": "UART-001",
-            "serial_port": "COM1",
             "datasheet_path": "board-datasheet.pdf",
-            "datasheet_sha256": "0" * 64,
+            "datasheet_sha256": None,
         },
     }
     for _ in range(3):

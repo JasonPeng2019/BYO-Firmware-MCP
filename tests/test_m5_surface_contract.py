@@ -171,9 +171,8 @@ async def test_m5_in_process_surface_is_exact_and_every_hidden_handler_is_locked
                 "mcu_part_number": "Part-Exact",
                 "serial_baudrate": 115200,
                 "serial_id": "UART-001",
-                "serial_port": "COM1",
                 "datasheet_path": "board-datasheet.pdf",
-                "datasheet_sha256": "0" * 64,
+                "datasheet_sha256": None,
             }
             for name in sorted(M6_GUARDED):
                 result = await session.call_tool(name, setup_arguments)
@@ -218,8 +217,8 @@ def test_m5_every_revised_runtime_and_plan_schema_is_exact() -> None:
             "allow_address_fallback",
             "reason",
         },
-        "flash_application": {"board_id", "artifact", "target_address"},
-        "flash_bootloader": {"board_id", "artifact", "target_address"},
+        "flash_application": {"board_id", "artifact"},
+        "flash_bootloader": {"board_id", "artifact"},
         "read_serial": {
             "board_id",
             "expected_text",
@@ -267,7 +266,6 @@ def test_m5_every_revised_runtime_and_plan_schema_is_exact() -> None:
             "mcu_part_number",
             "serial_baudrate",
             "serial_id",
-            "serial_port",
             "datasheet_path",
             "datasheet_sha256",
         },
@@ -280,7 +278,6 @@ def test_m5_every_revised_runtime_and_plan_schema_is_exact() -> None:
             "mcu_part_number",
             "serial_baudrate",
             "serial_id",
-            "serial_port",
             "datasheet_path",
             "datasheet_sha256",
         },
@@ -300,6 +297,8 @@ def test_m5_every_revised_runtime_and_plan_schema_is_exact() -> None:
         assert set(tools[name].parameters["properties"]) == expected, name
         if name != "setup_overview":
             assert "board_id" in tools[name].parameters["required"], name
+    for setup_action in ("board_setup", "board_fix_setup"):
+        assert "datasheet_sha256" in tools[setup_action].parameters["required"]
 
     common_plan_fields = {
         "board_id",

@@ -1,5 +1,5 @@
 {
-  "contract_version": 24,
+  "contract_version": 25,
   "status": "active",
   "milestone": "post-M10-adversarial-usability-contract",
   "supersedes": "adversarial-usability-server-tools.json",
@@ -8,28 +8,35 @@
     "sha256": "c4b9b1db6d83ccfd194563101f1eeedbfd47c862fa75424de50a6332bb77c86e"
   },
   "implementation_module_sha256_overrides": {
-    "scripts/run_fresh_workspace_e2e.py": "f159a0dacc0f718c099d178bb87bb439a2112dda96d939cf181028882752fa20",
+    "scripts/run_fresh_workspace_e2e.py": "64118edd67e72621119552a35e24aacc1ddb5c29085db3f225f664237da44bad",
     "scripts/validate_autonomous_acceptance.py": "ed6f560edd746a3f5387dfae427a58ec5f9723335ddab623c53081c102d5845e",
-    "src/pyocd_debug_mcp/guardrails/plan_defs.py": "691d6229b9f8bb9f4c683d41ed4d8815a88a843bddbe972a5d7312123609b23d",
+    "src/pyocd_debug_mcp/guardrails/plan_contract.py": "e7d6f13f76b7ba1a458924d5e19ba1b203ec8127f9c5860fb6cd4a5f11ea8545",
+    "src/pyocd_debug_mcp/guardrails/plan_defs.py": "6207af86ebe181e2978543f89f82d79fa644f4406ff20d2f03161e5313819329",
     "src/pyocd_debug_mcp/safety/enforce.py": "219091af8b5d3ec6d2419fdaac171d285877c120e4a90bd60032e7b15ccdd9f0",
     "src/pyocd_debug_mcp/safety/map_build.py": "5d9b9b6172c374075f4b7575aaab6b346702751d5abd5df9a9f43046da894fc6",
     "src/pyocd_debug_mcp/safety/refresh.py": "96db0d1374e6b0e9d832d401420bb122c7f5e5efaa639faed32c6fcad138ed67",
-    "src/pyocd_debug_mcp/server.py": "8c8497908477ce3246e5eea8a73f1a2540e533cdc5aab2f95a03c4f54133d983",
+    "src/pyocd_debug_mcp/server.py": "b7b7d1389042f3f4564d28f7a8b9469652bde4b9d2cc656a4c0bfffbcd493ef6",
     "src/pyocd_debug_mcp/services/uart_capture.py": "270a66d831212faec875080c2fb721eb5d2a04b73275ecfa39eea1fef8155f1f",
     "src/pyocd_debug_mcp/services/uart_exchange_schema.py": "99cc6b54313b5667f5ab3a59910dfdd586472719d23c33d735311c837f959770",
     "src/pyocd_debug_mcp/setup_flow/board_catalog.py": "b363e45772ac98106b8412a7b74c54b03773368b4a4a716dc4ea21c1fa17b583",
-    "src/pyocd_debug_mcp/setup_flow/preflight.py": "7d907e8c914bb6f2ecd3f5ff4d2b3cedc333a77ec73a4a3777d8dafaabd3e978",
+    "src/pyocd_debug_mcp/setup_flow/preflight.py": "696f52e06fc4868450028e457665ea222f96ff3f855063c1c88c8be193c90978",
     "src/pyocd_debug_mcp/setup_flow/reviewed_evidence.py": "4905269c6e13453aedea5407fdc37f7d221565afcfd4eef938edd5d4cf85f00f",
-    "src/pyocd_debug_mcp/tools/setup.py": "75467d926f5c230d99299413c0d6eb62a7f8c4770403d5188cf2e02246078d50",
+    "src/pyocd_debug_mcp/tools/flash.py": "635c45614e465fb242a4d9a156587edf861c88b17d1e4269daeadfbc982a1b86",
+    "src/pyocd_debug_mcp/tools/setup.py": "dbe917cb1ef2365d1e7d8a6ae93f6b81f3d159fd9c405bbbd909d26816356862",
     "src/pyocd_debug_mcp/tools/registers.py": "4f597b8a1ac7f00ee013b85d37d11bffecd163b403aad003b565acee29bd8697",
     "src/pyocd_debug_mcp/zephyr_build.py": "a25d0f5c9bf35a7299f1462ff259e9a33ee349de9d22428b83d25f695e57f0a5",
     "src/pyocd_debug_mcp/tools/handshake.py": "2084e2cb1fc0ad8b52c1f9820a246ebcd18a83fdd081854feafae43f64c86ac7"
   },
   "tool_contract_sha256_overrides": {
-    "board_fix_setup": "b3c996229721c3d19b9dab3e00ac80e34659a34cfb9b2ebd572da06f1bc833d7",
-    "board_setup": "45f3bd8087c64e719e499b581d2da0e27da262dec59db719bac4247baa2642d7"
+    "board_fix_setup": "e671db692b1f73a38b98fa9e1c168504b7dd48ae13bfa4b82bd1a6c292bdbbb5",
+    "board_setup": "382d347b1a294191e97bd1260585827fa2005bd4039cfeeaddc6add5b041ccd3",
+    "board_setup-plan": "b52b908d4d5730ed6a63676173e5c5bad9bd944d91f83f6981ac321bc118ea63",
+    "flash_application": "e6bca1d21690fafbbd5f62132821ee7fcd6bc11319be94cc6afe9caf959b71f7",
+    "flash_application-plan": "9bfef5bccd7ca73efa1953475ebdca1b056823e95502e96fa7f45e020a5d00ae",
+    "flash_bootloader": "c3d3ab1c0c8ff19e3a41dbac56794d739c1d6624106fde1ddd47bab549b6e5a8",
+    "flash_bootloader-plan": "319bd0c2bc98f04f291dbbcd303ace77877396d0f9c0df5f211cc317bfdff600"
   },
-  "plan_prompt_contents_spec_sha256": "3f4c15ccefccf0af9cf676d1cc27abc9c7215d48206192a50dc9694fa71ebc27",
+  "plan_tool_contract_sha256": "f4b29f5e9e5a956b760c7ce5d3b5a0fc7c7457989e48a84d53ff069a9212df81",
   "hardening_evidence": {
     "performance": "docs/evidence/m10-performance-2026-07-17.json",
     "software_boundary_report": "docs/evidence/m10-software-boundary-2026-07-17.json",
@@ -45,7 +52,7 @@
     "security_test": "tests/test_m10_security.py",
     "relay_text_test": "tests/test_m10_relay_text.py",
     "unicode_profile_test": "tests/test_profiles_v2.py",
-    "plan_prompt_contents_spec": "Plan_Prompt_Contents_Spec.md",
+    "plan_tool_contract": "docs/plan-tool-contract.md",
     "plan_prompt_contract_test": "tests/test_plan_prompt_contents.py",
     "fresh_workspace_runner": "scripts/run_fresh_workspace_e2e.py",
     "fresh_workspace_runner_test": "tests/test_fresh_workspace_runner.py"
@@ -58,6 +65,7 @@
     "Version 22 intentionally adds fail-closed reconciled automatic-setup evidence, directly executable advisory build guidance, public Server Run evidence, delayed UART readiness probing, and synchronized setup/UART plan documentation.",
     "The adversarial closure rebaseline requires current two-source erase geometry, closes legacy authority, shares exact serial-exchange validation, and audits causal autonomous evidence.",
     "Version 23 adds replayed authority, narrowed executable/peripheral regions, strict acceptance causality, and the checkout-local setup-only stdio runner.",
-    "Version 24 adds generic local-first heavy dependency guidance plus health-bound, process-safe Zephyr workspace, SDK, Python, and canonical build-output reuse."
+    "Version 24 adds generic local-first heavy dependency guidance plus health-bound, process-safe Zephyr workspace, SDK, Python, and canonical build-output reuse.",
+    "Version 25 removes volatile setup-port and unsupported flash-address fields, makes datasheet hashing server-owned, and derives the current human plan contract from live definitions."
   ]
 }

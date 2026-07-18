@@ -3,6 +3,9 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
+
+from pyocd_debug_mcp import server
 from pyocd_debug_mcp.firmstore.profiles import ProfileRepository
 from pyocd_debug_mcp.firmstore.reports import ReportWriter
 from pyocd_debug_mcp.firmstore.store import FirmStore
@@ -25,6 +28,8 @@ from pyocd_debug_mcp.setup_flow.validate import (
     BoardValidator,
     ValidationBackend,
     ValidationInventory,
+    ValidationProbe,
+    ValidationSerial,
 )
 from pyocd_debug_mcp.tools.setup import SetupToolLoadState, SetupToolServices, build_setup_handlers
 
@@ -37,7 +42,6 @@ PARAMETERS = {
     "mcu_part_number": "STM32L476RGT6-Exact",
     "serial_baudrate": 115200,
     "serial_id": "UART-001",
-    "serial_port": "COM1",
     "datasheet_path": "board-datasheet.pdf",
     "datasheet_sha256": "0" * 64,
 }
@@ -188,6 +192,45 @@ def test_setup_tool_index_descriptions_explain_trigger_and_routing(tmp_path: Pat
     assert "grants no permission" in continue_description
 
 
+def test_load_setup_tool_returns_distinct_bounded_next_step_guidance(tmp_path: Path) -> None:
+    _, _, _, _, handlers = services(tmp_path)
+    payloads = {
+        tool_name: json.loads(handlers["load_setup_tool"]("bench_board", tool_name))
+        for tool_name in (
+            "board_setup-plan",
+            "board_validate",
+            "board_safety_setup",
+            "board_safety_refresh",
+        )
+    }
+
+    assert {payload["next_call"]["tool"] for payload in payloads.values()} == set(payloads)
+    assert len({payload["guidance"]["purpose"] for payload in payloads.values()}) == 4
+    for tool_name, payload in payloads.items():
+        guidance = payload["guidance"]
+        assert payload["tool_name"] == tool_name
+        assert {
+            "purpose",
+            "when_to_use",
+            "when_not_to_use",
+            "expected_statuses",
+            "accepted_response_shape",
+            "common_remedies",
+            "relay_rule",
+        } <= set(guidance)
+        assert "do not expose" in guidance["relay_rule"].lower()
+        assert len(json.dumps(guidance, ensure_ascii=False)) < 5000
+
+    setup_call = payloads["board_setup-plan"]["next_call"]
+    assert setup_call["tool"] == "board_setup-plan"
+    assert setup_call["arguments"]
+    assert set(setup_call["arguments"].values()) == {None}
+    assert payloads["board_validate"]["next_call"] == {
+        "tool": "board_validate",
+        "arguments": {"board_id": "bench_board"},
+    }
+
+
 def test_setup_overview_routes_names_without_user_facing_internal_fields(tmp_path: Path) -> None:
     _, _, _, _, handlers = services(tmp_path)
 
@@ -198,6 +241,126 @@ def test_setup_overview_routes_names_without_user_facing_internal_fields(tmp_pat
         {"display_name": "Bench Board", "board_id": "bench_board", "route": "validate"}
     ]
     assert "do not expose JSON" in payload["agent_prompt"]
+
+
+@pytest.mark.parametrize(
+    "board_names",
+    ([], ["no board"], ["No Board"], ["  NO BOARD  "], ["Ｎｏ　Ｂｏａｒｄ"]),
+)
+def test_real_setup_overview_treats_no_board_as_literal_normalized_sentinel(
+    monkeypatch: pytest.MonkeyPatch,
+    board_names: list[str],
+) -> None:
+    monkeypatch.setattr(server._profile_repository, "load_all", lambda **_kwargs: ())
+    monkeypatch.setattr(server, "_validation_inventory", lambda: ValidationInventory())
+
+    payload = server._setup_overview(board_names)
+
+    assert payload["status"] == "setup_no_board"
+    assert payload["routes"] == []
+
+
+def test_real_setup_overview_rejects_mixed_no_board_sentinel_without_a_route(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(server._profile_repository, "load_all", lambda **_kwargs: ())
+    monkeypatch.setattr(server, "_validation_inventory", lambda: ValidationInventory())
+
+    payload = server._setup_overview(["left", "No Board"])
+
+    assert payload["status"] == "setup_names_clarification_required"
+    assert payload["routes"] == []
+    assert "ask" in str(payload["agent_prompt"]).lower()
+    assert "ordinary language" in str(payload["agent_prompt"]).lower()
+
+
+def test_real_unknown_setup_route_supplies_exact_machine_call_composition(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(server._profile_repository, "load_all", lambda **_kwargs: ())
+    monkeypatch.setattr(
+        server,
+        "_validation_inventory",
+        lambda: ValidationInventory(
+            probes=(ValidationProbe("probe-a", "J-Link", "jlink", "PROBE-001"),),
+            serial_ports=(
+                ValidationSerial(
+                    "UART-001",
+                    "COM11",
+                    "J-Link CDC UART",
+                    "UART-001",
+                    0x1366,
+                    0x1015,
+                ),
+            ),
+        ),
+    )
+
+    payload = server._setup_overview(["Brand New Board"])
+    route = payload["routes"][0]
+
+    assert route["load_call"] == {
+        "tool": "load_setup_tool",
+        "arguments": {"board_id": route["board_id"], "tool_name": "board_setup-plan"},
+    }
+    assert route["plan_initialization_call"]["tool"] == "board_setup-plan"
+    assert set(route["plan_initialization_call"]["arguments"].values()) == {None}
+    template = route["plan_action_parameters_template"]
+    assert template == {
+        "mode": "setup",
+        "connection_id": "probe:PROBE-001",
+        "display_name": "Brand New Board",
+        "board_type": None,
+        "mcu_part_number": None,
+        "serial_baudrate": None,
+        "serial_id": "UART-001",
+        "datasheet_path": None,
+        "datasheet_sha256": None,
+    }
+    facts = " ".join(route["required_user_facts"]).lower()
+    assert "baud" in facts
+    assert "authorization" in facts
+    assert "digest" not in facts and "sha" not in facts
+    assert "serial_port" not in json.dumps(route)
+    assert route["accepted_response"] is None
+    assert payload["serial_choices"] == [
+        {
+            "choice_id": "UART-001",
+            "friendly_name": payload["serial_choices"][0]["friendly_name"],
+            "port_path": "COM11",
+            "stable_usb_identity": "UART-001",
+        }
+    ]
+
+
+def test_real_unknown_setup_route_maps_ambiguous_friendly_hardware_choices(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(server._profile_repository, "load_all", lambda **_kwargs: ())
+    monkeypatch.setattr(
+        server,
+        "_validation_inventory",
+        lambda: ValidationInventory(
+            probes=(
+                ValidationProbe("probe-a", "First", "jlink", "PROBE-A"),
+                ValidationProbe("probe-b", "Second", "jlink", "PROBE-B"),
+            ),
+            serial_ports=(
+                ValidationSerial("uart-a", "COM7", "First UART", "UART-A"),
+                ValidationSerial("uart-b", "COM8", "Second UART", "UART-B"),
+            ),
+        ),
+    )
+
+    route = server._setup_overview(["Brand New Board"])["routes"][0]
+
+    assert route["plan_action_parameters_template"]["connection_id"] is None
+    assert route["plan_action_parameters_template"]["serial_id"] is None
+    assert route["accepted_response"] == {
+        "copy_into": "plan_action_parameters_template",
+        "connection_id": "<one connections[].connection_id selected from its friendly_name>",
+        "serial_id": "<one serial_choices[].choice_id selected from its friendly_name>",
+    }
 
 
 def test_setup_continuation_accepts_one_exact_response_object(tmp_path: Path) -> None:

@@ -37,7 +37,6 @@ def _config(tmp_path: Path) -> RunnerConfig:
         mcu_part_number="nRF52840-QIAA",
         probe_uid="683377322",
         uart_id="683377322",
-        uart_port="COM11",
         baudrate=115200,
         datasheet_path=datasheet,
         setup_authorized=True,
@@ -112,7 +111,7 @@ def test_setup_only_runner_reaches_exact_readiness_without_a_code_surface(
     assert evidence["status"] == "pass"
     assert evidence["code_phase_started"] is False
     assert evidence["identity"]["probe_uid"] == "683377322"
-    assert evidence["identity"]["uart_port"] == "COM11"
+    assert evidence["identity"]["resolved_uart"]["port_path"] == "COM11"
     assert evidence["setup_authorization_present"] is True
     assert "user_permission" not in json.dumps(evidence)
     names = [name for name, _arguments in client.calls]
@@ -129,6 +128,16 @@ def test_setup_only_runner_reaches_exact_readiness_without_a_code_surface(
     assert not set(names).intersection(
         {"flash_application", "flash_bootloader", "write_serial", "serial_exchange"}
     )
+    populated_plan = next(
+        arguments
+        for name, arguments in client.calls
+        if name == "board_setup-plan" and arguments
+    )
+    action_parameters = populated_plan["action_parameters"]
+    assert isinstance(action_parameters, dict)
+    assert action_parameters["serial_id"] == "683377322"
+    assert "serial_port" not in action_parameters
+    assert action_parameters["datasheet_sha256"] is None
 
 
 @pytest.mark.parametrize(
@@ -242,10 +251,10 @@ def test_runner_cli_has_explicit_identity_and_no_arbitrary_execution_option() ->
         "mcu_part_number",
         "probe_uid",
         "uart_id",
-        "uart_port",
         "datasheet_path",
         "authorize_setup",
     }.issubset(destinations)
+    assert "uart_port" not in destinations
     assert destinations.isdisjoint(
         {"command", "callback", "shell", "argv", "code", "build", "flash"}
     )

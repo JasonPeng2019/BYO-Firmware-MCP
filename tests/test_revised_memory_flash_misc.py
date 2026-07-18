@@ -232,7 +232,7 @@ async def test_flash_bootloader_is_physically_locked_without_permission_plan() -
     with pytest.raises(ToolError, match="flash_bootloader-plan") as caught:
         await server.mcp.call_tool(
             "flash_bootloader",
-            {"board_id": "board_b", "artifact": "firmware.hex", "target_address": None},
+            {"board_id": "board_b", "artifact": "firmware.hex"},
         )
     assert SAFE_EXIT_REMINDER in str(caught.value)
 

@@ -5,6 +5,7 @@ from pathlib import Path
 
 import pytest
 
+from pyocd_debug_mcp.guardrails.plan_contract import render_plan_contract_markdown
 from pyocd_debug_mcp.guardrails.plan_defs import PLAN_DEFINITIONS, PermissionMode
 from pyocd_debug_mcp.guardrails.plan_engine import PlanEngine, PlanRefusal
 from pyocd_debug_mcp.kernel.registry import ToolRegistry
@@ -204,55 +205,17 @@ def test_universal_null_envelope_and_populated_permission_shape_are_distinct() -
         )
 
 
-def test_human_plan_spec_matches_setup_and_serial_exchange_live_schemas() -> None:
-    spec = Path("Plan_Prompt_Contents_Spec.md").read_text(encoding="utf-8")
-    setup_fields = {field.name for field in PLAN_DEFINITIONS["board_setup"].action_fields}
-    exchange_fields = {
-        field.name for field in PLAN_DEFINITIONS["serial_exchange"].action_fields
-    }
+def test_current_human_plan_contract_is_generated_from_every_live_definition() -> None:
+    contract = Path("docs/plan-tool-contract.md").read_text(encoding="utf-8")
 
-    assert setup_fields == {
-        "mode",
-        "connection_id",
-        "display_name",
-        "board_type",
-        "mcu_part_number",
-        "serial_baudrate",
-        "serial_id",
-        "serial_port",
-        "datasheet_path",
-        "datasheet_sha256",
-    }
-    assert exchange_fields == {
-        "steps",
-        "read_seconds",
-        "baudrate",
-        "port",
-        "ready_text",
-        "ready_seconds",
-        "ready_probe_text",
-        "ready_probe_line_ending",
-        "ready_probe_delay_seconds",
-        "clear_input",
-    }
-    setup_section = spec[spec.index("### 3.1"):spec.index("### 3.2")]
-    for field in setup_fields:
-        assert f"`{field}`" in setup_section
-    exchange_section = spec[spec.index("### 8.3"):spec.index("### 8.4")]
-    for field in exchange_fields:
-        assert f"`{field}`" in exchange_section
-    accepted_section = spec[spec.index("### 1.6"):spec.index("## 2.")]
-    for response_field in (
-        "status",
-        "message",
-        "plan_id",
-        "underlying_action",
-        "total_calls",
-        "preferred_call",
-        "stable_client_fallback",
-        "paired_action_fallbacks",
-    ):
-        assert f'"{response_field}"' in accepted_section
+    assert contract == render_plan_contract_markdown()
+    for definition in PLAN_DEFINITIONS.values():
+        assert f"## `{definition.plan_tool_name}`" in contract
+        assert f"- Action: `{definition.action_name}`" in contract
+        assert f"- Budget mode: `{definition.budget_mode.value}`" in contract
+        assert f"- Permission mode: `{definition.permission_mode.value}`" in contract
+        for field in definition.action_fields:
+            assert f"`{field.name}`" in contract
 
 
 def test_rendered_serial_exchange_example_round_trips_and_invalid_replacements_are_atomic() -> None:
@@ -326,9 +289,8 @@ def test_rendered_setup_example_uses_current_reviewed_automatic_board() -> None:
         "mcu_part_number": "nRF52840-QIAA",
         "serial_baudrate": 115200,
         "serial_id": "683377322",
-        "serial_port": "COM11",
         "datasheet_path": "C:/firmware/docs/nRF52840_PS_v1.1.pdf",
-        "datasheet_sha256": "c619e336b9c0610663273041f057f2537a65fd408ce0c5b8214a26de2aa88422",
+        "datasheet_sha256": None,
     }
     assert action["board_type"] in reviewed_setup_board_types()
     assert example["max_calls"] == 1

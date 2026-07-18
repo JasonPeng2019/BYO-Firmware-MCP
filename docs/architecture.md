@@ -44,8 +44,8 @@ entries with a pinned official datasheet, a distinct pinned device-support
 document, and exact installed pyOCD target/SVD identities. It recomputes every
 hash, parses both authorities through the strict evidence schema, and persists
 only regions accepted by deterministic two-source reconciliation. An empty or
-drifted pin fails closed. Live silicon reads and the user-supplied
-content-addressed datasheet are required before committing a profile or safety
+drifted pin fails closed. Live silicon reads and the user-supplied datasheet
+bytes are required before committing a profile or safety
 baseline. Validation promotes the exact live connection; no pseudo-connection
 stamp can satisfy the readiness barrier.
 
@@ -83,7 +83,9 @@ or extra fields, and permission fields on non-permission populated plans are
 rejected atomically. Each all-NULL response renders the mechanism, purpose,
 use/not-use cases, fields, validation, budget, permission, preconditions,
 warnings, soft guardrails, exit state, and a complete example from
-`Plan_Prompt_Contents_Spec.md`.
+the same definition. `docs/plan-tool-contract.md` is a deterministic human-readable
+rendering of every live plan/action field, budget, and permission mode. Archived
+design prose is historical evidence rather than a second runtime authority.
 
 The pinned FastMCP SDK normally ignores unknown function arguments while
 building its Pydantic call model. Plan-tool registration deliberately rebuilds
@@ -162,7 +164,14 @@ research. Candidate replies must contain exactly the requested fields and
 cannot alter the exact user-supplied MCU part number.
 
 `setup_overview` is the entry adapter between ordinary familiar board names and
-internal profile/connection routing. `continue_setup` is the reverse adapter
+internal profile/connection routing. The normalized `no board` sentinel is
+handled before route construction. Each route composes the exact loader,
+validation, or plan-initialization call and pre-fills server-known action
+fields, including stable attachment identities. Volatile port paths remain
+diagnostic and are resolved again at execution. `load_setup_tool` returns one
+bounded, tool-specific guide instead of the entire setup manual. Validation
+choice results carry an executable retry recipe that retains already-resolved
+selectors. `continue_setup` is the reverse adapter
 for one friendly choice or strict research response. It is scoped to the live
 board continuation, grants no authority, and feeds the accepted selection or
 target into the paired repair attempt. Pack candidates are staged under the

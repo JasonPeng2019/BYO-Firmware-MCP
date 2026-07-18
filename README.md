@@ -57,12 +57,18 @@ guidance never grants memory authority.
 
 For a brand-new artifact root, `scripts/run_fresh_workspace_e2e.py` is the
 checkout-local setup-only orchestrator. It takes the exact board, MCU, probe,
-UART, datasheet, and artifact-root identities, requires the explicit
+stable UART identity, datasheet path, and artifact-root identity, requires the explicit
 `--authorize-setup` flag, drives the real MCP stdio handshake/plan/setup/
 validation sequence, and writes fixed-path machine-readable evidence. It has
 no callback, shell command, code-generation, build, flash, or UART-write
 option. Any terminal status other than completed setup plus current-run
 readiness stops the process before a coding workflow can begin.
+
+Plan fields, budgets, and permission modes are listed in
+[`docs/plan-tool-contract.md`](docs/plan-tool-contract.md), which is generated
+from the same definitions used by the live MCP schemas. Setup resolves the
+current UART port from the selected stable identity and computes the datasheet
+SHA-256 itself; agents never need to bind a COM path or run a hash command.
 
 ## Tool surface
 
@@ -103,12 +109,16 @@ Guarded actions are registered but hidden until their exact plan unlocks them:
   the setup loader and plan workflow.
 
 After the handshake, ask the user only for familiar board names and pass them
-to `setup_overview`. Every matching YAML routes to validation first; unknown
-names route to setup, and validation may return a specific repair. The response includes any
-server-generated identifiers for agent use. If setup returns a friendly choice
-or research request, relay its prose and submit exactly its `accepted_response`
-through `continue_setup`; do not invent a target or ask the user for internal
-IDs.
+to `setup_overview`. The normalized phrase `no board` is a literal sentinel
+that must be passed alone, never treated as a candidate profile name. Every
+matching YAML routes to validation first; unknown names route to setup, and
+validation may return a specific repair. The response supplies bounded
+`load_call`, `next_call`, or plan-template objects with every server-known ID
+already filled. Copy those fields into MCP calls; never ask the user to invent
+them or to hash a datasheet. `load_setup_tool` then returns guidance only for
+the requested setup tool. If setup or validation returns a friendly choice,
+relay its prose and copy its exact `accepted_response`; do not scrape labels,
+invent a target, or ask the user for internal IDs.
 
 Superseded unified reset/core-register/memory/flash tools and
 `unlock_recover` are absent. Exact schemas and status payload behavior are in

@@ -73,12 +73,10 @@ BOARD_FACING_TOOL_ARGUMENTS: dict[str, dict[str, object]] = {
     "flash_application": {
         "board_id": "board-b",
         "artifact": "firmware.hex",
-        "target_address": None,
     },
     "flash_bootloader": {
         "board_id": "board-b",
         "artifact": "bootloader.hex",
-        "target_address": None,
     },
     "read_serial": {"board_id": "board-b"},
     "write_serial": {"board_id": "board-b", "text": "ping"},

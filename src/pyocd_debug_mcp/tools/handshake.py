@@ -70,12 +70,14 @@ still passes through identical plan, permission, validation, gate, freshness, lo
 event, and cleanup checks.
 
 At startup, ask the user in ordinary conversation for one unique, familiar name for each
-connected board, or "no board". Never ask the user for structured data, board IDs, connection
-IDs, or permission values. Never expose structured payloads, continuation tokens, or internal
-field names to the user.
+connected board, or "no board". "no board" is a literal sentinel: pass it by itself, and treat it
+as never a candidate board name. If it is mixed with names, clarify the answer before routing.
+Never ask the user for structured data, board IDs, connection IDs, or permission values. Never
+expose structured payloads, continuation tokens, or internal field names to the user.
 
 After the user answers, call setup_overview with the familiar names. It lists known profiles,
-friendly current connections, server-generated board IDs, and the exact per-board route. Route an
+friendly current connections, server-generated board IDs, and exact per-board next-call templates.
+Copy those machine values into MCP calls; never ask the user to repeat or invent them. Route an
 existing profile name, including an incomplete profile, to validation with
 load_setup_tool(board_validate) and board_validate. Route an unknown name to setup through the
 all-NULL board_setup-plan first; ask for exact board type, exact MCU part number, and the

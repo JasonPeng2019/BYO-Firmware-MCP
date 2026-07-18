@@ -37,17 +37,6 @@ class FlashToolServices:
     validate_flash: Callable[[str, str, Path], None] | None = None
 
 
-def _parse_optional_address(value: str | int | None) -> int | None:
-    if value is None:
-        return None
-    if isinstance(value, bool):
-        raise ValueError("target_address must not be boolean")
-    parsed = value if isinstance(value, int) else int(value, 0)
-    if parsed < 0:
-        raise ValueError("target_address must be non-negative")
-    return parsed
-
-
 def build_flash_handlers(
     services: FlashToolServices,
 ) -> dict[str, Callable[..., str]]:
@@ -57,58 +46,13 @@ def build_flash_handlers(
         tool_name: str,
         board_id: str,
         artifact: str,
-        target_address: str | int | None,
     ) -> str:
         started = time.monotonic()
         runtime = services.runtime_for(board_id)
         args: dict[str, object] = {
             "board_id": board_id,
             "artifact": artifact,
-            "target_address": target_address,
         }
-        try:
-            parsed_target_address = _parse_optional_address(target_address)
-        except ValueError as exc:
-            refusal = PolicyRefusal("flash/invalid-target-address", str(exc))
-            services.record_event(
-                tool_name,
-                args,
-                outcome_kind=ToolOutcome.REFUSED,
-                error_code=refusal.code,
-                duration_ms=services.duration_ms(started),
-                details={"message": refusal.message},
-                board_id=board_id,
-                session=runtime,
-            )
-            return wrap_layer2_response(
-                services.format_refusal(
-                    refusal,
-                    session_id=services.active_session_id(board_id),
-                )
-            )
-        if parsed_target_address is not None:
-            refusal = PolicyRefusal(
-                "flash/explicit-address-unavailable",
-                "Explicit target_address is unavailable for the current ELF/HEX backend. "
-                "Use the artifact's own load addresses; M7 validates them against the named "
-                "partition.",
-            )
-            services.record_event(
-                tool_name,
-                args,
-                outcome_kind=ToolOutcome.REFUSED,
-                error_code=refusal.code,
-                duration_ms=services.duration_ms(started),
-                details={"message": refusal.message},
-                board_id=board_id,
-                session=runtime,
-            )
-            return wrap_layer2_response(
-                services.format_refusal(
-                    refusal,
-                    session_id=services.active_session_id(board_id),
-                )
-            )
         if runtime is not None:
             try:
                 services.ensure_flash_allowed(runtime)
@@ -185,20 +129,18 @@ def build_flash_handlers(
     def flash_application(
         board_id: str,
         artifact: str,
-        target_address: str | int | None = None,
     ) -> str:
-        """Flash one application artifact contained by the mapped application partition."""
+        """Flash artifact-defined addresses contained by the mapped application partition."""
 
-        return execute("flash_application", board_id, artifact, target_address)
+        return execute("flash_application", board_id, artifact)
 
     def flash_bootloader(
         board_id: str,
         artifact: str,
-        target_address: str | int | None = None,
     ) -> str:
-        """Flash one bootloader artifact after a permission-carrying fixed plan."""
+        """Flash artifact-defined bootloader addresses after a permission-carrying fixed plan."""
 
-        return execute("flash_bootloader", board_id, artifact, target_address)
+        return execute("flash_bootloader", board_id, artifact)
 
     return {
         "flash_application": flash_application,

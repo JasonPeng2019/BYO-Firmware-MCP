@@ -135,7 +135,6 @@ def test_setup_accepted_payload_has_separate_conditioned_paired_repair() -> None
         "mcu_part_number": "nRF52840",
         "serial_baudrate": 115200,
         "serial_id": "683377322",
-        "serial_port": "COM11",
         "datasheet_path": "Nano_BLE_MCU-nRF52840_PS_v1.1.pdf",
         "datasheet_sha256": "c619e336b9c0610663273041f057f2537a65fd408ce0c5b8214a26de2aa88422",
     }

@@ -282,7 +282,6 @@ def _fixture(tmp_path: Path) -> Path:
             {
                 "board_id": "nf_board",
                 "artifact": str(build_dir / "firmware.elf"),
-                "target_address": None,
             },
             "2026-07-17T00:01:46Z",
             "2026-07-17T00:01:50Z",

@@ -27,8 +27,8 @@ def test_setup_inventory_scopes_probe_and_uart_by_stable_connection_identity(
             ValidationProbe("683377322", "J-Link", "jlink", "683377322"),
         ),
         (
-            ValidationSerial("COM12", "COM12", "ST UART", "066ABC", 1, 2),
-            ValidationSerial("COM11", "COM11", "J-Link UART", "000683377322", 3, 4),
+            ValidationSerial("066ABC", "COM12", "ST UART", "066ABC", 1, 2),
+            ValidationSerial("000683377322", "COM11", "J-Link UART", "000683377322", 3, 4),
         ),
     )
     monkeypatch.setattr(server, "_validation_inventory", lambda: inventory)
@@ -60,7 +60,7 @@ def test_setup_inventory_scopes_probe_and_uart_by_stable_connection_identity(
     )
 
     assert [probe.probe_id for probe in result.probes] == ["683377322"]
-    assert [serial.serial_id for serial in result.serial_ports] == ["COM11"]
+    assert [serial.serial_id for serial in result.serial_ports] == ["000683377322"]
     assert result.exact_detected_targets == ("nrf52833",)
     assert resolutions == [("nrf52833dk", "683377322", ("COM11",))]
 
@@ -89,7 +89,6 @@ def test_setup_inventory_rejects_a_different_sole_uart_from_explicit_binding(
             115200,
             board_type="nrf52840dk",
             serial_id="683377322",
-            serial_port="COM11",
         )
     )
 
@@ -104,7 +103,7 @@ def test_setup_inventory_rejects_wrong_single_probe_and_port_path_as_uart_id(
         "_validation_inventory",
         lambda: ValidationInventory(
             (ValidationProbe("OTHER-PROBE", "Other J-Link", "jlink", "OTHER-PROBE"),),
-            (ValidationSerial("COM11", "COM11", "J-Link UART", "683377322", 1, 2),),
+            (ValidationSerial("683377322", "COM11", "J-Link UART", "683377322", 1, 2),),
         ),
     )
     monkeypatch.setattr(server, "_target_names", lambda: ("nrf52840",))
@@ -120,7 +119,6 @@ def test_setup_inventory_rejects_wrong_single_probe_and_port_path_as_uart_id(
             115200,
             board_type="nrf52840dk",
             serial_id="COM11",
-            serial_port="COM11",
         )
     )
 

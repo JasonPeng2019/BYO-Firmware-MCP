@@ -187,12 +187,8 @@ _DEFINITIONS = (
             _field(
                 "serial_id",
                 FieldType.TEXT,
-                "Stable UART identity selected from current setup inventory.",
-            ),
-            _field(
-                "serial_port",
-                FieldType.TEXT,
-                "Current UART port path paired with serial_id.",
+                "Stable UART identity selected from current setup inventory; the server resolves "
+                "its current port path at execution time.",
             ),
             _field(
                 "datasheet_path",
@@ -202,14 +198,16 @@ _DEFINITIONS = (
             _field(
                 "datasheet_sha256",
                 FieldType.TEXT,
-                "Exact SHA-256 of the selected datasheet PDF.",
+                "Optional SHA-256 cross-check; use null to let the server compute it.",
+                nullable=True,
             ),
         ),
         BudgetMode.FIXED,
         PermissionMode.REQUIRED,
         SafetyMode.SESSION,
         300.0,
-        "Do not guess hardware choices or rewrite the user-supplied MCU part number.",
+        "Do not guess hardware choices or rewrite the user-supplied MCU part number. The server "
+        "resolves the current UART port and computes the datasheet digest.",
         paired_actions=("board_fix_setup",),
         max_plan_cycles_per_board=3,
     ),
@@ -335,39 +333,25 @@ _DEFINITIONS = (
         "flash_application",
         "flash_application-plan",
         "Flash a validated artifact wholly inside the application partition.",
-        (
-            _field("artifact", FieldType.TEXT, "Local ELF or HEX artifact path."),
-            _field(
-                "target_address",
-                FieldType.TEXT_OR_INTEGER,
-                "Optional explicit load address.",
-                nullable=True,
-            ),
-        ),
+        (_field("artifact", FieldType.TEXT, "Local ELF or HEX artifact path."),),
         BudgetMode.FIXED,
         PermissionMode.NONE,
         SafetyMode.FRESH_WRITE,
         120.0,
-        "No caller-supplied allowed ranges are accepted.",
+        "Load addresses come only from the artifact; no caller-supplied address or allowed range "
+        "is accepted.",
     ),
     PlanDefinition(
         "flash_bootloader",
         "flash_bootloader-plan",
         "Flash a validated artifact wholly inside the bootloader partition.",
-        (
-            _field("artifact", FieldType.TEXT, "Local ELF or HEX artifact path."),
-            _field(
-                "target_address",
-                FieldType.TEXT_OR_INTEGER,
-                "Optional explicit load address.",
-                nullable=True,
-            ),
-        ),
+        (_field("artifact", FieldType.TEXT, "Local ELF or HEX artifact path."),),
         BudgetMode.FIXED,
         PermissionMode.REQUIRED,
         SafetyMode.FRESH_WRITE,
         120.0,
-        "Permission is partition-specific and never authorizes application or prohibited ranges.",
+        "Load addresses come only from the artifact. Permission is partition-specific and never "
+        "authorizes application or prohibited ranges.",
     ),
     PlanDefinition(
         "register_write",
@@ -648,9 +632,8 @@ _GUIDANCE: Final = MappingProxyType(
                 "mcu_part_number": "nRF52840-QIAA",
                 "serial_baudrate": 115200,
                 "serial_id": "683377322",
-                "serial_port": "COM11",
                 "datasheet_path": "C:/firmware/docs/nRF52840_PS_v1.1.pdf",
-                "datasheet_sha256": "c619e336b9c0610663273041f057f2537a65fd408ce0c5b8214a26de2aa88422",
+                "datasheet_sha256": None,
             },
             "PAIRED ALLOWANCE: if the first setup call fails, its one paired board_fix_setup call "
             "is already authorized even under one-time permission. A further attempt requires a "
@@ -785,8 +768,8 @@ _GUIDANCE: Final = MappingProxyType(
         "flash_application": _PromptGuidance(
             "Use only to deploy a rebuilt application artifact. Never use it for a bootloader or "
             "arbitrary flash. The server checks every loadable segment, required erase sector, entry "
-            "point, vector table, target identity, and optional explicit target address against the "
-            "application partition.",
+            "point, vector table, target identity, and artifact-defined load addresses against the "
+            "application partition. The request never supplies a target address.",
             "A validated session and open fresh gate are required. After rebuilding/relinking, run "
             "board_safety_refresh first or fingerprint freshness closes the gate.",
             "Cancellation lets an in-progress flash finish safely. A wrong-but-contained image may run "
@@ -798,7 +781,7 @@ _GUIDANCE: Final = MappingProxyType(
                 "If the linker changed, rebuild the safety map instead of flashing immediately.",
             ),
             "The target runs after flashing; verify the planned observable behavior.",
-            {"artifact": "firmware/app/build/firmware.elf", "target_address": None},
+            {"artifact": "firmware/app/build/firmware.elf"},
         ),
         "flash_bootloader": _PromptGuidance(
             "Use only for an artifact intended for the bootloader partition. Application, prohibited, "
@@ -815,7 +798,7 @@ _GUIDANCE: Final = MappingProxyType(
                 "State the post-flash check, such as a bootloader UART banner.",
             ),
             "The target runs after flashing; verify the bootloader behavior.",
-            {"artifact": "firmware/boot/build/bootloader.elf", "target_address": None},
+            {"artifact": "firmware/boot/build/bootloader.elf"},
         ),
         "register_write": _PromptGuidance(
             "Use for one documented peripheral/configuration register read-modify-write. The complete "
