@@ -2,17 +2,19 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import re
 from pathlib import Path
 from typing import Any
+
+import pytest
 
 
 ROOT = Path(__file__).resolve().parents[1]
 REPORT_PATH = ROOT / "docs/evidence/m10-final-validation-2026-07-17.json"
 MARKDOWN_PATH = ROOT / "docs/evidence/m10-final-validation-2026-07-17.md"
-EXTERNAL_ROOT = Path(
-    r"C:\Users\Jason\Documents\Jason\FirmCLI\M10-Final-Acceptance\2026-07-17_run1"
-)
+_EXTERNAL_ROOT = os.environ.get("M10_FINAL_ACCEPTANCE_ROOT", "").strip()
+EXTERNAL_ROOT = Path(_EXTERNAL_ROOT) if _EXTERNAL_ROOT else None
 
 
 def _load(path: Path) -> dict[str, Any]:
@@ -124,6 +126,10 @@ def test_every_open_question_and_risk_has_an_explicit_disposition() -> None:
 
 
 def test_repo_and_external_final_reports_are_identical_and_linked() -> None:
+    if EXTERNAL_ROOT is None:
+        pytest.skip(
+            "set M10_FINAL_ACCEPTANCE_ROOT to verify the optional external acceptance copy"
+        )
     external_json = EXTERNAL_ROOT / "final-validation.json"
     external_markdown = EXTERNAL_ROOT / "final-validation.md"
 

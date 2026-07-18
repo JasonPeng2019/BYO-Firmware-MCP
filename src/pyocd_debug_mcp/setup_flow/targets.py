@@ -58,20 +58,20 @@ class TargetResolver:
         if len(exact) == 1:
             return TargetResolution(status="exact", target=exact[0])
         unresolved = (
-            "No exact pyOCD target was auto-detected for the exact MCU part number."
+            "No exact debug-backend target was auto-detected for the exact MCU part number."
             if not exact
             else "Multiple target identifiers were detected and no exact choice is deterministic."
         )
         request = make_research_request(
-            fact_id="pyocd_target",
+            fact_id="target_identity",
             continuation_token=continuation_token,
             board_id=board_id,
             mcu_part_number=mcu_part_number,
             unresolved_fact=unresolved,
-            requested_fields=("pyocd_target", "evidence", "reasoning_summary"),
+            requested_fields=("target_identity", "evidence", "reasoning_summary"),
             authoritative_facts={"detected_targets": list(exact)},
             observed_output=observed_output,
-            acceptable_sources=("pyOCD built-in target list", "official vendor CMSIS-Pack"),
+            acceptable_sources=("selected backend target catalog", "official vendor support"),
             validation_plan=(
                 "Check target syntax and exact-part consistency.",
                 "Confirm built-in or staged package support.",
@@ -94,7 +94,7 @@ class TargetResolver:
     ) -> Literal["built_in", "staged_pack"]:
         if _TARGET_PATTERN.fullmatch(candidate) is None:
             raise TargetResolutionError(
-                "target/invalid-syntax", "Target must be a valid pyOCD target identifier"
+                "target/invalid-syntax", "Target must be a valid backend target identifier"
             )
         if candidate != expected_target:
             raise TargetResolutionError(
@@ -177,7 +177,7 @@ class EnrichmentValidator:
         )
 
     def _validate_location(self, address: int, width_bits: int) -> None:
-        if address < 0 or width_bits not in {8, 16, 32}:
+        if address < 0 or width_bits < 8 or width_bits > 256 or width_bits % 8:
             raise TargetResolutionError(
                 "enrichment/invalid-read", "Address and width are not a valid live read"
             )
@@ -214,7 +214,7 @@ class ProfileCommitCoordinator:
         pack_path: str | None = None,
     ) -> BoardProfile:
         staged = self._repository.stage_core(copy.deepcopy(dict(fields)))
-        target = staged.profile.board.pyocd_target
+        target = staged.profile.board.target_identity
         try:
             self._live_connect(target, pack_path)
         except Exception as exc:
@@ -229,3 +229,4 @@ class ProfileCommitCoordinator:
             return self._repository.load(board_id, include_legacy=False)
         staged = self._repository.stage_optional(board_id, result.fields)
         return self._repository.commit_optional(staged)
+

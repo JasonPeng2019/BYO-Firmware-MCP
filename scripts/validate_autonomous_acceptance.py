@@ -13,9 +13,8 @@ from typing import Any
 import yaml  # type: ignore[import-untyped]
 
 from pyocd_debug_mcp.setup_flow.board_catalog import BoardCatalogError, catalog_board
-from pyocd_debug_mcp.setup_flow.reviewed_evidence import (
-    verify_persisted_reviewed_evidence,
-)
+from pyocd_debug_mcp.safety.fingerprints import canonical_bytes
+from pyocd_debug_mcp.setup_flow.reviewed_evidence import load_pinned_reviewed_evidence
 
 
 class EvidenceValidationError(ValueError):
@@ -324,164 +323,114 @@ def _validate_semantic_links(evidence: dict[str, Any], workspace: Path) -> tuple
     assert isinstance(firm, Mapping)
     profile_record = firm.get("profile")
     map_record = firm.get("memory_map")
-    manifest_record = firm.get("source_manifest")
     _require(isinstance(profile_record, Mapping), "profile artifact is missing")
     _require(isinstance(map_record, Mapping), "memory map artifact is missing")
-    _require(isinstance(manifest_record, Mapping), "source manifest artifact is missing")
+    _require("source_manifest" not in firm, "legacy source manifest must not be present")
     assert isinstance(profile_record, Mapping)
     assert isinstance(map_record, Mapping)
-    assert isinstance(manifest_record, Mapping)
     profile = yaml.safe_load(Path(str(profile_record["path"])).read_text(encoding="utf-8"))
     memory_map = yaml.safe_load(Path(str(map_record["path"])).read_text(encoding="utf-8"))
-    manifest = json.loads(Path(str(manifest_record["path"])).read_text(encoding="utf-8"))
     _require(isinstance(profile, Mapping) and profile.get("schema_version") == 2, "profile is not schema v2")
     assert isinstance(profile, Mapping)
     for field in ("board_id", "display_name", "mcu_part_number"):
         _require(profile.get(field) == hardware.get(field), f"profile/hardware mismatch: {field}")
-    _require(isinstance(memory_map, Mapping) and memory_map.get("board_id") == hardware.get("board_id"), "memory map board mismatch")
-    _require(isinstance(manifest, Mapping) and manifest.get("board_id") == hardware.get("board_id"), "source manifest board mismatch")
-    assert isinstance(memory_map, Mapping) and isinstance(manifest, Mapping)
-    map_fingerprints = memory_map.get("fingerprints")
-    manifest_fingerprints = manifest.get("fingerprints")
-    _require(isinstance(map_fingerprints, Mapping), "memory map fingerprints are missing")
-    assert isinstance(map_fingerprints, Mapping)
-    _require(map_fingerprints == manifest_fingerprints, "map/manifest fingerprints disagree")
-    aggregate = map_fingerprints.get("aggregate")
-    _require(aggregate == evidence["safety"].get("aggregate_fingerprint"), "evidence safety aggregate disagrees")
-    source_rows = manifest.get("sources")
-    _require(isinstance(source_rows, Mapping), "source manifest sources are missing")
-    assert isinstance(source_rows, Mapping)
-    schema_source = source_rows.get("schema")
-    _require(isinstance(schema_source, Mapping), "schema source is missing")
-    assert isinstance(schema_source, Mapping)
-    schema_doc = schema_source.get("evidence")
-    _require(isinstance(schema_doc, Mapping) and schema_doc.get("evidence") == 2 and schema_doc.get("catalog") == 2, "authority schema is not current")
-    pack_source = source_rows.get("pack")
-    evidence_source = source_rows.get("evidence")
-    geometry_source = source_rows.get("geometry")
+    expected_map_fields = {
+        "schema_version", "board_id", "identity", "source_digests",
+        "geometry", "partitions", "regions",
+    }
     _require(
-        isinstance(pack_source, Mapping)
-        and isinstance(pack_source.get("evidence"), Mapping),
-        "device-support source is missing",
+        isinstance(memory_map, Mapping)
+        and set(memory_map) == expected_map_fields
+        and memory_map.get("schema_version") == 2
+        and memory_map.get("board_id") == hardware.get("board_id"),
+        "memory map is not the exact single-file schema v2 authority",
+    )
+    assert isinstance(memory_map, Mapping)
+    identity = memory_map.get("identity")
+    source_digests = memory_map.get("source_digests")
+    geometry = memory_map.get("geometry")
+    partitions = memory_map.get("partitions")
+    _require(
+        isinstance(identity, Mapping)
+        and identity.get("mcu_part_number") == hardware.get("mcu_part_number")
+        and isinstance(identity.get("board_type"), str)
+        and isinstance(identity.get("target"), str),
+        "memory map identity does not match the hardware evidence",
     )
     _require(
-        isinstance(evidence_source, Mapping)
-        and isinstance(evidence_source.get("evidence"), Mapping),
-        "official/reconciliation source is missing",
+        isinstance(source_digests, Mapping)
+        and set(source_digests) == {
+            "semantic_profile", "device_support", "official_evidence", "generator_schema"
+        }
+        and all(isinstance(value, str) and len(value) == 64 for value in source_digests.values()),
+        "memory map semantic source digests are incomplete",
     )
-    _require(
-        isinstance(geometry_source, Mapping)
-        and isinstance(geometry_source.get("evidence"), Mapping),
-        "erase-geometry source is missing",
-    )
-    assert isinstance(pack_source, Mapping)
-    assert isinstance(evidence_source, Mapping)
-    assert isinstance(geometry_source, Mapping)
-    pack_evidence = pack_source["evidence"]
-    authority_evidence = evidence_source["evidence"]
-    geometry_evidence = geometry_source["evidence"]
-    assert isinstance(pack_evidence, Mapping)
-    assert isinstance(authority_evidence, Mapping)
-    assert isinstance(geometry_evidence, Mapping)
-    part_target_source = source_rows.get("part_target")
-    _require(
-        isinstance(part_target_source, Mapping)
-        and isinstance(part_target_source.get("evidence"), Mapping),
-        "part/target source is missing",
-    )
-    assert isinstance(part_target_source, Mapping)
-    part_target_evidence = part_target_source["evidence"]
-    assert isinstance(part_target_evidence, Mapping)
-    support_document = pack_evidence.get("document")
-    official_record = authority_evidence.get("official_document")
-    reconciliation = authority_evidence.get("reconciliation")
-    _require(
-        isinstance(support_document, Mapping)
-        and support_document.get("schema_version") == 2,
-        "device-support evidence is not strict schema v2",
-    )
-    _require(
-        isinstance(official_record, Mapping)
-        and isinstance(official_record.get("document"), Mapping)
-        and official_record["document"].get("schema_version") == 2,  # type: ignore[union-attr]
-        "official evidence is not strict schema v2",
-    )
-    _require(
-        isinstance(reconciliation, Mapping)
-        and reconciliation.get("status") == "agreement"
-        and isinstance(reconciliation.get("erase_geometry"), Mapping),
-        "region/erase reconciliation record is missing",
-    )
-    assert isinstance(reconciliation, Mapping)
-    erase_geometry = reconciliation["erase_geometry"]
-    assert isinstance(erase_geometry, Mapping)
-    _require(
-        geometry_evidence.get("erase_origin") == erase_geometry.get("erase_origin")
-        and geometry_evidence.get("erase_size") == erase_geometry.get("erase_size"),
-        "persisted erase geometry does not equal the reconciled geometry",
-    )
+    assert isinstance(identity, Mapping)
     try:
-        catalog = catalog_board(str(part_target_evidence.get("board_type")))
-        reviewed = verify_persisted_reviewed_evidence(
-            catalog,
-            pack_evidence,
-            authority_evidence,
-        )
+        catalog = catalog_board(str(identity["board_type"]))
+        reviewed = load_pinned_reviewed_evidence(catalog, catalog.datasheet_sha256[0])
     except (BoardCatalogError, ValueError, OSError) as exc:
         raise EvidenceValidationError(
             f"persisted safety authority cannot be independently reproduced: {exc}"
         ) from exc
-    expected_authority = reviewed.source_record()
     _require(
-        pack_evidence == expected_authority["device_support"],
-        "device-support authority does not equal the pinned reviewed source",
+        identity == {
+            "board_type": catalog.board_type,
+            "mcu_part_number": catalog.package_part_number,
+            "target": catalog.pyocd_target,
+        },
+        "memory map identity does not equal the reviewed catalog identity",
     )
     _require(
-        authority_evidence.get("official_document")
-        == expected_authority["official_document"]
-        and reconciliation == expected_authority["reconciliation"],
-        "official/reconciliation authority cannot be reproduced",
+        isinstance(geometry, Mapping)
+        and geometry.get("flash_start") == catalog.flash_start
+        and geometry.get("flash_end") == catalog.flash_end
+        and geometry.get("ram_start") == catalog.ram_start
+        and geometry.get("ram_end") == catalog.ram_end
+        and geometry.get("erase_origin") == catalog.flash_start
+        and geometry.get("erase_size") == catalog.erase_size,
+        "persisted erase geometry does not equal the reviewed catalog geometry",
     )
-    hardware_regions = [
-        region
-        for region in memory_map.get("regions", [])
-        if isinstance(region, Mapping)
-        and set(region.get("source_groups", [])).intersection({"pack", "evidence", "geometry"})
-    ]
-    _require(bool(hardware_regions), "memory map has no authority-bearing hardware regions")
-    for region in hardware_regions:
+    expected_application = (
+        {"start": catalog.application_start, "end": catalog.application_end}
+        if catalog.application_partition_authoritative
+        else None
+    )
+    expected_bootloader = (
+        {"start": catalog.bootloader_start, "end": catalog.bootloader_end}
+        if catalog.bootloader_partition_authoritative
+        else None
+    )
+    _require(
+        isinstance(partitions, Mapping)
+        and partitions.get("application") == expected_application
+        and partitions.get("bootloader") == expected_bootloader,
+        "memory map partitions do not equal reviewed deployment policy",
+    )
+    regions = memory_map.get("regions")
+    _require(isinstance(regions, list) and bool(regions), "memory map regions are missing")
+    assert isinstance(regions, list)
+    for region in regions:
+        _require(isinstance(region, Mapping), "memory map region is malformed")
+        assert isinstance(region, Mapping)
         provenance = region.get("provenance")
         _require(
             isinstance(provenance, list)
             and bool(provenance)
-            and all(isinstance(item, Mapping) and item.get("authority") == "reconciled" for item in provenance),
-            f"memory map hardware region is not reconciled: {region.get('name')}",
+            and all(
+                isinstance(item, Mapping) and item.get("authority") == "reconciled"
+                for item in provenance
+            ),
+            f"memory map region is not reconciled: {region.get('name')}",
         )
-    expected_region_signatures = sorted(
-        (
-            item.name,
-            item.kind.value,
-            item.address_range.start,
-            item.address_range.end,
-        )
-        for item in reviewed.reconciliation.regions
-    )
-    observed_region_signatures = sorted(
-        (
-            str(item.get("name")),
-            str(item.get("kind")),
-            item.get("start"),
-            item.get("end"),
-        )
-        for item in hardware_regions
-    )
-    _require(
-        observed_region_signatures == expected_region_signatures,
-        "persisted hardware regions do not equal the reproduced reconciliation",
-    )
+    map_digest = hashlib.sha256(canonical_bytes(memory_map)).hexdigest()
 
     safety_summary = evidence["safety"]
     assert isinstance(safety_summary, Mapping)
+    _require(
+        safety_summary.get("memory_map_digest") == map_digest,
+        "evidence memory-map digest disagrees with memory_map.yaml",
+    )
     _require(
         safety_summary.get("official_document_asset_sha256")
         == reviewed.official_asset_sha256
@@ -555,37 +504,23 @@ def _validate_semantic_links(evidence: dict[str, Any], workspace: Path) -> tuple
         "source_first_modified_at is not the earliest recorded source artifact",
     )
 
-    safety_candidates = [
-        index
+    routine_safety_calls = [
+        tool
         for index, tool in enumerate(ordered_tools)
-        if index > barrier_index and tool in {"board_safety_setup", "board_safety_refresh"}
+        if index > barrier_index and tool == "board_safety_refresh"
     ]
-    _require(bool(safety_candidates), "acceptance timeline is missing required safety setup/refresh")
-    safety_index = safety_candidates[0]
-    post_validate_index = ordered_index("board_validate", safety_index)
-    post_status_index = ordered_index("get_setup_status", post_validate_index)
-    flash_index = ordered_index("flash_application", post_status_index)
+    _require(
+        not routine_safety_calls,
+        "routine build unexpectedly invoked safety setup/refresh instead of flash-time containment",
+    )
+    flash_index = ordered_index("flash_application", barrier_index)
     serial_index = ordered_index("serial_exchange", flash_index)
     disconnect_index = ordered_index("disconnect", serial_index)
     _require(
-        source_time < _time(requests[safety_index].get("timestamp"), "safety operation timestamp")
+        source_time < _time(requests[flash_index].get("timestamp"), "flash operation timestamp")
         and disconnect_index == len(requests) - 1,
         "acceptance operation ordering is incomplete or has work after disconnect",
     )
-    safety_payload = response_json(safety_index, "safety setup/refresh")
-    validation_payload = response_json(post_validate_index, "post-build validation")
-    status_payload = response_json(post_status_index, "post-build status")
-    _require(
-        safety_payload.get("status")
-        in {"safety_setup_completed", "safety_refresh_completed"},
-        "safety setup/refresh did not complete",
-    )
-    _require(
-        str(validation_payload.get("status", "")).startswith("validation_passed"),
-        "post-build validation did not pass",
-    )
-    for field in ("configuration_ready", "live_session_ready", "ready_for_code"):
-        _require(status_payload.get(field) is True, f"post-build status is not ready: {field}")
 
     build_mtimes: list[datetime] = []
     build_by_path: dict[Path, Mapping[str, object]] = {}
@@ -601,24 +536,14 @@ def _validate_semantic_links(evidence: dict[str, Any], workspace: Path) -> tuple
         )
         build_mtimes.append(modified)
         build_by_path[build_path] = build_record
-    safety_started = _time(
-        requests[safety_index].get("request_started_at"), "safety refresh start"
+    flash_started = _time(
+        requests[flash_index].get("request_started_at"), "flash start"
     )
     _require(
         max(source_mtimes) < min(build_mtimes)
-        and max(build_mtimes) <= safety_started,
-        "build artifacts are not ordered after source and before safety refresh",
+        and max(build_mtimes) <= flash_started,
+        "build artifacts are not ordered after source and before flash-time containment",
     )
-    safety_arguments = requests[safety_index].get("arguments")
-    _require(isinstance(safety_arguments, Mapping), "safety refresh arguments are missing")
-    assert isinstance(safety_arguments, Mapping)
-    for field in ("application_elf", "application_hex", "application_map"):
-        value = safety_arguments.get(field)
-        if value is not None:
-            _require(
-                Path(str(value)).resolve(strict=True) in build_by_path,
-                f"safety refresh {field} is not a recorded build artifact",
-            )
 
     flash_text = _response_text(requests[flash_index].get("response"))
     _require(

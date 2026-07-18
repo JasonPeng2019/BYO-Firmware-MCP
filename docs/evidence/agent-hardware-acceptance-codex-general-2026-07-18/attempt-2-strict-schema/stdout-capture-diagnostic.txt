@@ -1,0 +1,1 @@
+The adapter process completed with exit code 0 and wrote result.json, but its Python subprocess reader thread raised UnicodeDecodeError while decoding Codex JSONL stdout with Windows cp1252 (byte 0x9d at position 7154). The adapter consequently exposed an empty stdout_text, so raw-codex-events.jsonl is empty. No retry was made.

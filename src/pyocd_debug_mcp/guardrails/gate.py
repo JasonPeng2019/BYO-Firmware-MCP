@@ -25,12 +25,24 @@ class GateRefusal(RuntimeError):
 
 @dataclass(frozen=True, slots=True)
 class ValidationStamp:
+    """One run-scoped live identity proof bound to one current safety map.
+
+    ``aggregate_fingerprint`` remains as a read-only compatibility alias while callers migrate to
+    the truthful ``map_digest`` name.  Refresh may replace only ``map_digest``; it may never create
+    the live identity fields in this record.
+    """
+
     board_id: str
     connection_id: str
     hardware_result: str
     probe_identity: str
-    aggregate_fingerprint: str
+    observed_identity: str
+    map_digest: str
     validated_at: str
+
+    @property
+    def aggregate_fingerprint(self) -> str:
+        return self.map_digest
 
 
 class GateManager:
@@ -59,6 +71,7 @@ class GateManager:
         hardware_result: str,
         probe_identity: str,
         aggregate_fingerprint: str,
+        observed_identity: str | None = None,
     ) -> ValidationStamp:
         """Create or replace a stamp only for a completed successful validation."""
 
@@ -66,6 +79,7 @@ class GateManager:
         connection = self._required(connection_id, "connection_id")
         probe = self._required(probe_identity, "probe_identity")
         fingerprint = self._required(aggregate_fingerprint, "aggregate_fingerprint")
+        identity = self._required(observed_identity or "reviewed_identity_match", "observed_identity")
         if hardware_result not in _PASSED_RESULTS:
             raise ValueError("only a successful board_validate result may stamp a gate")
         stamp = ValidationStamp(
@@ -73,6 +87,7 @@ class GateManager:
             connection,
             hardware_result,
             probe,
+            identity,
             fingerprint,
             datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
         )
@@ -141,10 +156,10 @@ class GateManager:
             current_aggregate_fingerprint, "current_aggregate_fingerprint"
         )
         if stamp.aggregate_fingerprint != current:
-            self.clear(board_id, "configuration fingerprint changed")
+            self.clear(board_id, "stable memory map changed")
             raise GateRefusal(
                 "gate/configuration-stale",
-                f"Board '{board_id}' safety inputs changed after validation.",
+                f"Board '{board_id}' stable memory map changed after validation.",
                 remedy=("board_safety_refresh",),
             )
         return stamp
@@ -166,6 +181,7 @@ class GateManager:
             current.connection_id,
             current.hardware_result,
             current.probe_identity,
+            current.observed_identity,
             self._required(aggregate_fingerprint, "aggregate_fingerprint"),
             current.validated_at,
         )
@@ -174,4 +190,3 @@ class GateManager:
                 self._state[current.board_id] = refreshed
                 return refreshed
         return None
-

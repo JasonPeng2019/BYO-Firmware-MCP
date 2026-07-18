@@ -118,7 +118,10 @@ class ValidationHooks:
     """Task-14 extension points for map consistency and gate stamping."""
 
     load_layer0: Callable[[BoardProfile], Layer0Snapshot]
-    stamp_session: Callable[[str, str, str, str | None, str], bool]
+    stamp_session: Callable[[str, str, str, str | None, str, str], bool]
+    record_identity_mismatch: Callable[
+        [str, str, str, str | None, str | None, str], None
+    ] = lambda _board, _expected, _observed, _probe_id, _probe_uid, _detail: None
 
     @classmethod
     def closed_placeholders(cls) -> ValidationHooks:
@@ -131,7 +134,10 @@ class ValidationHooks:
                     "write-capable actions remain closed."
                 ),
             ),
-            stamp_session=lambda _board, _result, _probe_id, _probe_uid, _fingerprint: False,
+            stamp_session=lambda _board, _result, _probe_id, _probe_uid, _identity, _digest: False,
+            record_identity_mismatch=(
+                lambda _board, _expected, _observed, _probe_id, _probe_uid, _detail: None
+            ),
         )
 
 
@@ -195,7 +201,7 @@ def _prompt(message: str) -> str:
 
 
 class BoardValidator:
-    """Execute validation steps 1-9 with no mutating backend capability."""
+    """Prove live probe/MCU/map identity with no mutating backend capability."""
 
     def __init__(
         self,
@@ -233,7 +239,6 @@ class BoardValidator:
         profile: BoardProfile | None = None
         profile_before: bytes | None = None
         selected_probe: ValidationProbe | None = None
-        selected_serial: ValidationSerial | None = None
         retry_arguments: dict[str, Any] | None = None
         hardware_result = "not_started"
         status: ValidationStatus
@@ -271,9 +276,8 @@ class BoardValidator:
             inventory = self._backend.inventory()
             observed["inventory"] = {
                 "probes": [asdict(item) for item in inventory.probes],
-                "serial_ports": [asdict(item) for item in inventory.serial_ports],
             }
-            steps.append(ValidationStep(2, "Re-enumerate probes and serial ports", "passed"))
+            steps.append(ValidationStep(2, "Re-enumerate debug probes", "passed"))
 
             # Step 3: current selection and cache resolution.
             selected_probe, probe_choices = self._select_probe(profile, inventory, request.probe_id)
@@ -288,163 +292,98 @@ class BoardValidator:
                     "validation/probe-selection-required",
                     "Ask which friendly probe is connected to the intended board.",
                 )
-            needs_uart = bool(profile.board.expected_uart_substring)
-            selected_serial, serial_choices, cache_reason = self._select_serial(
-                profile,
-                selected_probe,
-                inventory,
-                request.serial_id,
-                needs_uart=needs_uart,
-            )
-            observed["cache"] = {"reason": cache_reason}
-            if serial_choices:
-                choices = serial_choices
-                retry_arguments = {
-                    "board_id": request.board_id,
-                    "probe_id": selected_probe.probe_id,
-                    "serial_id": "<one choice_id from choices>",
-                }
-                raise ValidationBackendError(
-                    "validation_needs_user_input",
-                    "validation/serial-selection-required",
-                    "Ask which friendly serial connection belongs to the intended board.",
-                )
             steps.append(
                 ValidationStep(
                     3,
-                    "Resolve current hardware and attachment cache",
+                    "Resolve the intended stable probe identity",
                     "passed",
-                    {
-                        "probe_id": selected_probe.probe_id,
-                        "serial_id": selected_serial.serial_id if selected_serial else None,
-                        "cache_reason": cache_reason,
-                    },
+                    {"probe_id": selected_probe.probe_id},
                 )
             )
 
-            # Step 4: support lookup never installs or changes a package.
-            support = self._backend.target_supported(profile.board.pyocd_target)
-            if support is None:
+            if (
+                profile.board.silicon_id_addr is None
+                or profile.board.silicon_id_expected is None
+            ):
                 raise ValidationBackendError(
-                    "validation_research_required",
-                    "validation/target-metadata-unknown",
-                    "Target-support metadata is unresolved and requires the research handoff.",
-                )
-            if not support:
-                raise ValidationBackendError(
-                    "validation_blocked",
-                    "validation/target-unavailable",
-                    "The profile target is unavailable from built-in or pinned support.",
-                )
-            steps.append(ValidationStep(4, "Confirm built-in or pinned target support", "passed"))
-
-            if profile.board.test_addr is None:
-                raise ValidationBackendError(
-                    "validation_blocked",
-                    "validation/test-read-evidence-missing",
-                    "The profile has no reviewed test_read_address. Run board_setup to enrich "
-                    "the profile, or board_fix_setup to repair this missing setup evidence.",
+                    "validation_incomplete",
+                    "validation/identity-evidence-missing",
+                    "The profile has no reviewed live silicon identity proof. Ask the user to "
+                    "repair this board profile; validation cannot open a gate from a generic "
+                    "readability check.",
                 )
 
-            # Step 5: bounded live connection. No reset, halt, flash, erase, or recovery.
+            # Step 4: bounded live connection. No reset, halt, flash, erase, or recovery.
             connection = self._backend.connect(
                 profile, selected_probe, self._step_timeout_seconds
             )
-            steps.append(ValidationStep(5, "Connect and verify target compatibility", "passed"))
+            steps.append(ValidationStep(4, "Connect without mutating target state", "passed"))
 
-            # Step 6: configured safe read and optional silicon identity.
-            test_value = self._backend.read_memory(
+            # Step 5: mandatory reviewed silicon identity. A generic readability probe would add
+            # latency without proving which MCU is connected, so validation performs only this
+            # identity-bearing read.
+            check_details: dict[str, Any] = {}
+            actual = self._backend.read_memory(
                 connection,
-                profile.board.test_addr,
-                32,
+                profile.board.silicon_id_addr,
+                profile.board.silicon_id_width_bits,
                 self._step_timeout_seconds,
             )
-            check_details: dict[str, Any] = {
-                "test_read_address": profile.board.test_addr,
-                "test_read_value": test_value,
-            }
-            if (
-                profile.board.silicon_id_addr is not None
-                and profile.board.silicon_id_expected is not None
-            ):
-                actual = self._backend.read_memory(
-                    connection,
-                    profile.board.silicon_id_addr,
-                    profile.board.silicon_id_width_bits,
-                    self._step_timeout_seconds,
+            mask = profile.board.silicon_id_mask
+            if mask is None:
+                mask = (1 << profile.board.silicon_id_width_bits) - 1
+            check_details.update(
+                {
+                    "silicon_actual": actual,
+                    "silicon_expected": profile.board.silicon_id_expected,
+                    "silicon_mask": mask,
+                }
+            )
+            if actual & mask != profile.board.silicon_id_expected & mask:
+                expected_text = f"{profile.board.silicon_id_expected & mask:#x}"
+                observed_text = f"{actual & mask:#x}"
+                self._hooks.record_identity_mismatch(
+                    profile.board_id,
+                    expected_text,
+                    observed_text,
+                    selected_probe.probe_id,
+                    selected_probe.usb_serial,
+                    f"mask={mask:#x}",
                 )
-                mask = profile.board.silicon_id_mask
-                if mask is None:
-                    mask = (1 << profile.board.silicon_id_width_bits) - 1
-                check_details.update(
-                    {"silicon_actual": actual, "silicon_expected": profile.board.silicon_id_expected, "silicon_mask": mask}
+                raise ValidationBackendError(
+                    "validation_failed",
+                    "validation/silicon-mismatch",
+                    "The connected MCU does not match the saved profile. Tell the user the "
+                    f"profile expected {expected_text}, but the attached target reported "
+                    f"{observed_text}, and ask whether the intended "
+                    "board is attached or whether they want to keep this different hardware. "
+                    "Do not rewrite the profile or rerun setup without their guidance.",
                 )
-                if actual & mask != profile.board.silicon_id_expected & mask:
-                    raise ValidationBackendError(
-                        "validation_failed",
-                        "validation/silicon-mismatch",
-                        "The attached hardware does not match the profile. Correct the physical "
-                        "assignment or attach the intended board; the profile was not changed.",
-                    )
-            steps.append(ValidationStep(6, "Run configured safe memory and identity checks", "passed", check_details))
-
-            # Step 7: Q-8 conservative fixed default, hard-capped by construction.
-            expected_uart = profile.board.expected_uart_substring
-            if expected_uart:
-                if selected_serial is None:
-                    raise ValidationBackendError(
-                        "validation_blocked",
-                        "validation/serial-unavailable",
-                        "Configured serial validation cannot run because no serial port is available.",
-                    )
-                captured = self._backend.capture_serial(
-                    selected_serial,
-                    profile.board.default_baudrate,
-                    self._serial_capture_seconds,
-                    self._serial_capture_bytes,
+            hardware_result = "validation_passed"
+            steps.append(
+                ValidationStep(
+                    5,
+                    "Confirm reviewed live silicon identity",
+                    "passed",
+                    check_details,
                 )
-                if expected_uart not in captured:
-                    raise ValidationBackendError(
-                        "validation_failed",
-                        "validation/uart-mismatch",
-                        "The configured expected serial text was not observed within the bounded capture.",
-                    )
-                hardware_result = "validation_passed"
-                steps.append(
-                    ValidationStep(
-                        7,
-                        "Run bounded configured serial check",
-                        "passed",
-                        {"captured_bytes": len(captured.encode("utf-8"))},
-                    )
-                )
-            else:
-                hardware_result = "validation_passed_uart_not_configured"
-                steps.append(
-                    ValidationStep(
-                        7,
-                        "Run bounded configured serial check",
-                        "not_configured",
-                    )
-                )
-
-            self._confirm_cache(profile, selected_probe, selected_serial)
+            )
 
             if not layer0.present:
-                steps.append(ValidationStep(8, "Confirm safety-map consistency", "incomplete", {"reason": layer0.reason}))
+                steps.append(ValidationStep(6, "Confirm safety-map consistency", "incomplete", {"reason": layer0.reason}))
                 raise ValidationBackendError(
                     "validation_incomplete",
                     "validation/safety-missing",
                     layer0.reason or "Required safety evidence is absent.",
                 )
             if not layer0.consistent or not layer0.aggregate_fingerprint:
-                steps.append(ValidationStep(8, "Confirm safety-map consistency", "failed", {"reason": layer0.reason}))
+                steps.append(ValidationStep(6, "Confirm safety-map consistency", "failed", {"reason": layer0.reason}))
                 raise ValidationBackendError(
                     "validation_blocked",
                     "validation/safety-invalid",
                     layer0.reason or "Safety evidence is inconsistent.",
                 )
-            steps.append(ValidationStep(8, "Confirm safety-map consistency", "passed"))
+            steps.append(ValidationStep(6, "Confirm safety-map consistency", "passed"))
 
             assert layer0.aggregate_fingerprint is not None
             stamped = self._hooks.stamp_session(
@@ -452,27 +391,23 @@ class BoardValidator:
                 hardware_result,
                 selected_probe.probe_id,
                 selected_probe.usb_serial,
+                f"{actual & mask:#x}",
                 layer0.aggregate_fingerprint,
             )
             if not stamped:
-                steps.append(ValidationStep(9, "Stamp validated session", "failed"))
+                steps.append(ValidationStep(7, "Stamp validated live identity", "failed"))
                 raise ValidationBackendError(
                     "validation_incomplete",
                     "validation/stamp-failed",
                     "The validated connection could not be stamped; reconnect and run board_validate.",
                 )
-            steps.append(ValidationStep(9, "Stamp validated session", "passed"))
-            if hardware_result == "validation_passed":
-                status = "validation_passed"
-                message = "All configured validation checks, including UART content, passed."
-            else:
-                status = "validation_passed_uart_not_configured"
-                message = (
-                    "Hardware and safety validation passed. The profile has no expected UART "
-                    "content assertion, so validation did not test console text; this status does "
-                    "not mean that UART is unavailable. Call get_setup_status for the current "
-                    "UART attachment readiness before console work."
-                )
+            steps.append(ValidationStep(7, "Stamp validated live identity", "passed"))
+            status = "validation_passed"
+            message = (
+                "The live probe, MCU identity, saved profile, and stable memory map match. "
+                "Validation intentionally did not test UART or firmware behavior; call "
+                "get_setup_status for console readiness."
+            )
             code = "validation/passed"
         except ValidationBackendError as exc:
             status = exc.status
@@ -652,13 +587,14 @@ def profile_from_board_config(board: Any, source_path: Path) -> BoardProfile:
     all non-destructive checks use :class:`BoardValidator`.
     """
 
-    part_number = getattr(board, "mcu_part_number", None) or board.pyocd_target
+    part_number = getattr(board, "mcu_part_number", None) or board.target_identity
     document = {
         "board_id": board.board_id,
         "display_name": board.display_name,
         "mcu_part_number": part_number,
         "mcu_family": board.mcu_family,
         "probe_family": board.probe_family,
-        "pyocd_target": board.pyocd_target,
+        "pyocd_target": board.target_identity,
     }
     return BoardProfile(2, part_number, board, None, None, None, source_path, True, document)
+

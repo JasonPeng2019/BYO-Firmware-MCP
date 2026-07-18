@@ -2,30 +2,48 @@
 
 ## Product boundary
 
-BYO Server is a local, checkout-operated MCP server for board setup, debug,
-flash, serial, and recovery through pyOCD and pyserial. The only server
-transport is stdio. It does not listen on a socket, embed an agent, or trust an
-MCP client as a safety authority.
+BYO Server is a paired local product. Server A is the user-facing stdio turnkey brain and owns one
+fresh provider-neutral middleman process per agentic call. Server B is the guarded board manager;
+the one-command entry point verifies and reuses an explicitly managed singleton loopback
+streamable-HTTP manager, or starts a session-owned one and terminates it at Client A EOF. A
+cross-process OS lease prevents a second Server B from owning the probes.
+Client A registers Server A's stdio command and may also register the supervised loopback Server B
+HTTP endpoint for direct setup, guardrail, and hardware tools. Both registrations reach the same
+Server B manager that the middleman uses; one `pyocd-turnkey` process owns their lifetime.
+Direct Server B stdio remains available only when it can acquire the same lease. Neither Client A
+nor a middleman is hardware safety authority.
 
 ```text
-MCP client over stdio
+Client A over stdio
         |
         v
-server.py composition root
+turnkey/launcher.py -> Server A (turnkey/server.py)
+        |                         |
+        | fresh middleman         | verified singleton endpoint
+        v                         v
+provider wrapper ----------> Server B streamable HTTP
+                                  |
+                                  v
+server.py guarded hardware composition
         |
         +-- kernel: registry, managed dispatch, lifecycle, process ownership
         +-- guardrails: plans, permissions, validation gate
-        +-- safety: evidence, regions, fingerprints, containment
+        +-- safety: reviewed maps, regions, and per-action containment
         +-- setup_flow: inventory, research, setup, validation
         +-- tools: schemas and board-facing handlers
-        +-- services/adapters: board routing, pyOCD, serial, symbols
+        +-- services/adapters: board routing, selectable target backend, serial, symbols
         |
-        +-- FirmStore: durable evidence under .firm (never live authority)
+        +-- FirmStore: durable profiles/evidence under .firm (never run-scoped gate authority)
 ```
+
+`.firm/setup/` and `.firm/validation/` are local immutable runtime reports and are ignored by Git;
+acceptance evidence selected for review is copied to `docs/evidence/`. Safety authority consists
+only of each board's `memory_map.yaml`; obsolete source-manifest/report siblings are removed and
+ignored so normal execution cannot dirty tracked history with them.
 
 The client chooses what to request. The server independently checks whether
 the named operation is visible, planned, permitted, scoped to the live board,
-safe for the current map, and still fresh. Discovery is guidance, not
+safe for the current stable map. Discovery is guidance, not
 authorization: hidden tools remain registered so a stale direct call reaches a
 physical handler lock and receives the same prerequisite refusal.
 
@@ -39,9 +57,11 @@ composition root.
 
 Schema-v2 profiles in the selected project `.firm/boards/` root are the primary
 normal-connection source. The checkout `boards/` directory is a read-only
-compatibility fallback. Fresh automatic setup is advertised only for catalog
-entries with a pinned official datasheet, a distinct pinned device-support
-document, and exact installed pyOCD target/SVD identities. It recomputes every
+compatibility fallback. Fresh automatic setup is advertised only for catalog entries with a
+pinned official datasheet, a distinct pinned device-support document, and an exact installed
+backend identity. The bundled catalog is pyOCD-backed; other MCU/toolchain providers register
+equivalent reviewed records and an evidence loader through
+`pyocd_debug_mcp.reviewed_board_support` without changing Server B. It recomputes every
 hash, parses both authorities through the strict evidence schema, and persists
 only regions accepted by deterministic two-source reconciliation. An empty or
 drifted pin fails closed. Live silicon reads and the user-supplied datasheet
@@ -55,7 +75,7 @@ The kernel provides the protocol and lifecycle boundary:
   `tools/list_changed`, rechecks handler locks, and routes every call through
   managed dispatch.
 - `kernel/operations.py` assigns a finite timeout and operation identity,
-  serializes one board while preserving cross-board concurrency, connects MCP
+  enters the shared board-affecting execution queue, connects MCP
   cancellation to cooperative cancellation, and owns one idempotent cleanup
   path.
 - `kernel/finalizers.py` accepts only the structured `uart_write` and
@@ -65,11 +85,22 @@ The kernel provides the protocol and lifecycle boundary:
   groups, and identity markers. `kernel/hygiene.py` performs bounded startup
   cleanup only when the live process identity still matches.
 
-`ConnectionManager` is the only owner of live board handles. It enforces one
-active connection per logical board and one logical board per stable
-connection identity. Calls on one board serialize; different boards can run
-concurrently. Disconnect clears only the named board's connection and
-run-scoped authority.
+`ConnectionManager` is the only owner of live board handles. It enforces one active connection per
+logical board and one logical board per stable connection identity. Every board-affecting operation
+shares one process-wide queue; metadata calls remain concurrent. Disconnect clears only the named
+board's connection and run-scoped authority.
+
+The one process is protected by `kernel/singleton.py` so separate Client A launches cannot create
+independent hardware queues. The built-in `pyocd` target backend is selected through the same
+production registry used by external `pyocd_debug_mcp.target_backends` entry points. Selection is
+per profile, not one global process choice. Board runtime logic consumes a backend-neutral target
+identity; `pyocd_target` remains a read-compatibility field for existing profiles only. Artifact
+containment is similarly selected through `pyocd_debug_mcp.artifact_evidence`, with
+content-recognized ELF/Intel HEX as the built-in provider and provider-declared dependency bytes
+bound into each plan. Symbol lookup and executable breakpoint resolution use the separate
+`pyocd_debug_mcp.symbol_providers` entry point. The bundled provider recognizes ELF by content;
+other toolchains can supply their native symbol/index format without adding vendor branches to
+Server B.
 
 ## Plans and permissions
 
@@ -112,66 +143,50 @@ empty after restart.
 
 ## Validation gate and safety
 
-The write gate is default closed. Only a successful `board_validate` can stamp
-it, using the logical board, live connection, hardware result, stable probe
-identity, and current aggregate safety fingerprint. A stamp is in memory only.
-Disk artifacts, safety refresh, setup, planning, permission, or tool discovery
-cannot create one.
+The write gate is default closed. Only a successful `board_validate` can create a run-scoped live
+identity proof. Validation is deliberately lean: it selects the stable probe, makes a bounded
+non-mutating connection, reads the reviewed silicon identity, checks the schema-v2 profile and
+single memory map, and binds that map's canonical digest. It does not test UART or firmware
+behavior, collect builds, rebuild safety, or rewrite the profile.
 
-Guarded dispatch applies the standard order before starting a handler:
+Call validation only when (1) the run has no live proof, including startup and initial setup; (2)
+the physical/logical connection or probe identity changed; or (3) identity repair or destructive
+recovery may have changed the hardware. Builds, flashes, resets, UART work, bookkeeping changes,
+and same-connection safety refresh are not validation triggers.
 
-1. require the registered handler to be unlocked;
-2. validate the exact plan, board, run, session, and permission;
-3. resolve the named live connection and board lock;
-4. require validation for guarded reads;
-5. for writes, recompute source freshness and require a matching gate stamp;
-6. apply the action-specific containment rule;
-7. decrement the plan/permission budget exactly once at execution start; and
-8. call the bounded backend operation.
+Guarded dispatch validates the exact plan, permission, run/board/session binding, live connection,
+map stamp, action containment, lock, and timeout before consuming budget and entering the backend.
+Reads deny UNKNOWN and PROHIBITED spans. Writes additionally require the current canonical map
+digest. Disconnect, connection changes, restart, identity repair, and destructive recovery clear
+the live proof; refresh may update only the map digest on a still-valid same-connection proof.
+Neither is persisted.
 
-Raw memory-read containment is part of step 6, so rejection occurs before a
-planned call burns budget. The memory handler repeats the same check as a
-defense at the backend boundary, and symbol reads check after resolving the
-symbol but before target I/O. Checks cover only bytes actually read: scalar
-width for scalar/symbol access and requested byte length for block access.
-Mapped region kinds are readable; UNKNOWN and PROHIBITED are fail-closed.
+`safety/regions.py` supplies typed half-open ranges and prohibited-overrides-all classification.
+`safety/linker.py` parses the selected ELF/HEX at execution. `memory_map.yaml` contains stable
+reviewed identity, geometry, application/optional bootloader partitions, semantic source digests,
+and region provenance. It is the only persisted file under `.firm/safety/<board_id>/`.
 
-`safety/regions.py` uses typed non-empty half-open ranges. Classification is
-UNKNOWN unless authoritative regions fully contain the request, and any
-prohibited overlap wins. `safety/linker.py` extracts build partitions,
-loadable segments, entry point, vector table, and configuration. It never
-accepts caller-provided allowed ranges. `safety/verify2.py` promotes only
-deterministically reconciled device-support and official-document facts.
+`board_safety_refresh` is the maximum safety recovery. It deterministically rederives the complete
+map from current server-owned reviewed sources and atomically replaces only `memory_map.yaml`.
+Missing, corrupt, old-schema, inconsistent, geometry-changed, partition-policy-changed, or reviewed
+evidence-changed maps all use refresh and never route through setup. Refresh preserves a valid live
+identity proof but never creates one. The obsolete `board_safety_setup` public surface is removed.
 
-`safety/fingerprints.py` creates canonical per-source and aggregate SHA-256
-fingerprints. Map setup and refresh re-evaluate conflicts and overlaps before
-atomic promotion. Anchor changes require setup plus validation. Refreshable
-artifact drift can update the fingerprint on an already-valid live stamp but
-cannot open a closed gate.
+Firmware binaries are not persistent map authority. Every application/bootloader flash parses the
+actual selected ELF/HEX and checks live target identity, all load ranges, entry/vector, stable
+partition containment, prohibited overlap, and every required erase sector before backend mutation.
+The populated flash plan hashes the artifact; execution rehashes it before budget or permission
+consumption and rejects changed bytes. A normal build therefore follows `build -> collect -> flash
+plan -> flash-time containment`; it does not require refresh. HEX requires its matching ELF.
 
-The resulting action policy is:
+Breakpoints likewise bind the current ELF in the plan and permit an address only inside that ELF's
+executable loadable sections. Stable application partitions are not treated as wholly executable.
+Memory writes remain RAM-only, peripheral writes exclude prohibited ranges, and recovery remains a
+typed one-time operation that clears the gate.
 
-- guarded address reads require a validated connection;
-- memory writes are fully contained in RAM;
-- peripheral register writes exclude prohibited ranges;
-- breakpoints require build-derived executable space;
-- application and bootloader flash require the exact target and fingerprinted
-  artifact, with segment, entry/vector, partition, and erase-sector
-  containment; and
-- target recovery uses a typed vendor mechanism, a fixed one-call plan, exact
-  live disclosure, and fresh one-time permission. Recovery leaves the gate
-  closed until validation succeeds again.
-
-Every refusal is before the corresponding backend mutation and names the
-required remedy.
-
-Normal connection is structurally separate from manual override. The visible
-`connect(board_id)` schema and handler resolve only the named project profile,
-disable legacy launch-environment probe/config fallbacks, and reject unknown
-fields before backend dispatch. The hidden `connect_override` retains explicit
-run-scoped probe, target, and external-config values behind its plan. Batch
-children traverse the same strict FastMCP argument model, so batching cannot
-reintroduce the removed public override channel.
+Normal connection is structurally separate from manual override. The visible `connect(board_id)`
+uses only the profile; guarded `connect_override` owns run-scoped manual probe/target/config values.
+Batch children traverse the identical strict dispatch path.
 
 ## Setup and agent relay boundary
 
@@ -200,29 +215,15 @@ to the authoritative project manifest.
 provider-neutral native-build and visible artifact-collector handoff. Reviewed
 Zephyr profiles may additionally return an optional, labeled and parameterized
 Zephyr terminal fallback. This guidance is never safety authority; the
-resulting ELF/map must still pass `board_safety_refresh` before application
-flash.
+resulting ELF/HEX must pass its flash plan and direct execution-time containment checks before
+application flash. Ordinary builds do not require `board_safety_refresh`.
 
-Safety refresh compares canonical sub-fingerprints and returns a stable drift
-classification plus exact public remedies. Application and bootloader build
-inputs are symmetric, but authority is not: application builds must remain
-inside the reviewed deployment ceiling, while bootloader builds may replace
-only build-derived regions already contained by an authoritative bootloader
-partition. A missing bootloader envelope is an honest terminal maintainer
-blocker, never an invitation to supply ranges. Pack and official-evidence
-sources remain coupled. Their migration path reloads current pinned assets and
-runtime identity, reruns two-source verification, reproduces retained build
-regions from content-addressed artifacts, and then atomically promotes the
-coupled replacement. A failure writes a blocked report and leaves the old map
-closed. Part/target, geometry, and schema changes require
-full safety setup followed by validation; unclear profile scope requires full
-safety setup. Safety responses do not expose internal continuation IDs because
-no public safety tool consumes them; report records retain correlation IDs.
-
-If a profile's board type lacks complete pinned reviewed evidence,
-`board_safety_setup` returns `safety_setup_unsupported_board` with the reviewed
-automatic board list and the maintainer evidence requirements. It does not
-advertise a dead research continuation and never opens a gate.
+Safety refresh always rebuilds one complete candidate from reviewed sources. It has no
+build-artifact scoped mutation mode, no source manifest, and no safety report. Missing reviewed
+evidence is an honest maintainer blocker, never a caller-supplied-range prompt. A live MCU mismatch
+is different: validation reports expected and observed identities, asks the user what they want,
+and never rewrites or automatically re-runs setup. Keeping different hardware requires a new logical
+profile so the established profile remains intact.
 
 `scripts/run_fresh_workspace_e2e.py` is a narrow real-stdio adapter for a clean
 artifact root. Its input surface is fixed to board/probe/UART/datasheet
@@ -252,7 +253,7 @@ implementations.
   boards/       schema-v2 board profiles
   packs/        authoritative pack manifest and downloaded files
   setup/        immutable setup attempts and append-only logs
-  safety/       maps, source manifests, fingerprints, safety reports
+  safety/       one memory_map.yaml per board
   validation/   immutable validation and recovery attempts
   cache/        revocable host attachment hints
 ```
@@ -298,9 +299,10 @@ interruptible. Stdio EOF and normal shutdown use the same cleanup ownership.
 Firmware builds remain native-project work: the agent or developer uses the
 validated local IDE/CLI and existing SDK. The always-visible
 `collect_build_artifacts` MCP tool then provides an optional build-system-neutral
-handoff for explicit ELF, HEX, BIN, and linker-map outputs. It performs no build,
-search, subprocess, download, or hardware access. Collection stages a canonical
-`firmware.*` bundle and deterministic SHA-256 manifest outside `.firm`; the
+handoff for explicit native outputs. Common ELF/HEX/BIN/MAP fields are convenient,
+while a bounded `native_artifacts` role-to-path mapping carries provider-defined formats
+without changing the collector. It performs no build, search, subprocess, download, or hardware
+access. Collection stages a canonical bundle and deterministic SHA-256 manifest outside `.firm`; the
 manifest contains provenance but no allowed ranges, plans, permissions, or gate
 state. Current safety refresh consumes the returned ELF/HEX/MAP paths explicitly
 and remains the sole route to build-derived containment evidence.

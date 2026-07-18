@@ -97,7 +97,10 @@ def test_every_null_prompt_is_self_contained_and_ordered(action_name: str) -> No
             ),
         ),
         ("connect_override", ("normal connect", "never rewrite a profile", "probe unique ID")),
-        ("write_cpu_register", ("R0-R12", "read_cpu_register", "ordinary-register class")),
+        (
+            "write_cpu_register",
+            ("connected backend", "read_cpu_register", "ordinary-register class"),
+        ),
         ("set_execution_state", ("PRIMASK", "reset_and_run", "Ask the user plainly")),
         ("read_memory_address", ("Prefer symbol access", "64 KiB", "clear-on-read")),
         ("write_memory", ("Try a symbol first", "RAM-only", "allow_address_fallback")),

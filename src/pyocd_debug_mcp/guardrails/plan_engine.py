@@ -22,6 +22,7 @@ from pyocd_debug_mcp.guardrails.plan_defs import (
     definition_for_plan_tool,
 )
 from pyocd_debug_mcp.kernel.run_state import ServerRun
+from pyocd_debug_mcp.kernel.caller import current_caller_principal
 from pyocd_debug_mcp.services.session_runtime import PolicyRefusal
 
 MAX_FLEXIBLE_CALLS = 20
@@ -47,11 +48,13 @@ class PlanStatus(str, Enum):
 class PlanLockRegistry(Protocol):
     def is_registered(self, name: str) -> bool: ...
 
-    def unlock(self, name: str, board_id: str) -> None: ...
+    def unlock(self, name: str, board_id: str, principal: str | None = None) -> None: ...
 
-    def relock(self, name: str, board_id: str) -> None: ...
+    def relock(self, name: str, board_id: str, principal: str | None = None) -> None: ...
 
-    def is_unlocked(self, name: str, board_id: str | None) -> bool: ...
+    def is_unlocked(
+        self, name: str, board_id: str | None, principal: str | None = None
+    ) -> bool: ...
 
 
 class PermissionProvider(Protocol):
@@ -128,6 +131,10 @@ class UnavailablePermissionProvider:
 
 ExecutionScopeValidator = Callable[[PlanDefinition, str, str | None], None]
 PreExecutionCheck = Callable[[], None]
+PlanBindingProvider = Callable[[PlanDefinition, str, Mapping[str, object]], object | None]
+PlanBindingValidator = Callable[
+    [PlanDefinition, str, Mapping[str, object], object | None], None
+]
 
 
 @dataclass(frozen=True, slots=True)
@@ -263,6 +270,7 @@ class _PlanState:
     definition: PlanDefinition
     board_id: str
     session_id: str | None
+    caller_principal: str
     max_calls: int
     max_calls_buffer: int
     remaining_calls: int
@@ -270,6 +278,7 @@ class _PlanState:
     canonical_parameters: str
     canonical_plan_fields: str
     authorization: object | None
+    execution_binding: object | None = None
     status: PlanStatus = PlanStatus.ACTIVE
     close_reason: str | None = None
 
@@ -410,13 +419,21 @@ class PlanEngine:
         *,
         permission_provider: PermissionProvider | None = None,
         scope_validator: ExecutionScopeValidator | None = None,
+        binding_provider: PlanBindingProvider | None = None,
+        binding_validator: PlanBindingValidator | None = None,
     ) -> None:
         self.server_run = server_run
         self.registry = registry
         self.permission_provider = permission_provider or UnavailablePermissionProvider()
         self.scope_validator = scope_validator or (lambda definition, board_id, session_id: None)
-        self._initialized_plan_tools: set[str] = set()
-        self._accepted_cycles: dict[tuple[str, str], int] = {}
+        self.binding_provider = binding_provider or (
+            lambda _definition, _board_id, _parameters: None
+        )
+        self.binding_validator = binding_validator or (
+            lambda _definition, _board_id, _parameters, _binding: None
+        )
+        self._initialized_plan_tools: set[tuple[str, str]] = set()
+        self._accepted_cycles: dict[tuple[str, str, str], int] = {}
         self._guard = threading.RLock()
 
     def null_response(self, tool_name: str) -> PlanResult:
@@ -427,7 +444,9 @@ class PlanEngine:
             else None
         )
         with self._guard:
-            self._initialized_plan_tools.add(definition.plan_tool_name)
+            self._initialized_plan_tools.add(
+                (definition.plan_tool_name, current_caller_principal())
+            )
         return PlanResult(
             status="initialized",
             message=definition.render_null_response(disclosure),
@@ -457,7 +476,10 @@ class PlanEngine:
             )
 
         with self._guard:
-            if definition.plan_tool_name not in self._initialized_plan_tools:
+            if (
+                definition.plan_tool_name,
+                current_caller_principal(),
+            ) not in self._initialized_plan_tools:
                 raise _refuse(
                     "plan/not-initialized",
                     f"Call {definition.plan_tool_name} once with every parameter NULL before "
@@ -499,10 +521,13 @@ class PlanEngine:
         )
         canonical_parameters = canonical_json(action_parameters)
         canonical_plan_fields = canonical_json(dict(fields))
+        execution_binding = self.binding_provider(definition, board_id, action_parameters)
 
         with self._guard:
-            key = (definition.action_name, board_id)
-            cycles = self._accepted_cycles.get(key, 0)
+            principal = current_caller_principal()
+            key = (definition.action_name, board_id, principal)
+            cycle_key = (definition.action_name, board_id, principal)
+            cycles = self._accepted_cycles.get(cycle_key, 0)
             if (
                 definition.max_plan_cycles_per_board is not None
                 and cycles >= definition.max_plan_cycles_per_board
@@ -530,6 +555,7 @@ class PlanEngine:
                 definition=definition,
                 board_id=board_id,
                 session_id=session_id,
+                caller_principal=principal,
                 max_calls=max_calls,
                 max_calls_buffer=max_calls_buffer,
                 remaining_calls=max_calls + max_calls_buffer,
@@ -537,6 +563,7 @@ class PlanEngine:
                 canonical_parameters=canonical_parameters,
                 canonical_plan_fields=canonical_plan_fields,
                 authorization=authorization,
+                execution_binding=execution_binding,
             )
             previous = self.server_run.plans.get(key)
             self.server_run.plans[key] = state
@@ -551,7 +578,7 @@ class PlanEngine:
             if isinstance(previous, _PlanState) and previous.status is PlanStatus.ACTIVE:
                 previous.status = PlanStatus.REPLACED
                 previous.close_reason = f"replaced by {state.plan_id}"
-            self._accepted_cycles[key] = cycles + 1
+            self._accepted_cycles[cycle_key] = cycles + 1
             snapshot = state.snapshot()
 
         payload = accepted_plan_payload(snapshot)
@@ -579,7 +606,10 @@ class PlanEngine:
         expected_names = set(definition.plan_field_names)
         supplied_names = set(fields)
         with self._guard:
-            if definition.plan_tool_name not in self._initialized_plan_tools:
+            if (
+                definition.plan_tool_name,
+                current_caller_principal(),
+            ) not in self._initialized_plan_tools:
                 raise _refuse(
                     "plan/not-initialized",
                     f"Call {definition.plan_tool_name} once with every parameter NULL before "
@@ -800,7 +830,8 @@ class PlanEngine:
                 session_id=session_id,
             )
         canonical_parameters = canonical_json(dict(parameters))
-        key = (definition.action_name, normalized_board)
+        principal = current_caller_principal()
+        key = (definition.action_name, normalized_board, principal)
         with self._guard:
             state = self._precheck_locked(
                 key,
@@ -810,6 +841,7 @@ class PlanEngine:
                 invoked_action=action_name,
             )
             plan_id = state.plan_id
+            execution_binding = state.execution_binding
 
         try:
             self.scope_validator(definition, normalized_board, session_id)
@@ -835,6 +867,24 @@ class PlanEngine:
                     normalized_board,
                     state.authorization,
                 )
+        try:
+            self.binding_validator(
+                definition,
+                normalized_board,
+                parameters,
+                execution_binding,
+            )
+        except PolicyRefusal:
+            # A run-scoped resource binding (currently flash/breakpoint artifact bytes) is part
+            # of the accepted plan, not just a transient precondition. Once it differs, that
+            # exact plan can never become valid again merely because a path happens to contain
+            # the old bytes later. Invalidate and relock without consuming budget or permission;
+            # the caller must deliberately approve a replacement plan for the current resource.
+            with self._guard:
+                current = self.server_run.plans.get(key)
+                if isinstance(current, _PlanState) and current.plan_id == plan_id:
+                    self._invalidate_locked(key, "bound resource changed before execution")
+            raise
         if preconditions is not None:
             preconditions()
 
@@ -876,7 +926,7 @@ class PlanEngine:
 
     def _precheck_locked(
         self,
-        key: tuple[str, str],
+        key: tuple[str, str, str],
         definition: PlanDefinition,
         canonical_parameters: str,
         session_id: str | None,
@@ -888,7 +938,8 @@ class PlanEngine:
         if not isinstance(state, _PlanState) or state.status is not PlanStatus.ACTIVE:
             raise _refuse(
                 "plan/no-active-plan",
-                f"No active plan covers {definition.action_name} for board '{key[1]}'. Call "
+                f"No active plan covers {definition.action_name} for board '{key[1]}' for this "
+                "MCP client. Call "
                 f"{definition.plan_tool_name} first.",
                 session_id=session_id,
             )
@@ -909,6 +960,12 @@ class PlanEngine:
             raise _refuse(
                 "plan/run-mismatch",
                 "The active plan belongs to a different Server Run; submit a new plan.",
+                session_id=session_id,
+            )
+        if state.caller_principal != current_caller_principal():
+            raise _refuse(
+                "plan/client-mismatch",
+                "The active plan belongs to another MCP client connection.",
                 session_id=session_id,
             )
         if invoked_action == definition.action_name:
@@ -954,7 +1011,7 @@ class PlanEngine:
         """
 
         definition = _definition(action_name)
-        key = (definition.action_name, board_id)
+        key = (definition.action_name, board_id, current_caller_principal())
         with self._guard:
             state = self.server_run.plans.get(key)
             if not isinstance(state, _PlanState) or state.status is not PlanStatus.ACTIVE:
@@ -975,7 +1032,7 @@ class PlanEngine:
 
     def active_plan(self, action_name: str, board_id: str) -> ActivePlan | None:
         definition = _definition(action_name)
-        key = (definition.action_name, board_id)
+        key = (definition.action_name, board_id, current_caller_principal())
         with self._guard:
             state = self.server_run.plans.get(key)
             if not isinstance(state, _PlanState) or state.status is not PlanStatus.ACTIVE:
@@ -985,7 +1042,9 @@ class PlanEngine:
     def invalidate(self, action_name: str, board_id: str, reason: str) -> None:
         definition = _definition(action_name)
         with self._guard:
-            self._invalidate_locked((definition.action_name, board_id), reason)
+            self._invalidate_locked(
+                (definition.action_name, board_id, current_caller_principal()), reason
+            )
 
     def invalidate_board(self, board_id: str, reason: str) -> None:
         with self._guard:
@@ -993,38 +1052,44 @@ class PlanEngine:
                 key
                 for key, state in self.server_run.plans.items()
                 if isinstance(key, tuple)
-                and len(key) == 2
+                and len(key) == 3
                 and key[1] == board_id
                 and isinstance(state, _PlanState)
             ]
             for key in keys:
                 self._invalidate_locked(key, reason)
 
-    def _invalidate_locked(self, key: tuple[str, str], reason: str) -> None:
+    def _invalidate_locked(self, key: tuple[str, str, str], reason: str) -> None:
         state = self.server_run.plans.get(key)
         if not isinstance(state, _PlanState) or state.status is not PlanStatus.ACTIVE:
             return
         state.status = PlanStatus.INVALIDATED
         state.close_reason = reason
-        self._relock_definition(state.definition, state.board_id)
+        self._relock_definition(
+            state.definition, state.board_id, state.caller_principal
+        )
 
-    def _unlock_definition(self, definition: PlanDefinition, board_id: str) -> None:
+    def _unlock_definition(
+        self, definition: PlanDefinition, board_id: str, principal: str | None = None
+    ) -> None:
         unlocked: list[str] = []
         try:
             for action in (definition.action_name, *definition.paired_actions):
                 if action != definition.action_name and not self.registry.is_registered(action):
                     continue
-                self.registry.unlock(action, board_id)
+                self.registry.unlock(action, board_id, principal)
                 unlocked.append(action)
         except BaseException:
             for action in reversed(unlocked):
-                self.registry.relock(action, board_id)
+                self.registry.relock(action, board_id, principal)
             raise
 
-    def _relock_definition(self, definition: PlanDefinition, board_id: str) -> None:
+    def _relock_definition(
+        self, definition: PlanDefinition, board_id: str, principal: str | None = None
+    ) -> None:
         for action in (definition.action_name, *definition.paired_actions):
             if action == definition.action_name or self.registry.is_registered(action):
-                self.registry.relock(action, board_id)
+                self.registry.relock(action, board_id, principal)
 
     def close_run(self) -> None:
         with self._guard:
@@ -1032,7 +1097,9 @@ class PlanEngine:
                 if isinstance(state, _PlanState) and state.status is PlanStatus.ACTIVE:
                     state.status = PlanStatus.RUN_CLOSED
                     state.close_reason = "Server Run ended"
-                    self._relock_definition(state.definition, state.board_id)
+                    self._relock_definition(
+                        state.definition, state.board_id, state.caller_principal
+                    )
             self.server_run.plans.clear()
             self._initialized_plan_tools.clear()
             self._accepted_cycles.clear()

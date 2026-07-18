@@ -3,12 +3,12 @@
 [project]
 name = "pyocd-debug-mcp"
 version = "0.1.0"
-description = "Headless local MCP server for embedded debug and flash control via pyOCD"
+description = "Local turnkey firmware brain and guarded multi-backend hardware MCP server"
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
     "httpx>=0.27",
-    "mcp>=1.2.0",
+    "mcp==1.28.1",
     "pyocd>=0.44.0",
     "pyelftools>=0.33",
     "pyserial>=3.5",
@@ -21,6 +21,8 @@ pyocd-debug-mcp = "pyocd_debug_mcp.server:main"
 pyocd-pack-repair = "pyocd_debug_mcp.pack_index_repair:main"
 pyocd-zephyr-build = "pyocd_debug_mcp.zephyr_build:main"
 pyocd-collect-artifacts = "pyocd_debug_mcp.artifact_collector:main"
+pyocd-debug-mcp-http = "pyocd_debug_mcp.server_b_http:main"
+pyocd-turnkey = "pyocd_debug_mcp.turnkey.launcher:main"
 
 [dependency-groups]
 dev = [

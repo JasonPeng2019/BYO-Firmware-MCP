@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import threading
-from contextlib import contextmanager
 
 import pytest
 
@@ -11,6 +10,7 @@ from pyocd_debug_mcp.kernel.operations import (
     FLASH_OPERATION_TIMEOUT_SECONDS,
     VALIDATION_OPERATION_TIMEOUT_SECONDS,
     OperationTimeoutError,
+    board_worker_is_held,
     dispatch,
     operation_timeout_seconds,
 )
@@ -84,21 +84,15 @@ def test_batch_outer_bound_allows_each_child_its_direct_timeout() -> None:
     )
 
 
-async def test_guard_and_handler_share_the_execution_lock_in_order() -> None:
+async def test_guard_and_handler_share_the_global_board_worker_in_order() -> None:
     order: list[str] = []
 
-    @contextmanager
-    def execution_lock():
-        order.append("lock-enter")
-        try:
-            yield
-        finally:
-            order.append("lock-exit")
-
     def before_execution() -> None:
+        assert board_worker_is_held()
         order.append("checklist-and-budget")
 
     def operation() -> str:
+        assert board_worker_is_held()
         order.append("handler")
         return "done"
 
@@ -108,11 +102,10 @@ async def test_guard_and_handler_share_the_execution_lock_in_order() -> None:
         operation,
         timeout=1.0,
         before_execution=before_execution,
-        execution_lock=execution_lock(),
     )
 
     assert result == "done"
-    assert order == ["lock-enter", "checklist-and-budget", "handler", "lock-exit"]
+    assert order == ["checklist-and-budget", "handler"]
 
 
 async def test_pre_execution_refusal_never_starts_handler() -> None:

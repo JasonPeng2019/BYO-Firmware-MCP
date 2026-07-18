@@ -7,6 +7,11 @@ import pytest
 
 from pyocd_debug_mcp import server
 from pyocd_debug_mcp.adapters import swd_pyocd
+from pyocd_debug_mcp.adapters.target_backend import (
+    MemoryAccessCapabilities,
+    RegisterClass,
+    RegisterDescriptor,
+)
 from pyocd_debug_mcp.guardrails.plan_defs import (
     BudgetMode,
     PermissionMode,
@@ -400,9 +405,25 @@ def register_handlers() -> tuple[dict[str, Callable[..., str]], list[tuple[str, 
         "control",
         "msp_ns",
     )
+
+    def describe(_board: str, name: str) -> RegisterDescriptor | None:
+        normalized = name.casefold()
+        if normalized not in supported:
+            return None
+        role = (
+            RegisterClass.EXECUTION_STATE
+            if normalized in {"pc", "msp", "control", "msp_ns"}
+            else RegisterClass.ORDINARY
+        )
+        width = 128 if normalized.startswith("q") else 64 if normalized.startswith("d") else 32
+        return RegisterDescriptor(normalized, role, width)
+
     handlers = build_register_handlers(
         RegisterToolServices(
-            supported_registers=lambda board: supported,
+            describe_register=describe,
+            memory_capabilities=lambda board: MemoryAccessCapabilities(
+                (8, 16, 32), (8, 16, 32), 32, 32, 4
+            ),
             read_register=lambda board, name: (
                 calls.append(("read", (board, name))) or f"{name}=0x1"
             ),
@@ -476,6 +497,32 @@ def test_floating_point_register_accepts_a_runtime_supported_wide_value() -> Non
 
     assert "Refused" not in result
     assert calls == [("write", ("board_a", "d3", 0x100000000))]
+
+
+def test_non_arm_backend_can_declare_its_own_register_names_and_widths() -> None:
+    writes: list[tuple[str, str, int]] = []
+    handlers = build_register_handlers(
+        RegisterToolServices(
+            describe_register=lambda board, name: RegisterDescriptor(
+                name, RegisterClass.ORDINARY, 64
+            )
+            if name == "x1"
+            else None,
+            memory_capabilities=lambda board: MemoryAccessCapabilities(
+                (8, 16, 32, 64), (8, 16, 32, 64), 64, 64, 8
+            ),
+            read_register=lambda board, name: f"{name}=0x1",
+            write_register=lambda board, name, value: (
+                writes.append((board, name, value)) or "written"
+            ),
+            masked_register_write=lambda board, address, mask, value: "masked",
+        )
+    )
+
+    result = handlers["write_cpu_register"]("riscv_board", "x1", (1 << 64) - 1)
+
+    assert "Refused" not in result
+    assert writes == [("riscv_board", "x1", (1 << 64) - 1)]
 
 
 @pytest.mark.parametrize(("value", "expected"), [("32", 32), ("0x20", 0x20)])
@@ -571,7 +618,16 @@ def test_register_write_uses_fixed_plan_and_safety_map_policy() -> None:
 
 def test_guarded_register_preconditions_reject_before_execution() -> None:
     services = RegisterToolServices(
-        supported_registers=lambda board: ("r0", "pc"),
+        describe_register=lambda board, name: RegisterDescriptor(
+            name,
+            RegisterClass.EXECUTION_STATE if name == "pc" else RegisterClass.ORDINARY,
+            32,
+        )
+        if name in {"r0", "pc"}
+        else None,
+        memory_capabilities=lambda board: MemoryAccessCapabilities(
+            (8, 16, 32), (8, 16, 32), 32, 32, 4
+        ),
         read_register=lambda board, name: "unreachable",
         write_register=lambda board, name, value: "unreachable",
         masked_register_write=lambda board, address, mask, value: "unreachable",

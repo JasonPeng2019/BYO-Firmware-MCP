@@ -209,7 +209,7 @@ def run_stage1_smoke(
         handle = target_control.open_session(
             board=board,
             unique_id=resolved_probe_uid,
-            target=board.pyocd_target,
+            target=board.target_identity,
         )
         target_control.flash_firmware(
             handle,
@@ -281,7 +281,7 @@ def main() -> int:
             serial_read_seconds=args.serial_read_seconds,
         )
 
-        print(f"\nStage 1 smoke harness — {result.board.display_name} ({result.board.board_id})")
+        print(f"\nStage 1 smoke harness â€” {result.board.display_name} ({result.board.board_id})")
         print(f"flash artifact: {result.flash_artifact}")
         print(f"symbol artifact: {result.symbol_artifact}")
         print(f"serial port: {result.serial_port.device}")
@@ -332,3 +332,4 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
+

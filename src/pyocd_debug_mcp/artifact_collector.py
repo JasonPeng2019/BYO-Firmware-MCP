@@ -6,6 +6,7 @@ import argparse
 import hashlib
 import json
 import os
+import re
 import shutil
 import sys
 import uuid
@@ -28,18 +29,18 @@ class ArtifactRole(str, Enum):
     MAP = "map"
 
 
-CANONICAL_NAMES: Mapping[ArtifactRole, str] = {
-    ArtifactRole.ELF: "firmware.elf",
-    ArtifactRole.HEX: "firmware.hex",
-    ArtifactRole.BIN: "firmware.bin",
-    ArtifactRole.MAP: "firmware.map",
+CANONICAL_NAMES: Mapping[str, str] = {
+    ArtifactRole.ELF.value: "firmware.elf",
+    ArtifactRole.HEX.value: "firmware.hex",
+    ArtifactRole.BIN.value: "firmware.bin",
+    ArtifactRole.MAP.value: "firmware.map",
 }
-DEPLOYABLE_ROLES = frozenset({ArtifactRole.ELF, ArtifactRole.HEX, ArtifactRole.BIN})
+_ROLE_PATTERN = re.compile(r"[a-z][a-z0-9_-]{0,31}\Z")
 
 
 @dataclass(frozen=True)
 class ArtifactRecord:
-    role: ArtifactRole
+    role: str
     path: str
     source_name: str
     size_bytes: int
@@ -58,7 +59,7 @@ class CollectionResult:
             "output_dir": str(self.output_dir),
             "manifest_path": str(self.manifest_path),
             "artifacts": {
-                record.role.value: {
+                record.role: {
                     "path": record.path,
                     "size_bytes": record.size_bytes,
                     "sha256": record.sha256,
@@ -82,14 +83,24 @@ def _sha256(path: Path) -> str:
 
 
 def _normalize_sources(
-    sources: Mapping[ArtifactRole, Path | str],
-) -> dict[ArtifactRole, Path]:
-    normalized: dict[ArtifactRole, Path] = {}
+    sources: (
+        Mapping[ArtifactRole, Path | str]
+        | Mapping[str, Path | str]
+        | Mapping[ArtifactRole | str, Path | str]
+    ),
+) -> dict[str, Path]:
+    normalized: dict[str, Path] = {}
     resolved_sources: set[Path] = set()
-    for role, raw_path in sources.items():
+    for raw_role, raw_path in sources.items():
+        role = raw_role.value if isinstance(raw_role, ArtifactRole) else raw_role.strip().casefold()
+        if _ROLE_PATTERN.fullmatch(role) is None:
+            raise ValueError(
+                "Artifact roles must start with a letter and contain only letters, digits, "
+                "underscores, or hyphens (maximum 32 characters)."
+            )
         path = Path(raw_path).expanduser().resolve()
         if role in normalized:
-            raise ValueError(f"Artifact role was supplied more than once: {role.value}")
+            raise ValueError(f"Artifact role was supplied more than once: {role}")
         if not path.is_file():
             raise ValueError(f"Artifact is not a regular file: {path}")
         if path.stat().st_size <= 0:
@@ -98,12 +109,14 @@ def _normalize_sources(
             raise ValueError(f"One source cannot fill multiple artifact roles: {path}")
         normalized[role] = path
         resolved_sources.add(path)
-    if not DEPLOYABLE_ROLES.intersection(normalized):
-        raise ValueError("Supply at least one explicit ELF, HEX, or BIN artifact.")
+    if not normalized:
+        raise ValueError("Supply at least one explicit native build artifact.")
+    if set(normalized) == {ArtifactRole.MAP.value}:
+        raise ValueError("Supply at least one firmware artifact in addition to a linker map.")
     return normalized
 
 
-def _validate_destination(destination: Path, sources: Mapping[ArtifactRole, Path]) -> Path:
+def _validate_destination(destination: Path, sources: Mapping[str, Path]) -> Path:
     requested = destination.expanduser()
     if _path_is_link_or_junction(requested):
         raise ValueError(f"Output directory must not be a link or junction: {requested}")
@@ -124,7 +137,11 @@ def _validate_destination(destination: Path, sources: Mapping[ArtifactRole, Path
 
 
 def collect_artifacts(
-    sources: Mapping[ArtifactRole, Path | str],
+    sources: (
+        Mapping[ArtifactRole, Path | str]
+        | Mapping[str, Path | str]
+        | Mapping[ArtifactRole | str, Path | str]
+    ),
     output_dir: Path | str,
     *,
     producer: str = "native-project-build",
@@ -137,11 +154,14 @@ def collect_artifacts(
         raise ValueError("Producer must contain 1 to 128 non-whitespace characters.")
     normalized = _normalize_sources(sources)
     expected = {
-        role if isinstance(role, ArtifactRole) else ArtifactRole(role) for role in expected_roles
+        role.value if isinstance(role, ArtifactRole) else role.strip().casefold()
+        for role in expected_roles
     }
+    if any(_ROLE_PATTERN.fullmatch(role) is None for role in expected):
+        raise ValueError("Expected artifact roles use the same bounded role-name syntax.")
     missing = expected.difference(normalized)
     if missing:
-        names = ", ".join(sorted(role.value for role in missing))
+        names = ", ".join(sorted(missing))
         raise ValueError(f"Missing expected artifact roles: {names}")
     destination = _validate_destination(Path(output_dir), normalized)
     destination.parent.mkdir(parents=True, exist_ok=True)
@@ -152,9 +172,12 @@ def collect_artifacts(
     try:
         stage.mkdir()
         records: list[ArtifactRecord] = []
-        for role in sorted(normalized, key=lambda item: item.value):
+        for role in sorted(normalized):
             source = normalized[role]
-            relative_path = CANONICAL_NAMES[role]
+            suffix = source.suffix.casefold()
+            if not re.fullmatch(r"\.[a-z0-9_-]{1,15}", suffix):
+                suffix = ".artifact"
+            relative_path = CANONICAL_NAMES.get(role, f"firmware-{role}{suffix}")
             target = stage / relative_path
             shutil.copyfile(source, target)
             records.append(
@@ -170,10 +193,10 @@ def collect_artifacts(
             "schema_version": 1,
             "owner": MANIFEST_OWNER,
             "producer": producer,
-            "present_roles": [record.role.value for record in records],
-            "expected_roles": sorted(role.value for role in expected),
+            "present_roles": [record.role for record in records],
+            "expected_roles": sorted(expected),
             "artifacts": {
-                record.role.value: {
+                record.role: {
                     "path": record.path,
                     "source_name": record.source_name,
                     "size_bytes": record.size_bytes,

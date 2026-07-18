@@ -40,13 +40,13 @@ def test_ac_13_1_restart_and_new_manager_are_default_closed() -> None:
 
 def test_ac_13_4_disk_artifacts_never_restore_gate_authority(tmp_path) -> None:
     store = FirmStore(tmp_path)
-    store.atomic_write_json(
-        store.layout.safety_board("board_a") / "safety_report.json",
+    map_path = store.layout.safety_board("board_a") / "memory_map.yaml"
+    store.atomic_write_yaml(
+        map_path,
         {
-            "schema_version": 1,
+            "schema_version": 2,
             "board_id": "board_a",
-            "status": "safety_setup_completed",
-            "aggregate_fingerprint": "aggregate-a",
+            "identity": {"target": "example"},
         },
     )
     first = GateManager(create_server_run().gates)
@@ -54,7 +54,7 @@ def test_ac_13_4_disk_artifacts_never_restore_gate_authority(tmp_path) -> None:
     assert first.snapshot("board_a") is not None
 
     restarted = GateManager(create_server_run().gates)
-    assert (store.layout.safety_board("board_a") / "safety_report.json").is_file()
+    assert map_path.is_file()
     with pytest.raises(GateRefusal) as refusal:
         restarted.require_write("board_a", "probe:a", "aggregate-a")
     assert refusal.value.code == "gate/validation-required"
@@ -125,7 +125,7 @@ def test_ac_13_3_disconnect_is_board_local_and_clears_stamp() -> None:
         manager.require_validated("board_a", "probe:a")
 
 
-def test_ac_11_6_fingerprint_drift_closes_gate_and_names_refresh() -> None:
+def test_ac_11_6_map_digest_change_closes_gate_and_names_refresh() -> None:
     manager = GateManager()
     stamp(manager)
 

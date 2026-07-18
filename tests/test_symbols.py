@@ -40,7 +40,7 @@ class FakeELF:
 
 def test_resolve_symbol_returns_backend_neutral_shape(monkeypatch, tmp_path: Path) -> None:
     elf_path = tmp_path / "firmware.elf"
-    elf_path.write_text("placeholder", encoding="utf-8")
+    elf_path.write_bytes(b"\x7fELFplaceholder")
     fake_symbol = FakeSymbol("stage1_known_value", 0x20000010, 4, "STT_OBJECT")
     captured: dict[str, FakeELF] = {}
 
@@ -63,7 +63,7 @@ def test_resolve_symbol_returns_backend_neutral_shape(monkeypatch, tmp_path: Pat
 
 def test_resolve_symbol_raises_for_missing_symbol(monkeypatch, tmp_path: Path) -> None:
     elf_path = tmp_path / "firmware.elf"
-    elf_path.write_text("placeholder", encoding="utf-8")
+    elf_path.write_bytes(b"\x7fELFplaceholder")
     monkeypatch.setattr(symbols, "ELFBinaryFile", lambda path: FakeELF(path, None))
 
     with pytest.raises(SymbolLookupError, match="missing_symbol"):
@@ -152,3 +152,38 @@ def test_read_symbol_u32_leaves_halted_target_halted(monkeypatch, tmp_path: Path
 
     assert resolved.value_u32 == 0x1234ABCD
     assert calls == ["read_memory"]
+
+
+def test_external_toolchain_symbol_provider_requires_no_central_code_change(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    artifact = tmp_path / "firmware.vendor"
+    artifact.write_bytes(b"VENDOR-SYMBOLS")
+
+    class Provider:
+        name = "vendor"
+
+        def supports(self, path: Path) -> bool:
+            return path.read_bytes().startswith(b"VENDOR")
+
+        def resolve(self, path: Path, name: str) -> symbols.ResolvedSymbol:
+            return symbols.ResolvedSymbol(name, 0x1000, 4, "object")
+
+        def find(
+            self, path: Path, query: str, limit: int
+        ) -> tuple[symbols.ResolvedSymbol, ...]:
+            return (symbols.ResolvedSymbol("vendor_symbol", 0x1000, 4, "object"),)[:limit]
+
+    class Entry:
+        name = "vendor"
+
+        @staticmethod
+        def load():
+            return Provider
+
+    monkeypatch.setattr(symbols, "entry_points", lambda **_kwargs: (Entry(),))
+
+    assert symbols.resolve_symbol(artifact, "vendor_symbol").address == 0x1000
+    assert symbols.find_symbols(artifact, "vendor") == (
+        symbols.ResolvedSymbol("vendor_symbol", 0x1000, 4, "object"),
+    )

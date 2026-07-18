@@ -6,7 +6,9 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+import yaml  # type: ignore[import-untyped]
 
+from pyocd_debug_mcp.adapters.target_backend import TargetSessionDescription
 from pyocd_debug_mcp.adapters.swd_interface import TargetSessionHandle
 from pyocd_debug_mcp.board_config import (
     RECOVER_MODE_MANUAL_ONLY,
@@ -27,6 +29,7 @@ from pyocd_debug_mcp.guardrails.permissions import (
 )
 from pyocd_debug_mcp.guardrails.plan_defs import PLAN_DEFINITIONS
 from pyocd_debug_mcp.guardrails.plan_engine import PlanEngine, PlanRefusal
+from pyocd_debug_mcp.kernel.caller import current_caller_principal
 from pyocd_debug_mcp.kernel.registry import ToolRegistry
 from pyocd_debug_mcp.kernel.run_state import ServerRun
 from pyocd_debug_mcp.safety.fingerprints import FingerprintInputs, FingerprintSource
@@ -78,15 +81,39 @@ def _contribution(
 
 
 def _safety_inputs(profile: object, *, geometry: object | None = None) -> FingerprintInputs:
+    default_geometry = {
+        "flash_start": 0,
+        "flash_end": 0x10000,
+        "ram_start": 0x20000000,
+        "ram_end": 0x20010000,
+        "erase_origin": 0,
+        "erase_size": 0x1000,
+    }
+    if isinstance(geometry, dict):
+        default_geometry.update(geometry)
     return FingerprintInputs(
         profile,
-        {"mcu_part_number": "nRF52833-QIAA", "target": "nrf52833"},
+        {
+            "board_type": "nrf52833dk",
+            "mcu_part_number": "nRF52833-QIAA",
+            "target": "nrf52833",
+        },
         {"id": "Nordic.nRF_DeviceFamilyPack", "version": "8.58.0"},
-        {"datasheet": "nRF52833 PS"},
-        {"elf": "app.elf"},
-        {"elf": "boot.elf"},
-        geometry if geometry is not None else {"erase_origin": 0, "erase_size": 0x1000},
-        {"memory_map": 1},
+        {
+            "datasheet": "nRF52833 PS",
+            "deployment_policy": {
+                "application_start": 0x2000,
+                "application_end": 0x10000,
+                "application_authoritative": True,
+                "bootloader_start": 0,
+                "bootloader_end": 0x2000,
+                "bootloader_authoritative": True,
+            },
+        },
+        {},
+        {},
+        default_geometry,
+        {"memory_map": 2},
     )
 
 
@@ -166,18 +193,22 @@ def _fixture(
             FingerprintSource.GEOMETRY,
         ),
         _contribution(
-            "bootloader",
-            RegionKind.BOOTLOADER_FLASH,
-            0,
-            0x2000,
-            FingerprintSource.BOOTLOADER_ARTIFACTS,
+            "physical RAM",
+            RegionKind.PHYSICAL_RAM,
+            0x20000000,
+            0x20010000,
+            FingerprintSource.PACK,
+            FingerprintSource.EVIDENCE,
+            FingerprintSource.GEOMETRY,
         ),
         _contribution(
-            "application",
-            RegionKind.APPLICATION_FLASH,
-            0x2000,
-            0x10000,
-            FingerprintSource.APPLICATION_ARTIFACTS,
+            "RAM",
+            RegionKind.RAM,
+            0x20000000,
+            0x20010000,
+            FingerprintSource.PACK,
+            FingerprintSource.EVIDENCE,
+            FingerprintSource.GEOMETRY,
         ),
         _contribution(
             "UICR and protection configuration",
@@ -252,6 +283,9 @@ def _fixture(
             lambda board_id: state["connection_id"],
             lambda board_id: state["session_id"],
             lambda board_id: state["fingerprint"],
+            lambda _handle: TargetSessionDescription(
+                profile.display_name, target.part_number, "test probe"
+            ),
             lambda handle, mechanism: (
                 backend_supports_recovery
                 and mechanism == RECOVER_MODE_BACKEND_MASS_ERASE
@@ -330,8 +364,8 @@ def test_ac_15_2_and_15_3_permission_payload_is_complete_and_relayable(
     ]
     assert {item["name"] for item in disclosure["affected_regions"]} == {
         "physical flash",
-        "application",
-        "bootloader",
+        "reviewed application partition",
+        "reviewed bootloader partition",
         "UICR and protection configuration",
     }
     assert {
@@ -387,11 +421,15 @@ def test_ac_5_7_and_15_5_full_session_never_authorizes_or_carries_forward(
     tmp_path: Path,
 ) -> None:
     fixture = _fixture(tmp_path)
-    fixture.permissions.server_run.permissions[("target_unlock", BOARD_ID)] = PermissionGrant(
+    principal = current_caller_principal()
+    fixture.permissions.server_run.permissions[
+        ("target_unlock", BOARD_ID, principal)
+    ] = PermissionGrant(
         "permission-prior-full-session",
         fixture.permissions.server_run.run_id,
         "target_unlock",
         BOARD_ID,
+        principal,
         GrantMode.FULL_SESSION,
         "2026-01-01T00:00:00Z",
     )
@@ -425,14 +463,21 @@ def test_ac_5_7_and_15_5_full_session_never_authorizes_or_carries_forward(
 
 
 def test_incomplete_erase_disclosure_fails_closed_before_permission(tmp_path: Path) -> None:
-    fixture = _fixture(tmp_path, geometry={"erase_size": 0x1000})
+    fixture = _fixture(tmp_path)
+    map_path = fixture.store.layout.safety_board(BOARD_ID) / "memory_map.yaml"
+    document = yaml.safe_load(map_path.read_text(encoding="utf-8"))
+    del document["geometry"]["erase_origin"]
+    map_path.write_text(yaml.safe_dump(document, sort_keys=False), encoding="utf-8")
+    fixture.state["fingerprint"] = SafetyArtifactRepository(fixture.store).load_current(
+        BOARD_ID
+    ).map_digest
     _initialize(fixture)
 
     with pytest.raises(PlanRefusal) as caught:
         fixture.coordinator.plan(_complete_fields())
 
     assert caught.value.code == "unlock/erase-disclosure-incomplete"
-    assert "board_safety_setup" in str(caught.value)
+    assert "board_safety_refresh" in str(caught.value)
     assert fixture.backend_calls == []
     assert fixture.permissions.active_grant("target_unlock", BOARD_ID) is None
     assert list(fixture.store.layout.validation.glob("target-unlock-*/report.json")) == []
@@ -544,6 +589,7 @@ def test_expired_and_restarted_runs_restore_no_unlock_authority(tmp_path: Path) 
             old.connection_id_for,
             old.session_id_for,
             old.current_fingerprint,
+            old.describe_session,
             old.supports_recovery,
             old.recover_target,
             old.mark_recover_completed,

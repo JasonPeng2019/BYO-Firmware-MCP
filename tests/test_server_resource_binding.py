@@ -12,11 +12,13 @@ import pytest
 from mcp.shared.memory import create_connected_server_and_client_session
 
 from pyocd_debug_mcp import server
+from pyocd_debug_mcp.adapters.target_backend import MemoryAccessCapabilities
 from pyocd_debug_mcp.firmstore.cache import CacheResolution
-from pyocd_debug_mcp.firmstore.profiles import ProfileRepository
+from pyocd_debug_mcp.firmstore.profiles import ProfileError, ProfileRepository
 from pyocd_debug_mcp.firmstore.reports import ReportWriter
 from pyocd_debug_mcp.firmstore.store import FirmStore
 from pyocd_debug_mcp.guardrails.plan_defs import PLAN_DEFINITIONS
+from pyocd_debug_mcp.guardrails.plan_engine import PlanRefusal
 from pyocd_debug_mcp.kernel.operations import ManagedOperation, OperationState
 from pyocd_debug_mcp.setup_flow.preflight import (
     PreflightDecision,
@@ -36,6 +38,107 @@ def _call_payload(result: types.CallToolResult) -> dict[str, object]:
     content = result.content[0]
     assert isinstance(content, types.TextContent)
     return json.loads(content.text)
+
+
+def test_mcu_mismatch_routes_adoption_to_a_new_profile_without_overwrite(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    definition = PLAN_DEFINITIONS["board_setup"]
+    monkeypatch.setattr(server.connection_manager, "maybe_connection", lambda _board: None)
+    monkeypatch.setattr(
+        server._profile_repository,
+        "load",
+        lambda *_args, **_kwargs: SimpleNamespace(board_id="established_board"),
+    )
+    monkeypatch.setitem(
+        server._setup_mismatch_allowances,
+        "established_board",
+        ("probe-1", "0x415", "0x52840", "masked reviewed identity"),
+    )
+
+    with pytest.raises(PlanRefusal) as caught:
+        server._validate_plan_scope(definition, "established_board", None)
+
+    assert caught.value.code == "plan/setup-new-profile-required"
+    assert "expected MCU identity 0x415" in str(caught.value)
+    assert "observed 0x52840" in str(caught.value)
+    assert "new familiar board name" in str(caught.value)
+    assert "never overwritten" in str(caught.value)
+
+    with pytest.raises(PlanRefusal) as acceptance:
+        server._bind_plan_resources(definition, "established_board", {})
+    assert acceptance.value.code == "plan/setup-new-profile-required"
+
+
+def test_invalid_existing_profile_cannot_be_treated_as_first_time_setup(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    definition = PLAN_DEFINITIONS["board_setup"]
+    monkeypatch.setattr(server.connection_manager, "maybe_connection", lambda _board: None)
+    monkeypatch.setattr(
+        server._profile_repository,
+        "load",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            ProfileError("Invalid schema-v2 profile established_board.yaml")
+        ),
+    )
+
+    with pytest.raises(PlanRefusal) as caught:
+        server._validate_plan_scope(definition, "established_board", None)
+
+    assert caught.value.code == "plan/setup-profile-invalid"
+    assert "Do not treat it as a new board" in str(caught.value)
+
+
+def test_live_target_override_is_the_target_used_by_flash_safety(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    handle = SimpleNamespace(
+        target_override="nrf52840",
+        board=SimpleNamespace(target_identity="stm32l476rgtx"),
+    )
+    monkeypatch.setattr(server, "_handle", lambda _board: handle)
+
+    assert server._current_target("board_a") == "nrf52840"
+
+
+def test_refresh_clears_live_gate_when_stable_identity_changed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cleared: list[tuple[str, str]] = []
+    monkeypatch.setattr(
+        server.gate_manager,
+        "clear",
+        lambda board, reason: cleared.append((board, reason)),
+    )
+    monkeypatch.setattr(
+        server.connection_manager,
+        "maybe_connection",
+        lambda _board: pytest.fail("identity-changing refresh must not restamp a connection"),
+    )
+
+    assert server._restamp_after_refresh("board_a", "new-map-digest", False) is False
+    assert cleared == [
+        ("board_a", "stable MCU or target identity changed during safety refresh")
+    ]
+
+
+def test_hex_plan_binds_matching_elf_companion_bytes(tmp_path: Path) -> None:
+    hex_path = tmp_path / "firmware.hex"
+    elf_path = tmp_path / "firmware.elf"
+    hex_path.write_text(":00000001FF\n", encoding="ascii")
+    elf_path.write_bytes(b"\x7fELF-before")
+    definition = PLAN_DEFINITIONS["flash_application"]
+    parameters = {"artifact": str(hex_path)}
+
+    binding = server._bind_plan_resources(definition, "board_a", parameters)
+    server._validate_plan_artifact_binding(definition, "board_a", parameters, binding)
+    elf_path.write_bytes(b"\x7fELF-after")
+
+    with pytest.raises(PlanRefusal) as caught:
+        server._validate_plan_artifact_binding(definition, "board_a", parameters, binding)
+
+    assert caught.value.code == "plan/artifact-changed"
 
 
 def test_successful_ordinary_operation_releases_reset_without_rebooting(monkeypatch) -> None:
@@ -174,23 +277,23 @@ def test_setup_status_cannot_report_legacy_safety_authority_ready(monkeypatch) -
     monkeypatch.setattr(server, "region_conflicts", lambda _regions: ())
     monkeypatch.setattr(server, "_missing_base_safety_kinds", lambda _regions: ())
 
-    def reject_legacy(_board: str) -> str:
+    def reject_invalid_map(_board: str) -> str:
         raise server.SafetyPolicyError(
-            "safety/authority-migration-required",
-            "legacy authority schema",
-            remedy=("board_setup", "board_safety_setup", "board_validate"),
+            "safety/refresh-required",
+            "invalid map schema",
+            remedy=("board_safety_refresh",),
         )
 
     monkeypatch.setattr(
         server,
         "_safety_policy",
-        SimpleNamespace(current_aggregate=reject_legacy),
+        SimpleNamespace(current_aggregate=reject_invalid_map),
     )
 
     status = server._get_setup_status("board_a")
 
     assert status["configuration_ready"] is False
-    assert "legacy authority schema" in str(status["configuration_reason"])
+    assert "invalid map schema" in str(status["configuration_reason"])
 
 
 @pytest.mark.skipif(server.sys.platform != "win32", reason="PowerShell rendering is Windows-only")
@@ -315,12 +418,21 @@ def test_automatic_setup_rejects_family_name_without_rewriting_profile(monkeypat
 def test_setup_safety_research_automatically_rebuilds_obsolete_reviewed_map(
     monkeypatch,
 ) -> None:
-    legacy = SimpleNamespace(source_manifest={})
+    legacy = SimpleNamespace(identity={})
     rebuilt = SimpleNamespace(
-        source_manifest={"sources": {"evidence": {}}},
-        fingerprints=SimpleNamespace(aggregate="current-reviewed-aggregate"),
+        map_digest="current-reviewed-map-digest",
+        source_digests={"official_evidence": "a" * 64},
     )
     monkeypatch.setattr(server._safety_repository, "load_current", lambda _board: legacy)
+    monkeypatch.setattr(
+        server,
+        "require_reconciled_authority",
+        lambda artifacts: (
+            None
+            if artifacts is rebuilt
+            else (_ for _ in ()).throw(server.SafetyArtifactError("obsolete map"))
+        ),
+    )
     monkeypatch.setattr(server, "_build_automatic_catalog_safety", lambda _context: rebuilt)
     context = cast(
         SetupPhaseContext,
@@ -331,7 +443,7 @@ def test_setup_safety_research_automatically_rebuilds_obsolete_reviewed_map(
 
     assert result.verified is True
     assert result.code == "setup/safety-sources-verified"
-    assert result.details["aggregate_fingerprint"] == "current-reviewed-aggregate"
+    assert result.details["map_digest"] == "current-reviewed-map-digest"
 
 
 def test_fresh_setup_rejects_family_only_mcu_before_profile_commit() -> None:
@@ -406,6 +518,7 @@ def test_reviewed_opaque_target_reaches_live_connect_before_profile_commit(
     profiles = ProfileRepository(FirmStore(tmp_path), legacy_board_dir=tmp_path / "legacy")
     monkeypatch.setattr(server, "_profile_repository", profiles)
     events: list[str] = []
+    reads: list[tuple[int, int]] = []
     handle = SimpleNamespace()
 
     def open_session(**kwargs: object) -> object:
@@ -414,11 +527,17 @@ def test_reviewed_opaque_target_reaches_live_connect_before_profile_commit(
         assert not profiles.store.layout.board_profile("reviewed_board").exists()
         return handle
 
-    def read_memory(_handle: object, address: int, _width: int) -> int:
+    def read_memory(_handle: object, address: int, width: int) -> int:
+        reads.append((address, width))
         return 0x00052840 if address == 0x10000100 else 0x12345678
 
     monkeypatch.setattr(server.target_control, "open_session", open_session)
     monkeypatch.setattr(server.target_control, "read_memory", read_memory)
+    monkeypatch.setattr(
+        server.target_control,
+        "memory_access_capabilities",
+        lambda _handle: MemoryAccessCapabilities((8, 16, 32), (8, 16, 32), 32),
+    )
     monkeypatch.setattr(server.target_control, "close_session", lambda _handle: None)
     datasheet = Path("Nano_BLE_MCU-nRF52840_PS_v1.1.pdf").resolve()
     user_input = SetupUserInput(
@@ -447,9 +566,10 @@ def test_reviewed_opaque_target_reaches_live_connect_before_profile_commit(
 
     assert result.verified is True
     assert events == ["connect"]
+    assert reads == [(0x10000100, 32), (0x10000000, 32)]
     committed = profiles.load("reviewed_board", include_legacy=False)
     assert committed.mcu_part_number == "nRF52840-QIAA"
-    assert committed.board.pyocd_target == "nrf52840"
+    assert committed.board.target_identity == "nrf52840"
     assert committed.board.silicon_id_label == "silicon_id"
     assert committed.board.silicon_id_addr == 0x10000100
     assert committed.board.silicon_id_expected == 0x00052840
@@ -548,3 +668,4 @@ async def test_live_mcp_board_setup_commits_target_neutral_silicon_identity_labe
     assert committed.board.silicon_id_addr == 0x10000100
     assert committed.board.silicon_id_expected == 0x00052840
     assert committed.board.silicon_id_mask == 0xFFFFFFFF
+

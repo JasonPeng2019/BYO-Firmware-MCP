@@ -7,6 +7,7 @@ import pytest
 from mcp.server.fastmcp.exceptions import ToolError
 
 from pyocd_debug_mcp import server
+from pyocd_debug_mcp.adapters.target_backend import MemoryAccessCapabilities
 from pyocd_debug_mcp.guardrails.flash_gate import (
     FlashArtifactIdentity,
     ResolvedFlashRequest,
@@ -41,7 +42,7 @@ def _format_refusal(refusal, **kwargs) -> str:
     return f"Refused [{refusal.code}]: {refusal.message}"
 
 
-def _memory_handlers(tmp_path: Path, *, check_memory_read=None):
+def _memory_handlers(tmp_path: Path, *, check_memory_read=None, capabilities=None):
     artifact = tmp_path / "firmware.elf"
     artifact.write_bytes(b"elf")
     calls: list[tuple[str, object]] = []
@@ -66,6 +67,8 @@ def _memory_handlers(tmp_path: Path, *, check_memory_read=None):
         write_target_memory=lambda selected, address, value, width: calls.append(
             ("write", (selected, address, value, width))
         ),
+        memory_capabilities=lambda board: capabilities
+        or MemoryAccessCapabilities((8, 16, 32), (8, 16, 32), 32, 32, 4),
         check_memory_read=check_memory_read or (lambda board, address, size: None),
     )
     return build_memory_handlers(services), calls
@@ -160,6 +163,11 @@ def test_raw_memory_read_containment_is_a_central_pre_execution_check(
             check_memory_read=lambda board, address, size: checked.append((board, address, size))
         ),
     )
+    monkeypatch.setattr(
+        server,
+        "_memory_capabilities_for",
+        lambda board: MemoryAccessCapabilities((8, 16, 32), (8, 16, 32), 32, 32, 4),
+    )
 
     server._enforce_action_containment(
         "read_memory_address",
@@ -233,6 +241,21 @@ def _flash_handlers(tmp_path: Path):
     return build_flash_handlers(services), calls, artifact
 
 
+def test_memory_widths_and_address_space_come_from_connected_backend(tmp_path: Path) -> None:
+    handlers, calls = _memory_handlers(
+        tmp_path,
+        capabilities=MemoryAccessCapabilities((8, 32, 64), (8, 32, 64), 64, 64, 8),
+    )
+
+    result = handlers["read_memory_address"]("board64", "0x100000000", 64, None)
+
+    assert "Refused" not in result
+    kind, payload = calls[-1]
+    assert kind == "read"
+    assert isinstance(payload, tuple)
+    assert payload[1:] == (0x100000000, 64)
+
+
 def test_split_flash_actions_report_safety_map_validation(tmp_path: Path) -> None:
     handlers, calls, artifact = _flash_handlers(tmp_path)
 
@@ -304,7 +327,7 @@ def test_breakpoint_symbol_and_address_paths_are_wrapped(tmp_path: Path) -> None
         )
     )
 
-    set_result = handlers["set_breakpoint"]("board_b", "main")
+    set_result = handlers["set_breakpoint"]("board_b", "main", str(artifact))
     remove_result = handlers["remove_breakpoint"]("board_b", "0x08000100")
     assert calls == [("set", 0x08000100), ("remove", 0x08000100)]
     assert "executable space" in set_result

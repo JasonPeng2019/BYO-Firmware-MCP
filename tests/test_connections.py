@@ -316,7 +316,7 @@ def test_a4_reads_require_validation_without_freshness_and_writes_require_both(
     ]
 
 
-def test_same_board_serializes_while_cross_board_operations_overlap(
+def test_all_board_affecting_operations_share_one_global_queue(
     monkeypatch,
     isolated_server,
 ) -> None:
@@ -351,7 +351,7 @@ def test_same_board_serializes_while_cross_board_operations_overlap(
             executor.submit(server.get_state, "board-b"),
         ]
         assert {future.result(timeout=1) for future in cross} == {"probe-a", "probe-b"}
-    assert maximum == 2
+    assert maximum == 1
 
 
 def test_every_board_facing_tool_requires_board_id() -> None:

@@ -7,12 +7,12 @@ import re
 from dataclasses import dataclass
 from pathlib import Path
 
-from pyocd_debug_mcp.adapters.swd_interface import TargetSessionHandle
+from pyocd_debug_mcp.adapters.target_backend import TargetSessionHandle
+from pyocd_debug_mcp.safety.artifact_evidence import provider_for_artifact
 from pyocd_debug_mcp.reference_artifacts import resolve_reference_artifacts
 from pyocd_debug_mcp.services.session_runtime import ActionContext, PolicyRefusal
 from pyocd_debug_mcp.target_errors import ReferenceArtifactError
 
-SUPPORTED_FLASH_SUFFIXES = frozenset({".elf", ".hex"})
 _URL_LIKE = re.compile(r"^[A-Za-z][A-Za-z0-9+.-]*://")
 
 
@@ -110,14 +110,14 @@ def resolve_flash_request(
             action_context,
         )
 
-    suffix = artifact_path.suffix.lower()
-    if suffix not in SUPPORTED_FLASH_SUFFIXES:
-        supported = ", ".join(sorted(SUPPORTED_FLASH_SUFFIXES))
+    if provider_for_artifact(artifact_path) is None:
         raise _refuse(
-            "flash/unsupported-suffix",
-            f"Unsupported flash artifact type '{suffix or '(none)'}'. Use one of: {supported}.",
+            "flash/unsupported-format",
+            "No installed evidence provider recognizes this self-addressing artifact. Install "
+            "the toolchain/backend evidence adapter; raw load addresses cannot be caller supplied.",
             action_context,
         )
 
     identity = _build_identity(artifact_path, source="explicit")
     return ResolvedFlashRequest(artifact_path=artifact_path, identity=identity)
+

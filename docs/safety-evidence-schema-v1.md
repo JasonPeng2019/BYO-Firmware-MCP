@@ -1,4 +1,4 @@
-# Safety evidence schema v1
+# Reviewed hardware-evidence input schema v1
 
 Task 12 accepts hardware evidence only through the strict `verify2` schema below. Unknown,
 missing, or authority-inappropriate fields reject the complete evidence document. This schema
@@ -44,5 +44,7 @@ For automatic catalog setup, the profile must already preserve the user's exact 
 part number (for example `nRF52840-QIAA`); a family-only value is rejected before profile commit
 and is never silently expanded. The loader also verifies the official PDF bytes, evidence-asset
 hashes, installed pyOCD version, target-module hash, and SVD-bundle hash before reconciliation.
-Only `reconciled` provenance is promoted to `memory_map.yaml`; the two distinct source documents,
-hashes, and runtime identities remain visible in `source_manifest.json`.
+Only `reconciled` provenance is promoted to the schema-v2 `memory_map.yaml`. The map embeds the
+minimum stable identity, geometry, partitions, and semantic source digests needed to detect drift.
+There is no persisted source manifest or safety report; current reviewed sources are reproduced
+from the server-owned catalog when `board_safety_refresh` rebuilds the map.

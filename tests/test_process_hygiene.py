@@ -135,6 +135,7 @@ def test_new_stdio_server_run_cleans_seeded_helper_before_boot(tmp_path: Path) -
     assert marker is not None
     environment = dict(os.environ)
     environment["PYOCD_MCP_RUNS_ROOT"] = str(runs_root)
+    environment["PYOCD_MCP_SERVER_B_LOCK"] = str(tmp_path / "server-b.lock")
     server = subprocess.Popen(
         [sys.executable, "-m", "pyocd_debug_mcp.server"],
         cwd=Path(__file__).parents[1],

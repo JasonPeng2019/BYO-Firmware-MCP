@@ -857,7 +857,7 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "httpx", specifier = ">=0.27" },
-    { name = "mcp", specifier = ">=1.2.0" },
+    { name = "mcp", specifier = "==1.28.1" },
     { name = "pyelftools", specifier = ">=0.33" },
     { name = "pyocd", specifier = ">=0.44.0" },
     { name = "pyserial", specifier = ">=3.5" },

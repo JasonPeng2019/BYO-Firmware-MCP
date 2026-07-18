@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 from pathlib import Path
+import struct
 from typing import Any, cast
 
 import pytest
 
+from pyocd_debug_mcp.safety.artifact_evidence import ElfHexEvidenceProvider
 from pyocd_debug_mcp.safety.linker import (
     BuildArtifactSelection,
     BuildRole,
@@ -13,6 +15,7 @@ from pyocd_debug_mcp.safety.linker import (
     select_build_configuration,
 )
 from pyocd_debug_mcp.safety.regions import AddressRange
+from pyocd_debug_mcp.safety import linker
 
 ROOT = Path(__file__).resolve().parents[1]
 NUCLEO_ELF = ROOT / "firmware/nucleo_l476rg/reference/build/firmware.elf"
@@ -44,6 +47,36 @@ def ihex_record(address: int, record_type: int, data: bytes = b"") -> str:
     payload = bytes([len(data), (address >> 8) & 0xFF, address & 0xFF, record_type, *data])
     checksum = (-sum(payload)) & 0xFF
     return f":{payload.hex().upper()}{checksum:02X}"
+
+
+def test_bundled_artifact_provider_selects_vector_requirement_by_elf_architecture(
+    tmp_path: Path,
+) -> None:
+    provider = ElfHexEvidenceProvider()
+    assert provider.requires_vector_table(NUCLEO_ELF, BuildRole.APPLICATION) is True
+
+    ident = b"\x7fELF" + bytes((1, 1, 1, 0)) + bytes(8)
+    riscv = tmp_path / "riscv.elf"
+    riscv.write_bytes(
+        struct.pack(
+            "<16sHHIIIIIHHHHHH",
+            ident,
+            2,
+            243,
+            1,
+            0,
+            0,
+            0,
+            0,
+            52,
+            0,
+            0,
+            0,
+            0,
+            0,
+        )
+    )
+    assert provider.requires_vector_table(riscv, BuildRole.APPLICATION) is False
 
 
 def test_tracked_nucleo_elf_and_linker_map_extract_all_build_owned_facts() -> None:
@@ -128,6 +161,26 @@ def test_absent_build_artifacts_allow_non_flash_evidence_but_close_flash() -> No
     assert evidence.ram_partitions == ()
     assert "Non-flash safety evidence may continue" in (evidence.reason or "")
     assert "flashing remain unavailable" in (evidence.reason or "")
+
+
+def test_runtime_mode_does_not_require_vendor_partition_or_ram_symbols(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(linker, "_FLASH_SYMBOLS", {"application": (), "bootloader": ()})
+    monkeypatch.setattr(linker, "_RAM_SYMBOLS", ())
+    monkeypatch.setattr(linker, "_INTERESTING_SYMBOLS", frozenset(linker._VECTOR_SYMBOLS))
+
+    evidence = extract_build_evidence(
+        BuildArtifactSelection("runtime", BuildRole.APPLICATION, NUCLEO_ELF),
+        require_flash_partition=False,
+        require_ram_partition=False,
+    )
+
+    assert evidence.flash_partition is None
+    assert evidence.ram_partitions == ()
+    assert evidence.loadable_segments
+    assert evidence.entry_point is not None
+    assert evidence.vector_table is not None
 
 
 def test_build_configuration_selection_is_exact_and_never_accepts_ranges() -> None:

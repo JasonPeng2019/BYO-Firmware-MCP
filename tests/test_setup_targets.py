@@ -55,7 +55,7 @@ def test_exact_auto_detection_skips_research_and_unknown_requests_it() -> None:
     assert unknown.status == "research"
     assert unknown.research_request is not None
     assert unknown.research_request.requested_fields == (
-        "pyocd_target",
+        "target_identity",
         "evidence",
         "reasoning_summary",
     )

@@ -24,7 +24,7 @@ class BreakpointToolServices:
     resolve_symbol: Callable[[Path, str], ResolvedSymbol]
     set_target_breakpoint: Callable[[Any, int], None]
     remove_target_breakpoint: Callable[[Any, int], None]
-    check_breakpoint: Callable[[str, int], None] | None = None
+    check_breakpoint: Callable[[str, int, Path], None] | None = None
 
 
 def _parse_address(value: str | int) -> int:
@@ -67,13 +67,31 @@ def build_breakpoint_handlers(
             )
         )
 
-    def set_breakpoint(board_id: str, symbol_or_address: str | int) -> str:
-        """Set one symbol-backed or explicit breakpoint under a fixed plan."""
+    def set_breakpoint(
+        board_id: str,
+        symbol_or_address: str | int,
+        artifact: str,
+    ) -> str:
+        """Set one breakpoint inside a plan-bound current executable artifact."""
 
         started = time.monotonic()
         runtime = services.runtime_for(board_id)
-        args = {"board_id": board_id, "symbol_or_address": symbol_or_address}
+        args = {
+            "board_id": board_id,
+            "symbol_or_address": symbol_or_address,
+            "artifact": artifact,
+        }
         handle = services.handle_for(board_id)
+        artifact_path = Path(artifact).expanduser().resolve()
+        if not artifact_path.is_file():
+            return refuse(
+                "set_breakpoint",
+                board_id,
+                args,
+                "artifact must name an existing current executable artifact.",
+                started,
+                runtime,
+            )
         try:
             address = _parse_address(symbol_or_address)
         except (TypeError, ValueError):
@@ -86,10 +104,9 @@ def build_breakpoint_handlers(
                     started,
                     runtime,
                 )
-            artifact = services.symbol_artifact_for(handle)
-            address = services.resolve_symbol(artifact, symbol_or_address).address
+            address = services.resolve_symbol(artifact_path, symbol_or_address).address
         if services.check_breakpoint is not None:
-            services.check_breakpoint(board_id, address)
+            services.check_breakpoint(board_id, address, artifact_path)
         services.set_target_breakpoint(handle, address)
         services.record_event(
             "set_breakpoint",

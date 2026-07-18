@@ -24,7 +24,7 @@ from pyocd_debug_mcp.setup_flow.validate import (
 )
 
 SETUP_LOADABLE_TOOLS = frozenset(
-    {"board_setup-plan", "board_safety_setup", "board_safety_refresh", "board_validate"}
+    {"board_setup-plan", "board_safety_refresh", "board_validate"}
 )
 
 
@@ -85,13 +85,15 @@ def _load_guidance(board_id: str, tool_name: str) -> dict[str, Any]:
         return {
             "next_call": {"tool": tool_name, "arguments": {"board_id": board_id}},
             "guidance": {
-                "purpose": "Non-destructively verify the profile, live board, UART, and safety evidence.",
+                "purpose": "Non-destructively prove live board identity and bind the stable map.",
                 "when_to_use": (
-                    "Use first for every matching familiar-name profile, after setup or safety "
-                    "work, and again after disconnect or restart."
+                    "Use only when this run has no live proof (startup or initial setup), after "
+                    "disconnect/probe/connection identity changes, or after identity repair or "
+                    "destructive recovery."
                 ),
                 "when_not_to_use": (
-                    "Do not use as setup for an unknown name and do not treat an old report as a live gate."
+                    "Do not call it for a normal build, flash, reset, UART operation, bookkeeping "
+                    "change, or safety refresh while the same live identity proof still applies."
                 ),
                 "expected_statuses": list(VALIDATION_STATUSES),
                 "accepted_response_shape": (
@@ -100,44 +102,9 @@ def _load_guidance(board_id: str, tool_name: str) -> dict[str, Any]:
                     "retry. Terminal statuses have accepted_response null."
                 ),
                 "common_remedies": [
-                    "Choose a returned friendly probe or UART label without exposing its choice_id.",
-                    "Use board_safety_setup or board_safety_refresh only when the validation code names it.",
-                    "Correct a physical mismatch rather than rewriting the profile.",
-                ],
-                "relay_rule": relay_rule,
-            },
-        }
-    if tool_name == "board_safety_setup":
-        return {
-            "next_call": {"tool": tool_name, "arguments": {"board_id": board_id}},
-            "guidance": {
-                "purpose": "Create or structurally rebuild authoritative safety-map evidence.",
-                "when_to_use": (
-                    "Use only when setup or validation reports a missing, incomplete, conflicting, "
-                    "or anchor-invalid safety map."
-                ),
-                "when_not_to_use": (
-                    "Do not use for routine application build drift; use board_safety_refresh for "
-                    "that named remedy. It never opens the live gate."
-                ),
-                "expected_statuses": [
-                    "safety_setup_completed",
-                    "safety_setup_needs_user_input",
-                    "safety_setup_incomplete",
-                    "safety_setup_conflict",
-                    "safety_setup_blocked",
-                    "safety_setup_unsupported_board",
-                ],
-                "accepted_response_shape": (
-                    "Follow only the exact public-tool remedy in the returned status. Terminal "
-                    "unsupported-board responses have accepted_response null and no continuation; "
-                    "this tool never accepts caller-supplied allowed ranges."
-                ),
-                "common_remedies": [
-                    "For reviewed boards, rerun board_setup with the reviewed datasheet when pinned authority must be rebuilt.",
-                    "For unsupported boards, maintainers must add pinned two-source evidence and catalog geometry.",
-                    "Resolve conflicting evidence fail-closed.",
-                    "After completion, load and call board_validate.",
+                    "Choose a returned friendly probe label without exposing its choice_id.",
+                    "Run board_safety_refresh when the map is missing, malformed, or inconsistent.",
+                    "On MCU mismatch, tell the user expected versus observed identity and ask what to do.",
                 ],
                 "relay_rule": relay_rule,
             },
@@ -145,30 +112,21 @@ def _load_guidance(board_id: str, tool_name: str) -> dict[str, Any]:
     return {
         "next_call": {
             "tool": tool_name,
-            "arguments": {
-                "board_id": board_id,
-                "application_elf": None,
-                "application_hex": None,
-                "application_map": None,
-                "bootloader_elf": None,
-                "bootloader_hex": None,
-                "bootloader_map": None,
-            },
+            "arguments": {"board_id": board_id},
         },
         "guidance": {
             "purpose": (
-                "Refresh an existing valid safety map after safely scoped application, "
-                "bootloader, pack, or official-evidence drift."
+                "Deterministically create or rebuild the complete stable memory map from "
+                "server-owned reviewed evidence."
             ),
             "when_to_use": (
-                "Use when validation or a guarded action specifically reports refreshable "
-                "fingerprint drift, normally after rebuilding an application or an already-"
-                "authorized bootloader partition."
+                "Use for a missing, malformed, old-schema, inconsistent, or genuinely changed "
+                "stable map: MCU/target evidence, geometry, partition policy, or reviewed sources."
             ),
             "when_not_to_use": (
-                "Do not use for a missing or conflicting map or for board, MCU, target, probe, "
-                "geometry, or schema anchor changes. It cannot create a new bootloader authority "
-                "envelope, accept caller ranges, or reopen a disconnected gate."
+                "Do not use after an ordinary firmware rebuild. Flash execution checks each "
+                "artifact against the map. Refresh accepts no caller ranges and never creates a "
+                "live identity proof."
             ),
             "expected_statuses": [
                 "safety_refresh_completed",
@@ -177,14 +135,13 @@ def _load_guidance(board_id: str, tool_name: str) -> dict[str, Any]:
                 "safety_refresh_blocked",
             ],
             "accepted_response_shape": (
-                "Copy application or bootloader artifact paths named by the triggering remedy "
-                "into the matching optional next_call fields; leave unrelated fields null."
+                "Call with the server-provided board_id only. Build artifacts are not refresh "
+                "inputs and do not define persistent map authority."
             ),
             "common_remedies": [
-                "Use full board_safety_setup when scope is unclear; follow with board_validate for anchor, geometry, or schema changes.",
-                "Resolve a safety conflict before retrying.",
-                "A missing reviewed bootloader envelope is a maintainer evidence task, not a caller-supplied-range prompt.",
-                "Run board_validate if a new live gate stamp is required.",
+                "Resolve the exact missing reviewed source and retry refresh.",
+                "A missing reviewed bootloader envelope is a maintainer evidence task.",
+                "Run board_validate afterward only if no same-connection live identity proof remains.",
             ],
             "relay_rule": relay_rule,
         },
@@ -257,7 +214,6 @@ class SetupToolServices:
     plan_engine: PlanEngine
     workflow: SetupWorkflow
     validator: BoardValidator
-    safety_setup: Callable[[str], Mapping[str, Any]]
     safety_refresh: Callable[..., Mapping[str, Any]]
     setup_status: Callable[[str], Mapping[str, Any]] | None = None
     setup_overview: Callable[[list[str] | None], Mapping[str, Any]] | None = None
@@ -489,65 +445,32 @@ def build_setup_handlers(services: SetupToolServices) -> dict[str, Callable[...,
     def board_validate(
         board_id: str,
         probe_id: str | None = None,
-        serial_id: str | None = None,
     ) -> str:
-        """Validate a matching board YAML first, or validate after setup, repair, or reconnect.
+        """Prove live MCU identity and bind the stable map at exactly three trigger categories.
 
-        Trigger this instead of board_setup when the user's familiar board name already matches a
-        healthy profile. A passing validation stamps only the current board/connection gate. If it
-        fails because setup or safety evidence is incomplete, follow its exact setup or safety
-        remedy; never treat the profile's presence alone as permission to access hardware.
+        Call only when this run has no live proof (startup or initial setup), after a physical or
+        logical disconnect/probe/connection change, or after identity repair/destructive recovery.
+        Do not call for builds, flashes, resets, UART, bookkeeping, or a safety refresh while the
+        same live proof remains valid. This bounded check performs no UART or firmware behavior test.
         """
 
         if not services.loader.is_loaded(board_id, "board_validate"):
             return services.loader.redirect(board_id, "board_validate")
-        result = services.validator.validate(ValidationRequest(board_id, probe_id, serial_id))
+        result = services.validator.validate(ValidationRequest(board_id, probe_id))
         return _json(result.to_payload())
 
-    def board_safety_setup(board_id: str) -> str:
-        """Create the first authoritative safety map, or rebuild one after structural failure.
+    def board_safety_refresh(board_id: str) -> str:
+        """Create or rebuild the complete stable map when stable authority is missing or changed.
 
-        Trigger this when board setup/validation reports that no safety map exists, authoritative
-        sources are incomplete, regions conflict, or an anchor change requires a full rebuild. It
-        is not the routine source-drift path and never opens the hardware gate by itself; call
-        board_validate after it succeeds.
-        """
-
-        if not services.loader.is_loaded(board_id, "board_safety_setup"):
-            return services.loader.redirect(board_id, "board_safety_setup")
-        return _json(services.safety_setup(board_id))
-
-    def board_safety_refresh(
-        board_id: str,
-        application_elf: str | None = None,
-        application_hex: str | None = None,
-        application_map: str | None = None,
-        bootloader_elf: str | None = None,
-        bootloader_hex: str | None = None,
-        bootloader_map: str | None = None,
-    ) -> str:
-        """Refresh an existing valid safety map after safely scoped source or build drift.
-
-        Trigger this only when a current map already exists and validation or a guarded action names
-        refreshable fingerprint drift as the remedy, such as a rebuilt application or a rebuilt
-        bootloader already contained by a reviewed bootloader partition. Use board_safety_setup for
-        a missing/conflicting map and full setup plus validation for board, MCU, target, geometry,
-        or schema-anchor changes. Refresh never creates authority and never reopens a disconnected gate.
+        Use for a missing/corrupt/old map or changed reviewed identity, geometry, partition policy,
+        pack/SVD/target, or official evidence. Do not call it for a routine firmware rebuild: each
+        flash inspects the actual ELF/HEX against the stable map. Refresh preserves a same-connection
+        live identity proof, never creates one, accepts no caller ranges, and never routes to setup.
         """
 
         if not services.loader.is_loaded(board_id, "board_safety_refresh"):
             return services.loader.redirect(board_id, "board_safety_refresh")
-        return _json(
-            services.safety_refresh(
-                board_id,
-                application_elf=application_elf,
-                application_hex=application_hex,
-                application_map=application_map,
-                bootloader_elf=bootloader_elf,
-                bootloader_hex=bootloader_hex,
-                bootloader_map=bootloader_map,
-            )
-        )
+        return _json(services.safety_refresh(board_id))
 
     def get_setup_status(board_id: str) -> str:
         """Report whether durable setup and this run's live validated session are ready.
@@ -559,7 +482,7 @@ def build_setup_handlers(services: SetupToolServices) -> dict[str, Callable[...,
         MCU, build_guidance first returns the provider-neutral native-build and
         collect_build_artifacts workflow. Reviewed Zephyr profiles may also include a labeled,
         parameterized Zephyr terminal fallback. All build guidance is advisory only: inspect the
-        resulting ELF/map with board_safety_refresh before flashing.
+        resulting artifact directly with its flash plan; routine builds do not require refresh.
         """
 
         if services.setup_status is None:
@@ -583,7 +506,6 @@ def build_setup_handlers(services: SetupToolServices) -> dict[str, Callable[...,
         "board_setup": board_setup,
         "board_fix_setup": board_fix_setup,
         "continue_setup": continue_setup,
-        "board_safety_setup": board_safety_setup,
         "board_safety_refresh": board_safety_refresh,
         "board_validate": board_validate,
         "get_setup_status": get_setup_status,

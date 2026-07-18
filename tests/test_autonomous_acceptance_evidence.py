@@ -18,6 +18,7 @@ from scripts.validate_autonomous_acceptance import (
     EvidenceValidationError,
     validate_evidence,
 )  # noqa: E402
+from pyocd_debug_mcp.safety.fingerprints import canonical_bytes  # noqa: E402
 from pyocd_debug_mcp.setup_flow.board_catalog import catalog_board  # noqa: E402
 from pyocd_debug_mcp.setup_flow import board_catalog as board_catalog_module  # noqa: E402
 from pyocd_debug_mcp.setup_flow.reviewed_evidence import (  # noqa: E402
@@ -60,7 +61,7 @@ def _fixture(tmp_path: Path) -> Path:
                 "report_type": "validation",
                 "validation_id": "validation-1",
                 "board_id": "nf_board",
-                "terminal_status": "validation_passed_uart_not_configured",
+                "terminal_status": "validation_passed",
                 "code": "validation/passed",
             }
         ),
@@ -112,64 +113,69 @@ def _fixture(tmp_path: Path) -> Path:
         "ram_start": 536870912,
         "ram_end": 537133056,
     }
-    fingerprints = {"aggregate": "aggregate-1"}
+    application = {"start": catalog.application_start, "end": catalog.application_end}
+    regions = [
+        {
+            "name": item.name,
+            "kind": item.kind.value,
+            "start": item.address_range.start,
+            "end": item.address_range.end,
+            "executable": False,
+            "provenance": [
+                {
+                    "authority": "reconciled",
+                    "source_id": "+".join(item.source_ids),
+                    "detail": ", ".join(item.reconciliations) or "exact two-source agreement",
+                }
+            ],
+            "source_groups": ["evidence", "geometry"],
+        }
+        for item in reviewed.reconciliation.regions
+    ]
+    regions.append(
+        {
+            "name": "reviewed application partition",
+            "kind": "application_flash",
+            "start": catalog.application_start,
+            "end": catalog.application_end,
+            "executable": False,
+            "provenance": [
+                {
+                    "authority": "reconciled",
+                    "source_id": "reviewed_deployment_policy",
+                    "detail": "server-owned stable application partition",
+                }
+            ],
+            "source_groups": ["evidence", "geometry"],
+        }
+    )
+    regions.sort(key=lambda row: (row["start"], row["end"], row["kind"], row["name"]))
+    def digest(value: object) -> str:
+        return hashlib.sha256(canonical_bytes(value)).hexdigest()
+    memory_document = {
+        "schema_version": 2,
+        "board_id": "nf_board",
+        "identity": {
+            "board_type": "nrf52840dk",
+            "mcu_part_number": "nRF52840-QIAA",
+            "target": "nrf52840",
+        },
+        "source_digests": {
+            "semantic_profile": digest({"board_id": "nf_board", "mcu_part_number": "nRF52840-QIAA"}),
+            "device_support": digest(pack_record),
+            "official_evidence": digest(authority_record),
+            "generator_schema": digest({"memory_map": 2}),
+        },
+        "geometry": geometry,
+        "partitions": {"application": application, "bootloader": None},
+        "regions": regions,
+    }
     memory_map = safety_dir / "memory_map.yaml"
     memory_map.write_text(
-        yaml.safe_dump(
-            {
-                "board_id": "nf_board",
-                "schema_version": 1,
-                "fingerprints": fingerprints,
-                "regions": [
-                    {
-                        "name": item.name,
-                        "kind": item.kind.value,
-                        "start": item.address_range.start,
-                        "end": item.address_range.end,
-                        "executable": False,
-                        "provenance": [
-                            {
-                                "authority": "reconciled",
-                                "source_id": "+".join(item.source_ids),
-                                "detail": ", ".join(item.reconciliations)
-                                or "exact two-source agreement",
-                            }
-                        ],
-                        "source_groups": ["evidence", "geometry"],
-                    }
-                    for item in reviewed.reconciliation.regions
-                ],
-            },
-            sort_keys=False,
-        ),
+        yaml.safe_dump(memory_document, sort_keys=False),
         encoding="utf-8",
     )
-    source_manifest = safety_dir / "source_manifest.json"
-    source_manifest.write_text(
-        json.dumps(
-            {
-                "board_id": "nf_board",
-                "schema_version": 1,
-                "fingerprints": fingerprints,
-                "sources": {
-                    "schema": {
-                        "evidence": {"memory_map": 1, "evidence": 2, "catalog": 2}
-                    },
-                    "part_target": {
-                        "evidence": {
-                            "board_type": "nrf52840dk",
-                            "mcu_part_number": "nRF52840-QIAA",
-                            "target": "nrf52840",
-                        }
-                    },
-                    "pack": {"evidence": pack_record},
-                    "evidence": {"evidence": authority_record},
-                    "geometry": {"evidence": geometry},
-                },
-            }
-        ),
-        encoding="utf-8",
-    )
+    memory_map_digest = digest(memory_document)
     main_source = source_dir / "main.c"
     main_source.write_text("/* worker-thread LED console fixture */", encoding="utf-8")
     for name in ("firmware.elf", "firmware.hex", "zephyr.map"):
@@ -224,7 +230,7 @@ def _fixture(tmp_path: Path) -> Path:
             ),
             "board_validate": json.dumps(
                 {
-                    "status": "validation_passed_uart_not_configured",
+                    "status": "validation_passed",
                     "continuation_id": "validation-1",
                 }
             ),
@@ -264,19 +270,6 @@ def _fixture(tmp_path: Path) -> Path:
         request("board_setup", {"board_id": "nf_board"}, "2026-07-17T00:00:04Z", "2026-07-17T00:00:05Z"),
         request("board_validate", {"board_id": "nf_board"}, "2026-07-17T00:00:06Z", "2026-07-17T00:00:07Z"),
         request("get_setup_status", {"board_id": "nf_board"}, "2026-07-17T00:00:08Z", "2026-07-17T00:00:10Z"),
-        request(
-            "board_safety_refresh",
-            {
-                "board_id": "nf_board",
-                "application_elf": str(build_dir / "firmware.elf"),
-                "application_hex": str(build_dir / "firmware.hex"),
-                "application_map": str(build_dir / "zephyr.map"),
-            },
-            "2026-07-17T00:01:40Z",
-            "2026-07-17T00:01:41Z",
-        ),
-        request("board_validate", {"board_id": "nf_board"}, "2026-07-17T00:01:42Z", "2026-07-17T00:01:43Z"),
-        request("get_setup_status", {"board_id": "nf_board"}, "2026-07-17T00:01:44Z", "2026-07-17T00:01:45Z"),
         request(
             "flash_application",
             {
@@ -389,7 +382,7 @@ def _fixture(tmp_path: Path) -> Path:
                 "target_module_sha256": reviewed.pyocd_target_module_sha256,
                 "svd_bundle_sha256": reviewed.pyocd_svd_bundle_sha256,
             },
-            "aggregate_fingerprint": "aggregate-1",
+            "memory_map_digest": memory_map_digest,
         },
         "uart": {
             "single_handle_five_steps": True,
@@ -418,15 +411,12 @@ def _fixture(tmp_path: Path) -> Path:
         "firm_artifacts": {
             "profile": _record(workspace, ".firm/boards/nf_board.yaml"),
             "memory_map": _record(workspace, ".firm/safety/nf_board/memory_map.yaml"),
-            "source_manifest": _record(
-                workspace, ".firm/safety/nf_board/source_manifest.json"
-            ),
             "reports": [
                 {
                     **_record(workspace, ".firm/validation/validation-1/report.json"),
                     "report_id": "validation-1",
                     "report_type": "validation",
-                    "terminal_status": "validation_passed_uart_not_configured",
+                    "terminal_status": "validation_passed",
                 }
             ]
         },
@@ -459,7 +449,7 @@ def test_strict_acceptance_evidence_links_all_artifacts(tmp_path: Path) -> None:
     result = validate_evidence(_fixture(tmp_path))
 
     assert result["status"] == "pass"
-    assert result["artifact_count"] == 10
+    assert result["artifact_count"] == 9
     assert result["report_count"] == 1
 
 
@@ -528,17 +518,17 @@ def test_report_status_must_match_immutable_report_bytes(tmp_path: Path) -> None
         validate_evidence(path)
 
 
-def test_reconciled_erase_geometry_must_match_persisted_authority_subset(
+def test_reconciled_erase_geometry_must_match_single_persisted_map(
     tmp_path: Path,
 ) -> None:
     path = _fixture(tmp_path)
     value = json.loads(path.read_text(encoding="utf-8"))
-    manifest_path = path.parents[1] / ".firm/safety/nf_board/source_manifest.json"
-    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-    manifest["sources"]["geometry"]["evidence"]["erase_size"] = 8192
-    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
-    value["firm_artifacts"]["source_manifest"] = _record(
-        path.parents[1], ".firm/safety/nf_board/source_manifest.json"
+    map_path = path.parents[1] / ".firm/safety/nf_board/memory_map.yaml"
+    memory_map = yaml.safe_load(map_path.read_text(encoding="utf-8"))
+    memory_map["geometry"]["erase_size"] = 8192
+    map_path.write_text(yaml.safe_dump(memory_map, sort_keys=False), encoding="utf-8")
+    value["firm_artifacts"]["memory_map"] = _record(
+        path.parents[1], ".firm/safety/nf_board/memory_map.yaml"
     )
     path.write_text(json.dumps(value), encoding="utf-8")
 
@@ -546,21 +536,46 @@ def test_reconciled_erase_geometry_must_match_persisted_authority_subset(
         validate_evidence(path)
 
 
-def test_acceptance_rejects_missing_required_safety_operation(tmp_path: Path) -> None:
+def test_acceptance_rejects_routine_build_safety_refresh(tmp_path: Path) -> None:
     path = _fixture(tmp_path)
 
-    def remove_refresh(rows: list[dict[str, object]]) -> None:
-        rows[:] = [row for row in rows if row.get("tool") != "board_safety_refresh"]
+    def insert_refresh(rows: list[dict[str, object]]) -> None:
+        flash_index = next(i for i, row in enumerate(rows) if row.get("tool") == "flash_application")
+        refresh = dict(rows[flash_index])
+        refresh["tool"] = "board_safety_refresh"
+        refresh["arguments"] = {"board_id": "nf_board"}
+        refresh["request_started_at"] = "2026-07-17T00:01:40Z"
+        refresh["timestamp"] = "2026-07-17T00:01:41Z"
+        refresh["response"] = {
+            "content": [{"type": "text", "text": json.dumps({"status": "safety_refresh_completed"})}],
+            "isError": False,
+            "meta": None,
+            "structuredContent": None,
+        }
+        rows.insert(flash_index, refresh)
 
-    evidence = _rewrite_timeline(path, remove_refresh)
-    evidence["operation_run_linkage"] = [
-        link
-        for link in evidence["operation_run_linkage"]
-        if link["tool"] != "board_safety_refresh"
-    ]
+    evidence = _rewrite_timeline(path, insert_refresh)
+    evidence["operation_run_linkage"].append(
+        {
+            "tool": "board_safety_refresh",
+            "phase": "acceptance",
+            "request_timestamp": "2026-07-17T00:01:40Z",
+            "response_timestamp": "2026-07-17T00:01:41Z",
+            "run_id": "run-20260717T000000Z-12345678",
+            "server_started_at": "2026-07-17T00:00:00Z",
+            "canonical_arguments_sha256": hashlib.sha256(
+                json.dumps(
+                    {"board_id": "nf_board"},
+                    ensure_ascii=False,
+                    separators=(",", ":"),
+                    sort_keys=True,
+                ).encode("utf-8")
+            ).hexdigest(),
+        }
+    )
     path.write_text(json.dumps(evidence), encoding="utf-8")
 
-    with pytest.raises(EvidenceValidationError, match="missing required safety setup/refresh"):
+    with pytest.raises(EvidenceValidationError, match="routine build unexpectedly invoked"):
         validate_evidence(path)
 
 
@@ -599,7 +614,7 @@ def test_acceptance_rejects_nonmonotonic_timeline(tmp_path: Path) -> None:
 
     _rewrite_timeline(path, backdate_flash)
 
-    with pytest.raises(EvidenceValidationError, match="not monotonic"):
+    with pytest.raises(EvidenceValidationError, match="(not monotonic|no exact operation/run link)"):
         validate_evidence(path)
 
 

@@ -6,6 +6,7 @@ from pyocd_debug_mcp.guardrails.permissions import GrantMode, PermissionStore
 from pyocd_debug_mcp.guardrails.plan_defs import PLAN_DEFINITIONS
 from pyocd_debug_mcp.guardrails.plan_engine import PlanEngine, PlanRefusal
 from pyocd_debug_mcp.kernel.registry import ToolRegistry
+from pyocd_debug_mcp.kernel.caller import reset_caller_principal, set_caller_principal
 from pyocd_debug_mcp.kernel.run_state import ServerRun
 from pyocd_debug_mcp.services.session_runtime import PolicyRefusal
 
@@ -222,3 +223,22 @@ def test_ac_5_7_fresh_one_time_never_accepts_full_session_authority() -> None:
     with pytest.raises(PolicyRefusal) as missing_fresh:
         store.authorize_plan(definition, "board_a", None, 1, 0)
     assert missing_fresh.value.code == "permission/required"
+
+
+def test_permission_grants_are_isolated_between_calling_clients() -> None:
+    definition = PLAN_DEFINITIONS["set_execution_state"]
+    store = PermissionStore(ServerRun(run_id="permission-run"))
+    first = set_caller_principal("client-a")
+    try:
+        store.authorize_plan(definition, "board_a", "full-session", 1, 0)
+        assert store.active_grant("set_execution_state", "board_a") is not None
+    finally:
+        reset_caller_principal(first)
+
+    second = set_caller_principal("client-b")
+    try:
+        assert store.active_grant("set_execution_state", "board_a") is None
+        with pytest.raises(PolicyRefusal, match="permission"):
+            store.authorize_plan(definition, "board_a", None, 1, 0)
+    finally:
+        reset_caller_principal(second)

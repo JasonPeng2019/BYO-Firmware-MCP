@@ -116,13 +116,8 @@ def services(tmp_path: Path):
             workflow,
             validator,
             lambda board_id: {
-                "status": "safety_setup_completed",
-                "board_id": board_id,
-            },
-            lambda board_id, **artifacts: {
                 "status": "safety_refresh_completed",
                 "board_id": board_id,
-                "artifacts": artifacts,
             },
             setup_overview=lambda names: {
                 "status": "setup_routes_ready" if names else "setup_names_required",
@@ -172,18 +167,14 @@ def test_setup_tool_index_descriptions_explain_trigger_and_routing(tmp_path: Pat
     assert "matching YAML profile" in setup_description
     assert "board_validate" in setup_description
 
-    safety_setup_description = handlers["board_safety_setup"].__doc__ or ""
-    assert "first authoritative safety map" in safety_setup_description
-    assert "never opens the hardware gate" in safety_setup_description
-
     refresh_description = handlers["board_safety_refresh"].__doc__ or ""
-    assert "existing valid safety map" in refresh_description
-    assert "fingerprint drift" in refresh_description
-    assert "never reopens a disconnected gate" in refresh_description
+    assert "complete stable map" in refresh_description
+    assert "routine firmware rebuild" in refresh_description
+    assert "never creates one" in refresh_description
 
     validate_description = handlers["board_validate"].__doc__ or ""
-    assert "matching board YAML first" in validate_description
-    assert "passing validation stamps" in validate_description
+    assert "exactly three trigger categories" in validate_description
+    assert "Do not call for builds" in validate_description
 
     overview_description = handlers["setup_overview"].__doc__ or ""
     assert "familiar board names" in overview_description
@@ -201,13 +192,12 @@ def test_load_setup_tool_returns_distinct_bounded_next_step_guidance(tmp_path: P
         for tool_name in (
             "board_setup-plan",
             "board_validate",
-            "board_safety_setup",
             "board_safety_refresh",
         )
     }
 
     assert {payload["next_call"]["tool"] for payload in payloads.values()} == set(payloads)
-    assert len({payload["guidance"]["purpose"] for payload in payloads.values()}) == 4
+    assert len({payload["guidance"]["purpose"] for payload in payloads.values()}) == 3
     for tool_name, payload in payloads.items():
         guidance = payload["guidance"]
         assert payload["tool_name"] == tool_name
@@ -231,19 +221,10 @@ def test_load_setup_tool_returns_distinct_bounded_next_step_guidance(tmp_path: P
         "tool": "board_validate",
         "arguments": {"board_id": "bench_board"},
     }
-    assert set(payloads["board_safety_refresh"]["next_call"]["arguments"]) == {
-        "board_id",
-        "application_elf",
-        "application_hex",
-        "application_map",
-        "bootloader_elf",
-        "bootloader_hex",
-        "bootloader_map",
+    assert payloads["board_safety_refresh"]["next_call"] == {
+        "tool": "board_safety_refresh",
+        "arguments": {"board_id": "bench_board"},
     }
-    assert (
-        "safety_setup_unsupported_board"
-        in payloads["board_safety_setup"]["guidance"]["expected_statuses"]
-    )
 
 
 def test_setup_overview_routes_names_without_user_facing_internal_fields(tmp_path: Path) -> None:
@@ -431,53 +412,22 @@ def test_board_validate_redirect_then_structured_incomplete_report(tmp_path: Pat
     assert result["constraints"]
 
 
-def test_a20_safety_tools_redirect_then_invoke_their_scoped_engines(tmp_path: Path) -> None:
+def test_a20_refresh_redirects_and_obsolete_safety_setup_is_absent(tmp_path: Path) -> None:
     _, _, _, _, handlers = services(tmp_path)
 
-    for tool_name, expected_status in (
-        ("board_safety_setup", "safety_setup_completed"),
-        ("board_safety_refresh", "safety_refresh_completed"),
-    ):
-        redirect = json.loads(handlers[tool_name]("bench_board"))
-        assert redirect["status"] == "setup_tool_not_loaded"
-        assert redirect["tool_name"] == tool_name
+    assert "board_safety_setup" not in handlers
 
-        handlers["load_setup_tool"]("bench_board", tool_name)
-        result = json.loads(handlers[tool_name]("bench_board"))
-        expected: dict[str, object] = {
-            "board_id": "bench_board",
-            "status": expected_status,
-        }
-        if tool_name == "board_safety_refresh":
-            expected["artifacts"] = {
-                "application_elf": None,
-                "application_hex": None,
-                "application_map": None,
-                "bootloader_elf": None,
-                "bootloader_hex": None,
-                "bootloader_map": None,
-            }
-        assert result == expected
+    redirect = json.loads(handlers["board_safety_refresh"]("bench_board"))
+    assert redirect["status"] == "setup_tool_not_loaded"
+    handlers["load_setup_tool"]("bench_board", "board_safety_refresh")
+    result = json.loads(handlers["board_safety_refresh"]("bench_board"))
+    assert result["status"] == "safety_refresh_completed"
 
 
-def test_safety_refresh_forwards_symmetric_bootloader_artifacts(tmp_path: Path) -> None:
+def test_safety_refresh_accepts_only_the_server_provided_board_id(tmp_path: Path) -> None:
     _, _, _, _, handlers = services(tmp_path)
     handlers["load_setup_tool"]("bench_board", "board_safety_refresh")
 
-    result = json.loads(
-        handlers["board_safety_refresh"](
-            "bench_board",
-            bootloader_elf="boot.elf",
-            bootloader_hex="boot.hex",
-            bootloader_map="boot.map",
-        )
-    )
+    result = json.loads(handlers["board_safety_refresh"]("bench_board"))
 
-    assert result["artifacts"] == {
-        "application_elf": None,
-        "application_hex": None,
-        "application_map": None,
-        "bootloader_elf": "boot.elf",
-        "bootloader_hex": "boot.hex",
-        "bootloader_map": "boot.map",
-    }
+    assert result == {"board_id": "bench_board", "status": "safety_refresh_completed"}

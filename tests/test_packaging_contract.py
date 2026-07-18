@@ -20,7 +20,9 @@ def test_public_scripts_and_dependencies_are_byo_only() -> None:
     assert project["scripts"] == {
         "pyocd-collect-artifacts": "pyocd_debug_mcp.artifact_collector:main",
         "pyocd-debug-mcp": "pyocd_debug_mcp.server:main",
+        "pyocd-debug-mcp-http": "pyocd_debug_mcp.server_b_http:main",
         "pyocd-pack-repair": "pyocd_debug_mcp.pack_index_repair:main",
+        "pyocd-turnkey": "pyocd_debug_mcp.turnkey.launcher:main",
         "pyocd-zephyr-build": "pyocd_debug_mcp.zephyr_build:main",
     }
 

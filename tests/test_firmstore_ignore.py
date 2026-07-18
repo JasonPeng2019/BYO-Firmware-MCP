@@ -14,6 +14,10 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
     [
         ".firm/cache/attachments.json",
         ".firm/packs/files/vendor.pack",
+        ".firm/setup/setup-attempt/report.json",
+        ".firm/validation/validation-attempt/events.jsonl",
+        ".firm/safety/board/source_manifest.json",
+        ".firm/safety/board/safety_report.json",
     ],
 )
 def test_host_local_and_staged_pack_artifacts_are_gitignored(artifact: str) -> None:

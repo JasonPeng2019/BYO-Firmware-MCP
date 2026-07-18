@@ -45,7 +45,7 @@ def board_summary(board: BoardConfig) -> dict[str, object]:
         "display_name": board.display_name,
         "mcu_family": board.mcu_family,
         "probe_family": board.probe_family,
-        "pyocd_target": board.pyocd_target,
+        "pyocd_target": board.target_identity,
         "source_path": str(board.source_path) if board.source_path else None,
     }
 
@@ -71,3 +71,4 @@ def main(argv: list[str] | None = None) -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
+

@@ -151,98 +151,45 @@ Validation has exactly seven results:
 - `validation_incomplete`
 
 Only the first two can stamp the current in-memory gate. A silicon mismatch
-must not rewrite the profile. Setup, safety setup, reports, cache hits, or a
-prior validation result do not open a gate.
+must not rewrite the profile. Setup, map persistence, reports, cache hits, or a prior validation
+result do not open a gate.
 
 ## Safety and remedies
 
-Never supply allowed ranges. The server derives them from tracked build
-artifacts and reconciled device evidence. Guarded reads require current board
-validation. Writes additionally require a gate whose aggregate fingerprint is
-fresh on that call.
+Never supply allowed ranges. The only persistent safety authority is
+`.firm/safety/<board_id>/memory_map.yaml`, derived from server-owned reviewed identity, geometry,
+partition, pack/target/SVD, and official evidence. `source_manifest.json` and `safety_report.json`
+do not exist. Gates, plans, permissions, and live identity remain in memory only.
 
-Every raw or symbol-resolved memory read checks the exact scalar width or block
-length before backend access. Reads may use mapped RAM, flash, ROM, CPU-system,
-or peripheral regions, but UNKNOWN and PROHIBITED spans are denied. For
-`safety/unknown`, complete `board_safety_setup`; for `safety/prohibited`, choose
-a mapped, non-prohibited address. A safety rebuild never turns a deliberately
-prohibited security/provisioning range into readable memory.
+Call `board_validate` only in three situations: this Server Run has no live proof (startup or
+initial setup), the physical/logical connection or probe changed, or identity repair/destructive
+recovery may have changed the hardware. It checks the live reviewed MCU identity and current map; it
+does not test UART or firmware behavior. Do not call it for a build, flash, reset, UART operation,
+bookkeeping change, or same-connection safety refresh.
 
-Follow the exact remedy named in a refusal:
+Use `board_safety_refresh` for every safety-map problem, including a missing, corrupt, old-schema,
+inconsistent, geometry/partition-policy-changed, or reviewed-evidence-changed map. Refresh rebuilds
+the complete map and never routes through setup. It preserves a same-connection live proof but
+cannot create one. The obsolete `board_safety_setup` public surface is removed. If validation
+reports an MCU mismatch,
+tell the user the expected and observed identities and ask what they want; do not rewrite the
+profile or automatically rerun setup.
 
-- `board_validate` establishes a live validation stamp;
-- `board_safety_refresh` handles scoped application, already-authorized
-  bootloader, pack, or official-evidence drift while a live stamp still exists;
-- `board_safety_setup` rebuilds structural safety evidence; and
-- full safety setup plus validation is required for board/target, geometry, or
-  schema anchor changes. Unclear scope routes to full safety setup.
+A routine firmware rebuild does not require refresh. Build with the project's native local tool,
+use `collect_build_artifacts` when canonical outputs help; use its `native_artifacts` mapping for a
+provider-defined toolchain format, then call the relevant flash plan. At plan acceptance the server
+binds the selected artifact bytes. At execution the installed evidence provider parses the selected
+format and verifies the live target, all loadable ranges, entry/vector, stable partition, prohibited
+space, and erase sectors before any erase/write. Changed bytes require a replacement plan. HEX
+requires its matching ELF. Artifact violations mean fix/select the build, not rebuild the map.
 
-Refresh accepts symmetric `application_elf`/`application_hex`/`application_map`
-and `bootloader_elf`/`bootloader_hex`/`bootloader_map` fields. An explicit
-bootloader refresh can replace only build-derived regions already inside a
-server-owned reviewed bootloader partition; it cannot create or widen that
-partition. A board without complete pinned catalog evidence returns terminal
-`safety_setup_unsupported_board`, lists the reviewed automatic board types,
-and exposes no unusable continuation. Adding support is a maintainer task that
-requires pinned device-support and official-document evidence, runtime
-identity, deterministic reconciliation, and reviewed geometry—not caller
-ranges.
+`set_breakpoint-plan` also binds the current ELF. `set_breakpoint` permits only addresses in that
+ELF's executable loadable sections; `remove_breakpoint` remains always available. Reads reject
+UNKNOWN and PROHIBITED spans; writes remain constrained by their mapped action category.
 
-For pack or official-evidence drift, refresh reloads the current repository-
-pinned assets and installed reviewed runtime, reruns deterministic two-source
-reconciliation, and promotes the coupled replacement only if retained build
-regions can be reproduced from their content-addressed artifacts. A failed
-reconciliation returns an explicit blocked refresh with a report and leaves the
-old map closed.
-
-Before a coding workflow begins, require `get_setup_status` to report both
-`configuration_ready` and `live_session_ready`. After relinking, pass the
-selected application ELF to `board_safety_refresh`; the build may narrow but
-cannot widen the catalog deployment envelope. Pass bootloader artifacts only
-when the existing map already owns a reviewed bootloader envelope. Use
-`serial_exchange` when a
-console command's immediate acknowledgement or later command depends on
-volatile application state. It validates the complete bounded step list before
-opening one UART handle. Separate serial calls may reopen a board UART and some
-adapters reset on open; `clear_input` and capture reopen are explicit opt-ins.
-After flash/reset, `ready_probe_delay_seconds` provides a bounded same-open
-observation window in which an unsolicited boot/prompt marker can satisfy
-readiness before the one planned readiness probe is sent.
-
-For a checkout-local clean-root acceptance, prefer the bounded
-`scripts/run_fresh_workspace_e2e.py` setup-only runner. Supply every required
-identity explicitly and pass `--authorize-setup` only after the user has
-approved that non-destructive attempt. The runner cannot launch code, a build,
-flash, UART writes, or arbitrary commands. Treat a nonzero exit or any evidence
-status other than `pass` as a hard stop; only a separate orchestrator may begin
-coding after verifying the exact readiness payload.
-
-When `get_setup_status` includes `build_guidance`, follow its provider-neutral
-`native_project_build` workflow first: reuse the project's validated local IDE
-or CLI, then call the returned `collect_build_artifacts` template with the
-outputs that actually exist. A reviewed profile may also return a labeled
-`toolchain_fallback`; use the Zephyr fallback only for a Zephyr project without
-an already-valid local build command. Treat every build route as advisory only:
-do not infer memory permission from it, and always refresh safety from the final
-ELF/map.
-
-For any other native build system, keep using its normal validated CLI or IDE
-build and optionally normalize explicit outputs with the always-visible
-`collect_build_artifacts` MCP tool (or
-`python -m pyocd_debug_mcp.artifact_collector` outside MCP). Supply typed `--elf`, `--hex`,
-`--bin`, and `--map` paths rather than asking the collector to search or guess.
-The result uses canonical `firmware.*` names and a deterministic provenance
-manifest, but it grants no memory authority. Pass the canonical ELF/HEX/MAP
-paths explicitly to `board_safety_refresh`; the safety flow does not currently
-ingest the collector manifest automatically. HEX-only and BIN-only bundles may
-be valid provenance outputs, but a raw BIN has no trusted address and collection
-alone never makes either safe to flash.
-
-For Zephyr sysbuild, the helper selects the generated `domains.yaml` default
-domain and takes ELF, HEX, BIN, and linker map only from that coherent image. It
-does not choose an aggregate or bootloader image by basename or directory depth,
-and a missing application linker map is a clear build-output failure rather than
-a silently incomplete safety handoff.
+Use `serial_exchange` when multiple console commands must share one UART open so state is retained.
+`get_setup_status` reports UART attachment separately from the validation gate. Build guidance is
+advisory and local-first; it never grants safety authority.
 
 Recovery plans use the target-neutral `backend_mass_erase` mechanism. The
 server checks that the live typed backend reports that capability before it

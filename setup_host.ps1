@@ -374,11 +374,15 @@ try {
     Ensure-Uv -PythonCommand $pythonCommand
     Ensure-UvSync
 
-    $needsNordicJlink = $boards | Where-Object { $_.mcu_family.StartsWith('nrf') -and $_.probe_family -eq 'jlink' }
+    $needsJlink = $boards | Where-Object { $_.probe_family -eq 'jlink' }
+    $needsNordicTools = $boards | Where-Object { $_.mcu_family.StartsWith('nrf') }
     $needsStlink = $boards | Where-Object { $_.probe_family -eq 'stlink' }
 
-    if ($needsNordicJlink) {
+    if ($needsJlink) {
         Ensure-JLink
+    }
+
+    if ($needsNordicTools) {
         [void](Ensure-NrfjprogOptional)
     }
 

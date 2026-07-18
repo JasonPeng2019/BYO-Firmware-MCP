@@ -1,19 +1,16 @@
-"""Runtime safety-map containment and freshness enforcement for Layer 2."""
+"""Runtime stable-map and per-artifact containment enforcement for Layer 2."""
 
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
-from hashlib import sha256
 from pathlib import Path
 
-from pyocd_debug_mcp.safety.fingerprints import FingerprintInputs, FingerprintSet, FingerprintSource
+from pyocd_debug_mcp.safety.artifact_evidence import extract_artifact_evidence
 from pyocd_debug_mcp.safety.linker import (
-    BuildArtifactSelection,
     BuildEvidence,
     BuildRole,
     LinkerEvidenceError,
-    extract_build_evidence,
 )
 from pyocd_debug_mcp.safety.map_build import (
     SafetyArtifactError,
@@ -46,7 +43,6 @@ class LoadedSafetyMap:
     safety_map: SafetyMap
 
 
-LiveInputsProvider = Callable[[str, SafetyArtifacts], FingerprintInputs]
 AuthorityVerifier = Callable[[SafetyArtifacts], None]
 
 
@@ -55,10 +51,12 @@ class SafetyPolicy:
         self,
         repository: SafetyArtifactRepository,
         *,
-        live_inputs: LiveInputsProvider | None = None,
+        live_inputs: object | None = None,
         authority_verifier: AuthorityVerifier = require_reconciled_authority,
     ) -> None:
         self.repository = repository
+        # Kept as a source-compatible constructor argument while v1 callers are removed. V2
+        # currentness is the canonical single-map digest, not tracked build files.
         self.live_inputs = live_inputs
         self.authority_verifier = authority_verifier
 
@@ -67,17 +65,17 @@ class SafetyPolicy:
             artifacts = self.repository.load_current(board_id)
         except (SafetyArtifactError, ValueError) as exc:
             raise SafetyPolicyError(
-                "safety/setup-required",
+                "safety/refresh-required",
                 f"Board '{board_id}' has no complete consistent safety map: {exc}",
-                remedy=("board_safety_setup", "board_validate"),
+                remedy=("board_safety_refresh",),
             ) from exc
         try:
             self.authority_verifier(artifacts)
         except SafetyArtifactError as exc:
             raise SafetyPolicyError(
-                "safety/authority-migration-required",
-                f"Board '{board_id}' safety authority is obsolete or incomplete: {exc}",
-                remedy=("board_setup", "board_safety_setup", "board_validate"),
+                "safety/refresh-required",
+                f"Board '{board_id}' safety map is obsolete or incomplete: {exc}",
+                remedy=("board_safety_refresh",),
             ) from exc
         return LoadedSafetyMap(
             artifacts,
@@ -86,31 +84,7 @@ class SafetyPolicy:
 
     def current_aggregate(self, board_id: str) -> str:
         loaded = self.load(board_id)
-        self._verify_declared_artifacts(loaded.artifacts)
-        if self.live_inputs is not None:
-            candidate = FingerprintSet.build(self.live_inputs(board_id, loaded.artifacts))
-            changed = loaded.artifacts.fingerprints.changed_sources(candidate)
-            if changed:
-                anchor = FingerprintSource.PART_TARGET in changed
-                structural = bool(
-                    set(changed).intersection(
-                        {FingerprintSource.GEOMETRY, FingerprintSource.SCHEMA}
-                    )
-                )
-                remedy = (
-                    ("board_safety_setup", "board_validate")
-                    if anchor or structural
-                    else ("board_safety_setup",)
-                    if FingerprintSource.PROFILE in changed
-                    else ("board_safety_refresh",)
-                )
-                raise SafetyPolicyError(
-                    "safety/fingerprint-stale",
-                    "Current safety inputs differ from the persisted aggregate for source groups "
-                    + ", ".join(item.value for item in changed),
-                    remedy=remedy,
-                )
-        return loaded.artifacts.fingerprints.aggregate
+        return loaded.artifacts.map_digest
 
     def check_range(
         self,
@@ -120,10 +94,16 @@ class SafetyPolicy:
     ) -> Allowed:
         result = self.load(board_id).safety_map.check(action, (requested,))
         if isinstance(result, Refusal):
+            if result.classification is RegionKind.UNKNOWN:
+                remedy = ("board_safety_refresh",)
+            elif result.classification is RegionKind.PROHIBITED:
+                remedy = ("choose a mapped, non-prohibited address",)
+            else:
+                remedy = ("choose an address appropriate for this action",)
             raise SafetyPolicyError(
                 result.code,
                 result.reason,
-                remedy=("board_safety_setup",),
+                remedy=remedy,
             )
         return result
 
@@ -146,7 +126,7 @@ class SafetyPolicy:
             remedy = (
                 ("choose a mapped, non-prohibited address",)
                 if result.classification is RegionKind.PROHIBITED
-                else ("board_safety_setup",)
+                else ("board_safety_refresh",)
             )
             raise SafetyPolicyError(
                 result.code,
@@ -156,19 +136,66 @@ class SafetyPolicy:
             )
         return result
 
-    def check_register_write(self, board_id: str, address: int) -> Allowed:
+    def check_register_write(
+        self, board_id: str, address: int, size_bytes: int = 4
+    ) -> Allowed:
         return self.check_range(
             board_id,
             ActionCategory.REGISTER_WRITE,
-            AddressRange.from_start_size(address, 4),
+            AddressRange.from_start_size(address, size_bytes),
         )
 
-    def check_breakpoint(self, board_id: str, address: int) -> Allowed:
-        return self.check_range(
-            board_id,
-            ActionCategory.BREAKPOINT,
-            AddressRange.from_start_size(address, 2),
+    def check_breakpoint(
+        self,
+        board_id: str,
+        address: int,
+        artifact_path: Path,
+        memory_span_bytes: int,
+    ) -> Allowed:
+        """Authorize a breakpoint only from the current ELF's executable segments."""
+
+        loaded = self.load(board_id)
+        requested = AddressRange.from_start_size(address, memory_span_bytes)
+        classification = loaded.safety_map.classify(requested)
+        if classification is RegionKind.PROHIBITED:
+            raise SafetyPolicyError(
+                "safety/prohibited",
+                "The breakpoint touches a prohibited security or provisioning region.",
+                remedy=("choose_another_breakpoint",),
+            )
+        if classification not in {
+            RegionKind.APPLICATION_FLASH,
+            RegionKind.BOOTLOADER_FLASH,
+            RegionKind.ROM,
+        }:
+            raise SafetyPolicyError(
+                "safety/breakpoint-wrong-region",
+                f"The breakpoint is in mapped region kind '{classification.value}', not code space.",
+                remedy=("choose_another_breakpoint",),
+            )
+        artifact = artifact_path.expanduser().resolve()
+        try:
+            evidence = extract_artifact_evidence(
+                artifact, BuildRole.APPLICATION, require_vector_table=False
+            )
+        except LinkerEvidenceError as exc:
+            raise SafetyPolicyError(
+                exc.code,
+                str(exc),
+                remedy=("select_current_executable_artifact",),
+            ) from exc
+        executable_ranges = tuple(
+            segment.runtime_range
+            for segment in evidence.loadable_segments
+            if segment.executable
         )
+        if not any(item.contains(requested) for item in executable_ranges):
+            raise SafetyPolicyError(
+                "safety/not-executable",
+                "The breakpoint is outside every executable range in the current artifact.",
+                remedy=("choose_another_breakpoint",),
+            )
+        return Allowed(ActionCategory.BREAKPOINT, (requested,), (classification,))
 
     def check_flash(
         self,
@@ -187,40 +214,13 @@ class SafetyPolicy:
                 remedy=("correct_board_assignment", "board_validate"),
             )
         artifact = artifact_path.expanduser().resolve()
-        self._require_fingerprinted_flash_artifact(loaded.artifacts, role, artifact)
-        if artifact.suffix.casefold() == ".elf":
-            elf_path = artifact
-            hex_path = None
-        elif artifact.suffix.casefold() == ".hex":
-            elf_path = artifact.with_suffix(".elf")
-            hex_path = artifact
-        else:
-            raise SafetyPolicyError(
-                "safety/flash-artifact-type",
-                "Safety extraction requires an ELF or HEX artifact.",
-                remedy=("select_valid_build_artifact",),
-            )
-        # Do not silently add an adjacent linker map that was not selected and
-        # fingerprinted during safety refresh.  The ELF is authoritative for
-        # this call's partitions, segments, entry point, and vector table; an
-        # unrelated or dialect-incompatible sibling map must not alter the
-        # meaning of an already reviewed artifact.
-        map_path = None
         try:
-            evidence = extract_build_evidence(
-                BuildArtifactSelection(
-                    f"runtime_{role.value}",
-                    role,
-                    elf_path,
-                    map_path,
-                    hex_path,
-                )
-            )
+            evidence = extract_artifact_evidence(artifact, role)
         except LinkerEvidenceError as exc:
             raise SafetyPolicyError(
                 exc.code,
                 str(exc),
-                remedy=("select_valid_build_artifact", "board_safety_refresh"),
+                remedy=("select_valid_build_artifact",),
             ) from exc
         action = (
             ActionCategory.FLASH_APPLICATION
@@ -252,7 +252,7 @@ class SafetyPolicy:
                     "safety/flash-outside-partition",
                     f"Flash artifact range {requested.to_document()} is not fully contained: "
                     f"{result.reason}",
-                    remedy=("select_correct_build", "board_safety_refresh"),
+                    remedy=("select_correct_build",),
                 )
         for sector in self._erase_sectors(loaded.artifacts, content_ranges):
             result = loaded.safety_map.check(action, (sector,))
@@ -260,56 +260,26 @@ class SafetyPolicy:
                 raise SafetyPolicyError(
                     "safety/erase-sector-outside-partition",
                     f"Required erase sector {sector.to_document()} exits the mapped partition.",
-                    remedy=("select_correct_build", "board_safety_refresh"),
+                    remedy=("select_correct_build",),
                 )
         return evidence
 
-    def _source_evidence(self, artifacts: SafetyArtifacts, source: FingerprintSource) -> object:
-        sources = artifacts.source_manifest.get("sources")
-        if not isinstance(sources, Mapping):
-            raise SafetyPolicyError(
-                "safety/source-manifest-invalid",
-                "Safety source manifest is missing its source table.",
-                remedy=("board_safety_setup",),
-            )
-        row = sources.get(source.value)
-        if not isinstance(row, Mapping) or "evidence" not in row:
-            raise SafetyPolicyError(
-                "safety/source-manifest-invalid",
-                f"Safety source manifest is missing {source.value} evidence.",
-                remedy=("board_safety_setup",),
-            )
-        return row["evidence"]
-
     def _expected_target(self, artifacts: SafetyArtifacts) -> str:
-        evidence = self._source_evidence(artifacts, FingerprintSource.PART_TARGET)
-        if not isinstance(evidence, Mapping) or not isinstance(evidence.get("target"), str):
+        target = artifacts.identity.get("target")
+        if not isinstance(target, str) or not target.strip():
             raise SafetyPolicyError(
                 "safety/target-evidence-missing",
-                "Safety evidence has no exact target identity.",
-                remedy=("board_safety_setup",),
+                "The memory map has no exact target identity.",
+                remedy=("board_safety_refresh",),
             )
-        target = str(evidence["target"]).strip()
-        if not target:
-            raise SafetyPolicyError(
-                "safety/target-evidence-missing",
-                "Safety evidence has an empty target identity.",
-                remedy=("board_safety_setup",),
-            )
-        return target
+        return target.strip()
 
     def _erase_sectors(
         self,
         artifacts: SafetyArtifacts,
         ranges: Sequence[AddressRange],
     ) -> tuple[AddressRange, ...]:
-        geometry = self._source_evidence(artifacts, FingerprintSource.GEOMETRY)
-        if not isinstance(geometry, Mapping):
-            raise SafetyPolicyError(
-                "safety/geometry-missing",
-                "Flash erase geometry is not an object.",
-                remedy=("board_safety_setup",),
-            )
+        geometry = artifacts.geometry
         explicit = geometry.get("sectors")
         if isinstance(explicit, list):
             sectors: list[AddressRange] = []
@@ -318,7 +288,7 @@ class SafetyPolicy:
                     raise SafetyPolicyError(
                         "safety/geometry-invalid",
                         "Erase-sector entries must be objects.",
-                        remedy=("board_safety_setup",),
+                        remedy=("board_safety_refresh",),
                     )
                 try:
                     sectors.append(AddressRange(row["start"], row["end"]))  # type: ignore[arg-type]
@@ -326,7 +296,7 @@ class SafetyPolicy:
                     raise SafetyPolicyError(
                         "safety/geometry-invalid",
                         f"Invalid erase-sector entry: {exc}",
-                        remedy=("board_safety_setup",),
+                        remedy=("board_safety_refresh",),
                     ) from exc
             required = {
                 sector for sector in sectors for requested in ranges if sector.overlaps(requested)
@@ -335,7 +305,7 @@ class SafetyPolicy:
                 raise SafetyPolicyError(
                     "safety/geometry-incomplete",
                     "Erase geometry does not cover every flash range.",
-                    remedy=("board_safety_setup",),
+                    remedy=("board_safety_refresh",),
                 )
             return tuple(sorted(required))
         erase_size = geometry.get("erase_size")
@@ -351,7 +321,7 @@ class SafetyPolicy:
             raise SafetyPolicyError(
                 "safety/geometry-missing",
                 "Uniform geometry requires positive erase_size and non-negative erase_origin.",
-                remedy=("board_safety_setup",),
+                remedy=("board_safety_refresh",),
             )
         uniform_sectors: set[AddressRange] = set()
         for requested in ranges:
@@ -359,7 +329,7 @@ class SafetyPolicy:
                 raise SafetyPolicyError(
                     "safety/geometry-incomplete",
                     "A flash range precedes the erase geometry origin.",
-                    remedy=("board_safety_setup",),
+                    remedy=("board_safety_refresh",),
                 )
             first = origin + ((requested.start - origin) // erase_size) * erase_size
             cursor = first
@@ -367,70 +337,6 @@ class SafetyPolicy:
                 uniform_sectors.add(AddressRange.from_start_size(cursor, erase_size))
                 cursor += erase_size
         return tuple(sorted(uniform_sectors))
-
-    def _verify_declared_artifacts(self, artifacts: SafetyArtifacts) -> None:
-        for source in FingerprintSource:
-            evidence = self._source_evidence(artifacts, source)
-            for path_value, digest in _artifact_records(evidence):
-                path = Path(path_value)
-                if not path.is_absolute():
-                    path = self.repository.store.layout.project_root / path
-                if not path.is_file() or sha256(path.read_bytes()).hexdigest() != digest:
-                    raise SafetyPolicyError(
-                        "safety/artifact-stale",
-                        f"{source.value} artifact '{path}' changed or disappeared.",
-                        remedy=("board_safety_refresh",),
-                    )
-
-    def _require_fingerprinted_flash_artifact(
-        self,
-        artifacts: SafetyArtifacts,
-        role: BuildRole,
-        artifact: Path,
-    ) -> None:
-        source = (
-            FingerprintSource.APPLICATION_ARTIFACTS
-            if role is BuildRole.APPLICATION
-            else FingerprintSource.BOOTLOADER_ARTIFACTS
-        )
-        records = _artifact_records(self._source_evidence(artifacts, source))
-        resolved = {
-            (
-                Path(path_value)
-                if Path(path_value).is_absolute()
-                else self.repository.store.layout.project_root / path_value
-            ).resolve(): digest
-            for path_value, digest in records
-        }
-        expected_digest = resolved.get(artifact)
-        if expected_digest is None:
-            raise SafetyPolicyError(
-                "safety/flash-artifact-unfingerprinted",
-                f"Selected {role.value} artifact '{artifact}' is not in the current aggregate.",
-                remedy=("board_safety_refresh",),
-            )
-        if not artifact.is_file() or sha256(artifact.read_bytes()).hexdigest() != expected_digest:
-            raise SafetyPolicyError(
-                "safety/artifact-stale",
-                f"Selected {role.value} artifact '{artifact}' changed or disappeared.",
-                remedy=("board_safety_refresh",),
-            )
-
-
-def _artifact_records(value: object) -> tuple[tuple[str, str], ...]:
-    records: list[tuple[str, str]] = []
-    if isinstance(value, Mapping):
-        path = value.get("path")
-        digest = value.get("sha256")
-        if isinstance(path, str) and isinstance(digest, str):
-            records.append((path, digest))
-        for item in value.values():
-            records.extend(_artifact_records(item))
-    elif isinstance(value, list):
-        for item in value:
-            records.extend(_artifact_records(item))
-    return tuple(records)
-
 
 def _fully_covered(requested: AddressRange, sectors: Sequence[AddressRange]) -> bool:
     cursor = requested.start

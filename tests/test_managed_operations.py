@@ -200,7 +200,7 @@ async def test_cancelled_flash_finishes_before_cleanup_and_release() -> None:
     assert manager.snapshots() == ()
 
 
-async def test_same_board_reports_busy_without_interleaving_and_cross_board_runs() -> None:
+async def test_all_board_operations_share_one_queue_without_interleaving() -> None:
     manager = OperationManager()
     board_a_started = threading.Event()
     release_board_a = threading.Event()
@@ -220,11 +220,11 @@ async def test_same_board_reports_busy_without_interleaving_and_cross_board_runs
         board_b_started.set()
         return "b"
 
-    assert (
-        await dispatch("read_cpu_register", "board_b", board_b_operation, 0.5, manager=manager)
-        == "b"
+    board_b = asyncio.create_task(
+        dispatch("read_cpu_register", "board_b", board_b_operation, 0.5, manager=manager)
     )
-    assert board_b_started.is_set()
+    await asyncio.sleep(0.03)
+    assert not board_b_started.is_set()
 
     with pytest.raises(BoardBusyError, match="Board 'board_a' is busy"):
         await dispatch(
@@ -232,6 +232,8 @@ async def test_same_board_reports_busy_without_interleaving_and_cross_board_runs
         )
     release_board_a.set()
     assert await first == "a"
+    assert await board_b == "b"
+    assert board_b_started.is_set()
 
 
 @pytest.mark.parametrize("tool_name,preserves_halt", [("halt", True), ("get_state", False)])

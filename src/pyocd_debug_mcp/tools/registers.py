@@ -2,39 +2,16 @@
 
 from __future__ import annotations
 
-import re
 from collections.abc import Callable
 from dataclasses import dataclass
 
+from pyocd_debug_mcp.adapters.target_backend import (
+    MemoryAccessCapabilities,
+    RegisterClass,
+    RegisterDescriptor,
+)
 from pyocd_debug_mcp.kernel.operations import wrap_layer2_response
 
-
-_ORDINARY_REGISTER = re.compile(r"(?:r(?:[0-9]|1[0-2])|[sdq][0-9]+)", re.IGNORECASE)
-_EXECUTION_REGISTERS = frozenset(
-    {
-        "r13",
-        "r14",
-        "r15",
-        "sp",
-        "lr",
-        "pc",
-        "xpsr",
-        "apsr",
-        "ipsr",
-        "epsr",
-        "msp",
-        "psp",
-        "msplim",
-        "psplim",
-        "primask",
-        "basepri",
-        "basepri_max",
-        "faultmask",
-        "control",
-        "cfbp",
-        "fpscr",
-    }
-)
 _PROHIBITED_TERMS = (
     "secure",
     "security",
@@ -53,11 +30,12 @@ _PROHIBITED_TERMS = (
 
 @dataclass(frozen=True, slots=True)
 class RegisterToolServices:
-    supported_registers: Callable[[str], tuple[str, ...]]
+    describe_register: Callable[[str, str], RegisterDescriptor | None]
+    memory_capabilities: Callable[[str], MemoryAccessCapabilities]
     read_register: Callable[[str, str], str]
     write_register: Callable[[str, str, int], str]
     masked_register_write: Callable[[str, int, int, int], str]
-    check_register_write: Callable[[str, int], None] | None = None
+    check_register_write: Callable[[str, int, int], None] | None = None
 
 
 class RegisterPreconditionError(ValueError):
@@ -82,31 +60,39 @@ def _validate_supported(
     name: str,
     *,
     execution_state: bool,
-) -> tuple[str | None, str | None]:
+) -> tuple[RegisterDescriptor | None, str | None]:
     normalized = _normalize_name(name)
     if _is_prohibited(normalized):
         return None, _refusal(
             "register/prohibited",
             f"Register '{name}' is security/provisioning-related and unavailable.",
         )
+    descriptor = services.describe_register(board_id, normalized)
+    if descriptor is None:
+        return None, _refusal(
+            "register/unsupported",
+            f"Register '{name}' is not supported by the connected core.",
+        )
     expected_class = (
-        normalized in _EXECUTION_REGISTERS
-        if execution_state
-        else _ORDINARY_REGISTER.fullmatch(normalized) is not None
+        RegisterClass.EXECUTION_STATE if execution_state else RegisterClass.ORDINARY
     )
-    if not expected_class:
+    if descriptor.register_class is RegisterClass.PROHIBITED:
+        return None, _refusal(
+            "register/prohibited",
+            f"Register '{name}' is security/provisioning-related and unavailable.",
+        )
+    if descriptor.register_class is not expected_class:
         class_name = "execution-state" if execution_state else "ordinary CPU/FP"
         return None, _refusal(
             "register/wrong-class",
             f"Register '{name}' is not in the {class_name} register class.",
         )
-    supported = {item.casefold() for item in services.supported_registers(board_id)}
-    if normalized not in supported:
+    if descriptor.width_bits < 1:
         return None, _refusal(
             "register/unsupported",
-            f"Register '{name}' is not supported by the connected core.",
+            f"Register '{name}' has no usable width from the connected backend.",
         )
-    return normalized, None
+    return descriptor, None
 
 
 def _parse_value(
@@ -137,14 +123,6 @@ def _parse_value(
     return parsed, None
 
 
-def _register_maximum(normalized_name: str) -> int:
-    if normalized_name.startswith("q"):
-        return (1 << 128) - 1
-    if normalized_name.startswith("d"):
-        return (1 << 64) - 1
-    return 0xFFFFFFFF
-
-
 def _raise_precondition(refusal: str | None) -> None:
     if refusal is not None:
         raise RegisterPreconditionError(refusal.splitlines()[0])
@@ -167,22 +145,27 @@ def validate_guarded_register_call(
             raise RegisterPreconditionError(
                 "Refused [register/invalid-value]: name and value have invalid types."
             )
-        normalized, refusal = _validate_supported(
+        descriptor, refusal = _validate_supported(
             services,
             board_id,
             name,
             execution_state=action_name == "set_execution_state",
         )
         _raise_precondition(refusal)
-        assert normalized is not None
-        _, refusal = _parse_value(
-            value, "value", maximum=_register_maximum(normalized)
-        )
+        assert descriptor is not None
+        _, refusal = _parse_value(value, "value", maximum=(1 << descriptor.width_bits) - 1)
         _raise_precondition(refusal)
         return
 
     if action_name != "register_write":
         return
+    capabilities = services.memory_capabilities(board_id)
+    width_bits = capabilities.peripheral_width_bits
+    alignment = capabilities.peripheral_alignment_bytes
+    if width_bits is None or alignment is None or width_bits < 1 or alignment < 1:
+        raise RegisterPreconditionError(
+            "Refused [register/unsupported]: backend does not support peripheral writes."
+        )
     parsed: dict[str, int] = {}
     for field_name in ("address", "mask", "value"):
         value = arguments.get(field_name)
@@ -190,13 +173,16 @@ def validate_guarded_register_call(
             raise RegisterPreconditionError(
                 f"Refused [register/invalid-value]: {field_name} has an invalid type."
             )
-        parsed_value, refusal = _parse_value(value, field_name)
+        maximum = (1 << capabilities.address_bits) - 1 if field_name == "address" else (
+            1 << width_bits
+        ) - 1
+        parsed_value, refusal = _parse_value(value, field_name, maximum=maximum)
         _raise_precondition(refusal)
         assert parsed_value is not None
         parsed[field_name] = parsed_value
-    if parsed["address"] % 4:
+    if parsed["address"] % alignment:
         raise RegisterPreconditionError(
-            "Refused [register/unaligned]: address must be 32-bit aligned."
+            f"Refused [register/unaligned]: address must be {alignment}-byte aligned."
         )
     if parsed["mask"] == 0:
         raise RegisterPreconditionError(
@@ -212,58 +198,54 @@ def build_register_handlers(
     def read_cpu_register(board_id: str, name: str) -> str:
         """Read one runtime-supported ordinary CPU or floating-point register."""
 
-        normalized, refusal = _validate_supported(
+        descriptor, refusal = _validate_supported(
             services, board_id, name, execution_state=False
         )
         if refusal is not None:
             return refusal
-        assert normalized is not None
-        return wrap_layer2_response(services.read_register(board_id, normalized))
+        assert descriptor is not None
+        return wrap_layer2_response(services.read_register(board_id, descriptor.name))
 
     def read_execution_state(board_id: str, name: str) -> str:
         """Read one runtime-supported control-flow or execution-state register."""
 
-        normalized, refusal = _validate_supported(
+        descriptor, refusal = _validate_supported(
             services, board_id, name, execution_state=True
         )
         if refusal is not None:
             return refusal
-        assert normalized is not None
-        return wrap_layer2_response(services.read_register(board_id, normalized))
+        assert descriptor is not None
+        return wrap_layer2_response(services.read_register(board_id, descriptor.name))
 
     def write_cpu_register(board_id: str, name: str, value: str | int) -> str:
-        """Write one ordinary R0-R12 or floating-point register under a fixed plan."""
+        """Write one backend-declared ordinary CPU register under a fixed plan."""
 
-        normalized, refusal = _validate_supported(
+        descriptor, refusal = _validate_supported(
             services, board_id, name, execution_state=False
         )
         if refusal is not None:
             return refusal
-        assert normalized is not None
-        parsed, refusal = _parse_value(
-            value, "value", maximum=_register_maximum(normalized)
-        )
+        assert descriptor is not None
+        parsed, refusal = _parse_value(value, "value", maximum=(1 << descriptor.width_bits) - 1)
         if refusal is not None:
             return refusal
         assert parsed is not None
-        return wrap_layer2_response(services.write_register(board_id, normalized, parsed))
+        return wrap_layer2_response(services.write_register(board_id, descriptor.name, parsed))
 
     def set_execution_state(board_id: str, name: str, value: str | int) -> str:
         """Set one control-flow/mode register under a permission-carrying fixed plan."""
 
-        normalized, refusal = _validate_supported(
+        descriptor, refusal = _validate_supported(
             services, board_id, name, execution_state=True
         )
         if refusal is not None:
             return refusal
-        assert normalized is not None
-        parsed, refusal = _parse_value(
-            value, "value", maximum=_register_maximum(normalized)
-        )
+        assert descriptor is not None
+        parsed, refusal = _parse_value(value, "value", maximum=(1 << descriptor.width_bits) - 1)
         if refusal is not None:
             return refusal
         assert parsed is not None
-        return wrap_layer2_response(services.write_register(board_id, normalized, parsed))
+        return wrap_layer2_response(services.write_register(board_id, descriptor.name, parsed))
 
     def register_write(
         board_id: str,
@@ -273,22 +255,31 @@ def build_register_handlers(
     ) -> str:
         """Apply a fixed-plan masked write inside mapped non-prohibited peripheral space."""
 
-        parsed_address, refusal = _parse_value(address, "address")
+        capabilities = services.memory_capabilities(board_id)
+        width_bits = capabilities.peripheral_width_bits
+        alignment = capabilities.peripheral_alignment_bytes
+        if width_bits is None or alignment is None:
+            return _refusal("register/unsupported", "backend does not support peripheral writes.")
+        address_maximum = (1 << capabilities.address_bits) - 1
+        value_maximum = (1 << width_bits) - 1
+        parsed_address, refusal = _parse_value(address, "address", maximum=address_maximum)
         if refusal is not None:
             return refusal
-        parsed_mask, refusal = _parse_value(mask, "mask")
+        parsed_mask, refusal = _parse_value(mask, "mask", maximum=value_maximum)
         if refusal is not None:
             return refusal
-        parsed_value, refusal = _parse_value(value, "value")
+        parsed_value, refusal = _parse_value(value, "value", maximum=value_maximum)
         if refusal is not None:
             return refusal
         assert parsed_address is not None and parsed_mask is not None and parsed_value is not None
-        if parsed_address % 4:
-            return _refusal("register/unaligned", "address must be 32-bit aligned.")
+        if parsed_address % alignment:
+            return _refusal(
+                "register/unaligned", f"address must be {alignment}-byte aligned."
+            )
         if parsed_mask == 0:
             return _refusal("register/empty-mask", "mask must affect at least one bit.")
         if services.check_register_write is not None:
-            services.check_register_write(board_id, parsed_address)
+            services.check_register_write(board_id, parsed_address, width_bits // 8)
         result = services.masked_register_write(
             board_id,
             parsed_address,

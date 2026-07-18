@@ -14,6 +14,7 @@ from mcp.client.session import ClientSession
 from mcp.server.fastmcp.exceptions import ToolError
 from mcp.shared.exceptions import McpError
 from mcp.shared.memory import create_client_server_memory_streams
+from mcp.shared.memory import create_connected_server_and_client_session
 
 from pyocd_debug_mcp.kernel.registry import RegistryFastMCP, ToolRegistry
 from pyocd_debug_mcp.kernel.operations import cancellation_checkpoint, operation_resources
@@ -236,3 +237,71 @@ async def test_in_process_dynamic_list_and_notification_preserve_physical_lock()
         )
         assert stale_client_call.isError is True
         assert "guarded_echo-plan" in first_text(stale_client_call)
+
+
+async def test_plan_unlock_visibility_and_authority_are_client_scoped() -> None:
+    server = RegistryFastMCP("registry-client-isolation")
+
+    @server.tool()
+    def guarded_echo(board_id: str) -> str:
+        return f"ok:{board_id}"
+
+    server.registry.configure(
+        "guarded_echo",
+        hidden=True,
+        locked=True,
+        prerequisite="guarded_echo-plan",
+    )
+
+    @server.tool()
+    def unlock_echo(board_id: str) -> str:
+        server.registry.unlock("guarded_echo", board_id)
+        return "unlocked"
+
+    async with create_connected_server_and_client_session(server) as first:
+        async with create_connected_server_and_client_session(server) as second:
+            await first.call_tool("unlock_echo", {"board_id": "board_a"})
+            assert "guarded_echo" in {tool.name for tool in (await first.list_tools()).tools}
+            assert "guarded_echo" not in {
+                tool.name for tool in (await second.list_tools()).tools
+            }
+            denied = await second.call_tool("guarded_echo", {"board_id": "board_a"})
+            assert denied.isError is True
+            assert "guarded_echo-plan" in first_text(denied)
+            allowed = await first.call_tool("guarded_echo", {"board_id": "board_a"})
+            assert allowed.isError is not True
+
+
+async def test_cached_metadata_bypasses_the_board_affecting_worker_queue() -> None:
+    server = RegistryFastMCP("metadata-concurrency")
+    started = threading.Event()
+    release = threading.Event()
+
+    @server.tool()
+    def slow_hardware(board_id: str) -> str:
+        del board_id
+        started.set()
+        assert release.wait(2.0)
+        return "hardware complete"
+
+    @server.tool()
+    def cached_board_info(board_id: str) -> str:
+        return f"cached:{board_id}"
+
+    server.configure_board_affecting("slow_hardware")
+    server.configure_metadata("cached_board_info")
+
+    async with create_connected_server_and_client_session(server) as client:
+        hardware = asyncio.create_task(
+            client.call_tool("slow_hardware", {"board_id": "board_a"})
+        )
+        assert await asyncio.to_thread(started.wait, 1.0)
+        with anyio.fail_after(0.5):
+            metadata = await client.call_tool(
+                "cached_board_info", {"board_id": "board_a"}
+            )
+        release.set()
+        completed = await hardware
+
+    assert first_text(metadata) == "cached:board_a"
+    assert first_text(completed) == "hardware complete"

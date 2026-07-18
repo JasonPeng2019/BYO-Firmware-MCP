@@ -298,7 +298,7 @@ def test_timeout_failure_and_repeated_cleanup_have_one_start_budget_and_parity(
         assert cleanup == list(CLEANUP_EVENTS)
 
 
-def test_same_board_busy_does_not_burn_budget_while_other_board_is_independent(
+def test_global_board_queue_does_not_burn_budget_before_execution(
     stdio_server: StdioMCPProcess,
 ) -> None:
     stdio_server.call(40, "slow_read", _slow_args("board-a-active", duration=0.35))
@@ -314,16 +314,18 @@ def test_same_board_busy_does_not_burn_budget_while_other_board_is_independent(
         _slow_args("board-b", board_id="board_b", duration=0.02, timeout=1.0),
     )
 
-    board_b = stdio_server.response(42)
-    assert "completed:board_b:board-b" in json.dumps(board_b)
     busy = stdio_server.response(41)
     _assert_tool_error(busy, "Board 'board_a' is busy")
     assert "result" in stdio_server.response(40)
+    board_b = stdio_server.response(42)
+    assert "completed:board_b:board-b" in json.dumps(board_b)
     board_b_complete = _wait_for_row(stdio_server.log_path, "handler-complete", "board-b")
     board_a_complete = _wait_for_row(
         stdio_server.log_path, "handler-complete", "board-a-active"
     )
-    assert board_b_complete["monotonic"] < board_a_complete["monotonic"]
+    # Server A's product contract requires one global board-affecting queue, so a
+    # different board waits rather than bypassing the active hardware operation.
+    assert board_b_complete["monotonic"] > board_a_complete["monotonic"]
     assert _budget_count(stdio_server.log_path, "board-a-active") == 1
     assert _budget_count(stdio_server.log_path, "board-a-busy") == 0
     assert _budget_count(stdio_server.log_path, "board-b") == 1

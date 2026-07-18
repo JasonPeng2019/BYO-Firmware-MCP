@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-import json
+from collections.abc import Mapping
 from pathlib import Path
 from typing import cast
 
@@ -11,8 +11,8 @@ from pyocd_debug_mcp.firmstore.store import PERSISTED_AUTHORITY_KEYS, FirmStore
 from pyocd_debug_mcp.safety.fingerprints import FingerprintInputs, FingerprintSource
 from pyocd_debug_mcp.safety.map_build import (
     RegionContribution,
+    SafetyArtifactError,
     SafetyArtifactRepository,
-    SafetyIssue,
     SafetyMapBuilder,
     SafetySetupRequest,
 )
@@ -25,280 +25,195 @@ from pyocd_debug_mcp.safety.regions import (
 )
 
 
-def inputs(**overrides: object) -> FingerprintInputs:
-    values: dict[str, object] = {
-        "profile": {"board_id": "board", "display_name": "Board"},
-        "part_target": {"mcu_part_number": "MCU-1", "target": "target_1"},
-        "pack": {"id": "Vendor.Pack", "version": "1.0"},
-        "evidence": {"manual": "R2", "svd": "1.0"},
-        "application_artifacts": {"elf": "app-v1"},
-        "bootloader_artifacts": {"elf": "boot-v1"},
-        "geometry": {"erase_size": 4096},
-        "schema": {"memory_map": 1},
+def inputs(*, profile: object | None = None, evidence: object | None = None) -> FingerprintInputs:
+    deployment = {
+        "official_document": {"revision": "R1"},
+        "reconciliation": {"status": "agreement"},
+        "deployment_policy": {
+            "application_start": 0x08000000,
+            "application_end": 0x08010000,
+            "application_authoritative": True,
+            "bootloader_authoritative": False,
+        },
     }
-    values.update(overrides)
     return FingerprintInputs(
-        values["profile"],
-        values["part_target"],
-        values["pack"],
-        values["evidence"],
-        values["application_artifacts"],
-        values["bootloader_artifacts"],
-        values["geometry"],
-        values["schema"],
+        profile or {
+            "board_id": "board",
+            "mcu_part_number": "MCU-1",
+            "display_name": "Friendly",
+            "created_at": "2026-01-01T00:00:00Z",
+            "updated_at": "2026-01-01T00:00:00Z",
+            "serial_baudrate": 115200,
+            "safety_ref": ".firm/safety/board/memory_map.yaml",
+        },
+        {"board_type": "fixture", "mcu_part_number": "MCU-1", "target": "target_1"},
+        {"id": "Vendor.Pack", "version": "1.0"},
+        evidence or deployment,
+        {"artifact": "app-v1"},
+        {"artifact": "boot-v1"},
+        {
+            "flash_start": 0x08000000,
+            "flash_end": 0x08020000,
+            "ram_start": 0x20000000,
+            "ram_end": 0x20010000,
+            "erase_origin": 0x08000000,
+            "erase_size": 0x1000,
+        },
+        {"memory_map": 2, "evidence": 2},
     )
 
 
-def contribution(
-    name: str,
-    kind: RegionKind,
-    start: int,
-    end: int,
-    *groups: FingerprintSource,
-) -> RegionContribution:
-    authority = (
-        SourceAuthority.BUILD
-        if FingerprintSource.APPLICATION_ARTIFACTS in groups
-        or FingerprintSource.BOOTLOADER_ARTIFACTS in groups
-        else SourceAuthority.RECONCILED
-    )
+def region(name: str, kind: RegionKind, start: int, end: int) -> RegionContribution:
     return RegionContribution(
         SafetyRegion(
             name,
             kind,
             AddressRange(start, end),
-            (Provenance(authority, f"source:{name}", "verified Task 13 test evidence"),),
-            kind in {RegionKind.APPLICATION_FLASH, RegionKind.BOOTLOADER_FLASH},
+            (Provenance(SourceAuthority.RECONCILED, name, "reviewed fixture"),),
         ),
-        groups,
+        (FingerprintSource.PACK, FingerprintSource.EVIDENCE),
     )
 
 
-def regions() -> tuple[RegionContribution, ...]:
+def regions(*extra: RegionContribution) -> tuple[RegionContribution, ...]:
     return (
-        contribution(
-            "physical flash",
-            RegionKind.PHYSICAL_FLASH,
-            0,
-            0x10000,
-            FingerprintSource.PACK,
-            FingerprintSource.EVIDENCE,
-            FingerprintSource.GEOMETRY,
-        ),
-        contribution(
-            "application",
-            RegionKind.APPLICATION_FLASH,
-            0x2000,
-            0x8000,
-            FingerprintSource.APPLICATION_ARTIFACTS,
-        ),
-        contribution(
-            "bootloader",
-            RegionKind.BOOTLOADER_FLASH,
-            0,
-            0x2000,
-            FingerprintSource.BOOTLOADER_ARTIFACTS,
-        ),
-        contribution(
-            "application RAM",
-            RegionKind.RAM,
-            0x20000000,
-            0x20001000,
-            FingerprintSource.APPLICATION_ARTIFACTS,
-        ),
-        contribution(
-            "peripherals",
-            RegionKind.PERIPHERAL,
-            0x40000000,
-            0x50000000,
-            FingerprintSource.PACK,
-            FingerprintSource.EVIDENCE,
-        ),
-        contribution(
-            "security registers",
-            RegionKind.PROHIBITED,
-            0x40001000,
-            0x40001100,
-            FingerprintSource.PACK,
-            FingerprintSource.EVIDENCE,
-        ),
+        region("physical flash", RegionKind.PHYSICAL_FLASH, 0x08000000, 0x08020000),
+        region("physical RAM", RegionKind.PHYSICAL_RAM, 0x20000000, 0x20010000),
+        region("usable RAM", RegionKind.RAM, 0x20000000, 0x20010000),
+        region("peripherals", RegionKind.PERIPHERAL, 0x40000000, 0x50000000),
+        region("option bytes", RegionKind.PROHIBITED, 0x1FFF7800, 0x1FFF7900),
+        *extra,
     )
 
 
-def request(**changes: object) -> SafetySetupRequest:
-    values: dict[str, object] = {
-        "board_id": "board",
-        "continuation_id": "safety-1",
-        "inputs": inputs(),
-        "regions": regions(),
-        "issues": (),
-    }
-    values.update(changes)
+def request(*, selected_inputs: FingerprintInputs | None = None, selected_regions=None):
     return SafetySetupRequest(
-        cast(str, values["board_id"]),
-        cast(str, values["continuation_id"]),
-        cast(FingerprintInputs, values["inputs"]),
-        cast(tuple[RegionContribution, ...], values["regions"]),
-        cast(tuple[SafetyIssue, ...], values["issues"]),
+        "board",
+        "safety-v2-test",
+        selected_inputs or inputs(),
+        tuple(selected_regions if selected_regions is not None else regions()),
     )
 
 
-def artifact_keys(value: object) -> set[str]:
+def nested_keys(value: object) -> set[str]:
     if isinstance(value, dict):
-        return {str(key) for key in value} | {
-            nested for item in value.values() for nested in artifact_keys(item)
-        }
+        return set(map(str, value)) | {key for item in value.values() for key in nested_keys(item)}
     if isinstance(value, list):
-        return {nested for item in value for nested in artifact_keys(item)}
+        return {key for item in value for key in nested_keys(item)}
     return set()
 
 
-def test_completed_setup_writes_current_artifacts_with_provenance_and_no_authority(
-    tmp_path: Path,
-) -> None:
+def test_v2_persists_only_one_self_contained_memory_map(tmp_path: Path) -> None:
     store = FirmStore(tmp_path)
     result = SafetyMapBuilder(store).build(request())
-
     assert result.status == "safety_setup_completed"
-    assert result.aggregate_fingerprint
-    artifacts = SafetyArtifactRepository(store).load_current("board")
-    assert artifacts.fingerprints.aggregate == result.aggregate_fingerprint
-    assert len(artifacts.regions) == len(regions())
     paths = SafetyArtifactRepository(store).paths("board")
-    memory = yaml.safe_load(paths["memory_map"].read_text(encoding="utf-8"))
-    manifest = json.loads(paths["source_manifest"].read_text(encoding="utf-8"))
-    report = json.loads(paths["safety_report"].read_text(encoding="utf-8"))
-    assert set(memory) == {
-        "schema_version",
-        "board_id",
-        "created_at",
-        "fingerprints",
-        "regions",
+    assert set(paths) == {"memory_map"}
+    assert [item.name for item in paths["memory_map"].parent.iterdir()] == ["memory_map.yaml"]
+    document = yaml.safe_load(paths["memory_map"].read_text(encoding="utf-8"))
+    assert set(document) == {
+        "schema_version", "board_id", "identity", "source_digests",
+        "geometry", "partitions", "regions",
     }
-    assert set(memory["fingerprints"]["sub_fingerprints"]) == {
-        source.value for source in FingerprintSource
-    }
-    assert set(manifest["sources"]) == {source.value for source in FingerprintSource}
-    assert all(row["provenance"] and row["source_groups"] for row in memory["regions"])
-    for document in (memory, manifest, report):
-        keys = {key.casefold().replace("-", "_") for key in artifact_keys(document)}
-        assert not keys.intersection(PERSISTED_AUTHORITY_KEYS)
-        assert all(not key.startswith("gate") for key in keys)
-    assert "do not expose structured internals" in result.agent_prompt
+    assert document["schema_version"] == 2
+    assert document["partitions"]["application"] == {"start": 0x08000000, "end": 0x08010000}
+    assert not {key.casefold().replace("-", "_") for key in nested_keys(document)}.intersection(
+        PERSISTED_AUTHORITY_KEYS
+    )
 
 
-def test_unchanged_rebuild_preserves_map_manifest_and_aggregate_bytes(tmp_path: Path) -> None:
+def test_bookkeeping_and_build_bytes_do_not_change_stable_map(tmp_path: Path) -> None:
     store = FirmStore(tmp_path)
     builder = SafetyMapBuilder(store)
     first = builder.build(request())
-    paths = SafetyArtifactRepository(store).paths("board")
-    before = {name: paths[name].read_bytes() for name in ("memory_map", "source_manifest")}
-
-    second = builder.build(request(continuation_id="safety-2"))
-
-    assert second.status == "safety_setup_completed"
-    assert second.aggregate_fingerprint == first.aggregate_fingerprint
+    changed = inputs(
+        profile={
+            "board_id": "board", "mcu_part_number": "MCU-1",
+            "display_name": "Renamed", "updated_at": "2030-01-01T00:00:00Z",
+            "serial_baudrate": 9600, "safety_ref": "changed-bookkeeping",
+        }
+    )
+    changed = FingerprintInputs(
+        changed.profile, changed.part_target, changed.pack, changed.evidence,
+        {"artifact": "completely-new-build"}, {"artifact": "another-boot-build"},
+        changed.geometry, changed.schema,
+    )
+    second = builder.build(request(selected_inputs=changed))
+    assert first.map_digest == second.map_digest
     assert second.observed["unchanged_rebuild"] is True
-    assert {name: paths[name].read_bytes() for name in ("memory_map", "source_manifest")} == before
 
 
-@pytest.mark.parametrize(
-    "status",
-    [
-        "safety_setup_needs_user_input",
-        "safety_setup_research_required",
-        "safety_setup_incomplete",
-        "safety_setup_blocked",
-    ],
-)
-def test_noncomplete_statuses_write_reports_without_committing_a_map(
-    tmp_path: Path, status: str
-) -> None:
-    issue = SafetyIssue(status, "safety/test", "More authoritative input is required.")  # type: ignore[arg-type]
+def test_commit_removes_exact_legacy_siblings(tmp_path: Path) -> None:
     store = FirmStore(tmp_path)
-    result = SafetyMapBuilder(store).build(request(issues=(issue,)))
-    payload = result.to_payload()
-
-    assert result.status == status
-    assert "continuation_id" not in payload
-    assert payload["accepted_response"] is None
-    paths = SafetyArtifactRepository(store).paths("board")
-    assert paths["safety_report"].is_file()
-    assert not paths["memory_map"].exists()
-    assert not paths["source_manifest"].exists()
+    root = store.layout.safety_board("board")
+    root.mkdir(parents=True)
+    (root / "source_manifest.json").write_text("{}", encoding="utf-8")
+    (root / "safety_report.json").write_text("{}", encoding="utf-8")
+    SafetyMapBuilder(store).build(request())
+    assert {item.name for item in root.iterdir()} == {"memory_map.yaml"}
 
 
-def test_unsupported_board_is_terminal_and_does_not_advertise_a_continuation(
-    tmp_path: Path,
-) -> None:
-    issue = SafetyIssue(
-        "safety_setup_unsupported_board",
-        "safety/unsupported-board",
-        "Automatic safety evidence is unavailable for this board type.",
-        details={"reviewed_board_types": ["nrf52840dk"]},
+def test_load_removes_exact_legacy_siblings(tmp_path: Path) -> None:
+    store = FirmStore(tmp_path)
+    repository = SafetyArtifactRepository(store)
+    assert SafetyMapBuilder(store).build(request()).status == "safety_setup_completed"
+    root = repository.paths("board")["memory_map"].parent
+    (root / "source_manifest.json").write_text("{}", encoding="utf-8")
+    (root / "safety_report.json").write_text("{}", encoding="utf-8")
+
+    repository.load_current("board")
+
+    assert {item.name for item in root.iterdir()} == {"memory_map.yaml"}
+
+
+@pytest.mark.parametrize("document", [{}, {"schema_version": 1}])
+def test_malformed_or_old_map_is_never_authority(tmp_path: Path, document: object) -> None:
+    store = FirmStore(tmp_path)
+    path = SafetyArtifactRepository(store).paths("board")["memory_map"]
+    path.parent.mkdir(parents=True)
+    path.write_text(yaml.safe_dump(document), encoding="utf-8")
+    with pytest.raises(SafetyArtifactError, match="schema|fields"):
+        SafetyArtifactRepository(store).load_current("board")
+
+
+def test_missing_reviewed_partition_authority_fails_closed(tmp_path: Path) -> None:
+    evidence = dict(cast(Mapping[str, object], inputs().evidence))
+    evidence["deployment_policy"] = {"application_authoritative": False}
+    result = SafetyMapBuilder(FirmStore(tmp_path)).build(
+        request(selected_inputs=inputs(evidence=evidence))
     )
-    store = FirmStore(tmp_path)
-    result = SafetyMapBuilder(store).build(request(issues=(issue,)))
-    payload = result.to_payload()
-
-    assert result.status == "safety_setup_unsupported_board"
-    assert "continuation_id" not in payload
-    assert payload["accepted_response"] is None
-    assert not SafetyArtifactRepository(store).paths("board")["memory_map"].exists()
-    report = json.loads(result.report_path.read_text(encoding="utf-8"))
-    assert report["continuation_id"] == "safety-1"
+    assert result.status == "safety_setup_blocked"
+    assert "partition authority" in result.agent_prompt
 
 
-def test_partition_prohibited_conflict_fails_closed_and_preserves_no_map(tmp_path: Path) -> None:
-    conflicting = (
-        contribution(
-            "application",
-            RegionKind.APPLICATION_FLASH,
-            0,
-            0x1000,
-            FingerprintSource.APPLICATION_ARTIFACTS,
-        ),
-        contribution(
-            "option bytes",
-            RegionKind.PROHIBITED,
-            0xF00,
-            0x1100,
-            FingerprintSource.PACK,
-            FingerprintSource.EVIDENCE,
-        ),
+def test_profile_identity_must_match_reviewed_map_identity(tmp_path: Path) -> None:
+    result = SafetyMapBuilder(FirmStore(tmp_path)).build(
+        request(
+            selected_inputs=inputs(
+                profile={"board_id": "board", "mcu_part_number": "DIFFERENT-MCU"}
+            )
+        )
     )
-    store = FirmStore(tmp_path)
-    result = SafetyMapBuilder(store).build(request(regions=conflicting))
 
-    assert result.status == "safety_setup_conflict"
-    assert result.aggregate_fingerprint is None
+    assert result.status == "safety_setup_blocked"
+    assert "MCU part" in result.agent_prompt
+
+
+def test_prohibited_partition_overlap_is_rejected_without_promotion(tmp_path: Path) -> None:
+    overlap = region("prohibited app bytes", RegionKind.PROHIBITED, 0x08001000, 0x08002000)
+    store = FirmStore(tmp_path)
+    result = SafetyMapBuilder(store).build(request(selected_regions=regions(overlap)))
+    assert result.status == "safety_setup_blocked"
     assert not SafetyArtifactRepository(store).paths("board")["memory_map"].exists()
 
 
-def test_interrupted_bundle_restores_every_previous_artifact(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_atomic_write_failure_preserves_previous_map(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     store = FirmStore(tmp_path)
     builder = SafetyMapBuilder(store)
-    baseline = builder.build(request())
-    assert baseline.aggregate_fingerprint
-    paths = SafetyArtifactRepository(store).paths("board")
-    before = {name: path.read_bytes() for name, path in paths.items()}
-    original = store._atomic_write_bytes
-    calls = 0
-
-    def interrupted(destination: Path, payload: bytes) -> Path:
-        nonlocal calls
-        calls += 1
-        if calls == 2:
-            raise OSError("simulated interrupted bundle")
-        return original(destination, payload)
-
-    monkeypatch.setattr(store, "_atomic_write_bytes", interrupted)
+    assert builder.build(request()).status == "safety_setup_completed"
+    path = builder.repository.paths("board")["memory_map"]
+    before = path.read_bytes()
+    monkeypatch.setattr(store, "atomic_write_bytes", lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("interrupted")))
     with pytest.raises(OSError, match="interrupted"):
-        builder.build(request(inputs=inputs(application_artifacts={"elf": "app-v2"})))
-
-    assert {name: path.read_bytes() for name, path in paths.items()} == before
-    assert SafetyArtifactRepository(store).load_current("board").fingerprints.aggregate == (
-        baseline.aggregate_fingerprint
-    )
+        builder.repository.commit("board", memory_map=builder.candidate(request()).memory_map)
+    assert path.read_bytes() == before

@@ -24,11 +24,15 @@ def make_board() -> BoardConfig:
         display_name="Nucleo-L476RG",
         mcu_family="stm32l476",
         probe_family="stlink",
-        pyocd_target="stm32l476rgtx",
+        target_identity="stm32l476rgtx",
         probe_type="ST-Link",
         probe_hint_terms=("stlink",),
         serial_hint_terms=("stlink",),
         test_addr=0x08000000,
+        silicon_id_addr=0xE0042000,
+        silicon_id_expected=0x415,
+        silicon_id_mask=0xFFF,
+        silicon_id_width_bits=32,
     )
 
 
@@ -38,7 +42,7 @@ def make_nordic_board() -> BoardConfig:
         display_name="nRF52833 DK",
         mcu_family="nrf52833",
         probe_family="jlink",
-        pyocd_target="nrf52833",
+        target_identity="nrf52833",
         probe_type="SEGGER J-Link",
         probe_hint_terms=("jlink",),
         serial_hint_terms=("jlink",),
@@ -266,7 +270,8 @@ def test_stage0_safe_validation_calls_shared_board_validator(
     monkeypatch.setattr(
         stage0_check.target_control,
         "read_memory",
-        lambda selected, address, width: calls.append(("read", address, width)) or 0x1234,
+        lambda selected, address, width: calls.append(("read", address, width))
+        or (0x415 if address == board.silicon_id_addr else 0x1234),
     )
     monkeypatch.setattr(
         stage0_check.target_control,
@@ -279,7 +284,7 @@ def test_stage0_safe_validation_calls_shared_board_validator(
     )
 
     assert connection_ok is True
-    assert identity_ok is None
+    assert identity_ok is True
     assert [call[0] for call in calls] == ["connect", "read", "close"]
     assert list((tmp_path / ".firm" / "validation").glob("*/report.json"))
 
@@ -287,3 +292,4 @@ def test_stage0_safe_validation_calls_shared_board_validator(
 def test_stage0_and_mcp_share_the_board_validator_implementation() -> None:
     assert stage0_check.BoardValidator is BoardValidator
     assert isinstance(server._board_validator, BoardValidator)
+

@@ -62,7 +62,7 @@ def test_build_session_options_keeps_jlink_workaround() -> None:
         display_name="Tmp J-Link",
         mcu_family="nrf52840",
         probe_family="jlink",
-        pyocd_target="nrf52840",
+        target_identity="nrf52840",
         probe_type="SEGGER J-Link",
         probe_hint_terms=("segger",),
         serial_hint_terms=("segger",),
@@ -94,7 +94,7 @@ def test_build_session_options_adds_nucleo_under_reset_workaround() -> None:
         display_name="Nucleo-L476RG",
         mcu_family="stm32l476",
         probe_family="stlink",
-        pyocd_target="stm32l476rgtx",
+        target_identity="stm32l476rgtx",
         probe_type="ST-Link",
         probe_hint_terms=("stlink",),
         serial_hint_terms=("stlink",),
@@ -124,14 +124,15 @@ def test_pyocd_flash_matches_cli_reset_sequence(monkeypatch, tmp_path: Path) -> 
         target_override="stm32l476rgtx",
     )
     firmware = tmp_path / "firmware.elf"
-    firmware.write_text("placeholder", encoding="utf-8")
+    firmware.write_bytes(b"\x7fELF" + bytes(60))
 
     class FakeProgrammer:
         def __init__(self, provided_session, *, chip_erase: str) -> None:
             assert provided_session is session
             assert chip_erase == "sector"
 
-        def program(self, path: str) -> None:
+        def program(self, path: str, *, file_format: str) -> None:
+            assert file_format == "elf"
             calls.append(f"program:{Path(path).name}")
 
     monkeypatch.setattr(swd_pyocd, "FileProgrammer", FakeProgrammer)
@@ -158,14 +159,15 @@ def test_pyocd_flash_can_leave_target_halted(monkeypatch, tmp_path: Path) -> Non
         target_override="stm32l476rgtx",
     )
     firmware = tmp_path / "firmware.hex"
-    firmware.write_text("placeholder", encoding="utf-8")
+    firmware.write_text(":00000001FF\n", encoding="ascii")
 
     class FakeProgrammer:
         def __init__(self, provided_session, *, chip_erase: str) -> None:
             assert provided_session is session
             assert chip_erase == "sector"
 
-        def program(self, path: str) -> None:
+        def program(self, path: str, *, file_format: str) -> None:
+            assert file_format == "hex"
             calls.append(f"program:{Path(path).name}")
 
     monkeypatch.setattr(swd_pyocd, "FileProgrammer", FakeProgrammer)
@@ -196,14 +198,15 @@ def test_pyocd_flash_suppresses_backend_stdout_progress(
         target_override="stm32l476rgtx",
     )
     firmware = tmp_path / "firmware.elf"
-    firmware.write_text("placeholder", encoding="utf-8")
+    firmware.write_bytes(b"\x7fELF" + bytes(60))
 
     class FakeProgrammer:
         def __init__(self, provided_session, *, chip_erase: str) -> None:
             assert provided_session is session
             assert chip_erase == "sector"
 
-        def program(self, path: str) -> None:
+        def program(self, path: str, *, file_format: str) -> None:
+            assert file_format == "elf"
             print("[---|---|---|---|---|---|---|---|---|----]")
             print("[========================================]")
             calls.append(f"program:{Path(path).name}")
@@ -228,7 +231,7 @@ def test_recover_target_rejects_manual_only_board() -> None:
         display_name="Tmp Manual",
         mcu_family="stm32f4",
         probe_family="stlink",
-        pyocd_target="stm32f4x",
+        target_identity="stm32f4x",
         probe_type="ST-Link",
         probe_hint_terms=("stlink",),
         serial_hint_terms=("stlink",),
@@ -266,7 +269,7 @@ def test_validation_attach_mode_overrides_board_under_reset_default(monkeypatch)
         display_name="Nucleo-L476RG",
         mcu_family="stm32l476",
         probe_family="stlink",
-        pyocd_target="stm32l476rgtx",
+        target_identity="stm32l476rgtx",
         probe_type="ST-Link",
         probe_hint_terms=("stlink",),
         serial_hint_terms=("stlink",),
@@ -315,7 +318,7 @@ def test_adapter_open_retries_jlink_uidless_after_known_serial_open_failure(monk
         display_name="nRF52840-DK",
         mcu_family="nrf52840",
         probe_family="jlink",
-        pyocd_target="nrf52840",
+        target_identity="nrf52840",
         probe_type="SEGGER J-Link",
         probe_hint_terms=("segger",),
         serial_hint_terms=("segger",),
@@ -455,7 +458,7 @@ def test_adapter_read_memory_raises_typed_connection_error() -> None:
         adapter.read_memory(handle, 0x08000000, 32)
 
 
-def test_pyocd_flash_rejects_unsupported_artifact_suffix(tmp_path: Path) -> None:
+def test_pyocd_flash_rejects_unsupported_artifact_bytes(tmp_path: Path) -> None:
     calls: list[str] = []
     target = FakeTarget(calls)
     session = FakeSession(target)
@@ -470,5 +473,6 @@ def test_pyocd_flash_rejects_unsupported_artifact_suffix(tmp_path: Path) -> None
     firmware.write_text("placeholder", encoding="utf-8")
 
     adapter = swd_pyocd.PyOCDSWDInterface()
-    with pytest.raises(UnsupportedArtifactError, match="Unsupported artifact type"):
+    with pytest.raises(UnsupportedArtifactError, match="Unsupported artifact bytes"):
         adapter.flash(handle, firmware, halt_after_reset=False)
+

@@ -156,6 +156,12 @@ def load_pinned_reviewed_evidence(
 ) -> ReviewedEvidenceBundle:
     """Resolve current pinned authorities for an already-reviewed datasheet digest."""
 
+    if catalog.reviewed_evidence_loader is not None:
+        supplied = catalog.reviewed_evidence_loader(catalog, datasheet_sha256)
+        if not isinstance(supplied, ReviewedEvidenceBundle):
+            raise BoardCatalogError("reviewed board-support provider returned invalid evidence")
+        return supplied
+
     if not catalog.automatic_setup_reviewed:
         raise BoardCatalogError(
             f"{catalog.board_type} lacks complete reviewed automatic-setup evidence"
@@ -201,7 +207,7 @@ def load_pinned_reviewed_evidence(
             )
         reconciliation = reconcile_hardware_evidence(
             expected_mcu_part_number=catalog.package_part_number,
-            expected_target=catalog.pyocd_target,
+            expected_target=catalog.target_identity,
             device_support=support,
             official_document=official,
         )
@@ -313,7 +319,7 @@ def verify_persisted_reviewed_evidence(
         official = HardwareEvidence.from_document(persisted_official)
         reconciliation = reconcile_hardware_evidence(
             expected_mcu_part_number=catalog.package_part_number,
-            expected_target=catalog.pyocd_target,
+            expected_target=catalog.target_identity,
             device_support=support,
             official_document=official,
         )

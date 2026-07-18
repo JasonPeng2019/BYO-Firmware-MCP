@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import threading
 from collections.abc import Mapping
 from typing import Any
 
@@ -105,10 +104,7 @@ async def test_static_client_can_execute_exact_accepted_fallback_without_refresh
         parameters = {key: value for key, value in arguments.items() if key != "board_id"}
         engine.enforce(name, board_id, parameters, session_id=None)
 
-    board_lock = threading.Lock()
-    mcp.configure_guarded_dispatch(
-        "read_serial", guard=guard, lock_for_board=lambda _board_id: board_lock
-    )
+    mcp.configure_guarded_dispatch("read_serial", guard=guard)
     result = await mcp.call_tool("action_batch", fallback["arguments"])
 
     batch_payload = json.loads(_text(result).splitlines()[0])

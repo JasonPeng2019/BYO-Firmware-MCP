@@ -5,6 +5,7 @@ from __future__ import annotations
 import contextlib
 import io
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -20,7 +21,16 @@ from pyocd.core.helpers import ConnectHelper  # type: ignore[import-untyped]
 from pyocd.flash.eraser import FlashEraser  # type: ignore[import-untyped]
 from pyocd.flash.file_programmer import FileProgrammer  # type: ignore[import-untyped]
 
-from pyocd_debug_mcp.adapters.swd_interface import SWDInterface, TargetSessionHandle
+from pyocd_debug_mcp.adapters.target_backend import (
+    BackendProbe,
+    MemoryAccessCapabilities,
+    RegisterClass,
+    RegisterDescriptor,
+    TargetBackend,
+    TargetSessionDescription,
+    TargetSessionHandle,
+)
+from pyocd_debug_mcp.artifact_formats import FirmwareFormat, detect_firmware_format
 from pyocd_debug_mcp.board_config import BoardConfig
 from pyocd_debug_mcp.pack_provision import discover_local_packs
 from pyocd_debug_mcp.probe_inventory import list_connected_probes
@@ -39,7 +49,33 @@ from pyocd_debug_mcp.timeouts import (
 )
 
 ROUTE_PYOCD_NATIVE = "pyocd-native"
-SUPPORTED_FLASH_SUFFIXES = frozenset({".elf", ".hex"})
+
+_ARM_ORDINARY_REGISTER = re.compile(r"(?:r(?:[0-9]|1[0-2])|[sdq][0-9]+)", re.IGNORECASE)
+_ARM_EXECUTION_REGISTERS = frozenset(
+    {
+        "r13",
+        "r14",
+        "r15",
+        "sp",
+        "lr",
+        "pc",
+        "xpsr",
+        "apsr",
+        "ipsr",
+        "epsr",
+        "msp",
+        "psp",
+        "msplim",
+        "psplim",
+        "primask",
+        "basepri",
+        "basepri_max",
+        "faultmask",
+        "control",
+        "cfbp",
+        "fpscr",
+    }
+)
 
 
 def _run_cmd(
@@ -169,8 +205,29 @@ def build_session_options(
     return options or None
 
 
-class PyOCDSWDInterface(SWDInterface):
+class PyOCDSWDInterface(TargetBackend):
     """Single native pyOCD route used during the early shared-service phase."""
+
+    backend_name = "pyocd"
+
+    def discover_targets(self) -> tuple[str, ...]:
+        from pyocd.target.builtin import BUILTIN_TARGETS
+
+        return tuple(sorted(str(name).casefold() for name in BUILTIN_TARGETS))
+
+    def discover_probes(self) -> tuple[BackendProbe, ...]:
+        return tuple(
+            BackendProbe(probe.uid, probe.description or probe.raw, probe.family)
+            for probe in list_connected_probes(_run_cmd)
+        )
+
+    def build_session_options(
+        self,
+        board: BoardConfig | None,
+        target: str | None,
+        server_timeouts: ServerTimeoutConfig | None = None,
+    ) -> dict[str, object] | None:
+        return build_session_options(board, target, server_timeouts)
 
     @staticmethod
     def _choose_session(
@@ -208,7 +265,7 @@ class PyOCDSWDInterface(SWDInterface):
         probe_uid = unique_id or os.environ.get("PYOCD_PROBE_UID") or None
         target_override = (
             target
-            or (board.pyocd_target if board else None)
+            or (board.target_identity if board else None)
             or os.environ.get("PYOCD_TARGET")
             or None
         )
@@ -270,7 +327,7 @@ class PyOCDSWDInterface(SWDInterface):
         probe_uid = unique_id or os.environ.get("PYOCD_PROBE_UID") or None
         target_override = (
             target
-            or (board.pyocd_target if board else None)
+            or (board.target_identity if board else None)
             or os.environ.get("PYOCD_TARGET")
             or None
         )
@@ -344,6 +401,16 @@ class PyOCDSWDInterface(SWDInterface):
         except Exception as exc:  # noqa: BLE001 - preserve backend context
             raise _typed_backend_error(exc) from exc
 
+    def describe_session(self, handle: TargetSessionHandle) -> TargetSessionDescription:
+        board = getattr(handle.session, "board", None)
+        target = getattr(handle.session, "target", None)
+        probe = getattr(handle.session, "probe", None)
+        return TargetSessionDescription(
+            board_name=str(getattr(board, "name", "") or "<unknown>"),
+            live_target_part=str(getattr(target, "part_number", "") or "").strip(),
+            probe_description=str(getattr(probe, "description", "") or "").strip(),
+        )
+
     def read_memory(self, handle: TargetSessionHandle, address: int, width_bits: int) -> int:
         try:
             with _quiet_backend_streams():
@@ -375,6 +442,18 @@ class PyOCDSWDInterface(SWDInterface):
         except Exception as exc:  # noqa: BLE001 - preserve backend context
             raise _typed_backend_error(exc) from exc
 
+    def memory_access_capabilities(
+        self, handle: TargetSessionHandle
+    ) -> MemoryAccessCapabilities:
+        del handle
+        return MemoryAccessCapabilities(
+            read_width_bits=(8, 16, 32),
+            write_width_bits=(8, 16, 32),
+            address_bits=32,
+            peripheral_width_bits=32,
+            peripheral_alignment_bytes=4,
+        )
+
     def read_core_register(self, handle: TargetSessionHandle, name: str) -> int:
         try:
             with _quiet_backend_streams():
@@ -396,6 +475,25 @@ class PyOCDSWDInterface(SWDInterface):
         except Exception as exc:  # noqa: BLE001 - preserve backend context
             raise _typed_backend_error(exc) from exc
 
+    def describe_core_register(
+        self, handle: TargetSessionHandle, name: str
+    ) -> RegisterDescriptor | None:
+        normalized = name.strip().casefold()
+        supported = {item.casefold() for item in self.supported_core_registers(handle)}
+        if normalized not in supported:
+            return None
+        if normalized in _ARM_EXECUTION_REGISTERS:
+            return RegisterDescriptor(normalized, RegisterClass.EXECUTION_STATE, 32)
+        if _ARM_ORDINARY_REGISTER.fullmatch(normalized) is None:
+            return None
+        if normalized.startswith("q"):
+            width_bits = 128
+        elif normalized.startswith("d"):
+            width_bits = 64
+        else:
+            width_bits = 32
+        return RegisterDescriptor(normalized, RegisterClass.ORDINARY, width_bits)
+
     def halt(self, handle: TargetSessionHandle) -> None:
         try:
             with _quiet_backend_streams():
@@ -410,10 +508,11 @@ class PyOCDSWDInterface(SWDInterface):
         except Exception as exc:  # noqa: BLE001 - preserve backend context
             raise _typed_backend_error(exc) from exc
 
-    def step(self, handle: TargetSessionHandle) -> None:
+    def step(self, handle: TargetSessionHandle) -> int:
         try:
             with _quiet_backend_streams():
                 handle.session.target.step()
+                return cast(int, handle.session.target.read_core_register("pc"))
         except Exception as exc:  # noqa: BLE001 - preserve backend context
             raise _typed_backend_error(exc) from exc
 
@@ -431,6 +530,15 @@ class PyOCDSWDInterface(SWDInterface):
         except Exception as exc:  # noqa: BLE001 - preserve backend context
             raise _typed_backend_error(exc) from exc
 
+    def release_reset(self, handle: TargetSessionHandle) -> None:
+        try:
+            probe = getattr(handle.session, "probe", None)
+            assert_reset = getattr(probe, "assert_reset", None)
+            if callable(assert_reset):
+                assert_reset(False)
+        except Exception as exc:  # noqa: BLE001 - preserve backend context
+            raise _typed_backend_error(exc) from exc
+
     def flash(
         self,
         handle: TargetSessionHandle,
@@ -438,10 +546,11 @@ class PyOCDSWDInterface(SWDInterface):
         *,
         halt_after_reset: bool,
     ) -> None:
-        if firmware.suffix.lower() not in SUPPORTED_FLASH_SUFFIXES:
+        artifact_format = detect_firmware_format(firmware)
+        if artifact_format not in {FirmwareFormat.ELF, FirmwareFormat.INTEL_HEX}:
             raise UnsupportedArtifactError(
-                f"Unsupported artifact type '{firmware.suffix}' - use one of: "
-                f"{', '.join(sorted(SUPPORTED_FLASH_SUFFIXES))}"
+                "Unsupported artifact bytes; pyOCD requires a self-addressing ELF or Intel HEX "
+                "image. Raw caller-defined load addresses are forbidden."
             )
 
         target = handle.session.target
@@ -453,7 +562,9 @@ class PyOCDSWDInterface(SWDInterface):
                 # M7 containment pre-computes and validates every implied erase sector.
                 # Force pyOCD to honor that sector scope even when a host/session option
                 # would otherwise select auto or whole-chip erase.
-                FileProgrammer(handle.session, chip_erase="sector").program(str(firmware))
+                FileProgrammer(handle.session, chip_erase="sector").program(
+                    str(firmware), file_format=artifact_format.value
+                )
                 if halt_after_reset:
                     target.reset_and_halt()
                 else:
@@ -478,6 +589,14 @@ class PyOCDSWDInterface(SWDInterface):
             and getattr(handle.session, "target", None) is not None
         )
 
+    def breakpoint_memory_span_bytes(
+        self, handle: TargetSessionHandle, address: int
+    ) -> int:
+        """Conservatively cover the widest instruction pyOCD may patch on Arm targets."""
+
+        del handle, address
+        return 4
+
     def set_breakpoint(self, handle: TargetSessionHandle, address: int) -> None:
         try:
             with _quiet_backend_streams():
@@ -491,3 +610,6 @@ class PyOCDSWDInterface(SWDInterface):
                 handle.session.target.remove_breakpoint(address)
         except Exception as exc:  # noqa: BLE001 - preserve backend context
             raise _typed_backend_error(exc) from exc
+
+
+

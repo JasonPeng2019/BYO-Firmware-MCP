@@ -262,6 +262,18 @@ def _preflight_build_request(app_value: str | Path, build_value: str | Path) -> 
     return app_dir, build_dir
 
 
+def _normalize_build_request(app_value: str | Path, build_value: str | Path) -> tuple[Path, Path]:
+    """Resolve immutable path facts before locking without inspecting shared output contents."""
+
+    app_dir = Path(app_value).expanduser().resolve()
+    requested_build_dir = Path(build_value).expanduser()
+    if not app_dir.is_dir():
+        raise RuntimeError(f"App dir does not exist: {app_dir}")
+    build_dir = requested_build_dir.resolve()
+    _validate_build_path_relationship(app_dir, build_dir)
+    return app_dir, build_dir
+
+
 def _claim_build_dir(app_dir: Path, build_dir: Path) -> None:
     _preflight_build_request(app_dir, build_dir)
     build_dir.mkdir(parents=True, exist_ok=True)
@@ -1950,7 +1962,7 @@ def _copy_artifacts(
 
 
 def run_build(args: argparse.Namespace, runtime: ZephyrRuntime) -> None:
-    app_dir, build_dir = _preflight_build_request(args.app_dir, args.build_dir)
+    app_dir, build_dir = _normalize_build_request(args.app_dir, args.build_dir)
     with _cache_lock(build_dir):
         _claim_build_dir(app_dir, build_dir)
         env = os.environ.copy()

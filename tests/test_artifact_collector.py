@@ -60,7 +60,7 @@ def test_collects_all_roles_byte_exactly_with_portable_deterministic_manifest(
     manifest = json.loads(manifest_text)
     assert manifest["present_roles"] == ["bin", "elf", "hex", "map"]
     for role, data in payloads.items():
-        canonical = first.output_dir / artifact_collector.CANONICAL_NAMES[role]
+        canonical = first.output_dir / artifact_collector.CANONICAL_NAMES[role.value]
         assert canonical.read_bytes() == data
         assert manifest["artifacts"][role.value]["sha256"] == hashlib.sha256(data).hexdigest()
 
@@ -68,12 +68,12 @@ def test_collects_all_roles_byte_exactly_with_portable_deterministic_manifest(
 @pytest.mark.parametrize("role", [ArtifactRole.ELF, ArtifactRole.HEX, ArtifactRole.BIN])
 def test_accepts_each_deployable_role_by_itself(tmp_path: Path, role: ArtifactRole) -> None:
     result = collect_artifacts({role: _write(tmp_path / f"input.{role.value}", b"x")}, tmp_path / "out")
-    assert [record.role for record in result.artifacts] == [role]
+    assert [record.role for record in result.artifacts] == [role.value]
 
 
 def test_rejects_map_only_and_missing_expected_role_before_output(tmp_path: Path) -> None:
     map_path = _write(tmp_path / "input.map", b"map")
-    with pytest.raises(ValueError, match="ELF, HEX, or BIN"):
+    with pytest.raises(ValueError, match="firmware artifact"):
         collect_artifacts({ArtifactRole.MAP: map_path}, tmp_path / "map-only")
     elf_path = _write(tmp_path / "input.elf", b"elf")
     with pytest.raises(ValueError, match="Missing expected artifact roles: map"):
@@ -83,6 +83,22 @@ def test_rejects_map_only_and_missing_expected_role_before_output(tmp_path: Path
             expected_roles=(ArtifactRole.MAP,),
         )
     assert not (tmp_path / "missing-map").exists()
+
+
+def test_collects_provider_defined_native_artifact_without_core_format_changes(
+    tmp_path: Path,
+) -> None:
+    native = _write(tmp_path / "application.vendor-container", b"provider-owned-bytes")
+
+    result = collect_artifacts(
+        {"vendor-image": native},
+        tmp_path / "native-bundle",
+        expected_roles=("vendor-image",),
+    )
+
+    record = result.artifacts[0]
+    assert record.role == "vendor-image"
+    assert (result.output_dir / record.path).read_bytes() == b"provider-owned-bytes"
 
 
 def test_rejects_missing_empty_duplicate_and_directory_sources(tmp_path: Path) -> None:

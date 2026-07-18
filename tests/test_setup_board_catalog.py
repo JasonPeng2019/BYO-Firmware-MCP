@@ -22,6 +22,8 @@ def test_nrf52840_catalog_separates_live_family_from_package_evidence() -> None:
     assert board.accepts_mcu("nRF52840-QIAA")
     assert board.package_part_number == "nRF52840-QIAA"
     assert board.silicon_id_address == 0x10000100
+    assert board.silicon_id_width_bits == 32
+    assert board.test_read_width_bits == 32
     assert board.silicon_id_expected == 0x00052840
     assert board.application_start >= board.flash_start
     assert board.application_end <= board.flash_end

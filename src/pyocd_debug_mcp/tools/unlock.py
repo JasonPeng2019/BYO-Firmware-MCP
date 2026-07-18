@@ -9,7 +9,7 @@ from collections.abc import Callable, Mapping
 from dataclasses import asdict, dataclass
 from typing import Any
 
-from pyocd_debug_mcp.adapters.swd_interface import TargetSessionHandle
+from pyocd_debug_mcp.adapters.target_backend import TargetSessionDescription, TargetSessionHandle
 from pyocd_debug_mcp.board_config import (
     RECOVER_MODE_MANUAL_ONLY,
     RECOVER_MODE_BACKEND_MASS_ERASE,
@@ -26,7 +26,6 @@ from pyocd_debug_mcp.guardrails.plan_engine import (
 )
 from pyocd_debug_mcp.kernel.operations import wrap_layer2_response
 from pyocd_debug_mcp.kernel.run_state import ServerRun
-from pyocd_debug_mcp.safety.fingerprints import FingerprintSource
 from pyocd_debug_mcp.safety.map_build import SafetyArtifactRepository, SafetyArtifacts
 from pyocd_debug_mcp.safety.regions import (
     RecoveryEraseDisclosure,
@@ -98,6 +97,7 @@ class UnlockToolServices:
     connection_id_for: Callable[[str], str]
     session_id_for: Callable[[str], str | None]
     current_fingerprint: Callable[[str], str]
+    describe_session: Callable[[TargetSessionHandle], TargetSessionDescription]
     supports_recovery: Callable[[TargetSessionHandle, str], bool]
     recover_target: Callable[[TargetSessionHandle, str], str]
     mark_recover_completed: Callable[[str], None]
@@ -109,19 +109,13 @@ def _json(document: Mapping[str, Any]) -> str:
 
 
 def _geometry(artifacts: SafetyArtifacts) -> Mapping[str, object]:
-    sources = artifacts.source_manifest.get("sources")
-    if not isinstance(sources, Mapping):
-        raise PlanRefusal(
-            "unlock/safety-evidence-invalid",
-            "The current safety source manifest is missing; run board_safety_setup.",
-        )
-    row = sources.get(FingerprintSource.GEOMETRY.value)
-    if not isinstance(row, Mapping) or not isinstance(row.get("evidence"), Mapping):
+    geometry = artifacts.geometry
+    if not geometry:
         raise PlanRefusal(
             "unlock/geometry-missing",
-            "The safety map has no complete erase geometry; run board_safety_setup.",
+            "The safety map has no complete erase geometry; run board_safety_refresh.",
         )
-    return row["evidence"]  # type: ignore[return-value]
+    return geometry
 
 
 class UnlockCoordinator:
@@ -143,8 +137,7 @@ class UnlockCoordinator:
                 "unlock/probe-identity-missing",
                 "The active probe has no stable identity; reconnect with an identifiable probe.",
             )
-        target = handle.session.target
-        live_part = str(getattr(target, "part_number", "") or "").strip()
+        live_part = self.services.describe_session(handle).live_target_part
         if not live_part:
             raise PlanRefusal(
                 "unlock/target-identity-missing",
@@ -155,10 +148,10 @@ class UnlockCoordinator:
         )
         fingerprint = self.services.current_fingerprint(board_id)
         artifacts = self.services.safety_repository.load_current(board_id)
-        if artifacts.fingerprints.aggregate != fingerprint:
+        if artifacts.map_digest != fingerprint:
             raise PlanRefusal(
                 "unlock/safety-fingerprint-mismatch",
-                "The current safety map fingerprint changed; run board_safety_refresh first.",
+                "The current stable memory-map digest changed; run board_safety_refresh first.",
             )
         return (
             LiveUnlockIdentity(
@@ -248,7 +241,7 @@ class UnlockCoordinator:
             raise PlanRefusal(
                 "unlock/erase-disclosure-incomplete",
                 f"The current safety map cannot prove the complete recovery erase disclosure: "
-                f"{exc}. Run board_safety_setup before requesting permission.",
+                f"{exc}. Run board_safety_refresh before requesting permission.",
             ) from exc
         return (
             UnlockBinding(
@@ -648,3 +641,4 @@ def build_unlock_handlers(
         "target_unlock-plan": target_unlock_plan,
         "target_unlock": target_unlock,
     }
+

@@ -1,13 +1,21 @@
 from __future__ import annotations
 
 from pathlib import Path
+import sys
 
 import pytest
 
-import host_bootstrap
-from pyocd_debug_mcp.board_config import BoardConfig
-from pyocd_debug_mcp.probe_inventory import ProbeInfo, ProbeResolution
-from pyocd_debug_mcp.serial_resolver import SerialPortInfo, SerialResolution
+ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+import host_bootstrap  # noqa: E402
+from pyocd_debug_mcp.board_config import BoardConfig  # noqa: E402
+from pyocd_debug_mcp.probe_inventory import ProbeInfo, ProbeResolution  # noqa: E402
+from pyocd_debug_mcp.serial_resolver import (  # noqa: E402
+    SerialPortInfo,
+    SerialResolution,
+)
 
 
 def _board(board_id: str, *, probe_family: str = "jlink") -> BoardConfig:
@@ -16,7 +24,7 @@ def _board(board_id: str, *, probe_family: str = "jlink") -> BoardConfig:
         display_name=board_id,
         mcu_family="nrf52833" if probe_family == "jlink" else "stm32l476",
         probe_family=probe_family,
-        pyocd_target="nrf52833" if probe_family == "jlink" else "stm32l476rgtx",
+        target_identity="nrf52833" if probe_family == "jlink" else "stm32l476rgtx",
         probe_type="SEGGER J-Link" if probe_family == "jlink" else "ST-Link",
         probe_hint_terms=("segger", "j-link") if probe_family == "jlink" else ("st-link",),
         serial_hint_terms=("virtual com",),
@@ -237,3 +245,4 @@ def test_main_without_board_id_keeps_host_only_behavior(
     monkeypatch.setattr(host_bootstrap, "board_attachment_summary", _unexpected_board_check)
 
     assert host_bootstrap.main([]) == 0
+

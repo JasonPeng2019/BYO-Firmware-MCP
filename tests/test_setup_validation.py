@@ -10,7 +10,6 @@ from pyocd_debug_mcp.firmstore.profiles import ProfileRepository
 from pyocd_debug_mcp.firmstore.reports import ReportWriter
 from pyocd_debug_mcp.firmstore.store import FirmStore
 from pyocd_debug_mcp.setup_flow.validate import (
-    MAX_SERIAL_CAPTURE_BYTES,
     BoardValidator,
     Layer0Snapshot,
     ValidationBackend,
@@ -82,7 +81,7 @@ class FakeBackend:
         )
 
 
-def repository(tmp_path: Path, *, uart: bool = True, silicon: bool = False) -> ProfileRepository:
+def repository(tmp_path: Path, *, uart: bool = True, silicon: bool = True) -> ProfileRepository:
     store = FirmStore(tmp_path)
     legacy = tmp_path / "boards"
     legacy.mkdir(exist_ok=True)
@@ -128,6 +127,7 @@ def open_hooks(events: list[str] | None = None) -> ValidationHooks:
         hardware_result: str,
         probe_id: str,
         probe: str | None,
+        observed_identity: str,
         fingerprint: str,
     ) -> bool:
         assert board == "bench_board"
@@ -135,9 +135,10 @@ def open_hooks(events: list[str] | None = None) -> ValidationHooks:
             "validation_passed",
             "validation_passed_uart_not_configured",
         }
-        assert (probe_id, probe, fingerprint) == (
+        assert (probe_id, probe, observed_identity, fingerprint) == (
             "probe-a",
             "PROBE-001",
+            "0x10016400",
             "fingerprint-1",
         )
         if events is not None:
@@ -168,9 +169,9 @@ def validator(
     ("case", "expected"),
     [
         ("passed", "validation_passed"),
-        ("uart_not_configured", "validation_passed_uart_not_configured"),
+        ("uart_not_configured", "validation_passed"),
         ("needs_input", "validation_needs_user_input"),
-        ("research", "validation_research_required"),
+        ("research", "validation_passed"),
         ("blocked", "validation_blocked"),
         ("failed", "validation_failed"),
         ("incomplete", "validation_incomplete"),
@@ -182,7 +183,7 @@ def test_exact_seven_status_vocabulary(tmp_path: Path, case: str, expected: str)
     profiles = repository(
         case_root,
         uart=case != "uart_not_configured",
-        silicon=case == "failed",
+        silicon=True,
     )
     backend = FakeBackend()
     hooks = open_hooks()
@@ -235,15 +236,10 @@ def test_validation_backend_call_order_is_bounded_and_non_destructive(tmp_path: 
     assert result.status == "validation_passed"
     assert [call[0] for call in backend.calls] == [
         "inventory",
-        "target_supported",
         "connect",
         "read_memory",
-        "read_memory",
-        "capture_serial",
         "close",
     ]
-    capture = next(call for call in backend.calls if call[0] == "capture_serial")
-    assert capture[3:] == (3.0, MAX_SERIAL_CAPTURE_BYTES)
     assert hook_events == ["load_layer0", "stamp"]
     assert all(
         call[0] not in {"write", "flash", "erase", "reset", "recover"}
@@ -251,7 +247,7 @@ def test_validation_backend_call_order_is_bounded_and_non_destructive(tmp_path: 
     )
 
 
-def test_missing_test_read_evidence_blocks_before_backend_connect(tmp_path: Path) -> None:
+def test_missing_generic_test_read_does_not_block_identity_validation(tmp_path: Path) -> None:
     profiles = repository(tmp_path)
     current = profiles.load("bench_board", include_legacy=False)
     document = current.to_document()
@@ -265,9 +261,9 @@ def test_missing_test_read_evidence_blocks_before_backend_connect(tmp_path: Path
         ValidationRequest("bench_board")
     )
 
-    assert result.status == "validation_blocked"
-    assert "board_fix_setup" in result.agent_prompt
-    assert not any(call[0] == "connect" for call in backend.calls)
+    assert result.status == "validation_passed"
+    reads = [call for call in backend.calls if call[0] == "read_memory"]
+    assert reads == [("read_memory", 0xE0042000, 32, 5.0)]
 
 
 def test_silicon_mismatch_does_not_mutate_profile_and_only_offers_assignment_remedy(
@@ -286,7 +282,7 @@ def test_silicon_mismatch_does_not_mutate_profile_and_only_offers_assignment_rem
     assert result.status == "validation_failed"
     assert result.code == "validation/silicon-mismatch"
     assert path.read_bytes() == before
-    assert "Correct the physical assignment or attach the intended board" in result.agent_prompt
+    assert "ask whether the intended board is attached" in result.agent_prompt
 
 
 def test_missing_safety_map_runs_hardware_but_never_stamps(tmp_path: Path) -> None:
@@ -301,7 +297,7 @@ def test_missing_safety_map_runs_hardware_but_never_stamps(tmp_path: Path) -> No
     assert all(step.number != 9 for step in result.steps)
 
 
-def test_successful_hardware_validation_confirms_stable_attachment_cache(tmp_path: Path) -> None:
+def test_lean_validation_does_not_mutate_attachment_cache(tmp_path: Path) -> None:
     profiles = repository(tmp_path)
     backend = FakeBackend()
     cache = AttachmentCache(FirmStore(tmp_path))
@@ -311,9 +307,7 @@ def test_successful_hardware_validation_confirms_stable_attachment_cache(tmp_pat
     )
 
     records = cache.load_records()
-    assert len(records) == 1
-    assert records[0].board_id == "bench_board"
-    assert records[0].probe_usb_serial == "PROBE-001"
+    assert records == []
 
 
 def test_validation_choice_retry_preserves_prior_selector_through_both_ambiguities(
@@ -344,15 +338,8 @@ def test_validation_choice_retry_preserves_prior_selector_through_both_ambiguiti
     }
 
     choose_serial = service.validate(ValidationRequest("bench_board", probe_id="probe-a"))
-    assert choose_serial.status == "validation_needs_user_input"
-    assert choose_serial.to_payload()["accepted_response"] == {
-        "tool": "board_validate",
-        "arguments": {
-            "board_id": "bench_board",
-            "probe_id": "probe-a",
-            "serial_id": "<one choice_id from choices>",
-        },
-    }
+    assert choose_serial.status == "validation_passed"
+    assert choose_serial.to_payload()["accepted_response"] is None
 
     passed = service.validate(
         ValidationRequest("bench_board", probe_id="probe-a", serial_id="serial-a")

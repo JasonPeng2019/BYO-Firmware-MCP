@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 import threading
+from contextlib import nullcontext
+from contextlib import AbstractContextManager
 from dataclasses import dataclass
 
-from pyocd_debug_mcp.adapters.swd_interface import TargetSessionHandle
+from pyocd_debug_mcp.adapters.target_backend import TargetSessionHandle
+from pyocd_debug_mcp.kernel.operations import board_worker_is_held
 from pyocd_debug_mcp.services.session_runtime import SessionRecord
 
 
@@ -42,13 +45,13 @@ class ManagedConnection:
 
 
 class ConnectionManager:
-    """Own active connections and a persistent serialization lock per board."""
+    """Own assignments and the one process-wide board-affecting execution queue."""
 
     def __init__(self) -> None:
         self._guard = threading.RLock()
         self._connections: dict[str, ManagedConnection] = {}
         self._boards_by_connection: dict[str, str] = {}
-        self._locks: dict[str, threading.RLock] = {}
+        self._execution_lock = threading.RLock()
 
     @staticmethod
     def _normalize_board_id(board_id: str) -> str:
@@ -57,12 +60,13 @@ class ConnectionManager:
             raise ValueError("board_id must be a non-empty string")
         return normalized
 
-    def lock_for(self, board_id: str) -> threading.RLock:
-        """Return the stable lock used to serialize one board's operations."""
+    def lock_for(self, board_id: str) -> AbstractContextManager[object]:
+        """Serialize direct calls, or reuse the global worker already held by MCP dispatch."""
 
-        normalized = self._normalize_board_id(board_id)
-        with self._guard:
-            return self._locks.setdefault(normalized, threading.RLock())
+        self._normalize_board_id(board_id)
+        if board_worker_is_held():
+            return nullcontext()
+        return self._execution_lock
 
     def assign(
         self,
@@ -94,7 +98,6 @@ class ConnectionManager:
             )
             self._connections[normalized] = connection
             self._boards_by_connection[identity] = normalized
-            self._locks.setdefault(normalized, threading.RLock())
             return connection
 
     def connection_for(self, board_id: str) -> ManagedConnection:
@@ -132,3 +135,4 @@ class ConnectionManager:
     def assigned_board_ids(self) -> tuple[str, ...]:
         with self._guard:
             return tuple(sorted(self._connections))
+

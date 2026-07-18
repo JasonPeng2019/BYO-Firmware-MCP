@@ -1,0 +1,5 @@
+Reading additional input from stdin...
+2026-07-18T08:50:09.478535Z ERROR codex_core::tools::router: error=Exit code: 1
+Wall time: 0.9 seconds
+Output:
+

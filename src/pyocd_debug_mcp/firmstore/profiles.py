@@ -34,11 +34,13 @@ _REQUIRED_CORE_FIELDS = frozenset(
         "mcu_part_number",
         "mcu_family",
         "probe_family",
-        "pyocd_target",
     }
 )
 _CORE_INPUT_FIELDS = _REQUIRED_CORE_FIELDS | {
+    "target_identity",
+    "pyocd_target",
     "probe_type",
+    "debug_backend",
     "probe_hint_terms",
     "serial_hint_terms",
     "serial_baudrate",
@@ -229,6 +231,10 @@ class ProfileRepository:
         missing = sorted(field for field in _REQUIRED_CORE_FIELDS if field not in document)
         if missing:
             raise ProfileError(f"Missing required schema-v2 profile fields: {', '.join(missing)}")
+        if not document.get("target_identity") and not document.get("pyocd_target"):
+            raise ProfileError("Missing required schema-v2 profile field: target_identity")
+        if document.get("target_identity") and document.get("pyocd_target"):
+            raise ProfileError("Profile must use target_identity or legacy pyocd_target, not both")
 
         board_id = _require_board_id(document["board_id"])
         if path.stem != board_id:
@@ -361,6 +367,8 @@ class ProfileRepository:
 
     def _materialize_core_document(self, fields: Mapping[str, object]) -> dict[str, Any]:
         document = copy.deepcopy(dict(fields))
+        if "pyocd_target" in document and "target_identity" not in document:
+            document["target_identity"] = document.pop("pyocd_target")
         ensure_no_persisted_authority(document, location="profile core")
         _reject_package_metadata(document, location="schema-v2 profile")
         unknown = sorted(set(document) - _CORE_INPUT_FIELDS)
@@ -369,6 +377,10 @@ class ProfileRepository:
         missing = sorted(field for field in _REQUIRED_CORE_FIELDS if field not in document)
         if missing:
             raise ProfileError(f"Missing required core profile fields: {', '.join(missing)}")
+        if not document.get("target_identity") and not document.get("pyocd_target"):
+            raise ProfileError("Missing required core profile field: target_identity")
+        if document.get("target_identity") and document.get("pyocd_target"):
+            raise ProfileError("Core profile must use target_identity or legacy pyocd_target, not both")
         if document.get("schema_version", PROFILE_SCHEMA_VERSION) != PROFILE_SCHEMA_VERSION:
             raise ProfileError(f"schema_version must be {PROFILE_SCHEMA_VERSION}")
         part_number = document["mcu_part_number"]

@@ -187,7 +187,7 @@ class SetupResponse:
             accepted_response = {
                 "tool": "continue_setup",
                 "response": {
-                    "pyocd_target": "one exact official target identifier",
+                    "target_identity": "one exact official target identifier",
                     "evidence": [{"source": "official source", "claim": "target-to-part claim"}],
                     "reasoning_summary": "why the target exactly matches the immutable MCU",
                 },

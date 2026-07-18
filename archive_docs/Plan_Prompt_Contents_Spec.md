@@ -208,8 +208,8 @@ section instead states that and that `user_permission` may be `null`. *(per-tool
 self-contained)*
 
 ▸ **[PRECONDITIONS]** — which of these the server will still verify at execution time: active
-plan, exact board, exact parameters, remaining calls, validated session, open gate, fingerprint
-freshness — and that a refusal names the remedy. *(per-tool subset)*
+plan, exact board, exact parameters, remaining calls, validated session, open gate, current stable
+map, and any plan-bound artifact bytes — and that a refusal names the remedy. *(per-tool subset)*
 
 ▸ **[WARNINGS]** — worst realistic outcome; whether and how it is recoverable. *(per-tool)*
 
@@ -251,9 +251,8 @@ substitutes its own reasoning and parameters.
 | `mcu_part_number` | exact package-level part number supplied by the user; never inferred or rewritten |
 | `serial_baudrate` | positive UART baud rate for the profile |
 | `serial_id` | exact stable UART identity selected from current inventory |
-| `serial_port` | exact current UART port paired with `serial_id` |
 | `datasheet_path` | local path to the authoritative PDF supplied by the user |
-| `datasheet_sha256` | exact 64-hex SHA-256 of that PDF; the server recomputes and verifies it |
+| `datasheet_sha256` | optional 64-hex SHA-256 cross-check, or `null` so the server computes and records it |
 
 - **VALIDATION**: `hypothesis_made` and `strategy_evaluated` must be `true`, and
   `hypothesis`/`strategy` must contain real reasoning about this board and this setup/repair —
@@ -261,7 +260,7 @@ substitutes its own reasoning and parameters.
   PERMISSION). A plan JSON that does not match this tool's required format — missing envelope
   fields, wrong types, unknown or extra fields, a budget other than `1,0`,
   `action_parameters` not matching exactly {`mode`, `connection_id`, `display_name`,
-  `board_type`, `mcu_part_number`, `serial_baudrate`, `serial_id`, `serial_port`, `datasheet_path`,
+  `board_type`, `mcu_part_number`, `serial_baudrate`, `serial_id`, `datasheet_path`,
   `datasheet_sha256`}, or missing/invalid `user_permission` without an active full-session
   grant — is rejected **without creating or replacing any plan**; the rejection lists the
   invalid fields and asks for a complete new corrected plan call. Rejected submissions consume
@@ -289,8 +288,8 @@ substitutes its own reasoning and parameters.
   1. Confirm the user explicitly named this board this session.
   2. Confirm no existing profile's `display_name` matches (else validate instead).
   3. Confirm you have the user's **exact** MCU part number — never guess or "correct" it.
-  4. Ask the user for the authoritative datasheet PDF and verify its SHA-256; never substitute
-     a web result or a merely similar device document.
+  4. Ask the user for the authoritative datasheet PDF. Let the server compute its SHA-256, or
+     supply a digest only as an optional cross-check; never substitute a merely similar document.
   5. Be ready to resolve probe/port/build ambiguity by relaying the server's friendly
      choices, not by choosing silently.
 - **EXIT**: on completion both setup actions relock; proceed to `board_validate`.
@@ -299,7 +298,7 @@ substitutes its own reasoning and parameters.
 ```json
 {
   "board_id": "left_controller",
-  "hypothesis": "The board the user calls 'left controller' is a new nRF52840-QIAA build with no existing profile; setup should resolve target and safety map from the attached J-Link and this workspace's linker artifacts.",
+  "hypothesis": "The board the user calls 'left controller' is a new nRF52840-QIAA build with no existing profile; setup should resolve its target from the attached J-Link and build its stable safety map from reviewed server-owned evidence.",
   "strategy": "Run board_setup once; if it reports a failed phase, use the paired board_fix_setup once with whatever fact the status requests; then run board_validate.",
   "hypothesis_made": true,
   "strategy_evaluated": true,
@@ -315,9 +314,8 @@ substitutes its own reasoning and parameters.
     "mcu_part_number": "nRF52840-QIAA",
     "serial_baudrate": 115200,
     "serial_id": "683377322",
-    "serial_port": "COM11",
     "datasheet_path": "C:/firmware/docs/nRF52840_PS_v1.1.pdf",
-    "datasheet_sha256": "c619e336b9c0610663273041f057f2537a65fd408ce0c5b8214a26de2aa88422"
+    "datasheet_sha256": null
   },
   "user_permission": "one-time"
 }
@@ -502,7 +500,8 @@ substitutes its own reasoning and parameters.
   are rejected. The one accepted write consumes the plan even on failure, timeout, or
   cancellation after start; another write requires a complete replacement plan.
 - **PERMISSION — none**: omit `user_permission` from the plan JSON.
-- **PRECONDITIONS**: validated session; open gate; fingerprint freshness; region rules above.
+- **PRECONDITIONS**: validated session; open gate associated with the current stable memory map;
+  region rules above.
 - **WARNINGS**: wrong writes crash the application; recoverable by reset/reflash.
 - **SOFT-GUARDRAILS**:
   1. Symbol resolution attempted and shown.
@@ -529,13 +528,13 @@ substitutes its own reasoning and parameters.
   an exact halt point. The location must resolve to a mapped **executable** region supported
   by the target's breakpoint mechanism. `remove_breakpoint` is always available — no plan
   needed for cleanup.
-- **ACTION-PARAMETERS**: `location` (symbol name or hex address).
+- **ACTION-PARAMETERS**: `symbol_or_address` (symbol name or hex address), `artifact` (the current ELF whose executable sections authorize the breakpoint).
 - **VALIDATION**: `hypothesis_made` and `strategy_evaluated` must be `true`, with real
   reasoning that records the print-based attempt and why escalation is needed — boilerplate
   is rejected. This tool is **not** permission-locked: omit `user_permission`; including it
   makes the plan malformed. A plan JSON not matching this tool's format — missing fields,
   wrong types, unknown/extra fields, any budget other than `1,0`, or `action_parameters` not
-  matching exactly {`location`} — is rejected without creating or replacing any plan; the
+  matching exactly {`symbol_or_address`, `artifact`} — is rejected without creating or replacing any plan; the
   rejection lists the invalid fields and asks for a complete new corrected plan call,
   consuming no budget, not counting as the all-`NULL` call, and leaving any active plan
   untouched. Plans are immutable — a different location is a new, replacing plan call.
@@ -544,7 +543,7 @@ substitutes its own reasoning and parameters.
   timeout, or cancellation after start; another breakpoint requires a complete replacement
   plan (one breakpoint per plan).
 - **PERMISSION — none**: omit `user_permission` from the plan JSON.
-- **PRECONDITIONS**: validated session; executable-region classification.
+- **PRECONDITIONS**: validated session; current map; the exact address must be inside an executable loadable segment of the plan-bound ELF.
 - **WARNINGS**: hardware breakpoints are finite; a breakpoint left behind halts the board
   unexpectedly later.
 - **SOFT-GUARDRAILS**:
@@ -557,7 +556,7 @@ substitutes its own reasoning and parameters.
   4. Commit to removing it — name the `remove_breakpoint` follow-up in `strategy`.
 - **EXIT**: remove the breakpoint when the task step completes; leave the core in a
   deliberate state.
-- **EXAMPLE-PLAN**: budget `1,0`; `action_parameters: {"location": "uart_rx_handler"}` — with
+- **EXAMPLE-PLAN**: budget `1,0`; `action_parameters: {"symbol_or_address": "uart_rx_handler", "artifact": "build/firmware.elf"}` — with
   a `hypothesis` that records the failed print-based attempt, e.g., "Tagged prints ([TRC-01..04],
   tracked in uart_debug_prints.md) narrowed the hard fault to uart_rx_handler, but the fault
   fires before the next print flushes; a halt at entry is needed to read the registers."
@@ -578,14 +577,13 @@ inspection is done, and no breakpoint may be left behind at task completion.
   (`flash_bootloader`) and never a way to write arbitrary flash — the server verifies every
   loadable segment, required erase sector, entry point, and vector table fit the
   linker-derived application partition, and that live MCU identity matches the profile.
-- **ACTION-PARAMETERS**: `artifact_path` (ELF/HEX from the selected build configuration),
-  `halt_after` (bool, default false).
+- **ACTION-PARAMETERS**: `artifact` (ELF/HEX from the selected build configuration). Load addresses come from the artifact.
 - **VALIDATION**: `hypothesis_made` and `strategy_evaluated` must be `true`, with real
   reasoning about what changed in this build and how you will verify it ran — boilerplate is
   rejected. This tool is **not** permission-locked: omit `user_permission`; including it
   makes the plan malformed. A plan JSON not matching this tool's format — missing fields,
   wrong types, unknown/extra fields, any budget other than `1,0`, or `action_parameters` not
-  matching exactly {`artifact_path`, `halt_after`} — is rejected without creating or
+  matching exactly {`artifact`} — is rejected without creating or
   replacing any plan; the rejection lists the invalid fields and asks for a corrected plan
   call, consuming no budget. Plans are immutable — a rebuilt artifact (new path or content)
   is a new, replacing plan call.
@@ -594,8 +592,10 @@ inspection is done, and no breakpoint may be left behind at task completion.
   cancelled after starting (an in-progress flash is allowed to finish); flashing again — same
   or new artifact — requires a complete replacement plan.
 - **PERMISSION — none**: omit `user_permission` from the plan JSON.
-- **PRECONDITIONS**: validated session; open gate; **fingerprint freshness** — after a
-  rebuild, run `board_safety_refresh` first or the gate closes on you; stated verbatim.
+- **PRECONDITIONS**: validated session; open gate; current stable memory map; unchanged
+  plan-bound artifact bytes. Execution parses the selected ELF/HEX and checks its segments,
+  entry point, vector table, target identity, and erase sectors directly against that map.
+  A routine firmware rebuild does **not** require `board_safety_refresh`.
 - **WARNINGS**: interrupting flash risks incomplete firmware (the server lets an in-progress
   flash finish on cancellation); a wrong-but-valid image simply runs wrong — recover by
   flashing a correct build.
@@ -609,7 +609,7 @@ inspection is done, and no breakpoint may be left behind at task completion.
 - **EXIT**: board resets and runs (or halts if requested); verify behavior via the planned
   observation.
 - **EXAMPLE-PLAN**: budget `1,0`;
-  `action_parameters: {"artifact_path": "firmware/nucleo_l476rg/reference/build/firmware.elf", "halt_after": false}`;
+  `action_parameters: {"artifact": "firmware/nucleo_l476rg/reference/build/firmware.elf"}`;
   no `user_permission` field.
 
 ### 6.2 `flash_bootloader-plan` (guards `flash_bootloader`) — permission-locked
@@ -620,7 +620,7 @@ inspection is done, and no breakpoint may be left behind at task completion.
 - **VALIDATION**: as 6.1, except `user_permission` is **required**: a plan missing or
   carrying an invalid `user_permission` without an active full-session grant is rejected as
   malformed — no plan created or replaced, invalid fields listed, corrected call requested,
-  no budget consumed. `action_parameters` must match exactly {`artifact_path`, `halt_after`}.
+  no budget consumed. `action_parameters` must match exactly {`artifact`}.
 - **BUDGET — fixed**: submit exactly `"max_calls": 1, "max_calls_buffer": 0`; any other values
   are rejected. The one accepted bootloader flash consumes the plan even on failure, timeout,
   or cancellation after start; another attempt requires a complete replacement plan — and a
@@ -998,9 +998,9 @@ responses, in substantially this form:
 >    exactly as if you were watching the board. Reason from what the prints show, not from
 >    what the code "should" do.
 > 4. **Budget for it.** Instrumented debugging takes multiple capture windows — set
->    `max_calls`/`max_calls_buffer` accordingly, and remember a rebuild + reflash
->    (with `board_safety_refresh` after relinking) is needed each time you change the
->    instrumentation.
+>    `max_calls`/`max_calls_buffer` accordingly. Each instrumentation change needs a rebuild,
+>    a new artifact collection, and a replacement flash plan; routine rebuilds do not need
+>    `board_safety_refresh` unless the stable partition/linker policy itself changed.
 > 5. **Clean up completely when the task is done.** Walk your tracking markdown entry by
 >    entry and **delete every print statement you injected for this task** from the source.
 >    Verify removal (grep for your tags — zero hits), rebuild, and reflash the clean
@@ -1020,7 +1020,7 @@ responses, in substantially this form:
 | `read_memory_address-plan` | multi | omit | symbol-first doctrine |
 | `write_memory-plan` | fixed `1,0` | omit | symbol-first + fallback flag/reason; RAM-only fallback |
 | `set_breakpoint-plan` | fixed `1,0` | omit | prints-first / step-through-second doctrine (§5.3, §8.4); executable region; remove_breakpoint free |
-| `flash_application-plan` | fixed `1,0` | omit | partition containment; rebuild → refresh |
+| `flash_application-plan` | fixed `1,0` | omit | partition containment; direct per-flash artifact checks |
 | `flash_bootloader-plan` | fixed `1,0` | required | bootloader risk disclosure |
 | `register_write-plan` | fixed `1,0` | omit | doc-verification steps; prohibited registers |
 | `reset_and_halt-plan` | multi | omit | reset_and_run-is-free notice; not-an-unlock |

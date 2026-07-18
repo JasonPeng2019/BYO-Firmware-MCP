@@ -10,6 +10,11 @@ from pyocd_debug_mcp.kernel.registry import ToolRegistry
 from pyocd_debug_mcp.kernel.run_state import ServerRun
 
 HANDSHAKE_TOOL_NAME = "initialization_handshake"
+SERVER_B_PRODUCT_ID = "pyocd-debug-mcp-server-b"
+SERVER_B_CONTRACT_VERSION = 1
+SERVER_B_PRODUCT_PREFIX = (
+    f"Server B identity: product={SERVER_B_PRODUCT_ID}; contract={SERVER_B_CONTRACT_VERSION}\n"
+)
 HANDSHAKE_DESCRIPTION = (
     "Call this first after connecting to learn the server's current safe operating workflow."
 )
@@ -36,7 +41,7 @@ Server Run evidence (record these values in acceptance artifacts):
 - started_at: {server_run.started_at_text}
 These values identify this in-memory server process; they grant no authority and change after restart.
 """
-    return f"""Guarded Hardware Server operating guidance
+    return f"""{SERVER_B_PRODUCT_PREFIX}Guarded Hardware Server operating guidance
 {run_evidence}
 
 The server intentionally hides some hardware-control tools at startup. The currently visible
@@ -68,8 +73,11 @@ fallback; it is not the generic route or an MCP hardware action. After any nativ
 are scattered or vendor-named, use the always-visible collect_build_artifacts MCP tool with the
 explicit paths the build actually produced. For guarded application or bootloader work, normally
 collect a coherent ELF and linker map and set expected_roles to ["elf", "map"]. Do not ask the
-collector to search or build. It only creates canonical, hashed provenance: pass its returned
-ELF/HEX/MAP paths explicitly to board_safety_refresh, and never treat collection as validation,
+collector to search or build. For a provider-defined native format, use its native_artifacts
+role-to-path mapping instead of pretending it is ELF/HEX/BIN. The collector only creates canonical,
+hashed provenance: pass the selected returned path to the matching flash plan. Each flash execution
+requires an installed evidence/backend provider to inspect the actual artifact against the stable
+map. A routine rebuild does not require board_safety_refresh. Collection is never validation,
 flash permission, memory authority, or an open hardware gate.
 
 Dynamic clients should call the newly exposed action directly. Some MCP clients keep static callable
@@ -93,8 +101,14 @@ existing profile name, including an incomplete profile, to validation with
 load_setup_tool(board_validate) and board_validate. Route an unknown name to setup through the
 all-NULL board_setup-plan first; ask for exact board type, exact MCU part number, and the
 authoritative local datasheet PDF, then load board_setup-plan and submit its populated plan before
-any other hardware plan. Use hidden setup, repair, or safety only when validation returns that exact
-remedy. If a physical match is
+any other hardware plan. Use hidden setup or repair only for a genuinely new profile. Any missing,
+corrupt, old, or changed stable map routes to board_safety_refresh, never back through setup. Call
+board_validate only when this run has no live proof, after disconnect/probe/connection identity
+changes, or after identity repair/destructive recovery—not after routine builds, flashes, resets,
+UART, or a same-connection safety refresh. Only a live MCU mismatch makes established-board setup
+eligible. If validation observes different silicon, tell the user
+the expected and observed identity and ask what they want; do not rewrite the profile or
+automatically rerun setup. If a physical match is
 ambiguous, relay only server-provided friendly choices. Never silently choose, rename, reassign,
 or rewrite a profile.
 

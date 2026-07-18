@@ -69,8 +69,16 @@ def _measure(operation: Callable[[], None], samples: int) -> list[float]:
 
 def _fingerprint_inputs() -> FingerprintInputs:
     return FingerprintInputs(
-        profile={"board_id": "performance_board"},
-        part_target={"mcu_part_number": "PERFORMANCE-PART", "target": "performance"},
+        profile={
+            "board_id": "performance_board",
+            "mcu_part_number": "PERFORMANCE-PART",
+            "pyocd_target": "performance",
+        },
+        part_target={
+            "board_type": "performance_board",
+            "mcu_part_number": "PERFORMANCE-PART",
+            "target": "performance",
+        },
         pack={
             "id": "Performance.Pack",
             "version": "1",
@@ -86,38 +94,69 @@ def _fingerprint_inputs() -> FingerprintInputs:
                     "erase_size": 0x800,
                 },
             },
+            "deployment_policy": {
+                "application_start": 0x08000000,
+                "application_end": 0x08010000,
+                "application_authoritative": True,
+                "bootloader_authoritative": False,
+            },
         },
         application_artifacts={"configuration": "none"},
         bootloader_artifacts={"configuration": "none"},
-        geometry={"erase_origin": 0x08000000, "erase_size": 0x800},
-        schema={"memory_map": 1, "evidence": 2, "catalog": 2},
+        geometry={
+            "flash_start": 0x08000000,
+            "flash_end": 0x08010000,
+            "ram_start": 0x20000000,
+            "ram_end": 0x20001000,
+            "erase_origin": 0x08000000,
+            "erase_size": 0x800,
+        },
+        schema={"memory_map": 2, "evidence": 2, "catalog": 2},
     )
 
 
 def _gate_operation(project_root: Path) -> Callable[[], None]:
     store = FirmStore(project_root)
     inputs = _fingerprint_inputs()
-    region = RegionContribution(
-        SafetyRegion(
-            "performance RAM",
-            RegionKind.RAM,
-            AddressRange(0x20000000, 0x20001000),
-            (
-                Provenance(
-                    SourceAuthority.RECONCILED,
-                    "m10-performance",
-                    "Deterministic local performance fixture",
-                ),
-            ),
+    provenance = (
+        Provenance(
+            SourceAuthority.RECONCILED,
+            "m10-performance",
+            "Deterministic local performance fixture",
         ),
-        (FingerprintSource.EVIDENCE,),
+    )
+    regions = tuple(
+        RegionContribution(SafetyRegion(name, kind, AddressRange(start, end), provenance), sources)
+        for name, kind, start, end, sources in (
+            (
+                "physical flash",
+                RegionKind.PHYSICAL_FLASH,
+                0x08000000,
+                0x08010000,
+                (FingerprintSource.PACK, FingerprintSource.EVIDENCE),
+            ),
+            (
+                "physical RAM",
+                RegionKind.PHYSICAL_RAM,
+                0x20000000,
+                0x20001000,
+                (FingerprintSource.PACK, FingerprintSource.EVIDENCE),
+            ),
+            (
+                "performance RAM",
+                RegionKind.RAM,
+                0x20000000,
+                0x20001000,
+                (FingerprintSource.EVIDENCE,),
+            ),
+        )
     )
     result = SafetyMapBuilder(store).build(
         SafetySetupRequest(
             "performance_board",
             "m10-performance",
             inputs,
-            (region,),
+            regions,
         )
     )
     if result.aggregate_fingerprint is None:

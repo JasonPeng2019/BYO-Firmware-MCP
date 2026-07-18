@@ -118,7 +118,7 @@ Extra instructions: Load addresses come only from the artifact. Permission is pa
 | Action field | Type | Constraints | Description |
 | --- | --- | --- | --- |
 | `address` | `text-or-integer` | required | Exact address. |
-| `width` | `integer` | required; choices=8, 16, 32 | Transfer width: 8, 16, or 32 bits. |
+| `width` | `integer` | required; >= 1 | Scalar transfer width supported by the connected target backend. |
 | `length` | `integer` | nullable; >= 1; <= 65536 | Optional block length up to 64 KiB. |
 
 Extra instructions: Prefer read_memory_symbol when debug metadata identifies the value.
@@ -215,13 +215,14 @@ Extra instructions: All steps, readiness input, and the optional pre-probe delay
 - Safety mode: `fresh-write`
 - Timeout: `30` seconds
 - Populated plan fields, in order: `board_id`, `hypothesis`, `strategy`, `hypothesis_made`, `strategy_evaluated`, `expected_fail_return`, `expected_success_return`, `max_calls`, `max_calls_buffer`, `action_parameters`
-- Exact action-parameter fields, in order: `symbol_or_address`
+- Exact action-parameter fields, in order: `symbol_or_address`, `artifact`
 
 | Action field | Type | Constraints | Description |
 | --- | --- | --- | --- |
 | `symbol_or_address` | `text-or-integer` | required | Exact symbol or address. |
+| `artifact` | `text` | required | Current ELF artifact whose executable sections authorize this breakpoint. |
 
-Extra instructions: The resolved location must be executable and supported by the connected core.
+Extra instructions: The resolved location must be inside an executable section of the exact plan-bound ELF and supported by the connected core.
 
 ## `set_execution_state-plan`
 
@@ -291,7 +292,7 @@ Extra instructions: Control-flow, security, and provisioning registers are exclu
 | --- | --- | --- | --- |
 | `symbol_or_address` | `text-or-integer` | required | Exact symbol or address. |
 | `value` | `json` | required | Exact JSON-representable value. |
-| `width` | `integer` | required; choices=8, 16, 32 | Transfer width: 8, 16, or 32 bits. |
+| `width` | `integer` | required; >= 1 | Scalar transfer width supported by the connected target backend. |
 | `allow_address_fallback` | `boolean` | required | Explicit raw-address fallback. |
 | `reason` | `text` | nullable | Reason symbol access is unsuitable. |
 

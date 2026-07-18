@@ -643,7 +643,8 @@ def run_shared_safe_validation(
         identity_ok: bool | None = None
     else:
         identity_ok = any(
-            step.number == 6 and step.outcome == "passed" for step in result.steps
+            step.outcome == "passed" and "silicon identity" in step.name.casefold()
+            for step in result.steps
         )
         if result.code == "validation/silicon-mismatch":
             identity_ok = False

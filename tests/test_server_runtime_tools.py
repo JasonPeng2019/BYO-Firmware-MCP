@@ -26,7 +26,7 @@ def make_board() -> BoardConfig:
         display_name="nRF52833 DK",
         mcu_family="nrf52833",
         probe_family="jlink",
-        pyocd_target="nrf52833",
+        target_identity="nrf52833",
         probe_type="SEGGER J-Link",
         probe_hint_terms=("jlink", "segger"),
         serial_hint_terms=("jlink", "segger", "virtual com"),
@@ -146,7 +146,7 @@ def test_flash_firmware_uses_explicit_path_without_board_config(
 ) -> None:
     handle = make_handle(None)
     artifact = tmp_path / "custom.elf"
-    artifact.write_text("elf", encoding="utf-8")
+    artifact.write_bytes(b"\x7fELF" + bytes(60))
     seen: dict[str, object] = {}
 
     attach_handle(handle)
@@ -460,7 +460,8 @@ def test_read_memory_refuses_invalid_word_size(monkeypatch) -> None:
     result = server.read_memory(BOARD_ID, "0x10000000", word_size=64)
 
     assert result.startswith(
-        "Refused [memory/invalid-word-size]: word_size must be one of: 8, 16, 32. session_id="
+        "Refused [memory/invalid-word-size]: word_size is not supported by the connected "
+        "backend. session_id="
     )
 
 
@@ -497,7 +498,8 @@ def test_write_memory_refuses_invalid_width(monkeypatch) -> None:
     )
 
     assert result.startswith(
-        "Refused [memory/invalid-width]: width must be one of: 8, 16, 32. session_id="
+        "Refused [memory/invalid-width]: width must be supported by the connected backend "
+        "(8, 16, 32 bits). session_id="
     )
 
 
@@ -625,3 +627,4 @@ def test_read_serial_returns_blocked_message_for_watcher_state() -> None:
         "Blocked [watch/uart-miss-repetition]: Repeated identical UART misses detected. "
         f"Disconnect and reconnect before trying again. session_id={runtime.session_id}"
     )
+

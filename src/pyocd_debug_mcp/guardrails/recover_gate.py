@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from pyocd_debug_mcp.adapters.swd_interface import TargetSessionHandle
+from pyocd_debug_mcp.adapters.target_backend import TargetSessionHandle
 from pyocd_debug_mcp.board_config import RECOVER_MODE_MANUAL_ONLY
 from pyocd_debug_mcp.services.session_runtime import ActionContext, PolicyRefusal
 
@@ -67,3 +67,4 @@ def authorize_recover(
         board_id=board.board_id,
         recover_mode=board.recover_mode,
     )
+

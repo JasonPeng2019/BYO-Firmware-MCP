@@ -264,7 +264,6 @@ async def test_ac_16_3_each_child_consumes_budget_only_at_its_execution_start() 
     mcp = RegistryFastMCP("batch-budget")
     calls: list[int] = []
     state = {"remaining": 2, "guard_calls": 0}
-    execution_lock = Lock()
 
     def guarded(board_id: str, value: int) -> str:
         """Execute one fake plan-guarded operation."""
@@ -287,7 +286,6 @@ async def test_ac_16_3_each_child_consumes_budget_only_at_its_execution_start() 
     mcp.configure_guarded_dispatch(
         "guarded",
         guard=enforce,
-        lock_for_board=lambda _board: execution_lock,
     )
     mcp.configure_layer2("guarded")
     _install_batch(mcp)
@@ -334,9 +332,7 @@ async def test_whole_list_precheck_does_not_burn_first_child_budget() -> None:
         "guarded", hidden=True, locked=True, prerequisite="guarded-plan"
     )
     mcp.registry.unlock("guarded", BOARD_ID)
-    mcp.configure_guarded_dispatch(
-        "guarded", guard=consume, lock_for_board=lambda _board: Lock()
-    )
+    mcp.configure_guarded_dispatch("guarded", guard=consume)
     _install_batch(mcp)
 
     with pytest.raises(ToolError, match="not shared board"):
@@ -381,9 +377,7 @@ async def test_parameter_drift_refuses_at_child_time_without_burning_remaining_b
         "guarded", hidden=True, locked=True, prerequisite="guarded-plan"
     )
     mcp.registry.unlock("guarded", BOARD_ID)
-    mcp.configure_guarded_dispatch(
-        "guarded", guard=enforce, lock_for_board=lambda _board: Lock()
-    )
+    mcp.configure_guarded_dispatch("guarded", guard=enforce)
     _install_batch(mcp)
 
     payload = _payload(
@@ -449,9 +443,7 @@ async def test_ac_16_4_policy_change_between_children_stops_before_mutation(
         "mutate", hidden=True, locked=True, prerequisite="mutate-plan"
     )
     mcp.registry.unlock("mutate", BOARD_ID)
-    mcp.configure_guarded_dispatch(
-        "mutate", guard=enforce, lock_for_board=lambda _board: Lock()
-    )
+    mcp.configure_guarded_dispatch("mutate", guard=enforce)
     _install_batch(mcp)
 
     payload = _payload(
@@ -503,9 +495,7 @@ async def test_first_child_refusal_matches_direct_dispatch_and_stops_batch() -> 
         "guarded", hidden=True, locked=True, prerequisite="guarded-plan"
     )
     mcp.registry.unlock("guarded", BOARD_ID)
-    mcp.configure_guarded_dispatch(
-        "guarded", guard=refuse, lock_for_board=lambda _board: Lock()
-    )
+    mcp.configure_guarded_dispatch("guarded", guard=refuse)
     mcp.configure_layer2("guarded")
     _install_batch(mcp)
 
@@ -597,9 +587,7 @@ async def test_one_time_permission_is_checked_and_consumed_per_child() -> None:
         "permitted", hidden=True, locked=True, prerequisite="permitted-plan"
     )
     mcp.registry.unlock("permitted", BOARD_ID)
-    mcp.configure_guarded_dispatch(
-        "permitted", guard=consume, lock_for_board=lambda _board: Lock()
-    )
+    mcp.configure_guarded_dispatch("permitted", guard=consume)
     _install_batch(mcp)
 
     payload = _payload(
@@ -686,7 +674,6 @@ async def test_server_batch_cannot_smuggle_manual_fields_through_visible_connect
 @pytest.mark.asyncio
 async def test_simultaneous_same_board_batches_serialize_each_child_dispatch() -> None:
     mcp = RegistryFastMCP("batch-same-board-concurrency")
-    execution_lock = Lock()
     counter_lock = Lock()
     active = 0
     maximum = 0
@@ -714,9 +701,7 @@ async def test_simultaneous_same_board_batches_serialize_each_child_dispatch() -
         "measured", hidden=True, locked=True, prerequisite="measured-plan"
     )
     mcp.registry.unlock("measured", BOARD_ID)
-    mcp.configure_guarded_dispatch(
-        "measured", guard=allow, lock_for_board=lambda _board: execution_lock
-    )
+    mcp.configure_guarded_dispatch("measured", guard=allow)
     _install_batch(mcp)
 
     async def run_batch(first: int) -> dict[str, Any]:

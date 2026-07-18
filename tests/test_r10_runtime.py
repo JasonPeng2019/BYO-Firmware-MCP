@@ -30,7 +30,7 @@ def make_nordic_board() -> BoardConfig:
         display_name="nRF52833 DK",
         mcu_family="nrf52833",
         probe_family="jlink",
-        pyocd_target="nrf52833",
+        target_identity="nrf52833",
         probe_type="SEGGER J-Link",
         probe_hint_terms=("jlink", "segger"),
         serial_hint_terms=("jlink", "segger", "virtual com"),
@@ -51,7 +51,7 @@ def make_stm32_board() -> BoardConfig:
         display_name="Nucleo-L476RG",
         mcu_family="stm32l476",
         probe_family="stlink",
-        pyocd_target="stm32l476rgtx",
+        target_identity="stm32l476rgtx",
         probe_type="ST-Link",
         probe_hint_terms=("st-link", "stlink"),
         serial_hint_terms=("st-link", "stlink", "virtual com"),
@@ -194,7 +194,10 @@ def test_flash_gate_allows_existing_local_elf_and_hex(tmp_path: Path, suffix: st
     board = make_nordic_board()
     handle = make_handle(board)
     artifact = tmp_path / f"firmware{suffix}"
-    artifact.write_text("artifact", encoding="utf-8")
+    if suffix == ".elf":
+        artifact.write_bytes(b"\x7fELF" + bytes(60))
+    else:
+        artifact.write_text(":00000001FF\n", encoding="ascii")
 
     request = flash_gate.resolve_flash_request(
         handle,
@@ -251,13 +254,13 @@ def test_flash_gate_refuses_directory(tmp_path: Path) -> None:
     assert exc_info.value.message == f"Flash artifact must be a file, not a directory: {tmp_path}"
 
 
-def test_flash_gate_refuses_bin_suffix(tmp_path: Path) -> None:
+def test_flash_gate_refuses_raw_binary_bytes(tmp_path: Path) -> None:
     board = make_nordic_board()
     handle = make_handle(board)
     artifact = tmp_path / "firmware.bin"
     artifact.write_text("bin", encoding="utf-8")
 
-    with pytest.raises(RuntimeError, match="Unsupported flash artifact type"):
+    with pytest.raises(RuntimeError, match="No installed evidence provider"):
         flash_gate.resolve_flash_request(
             handle,
             explicit_path=artifact,
@@ -454,3 +457,4 @@ def test_convergence_watcher_never_blocks_read_only_tools(tmp_path: Path) -> Non
     store.append_event(session, event)
 
     assert watcher.observe_event(session, event) is None
+

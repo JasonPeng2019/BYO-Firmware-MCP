@@ -1,12 +1,12 @@
-"""Safety-map construction, status payloads, and FirmStore-owned persistence."""
+"""Single-file, stable safety-map construction and persistence."""
 
 from __future__ import annotations
 
-import json
 import re
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
+from hashlib import sha256
 from pathlib import Path
 from typing import Any, Literal
 
@@ -15,8 +15,9 @@ import yaml  # type: ignore[import-untyped]
 from pyocd_debug_mcp.firmstore.store import FirmStore, ensure_no_persisted_authority
 from pyocd_debug_mcp.safety.fingerprints import (
     FingerprintInputs,
-    FingerprintSet,
     FingerprintSource,
+    canonical_bytes,
+    canonicalize,
 )
 from pyocd_debug_mcp.safety.regions import (
     AddressRange,
@@ -27,18 +28,11 @@ from pyocd_debug_mcp.safety.regions import (
     SourceAuthority,
 )
 
-SAFETY_MAP_SCHEMA_VERSION = 1
+SAFETY_MAP_SCHEMA_VERSION = 2
 NO_INTERNALS = "Relay this guidance conversationally and do not expose structured internals."
 _BOARD_ID = re.compile(r"[a-z0-9_]{1,64}")
-_REGION_SOURCE_GROUPS = frozenset(
-    {
-        FingerprintSource.PACK,
-        FingerprintSource.EVIDENCE,
-        FingerprintSource.APPLICATION_ARTIFACTS,
-        FingerprintSource.BOOTLOADER_ARTIFACTS,
-        FingerprintSource.GEOMETRY,
-    }
-)
+_REGION_SOURCE_GROUPS = frozenset(FingerprintSource)
+_PROFILE_SAFETY_FIELDS = ("board_id", "mcu_part_number", "mcu_family", "pyocd_target")
 
 SafetySetupStatus = Literal[
     "safety_setup_completed",
@@ -60,7 +54,7 @@ IncompleteSafetyStatus = Literal[
 
 
 class SafetyArtifactError(RuntimeError):
-    """Persisted safety artifacts are missing, stale, malformed, or inconsistent."""
+    """The single persisted safety map is missing, malformed, or inconsistent."""
 
 
 def _timestamp() -> str:
@@ -75,6 +69,27 @@ def _require_board_id(value: str) -> str:
     return value
 
 
+def _digest(value: object) -> str:
+    return sha256(canonical_bytes(value)).hexdigest()
+
+
+def _semantic_profile(value: object) -> Mapping[str, object]:
+    if not isinstance(value, Mapping):
+        raise SafetyArtifactError("semantic profile evidence must be an object")
+    document = {
+        key: canonicalize(value[key])
+        for key in _PROFILE_SAFETY_FIELDS
+        if key in value and value[key] is not None
+    }
+    if not isinstance(document.get("board_id"), str) or not isinstance(
+        document.get("mcu_part_number"), str
+    ):
+        raise SafetyArtifactError(
+            "semantic profile evidence requires board_id and exact mcu_part_number"
+        )
+    return document
+
+
 @dataclass(frozen=True, slots=True)
 class RegionContribution:
     region: SafetyRegion
@@ -83,7 +98,7 @@ class RegionContribution:
     def __post_init__(self) -> None:
         groups = tuple(sorted(set(self.source_groups), key=lambda item: item.value))
         if not groups or any(group not in _REGION_SOURCE_GROUPS for group in groups):
-            raise SafetyArtifactError("a region requires one or more authoritative source groups")
+            raise SafetyArtifactError("a region requires an authoritative source group")
         object.__setattr__(self, "source_groups", groups)
 
     def to_document(self) -> dict[str, object]:
@@ -119,39 +134,69 @@ class SafetySetupResult:
     agent_prompt: str
     choices: tuple[Mapping[str, str], ...]
     observed: Mapping[str, object]
-    report_path: Path
+    report_path: Path | None
     aggregate_fingerprint: str | None
 
+    @property
+    def map_digest(self) -> str | None:
+        return self.aggregate_fingerprint
+
     def to_payload(self) -> dict[str, object]:
-        payload: dict[str, object] = {
+        return {
             "status": self.status,
             "agent_prompt": self.agent_prompt,
             "choices": [dict(choice) for choice in self.choices],
             "observed": dict(self.observed),
             "constraints": [
-                "Only server-loaded build and doubly verified hardware facts define regions.",
-                "Safety setup never opens a gate; successful board validation owns gate opening.",
+                "Only server-owned reviewed facts define memory authority.",
+                "Safety map construction never opens a hardware gate.",
                 NO_INTERNALS,
             ],
             "rejected_candidates": [],
             "accepted_response": None,
             "validation_plan": [
-                "resolve authoritative sources",
-                "verify and classify regions",
-                "check partition/prohibited overlaps",
-                "fingerprint and atomically persist the map",
+                "load current reviewed sources",
+                "rederive the complete stable map",
+                "check conflicts and prohibited overlap",
+                "atomically persist memory_map.yaml",
             ],
         }
-        return payload
 
 
 @dataclass(frozen=True, slots=True)
 class SafetyArtifacts:
     board_id: str
-    fingerprints: FingerprintSet
+    map_digest: str
     regions: tuple[RegionContribution, ...]
     memory_map: Mapping[str, object]
-    source_manifest: Mapping[str, object]
+
+    @property
+    def identity(self) -> Mapping[str, object]:
+        value = self.memory_map.get("identity")
+        if not isinstance(value, Mapping):  # pragma: no cover - load invariant
+            raise SafetyArtifactError("memory map identity is missing")
+        return value
+
+    @property
+    def source_digests(self) -> Mapping[str, object]:
+        value = self.memory_map.get("source_digests")
+        if not isinstance(value, Mapping):  # pragma: no cover - load invariant
+            raise SafetyArtifactError("memory map source digests are missing")
+        return value
+
+    @property
+    def geometry(self) -> Mapping[str, object]:
+        value = self.memory_map.get("geometry")
+        if not isinstance(value, Mapping):  # pragma: no cover - load invariant
+            raise SafetyArtifactError("memory map geometry is missing")
+        return value
+
+    @property
+    def partitions(self) -> Mapping[str, object]:
+        value = self.memory_map.get("partitions")
+        if not isinstance(value, Mapping):  # pragma: no cover - load invariant
+            raise SafetyArtifactError("memory map partitions are missing")
+        return value
 
 
 def _region_from_document(raw: object) -> RegionContribution:
@@ -165,20 +210,20 @@ def _region_from_document(raw: object) -> RegionContribution:
         "source_groups",
     }
     if not isinstance(raw, Mapping) or set(raw) != expected:
-        raise SafetyArtifactError("persisted safety region fields do not match schema v1")
+        raise SafetyArtifactError("persisted safety region fields do not match schema v2")
     try:
         kind = RegionKind(raw["kind"])
         address_range = AddressRange(raw["start"], raw["end"])  # type: ignore[arg-type]
         groups = tuple(FingerprintSource(item) for item in raw["source_groups"])  # type: ignore[union-attr]
     except (TypeError, ValueError) as exc:
         raise SafetyArtifactError(f"invalid persisted safety region: {exc}") from exc
-    provenance_rows = raw["provenance"]
-    if not isinstance(provenance_rows, list):
-        raise SafetyArtifactError("persisted region provenance must be a list")
+    rows = raw["provenance"]
+    if not isinstance(rows, list) or not rows:
+        raise SafetyArtifactError("persisted region provenance must be a non-empty list")
     provenance: list[Provenance] = []
-    for row in provenance_rows:
+    for row in rows:
         if not isinstance(row, Mapping) or set(row) != {"authority", "source_id", "detail"}:
-            raise SafetyArtifactError("persisted provenance fields do not match schema v1")
+            raise SafetyArtifactError("persisted provenance fields do not match schema v2")
         try:
             provenance.append(
                 Provenance(
@@ -187,235 +232,20 @@ def _region_from_document(raw: object) -> RegionContribution:
                     str(row["detail"]),
                 )
             )
-        except ValueError as exc:
+        except (TypeError, ValueError) as exc:
             raise SafetyArtifactError(f"invalid persisted provenance: {exc}") from exc
     if not isinstance(raw["name"], str) or not isinstance(raw["executable"], bool):
-        raise SafetyArtifactError("persisted region name/executable values have invalid types")
+        raise SafetyArtifactError("persisted region name/executable fields are invalid")
     return RegionContribution(
-        SafetyRegion(raw["name"], kind, address_range, tuple(provenance), raw["executable"]),
+        SafetyRegion(
+            raw["name"],
+            kind,
+            address_range,
+            tuple(provenance),
+            raw["executable"],
+        ),
         groups,
     )
-
-
-class SafetyArtifactRepository:
-    """The sole Task 13 adapter for current safety artifacts below FirmStore."""
-
-    def __init__(self, store: FirmStore) -> None:
-        self.store = store
-
-    def paths(self, board_id: str) -> dict[str, Path]:
-        root = self.store.layout.safety_board(_require_board_id(board_id))
-        return {
-            "memory_map": root / "memory_map.yaml",
-            "source_manifest": root / "source_manifest.json",
-            "safety_report": root / "safety_report.json",
-        }
-
-    def write_report(self, board_id: str, report: Mapping[str, Any]) -> Path:
-        ensure_no_persisted_authority(report, location="safety report")
-        path = self.paths(board_id)["safety_report"]
-        return self.store.atomic_write_json(path, report)
-
-    def commit(
-        self,
-        board_id: str,
-        *,
-        memory_map: Mapping[str, Any],
-        source_manifest: Mapping[str, Any],
-        safety_report: Mapping[str, Any],
-    ) -> dict[str, Path]:
-        for label, document in (
-            ("memory map", memory_map),
-            ("source manifest", source_manifest),
-            ("safety report", safety_report),
-        ):
-            ensure_no_persisted_authority(document, location=label)
-        paths = self.paths(board_id)
-        yaml_payload = yaml.safe_dump(
-            dict(memory_map), allow_unicode=True, default_flow_style=False, sort_keys=False
-        ).encode("utf-8")
-        json_payloads = {
-            paths["source_manifest"]: (
-                json.dumps(source_manifest, indent=2, sort_keys=True, ensure_ascii=False) + "\n"
-            ).encode("utf-8"),
-            paths["safety_report"]: (
-                json.dumps(safety_report, indent=2, sort_keys=True, ensure_ascii=False) + "\n"
-            ).encode("utf-8"),
-        }
-        self.store.atomic_write_bundle({paths["memory_map"]: yaml_payload, **json_payloads})
-        return paths
-
-    def load_current(self, board_id: str) -> SafetyArtifacts:
-        paths = self.paths(board_id)
-        if not paths["memory_map"].is_file() or not paths["source_manifest"].is_file():
-            raise SafetyArtifactError("current safety map and source manifest are both required")
-        try:
-            memory = yaml.safe_load(paths["memory_map"].read_text(encoding="utf-8"))
-            manifest = json.loads(paths["source_manifest"].read_text(encoding="utf-8"))
-        except (OSError, UnicodeError, ValueError, yaml.YAMLError) as exc:
-            raise SafetyArtifactError(f"cannot load current safety artifacts: {exc}") from exc
-        if not isinstance(memory, Mapping) or not isinstance(manifest, Mapping):
-            raise SafetyArtifactError("current safety artifacts must be objects")
-        if memory.get("schema_version") != SAFETY_MAP_SCHEMA_VERSION:
-            raise SafetyArtifactError("unsupported memory-map schema version")
-        if memory.get("board_id") != board_id or manifest.get("board_id") != board_id:
-            raise SafetyArtifactError("safety artifacts do not match the requested board")
-        fingerprints = FingerprintSet.from_document(memory.get("fingerprints"))
-        manifest_fingerprints = FingerprintSet.from_document(manifest.get("fingerprints"))
-        if fingerprints != manifest_fingerprints:
-            raise SafetyArtifactError("memory map and source manifest fingerprints disagree")
-        source_rows = manifest.get("sources")
-        if not isinstance(source_rows, Mapping) or set(source_rows) != {
-            source.value for source in FingerprintSource
-        }:
-            raise SafetyArtifactError("source manifest must contain every exact source group")
-        source_documents: dict[FingerprintSource, object] = {}
-        expected_sub = fingerprints.as_mapping()
-        for source in FingerprintSource:
-            row = source_rows[source.value]
-            if not isinstance(row, Mapping) or set(row) != {"fingerprint", "evidence"}:
-                raise SafetyArtifactError(f"source manifest entry for {source.value} is malformed")
-            if row["fingerprint"] != expected_sub[source]:
-                raise SafetyArtifactError(f"source manifest entry for {source.value} is stale")
-            source_documents[source] = row["evidence"]
-        recomputed = FingerprintSet.build(
-            FingerprintInputs(
-                source_documents[FingerprintSource.PROFILE],
-                source_documents[FingerprintSource.PART_TARGET],
-                source_documents[FingerprintSource.PACK],
-                source_documents[FingerprintSource.EVIDENCE],
-                source_documents[FingerprintSource.APPLICATION_ARTIFACTS],
-                source_documents[FingerprintSource.BOOTLOADER_ARTIFACTS],
-                source_documents[FingerprintSource.GEOMETRY],
-                source_documents[FingerprintSource.SCHEMA],
-            )
-        )
-        if recomputed != fingerprints:
-            raise SafetyArtifactError("source manifest evidence is stale or fingerprint-mismatched")
-        rows = memory.get("regions")
-        if not isinstance(rows, list) or not rows:
-            raise SafetyArtifactError("current safety map requires at least one region")
-        regions = tuple(_region_from_document(row) for row in rows)
-        SafetyMap([item.region for item in regions])
-        return SafetyArtifacts(board_id, fingerprints, regions, memory, manifest)
-
-
-def require_reconciled_authority(artifacts: SafetyArtifacts) -> None:
-    """Reject legacy/synthetic maps before they can validate, refresh, or authorize I/O."""
-
-    sources = artifacts.source_manifest.get("sources")
-    if not isinstance(sources, Mapping):
-        raise SafetyArtifactError("source manifest has no authoritative source records")
-
-    def source_evidence(source: FingerprintSource) -> Mapping[str, object]:
-        row = sources.get(source.value)
-        evidence = row.get("evidence") if isinstance(row, Mapping) else None
-        if not isinstance(evidence, Mapping):
-            raise SafetyArtifactError(f"{source.value} authority evidence is missing")
-        return evidence
-
-    schema = source_evidence(FingerprintSource.SCHEMA)
-    if schema.get("evidence") != 2 or schema.get("catalog") != 2:
-        raise SafetyArtifactError(
-            "legacy safety authority schema; rerun full board setup and safety setup"
-        )
-    evidence = source_evidence(FingerprintSource.EVIDENCE)
-    pack = source_evidence(FingerprintSource.PACK)
-    reconciliation = evidence.get("reconciliation")
-    official = evidence.get("official_document")
-    support = pack.get("document")
-    if (
-        not isinstance(reconciliation, Mapping)
-        or reconciliation.get("status") != "agreement"
-        or not isinstance(reconciliation.get("erase_geometry"), Mapping)
-        or not isinstance(official, Mapping)
-        or not isinstance(official.get("document"), Mapping)
-        or official["document"].get("schema_version") != 2  # type: ignore[union-attr]
-        or not isinstance(support, Mapping)
-        or support.get("schema_version") != 2
-    ):
-        raise SafetyArtifactError(
-            "safety sources lack strict two-source region and erase-geometry reconciliation"
-        )
-    part_target = source_evidence(FingerprintSource.PART_TARGET)
-    board_type = part_target.get("board_type")
-    part_number = part_target.get("mcu_part_number")
-    target = part_target.get("target")
-    if not all(isinstance(value, str) and value for value in (board_type, part_number, target)):
-        raise SafetyArtifactError("safety authority has no exact board, part, and target anchors")
-    try:
-        from pyocd_debug_mcp.setup_flow.board_catalog import (
-            BoardCatalogError,
-            catalog_board,
-        )
-        from pyocd_debug_mcp.setup_flow.reviewed_evidence import (
-            verify_persisted_reviewed_evidence,
-        )
-
-        catalog = catalog_board(str(board_type))
-        if part_number != catalog.package_part_number or target != catalog.pyocd_target:
-            raise BoardCatalogError("persisted part/target anchors do not match the catalog")
-        bundle = verify_persisted_reviewed_evidence(catalog, pack, evidence)
-    except Exception as exc:  # noqa: BLE001 - every authority-resolution failure closes the gate
-        raise SafetyArtifactError(
-            f"safety authority cannot be reverified from server-owned sources: {exc}"
-        ) from exc
-    expected_record = bundle.source_record()
-    if pack != expected_record["device_support"]:
-        raise SafetyArtifactError("persisted device-support authority record is not exact")
-    if official != expected_record["official_document"]:
-        raise SafetyArtifactError("persisted official authority record is not exact")
-    if reconciliation != expected_record["reconciliation"]:
-        raise SafetyArtifactError("persisted reconciliation record cannot be reproduced")
-    geometry = source_evidence(FingerprintSource.GEOMETRY)
-    reconciled_geometry = reconciliation["erase_geometry"]
-    assert isinstance(reconciled_geometry, Mapping)
-    if geometry.get("erase_origin") != reconciled_geometry.get("erase_origin") or geometry.get(
-        "erase_size"
-    ) != reconciled_geometry.get("erase_size"):
-        raise SafetyArtifactError("persisted erase geometry is not the reconciled geometry")
-
-    authority_groups = {
-        FingerprintSource.PACK,
-        FingerprintSource.EVIDENCE,
-        FingerprintSource.GEOMETRY,
-    }
-    hardware_regions = [
-        contribution
-        for contribution in artifacts.regions
-        if authority_groups.intersection(contribution.source_groups)
-    ]
-    if not hardware_regions:
-        raise SafetyArtifactError("safety map has no reconciled hardware regions")
-    for contribution in hardware_regions:
-        provenance = contribution.region.provenance
-        if not provenance or any(
-            item.authority is not SourceAuthority.RECONCILED for item in provenance
-        ):
-            raise SafetyArtifactError(
-                f"hardware region '{contribution.region.name}' is not reconciled"
-            )
-
-    def region_signature(region: SafetyRegion) -> tuple[object, ...]:
-        return (
-            region.name,
-            region.kind.value,
-            region.address_range.start,
-            region.address_range.end,
-            region.executable,
-            tuple(
-                (item.authority.value, item.source_id, item.detail) for item in region.provenance
-            ),
-        )
-
-    observed_regions = sorted(region_signature(item.region) for item in hardware_regions)
-    expected_regions = sorted(
-        region_signature(item.to_safety_region()) for item in bundle.reconciliation.regions
-    )
-    if observed_regions != expected_regions:
-        raise SafetyArtifactError(
-            "persisted hardware regions do not exactly match recomputed reconciliation"
-        )
 
 
 def _ambiguous_overlap(first: RegionContribution, second: RegionContribution) -> bool:
@@ -425,13 +255,13 @@ def _ambiguous_overlap(first: RegionContribution, second: RegionContribution) ->
     right = second.region.kind
     if left is right or RegionKind.PROHIBITED in {left, right}:
         return False
-    allowed_nesting = {
+    allowed = {
         frozenset({RegionKind.PHYSICAL_FLASH, RegionKind.APPLICATION_FLASH}),
         frozenset({RegionKind.PHYSICAL_FLASH, RegionKind.BOOTLOADER_FLASH}),
         frozenset({RegionKind.PHYSICAL_RAM, RegionKind.RAM}),
         frozenset({RegionKind.ROM, RegionKind.ROM_BOOTLOADER}),
     }
-    return frozenset({left, right}) not in allowed_nesting
+    return frozenset({left, right}) not in allowed
 
 
 def region_conflicts(
@@ -464,19 +294,79 @@ def region_conflicts(
     return tuple(sorted(conflicts, key=lambda item: (str(item["code"]), str(item["regions"]))))
 
 
-def build_documents(
-    request: SafetySetupRequest,
-    fingerprints: FingerprintSet,
-    *,
-    status: str,
-    prompt: str,
-    conflicts: tuple[Mapping[str, object], ...] = (),
-) -> tuple[dict[str, object], dict[str, object], dict[str, object]]:
-    created_at = _timestamp()
-    region_documents = [
-        item.to_document()
-        for item in sorted(
-            request.regions,
+def _require_mapping(value: object, label: str) -> Mapping[str, object]:
+    if not isinstance(value, Mapping):
+        raise SafetyArtifactError(f"{label} must be an object")
+    return value
+
+
+def _stable_regions(request: SafetySetupRequest) -> tuple[RegionContribution, ...]:
+    values = request.inputs.values()
+    evidence = _require_mapping(values[FingerprintSource.EVIDENCE], "reviewed evidence")
+    deployment = _require_mapping(evidence.get("deployment_policy"), "deployment policy")
+    if deployment.get("application_authoritative") is not True:
+        raise SafetyArtifactError(
+            "reviewed application partition authority is unavailable; flashing remains closed"
+        )
+    try:
+        application = AddressRange(
+            deployment["application_start"], deployment["application_end"]  # type: ignore[arg-type]
+        )
+    except (KeyError, TypeError, ValueError) as exc:
+        raise SafetyArtifactError(f"reviewed application partition is invalid: {exc}") from exc
+    provenance = (
+        Provenance(
+            SourceAuthority.RECONCILED,
+            "reviewed_deployment_policy",
+            "server-owned stable application partition",
+        ),
+    )
+    stable = [
+        item
+        for item in request.regions
+        if not set(item.source_groups).intersection(
+            {
+                FingerprintSource.APPLICATION_ARTIFACTS,
+                FingerprintSource.BOOTLOADER_ARTIFACTS,
+            }
+        )
+        and item.region.kind
+        not in {RegionKind.APPLICATION_FLASH, RegionKind.BOOTLOADER_FLASH}
+    ]
+    stable.append(
+        RegionContribution(
+            SafetyRegion(
+                "reviewed application partition",
+                RegionKind.APPLICATION_FLASH,
+                application,
+                provenance,
+                executable=False,
+            ),
+            (FingerprintSource.EVIDENCE, FingerprintSource.GEOMETRY),
+        )
+    )
+    if deployment.get("bootloader_authoritative") is True:
+        try:
+            bootloader = AddressRange(
+                deployment["bootloader_start"], deployment["bootloader_end"]  # type: ignore[arg-type]
+            )
+        except (KeyError, TypeError, ValueError) as exc:
+            raise SafetyArtifactError(f"reviewed bootloader partition is invalid: {exc}") from exc
+        stable.append(
+            RegionContribution(
+                SafetyRegion(
+                    "reviewed bootloader partition",
+                    RegionKind.BOOTLOADER_FLASH,
+                    bootloader,
+                    provenance,
+                    executable=False,
+                ),
+                (FingerprintSource.EVIDENCE, FingerprintSource.GEOMETRY),
+            )
+        )
+    return tuple(
+        sorted(
+            stable,
             key=lambda item: (
                 item.region.address_range.start,
                 item.region.address_range.end,
@@ -484,170 +374,255 @@ def build_documents(
                 item.region.name,
             ),
         )
-    ]
-    fingerprint_document = fingerprints.to_document()
-    memory_map: dict[str, object] = {
-        "schema_version": SAFETY_MAP_SCHEMA_VERSION,
-        "board_id": request.board_id,
-        "created_at": created_at,
-        "fingerprints": fingerprint_document,
-        "regions": region_documents,
+    )
+
+
+def build_memory_map(request: SafetySetupRequest) -> dict[str, object]:
+    _require_board_id(request.board_id)
+    values = request.inputs.values()
+    profile = _semantic_profile(values[FingerprintSource.PROFILE])
+    part_target = _require_mapping(values[FingerprintSource.PART_TARGET], "part/target evidence")
+    identity = {
+        key: part_target[key]
+        for key in ("board_type", "mcu_part_number", "target")
+        if key in part_target
     }
-    canonical_sources = request.inputs.canonical_documents()
-    source_manifest: dict[str, object] = {
-        "schema_version": SAFETY_MAP_SCHEMA_VERSION,
-        "board_id": request.board_id,
-        "created_at": created_at,
-        "fingerprints": fingerprint_document,
-        "sources": {
-            source.value: {
-                "fingerprint": fingerprints.as_mapping()[source],
-                "evidence": canonical_sources[source.value],
-            }
-            for source in FingerprintSource
+    if set(identity) != {"board_type", "mcu_part_number", "target"} or any(
+        not isinstance(value, str) or not value.strip() for value in identity.values()
+    ):
+        raise SafetyArtifactError("map identity requires exact board type, MCU part, and target")
+    if profile["board_id"] != request.board_id:
+        raise SafetyArtifactError("semantic profile board_id does not match the requested board")
+    if profile["mcu_part_number"] != identity["mcu_part_number"]:
+        raise SafetyArtifactError("semantic profile MCU part does not match reviewed map identity")
+    profile_target = profile.get("pyocd_target")
+    if profile_target is not None and profile_target != identity["target"]:
+        raise SafetyArtifactError("semantic profile target does not match reviewed map identity")
+    geometry = dict(_require_mapping(values[FingerprintSource.GEOMETRY], "erase geometry"))
+    for key in ("flash_start", "flash_end", "ram_start", "ram_end", "erase_size"):
+        value = geometry.get(key)
+        if isinstance(value, bool) or not isinstance(value, int):
+            raise SafetyArtifactError(f"geometry field {key} must be an integer")
+    evidence = _require_mapping(values[FingerprintSource.EVIDENCE], "reviewed evidence")
+    deployment = _require_mapping(evidence.get("deployment_policy"), "deployment policy")
+    regions = _stable_regions(request)
+    conflicts = region_conflicts(regions)
+    if conflicts:
+        raise SafetyArtifactError(f"authoritative safety regions conflict: {conflicts}")
+    source_digests = {
+        "semantic_profile": _digest(profile),
+        "device_support": _digest(values[FingerprintSource.PACK]),
+        "official_evidence": _digest(
+            {key: value for key, value in evidence.items() if key != "deployment_policy"}
+        ),
+        "generator_schema": _digest(values[FingerprintSource.SCHEMA]),
+    }
+    partitions: dict[str, object] = {
+        "application": {
+            "start": deployment["application_start"],
+            "end": deployment["application_end"],
         },
+        "bootloader": None,
     }
-    report: dict[str, object] = {
+    if deployment.get("bootloader_authoritative") is True:
+        partitions["bootloader"] = {
+            "start": deployment["bootloader_start"],
+            "end": deployment["bootloader_end"],
+        }
+    document: dict[str, object] = {
         "schema_version": SAFETY_MAP_SCHEMA_VERSION,
-        "report_type": "safety",
         "board_id": request.board_id,
-        "continuation_id": request.continuation_id,
-        "created_at": created_at,
-        "status": status,
-        "agent_prompt": prompt,
-        "aggregate_fingerprint": fingerprints.aggregate,
-        "conflicts": [dict(item) for item in conflicts],
+        "identity": identity,
+        "source_digests": source_digests,
+        "geometry": canonicalize(geometry),
+        "partitions": canonicalize(partitions),
+        "regions": [item.to_document() for item in regions],
     }
-    return memory_map, source_manifest, report
+    ensure_no_persisted_authority(document, location="memory map")
+    return document
+
+
+def build_documents(
+    request: SafetySetupRequest,
+    _legacy_fingerprints: object | None = None,
+    *,
+    status: str = "safety_refresh_preflight",
+    prompt: str = "",
+    conflicts: tuple[Mapping[str, object], ...] = (),
+) -> tuple[dict[str, object], dict[str, object], dict[str, object]]:
+    """Temporary source-compatible helper while v1 call sites are removed.
+
+    Only the first document is authority and only it may be persisted. The two empty compatibility
+    documents prevent old, unreachable preflight helpers from making a manifest or report.
+    """
+
+    del status, prompt, conflicts
+    return build_memory_map(request), {}, {}
+
+
+class SafetyArtifactRepository:
+    """FirmStore adapter for the single authoritative memory map."""
+
+    def __init__(self, store: FirmStore) -> None:
+        self.store = store
+
+    def paths(self, board_id: str) -> dict[str, Path]:
+        board = _require_board_id(board_id)
+        root = self.store.layout.safety_board(board)
+        return {"memory_map": root / "memory_map.yaml"}
+
+    def _remove_legacy_siblings(self, board_id: str) -> None:
+        root = self.paths(board_id)["memory_map"].parent
+        for name in ("source_manifest.json", "safety_report.json"):
+            try:
+                (root / name).unlink(missing_ok=True)
+            except OSError as exc:
+                raise SafetyArtifactError(f"cannot remove legacy safety file {name}: {exc}") from exc
+
+    def commit(self, board_id: str, *, memory_map: Mapping[str, Any]) -> dict[str, Path]:
+        ensure_no_persisted_authority(memory_map, location="memory map")
+        paths = self.paths(board_id)
+        payload = yaml.safe_dump(
+            dict(memory_map), allow_unicode=True, default_flow_style=False, sort_keys=False
+        ).encode("utf-8")
+        self.store.atomic_write_bytes(paths["memory_map"], payload)
+        self._remove_legacy_siblings(board_id)
+        return paths
+
+    def load_current(self, board_id: str) -> SafetyArtifacts:
+        # V1 siblings are never authority. Remove only the two exact legacy filenames; do not
+        # recursively delete or touch setup/validation reports elsewhere in .firm.
+        self._remove_legacy_siblings(board_id)
+        path = self.paths(board_id)["memory_map"]
+        if not path.is_file():
+            raise SafetyArtifactError("current memory_map.yaml is missing; run board_safety_refresh")
+        try:
+            memory = yaml.safe_load(path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeError, yaml.YAMLError) as exc:
+            raise SafetyArtifactError(f"cannot load current memory map: {exc}") from exc
+        expected = {
+            "schema_version",
+            "board_id",
+            "identity",
+            "source_digests",
+            "geometry",
+            "partitions",
+            "regions",
+        }
+        if not isinstance(memory, Mapping) or set(memory) != expected:
+            raise SafetyArtifactError(
+                "memory map fields do not match schema v2; run board_safety_refresh"
+            )
+        if memory.get("schema_version") != SAFETY_MAP_SCHEMA_VERSION:
+            raise SafetyArtifactError(
+                "unsupported memory-map schema; run board_safety_refresh"
+            )
+        if memory.get("board_id") != board_id:
+            raise SafetyArtifactError("memory map does not match the requested board")
+        for name in ("identity", "source_digests", "geometry", "partitions"):
+            if not isinstance(memory.get(name), Mapping):
+                raise SafetyArtifactError(f"memory map {name} must be an object")
+        rows = memory.get("regions")
+        if not isinstance(rows, list) or not rows:
+            raise SafetyArtifactError("memory map requires at least one region")
+        regions = tuple(_region_from_document(row) for row in rows)
+        SafetyMap([item.region for item in regions])
+        if region_conflicts(regions):
+            raise SafetyArtifactError("memory map contains conflicting authoritative regions")
+        document = dict(memory)
+        return SafetyArtifacts(board_id, _digest(document), regions, document)
+
+
+def require_reconciled_authority(artifacts: SafetyArtifacts) -> None:
+    """Validate the self-contained structural authority required for guarded I/O."""
+
+    if set(artifacts.identity) != {"board_type", "mcu_part_number", "target"}:
+        raise SafetyArtifactError("memory map has incomplete board identity")
+    required_digests = {
+        "semantic_profile",
+        "device_support",
+        "official_evidence",
+        "generator_schema",
+    }
+    if set(artifacts.source_digests) != required_digests or any(
+        not isinstance(value, str) or len(value) != 64
+        for value in artifacts.source_digests.values()
+    ):
+        raise SafetyArtifactError("memory map has incomplete semantic source digests")
+    for key in ("flash_start", "flash_end", "ram_start", "ram_end", "erase_size"):
+        value = artifacts.geometry.get(key)
+        if isinstance(value, bool) or not isinstance(value, int):
+            raise SafetyArtifactError(f"memory map geometry field {key} is invalid")
+    application = artifacts.partitions.get("application")
+    if not isinstance(application, Mapping):
+        raise SafetyArtifactError("memory map has no authoritative application partition")
+    try:
+        AddressRange(application["start"], application["end"])  # type: ignore[arg-type]
+    except (KeyError, TypeError, ValueError) as exc:
+        raise SafetyArtifactError(f"memory map application partition is invalid: {exc}") from exc
+    required_kinds = {
+        RegionKind.PHYSICAL_FLASH,
+        RegionKind.PHYSICAL_RAM,
+        RegionKind.RAM,
+        RegionKind.APPLICATION_FLASH,
+    }
+    present = {item.region.kind for item in artifacts.regions}
+    if not required_kinds.issubset(present):
+        missing = sorted(kind.value for kind in required_kinds - present)
+        raise SafetyArtifactError(f"memory map lacks required regions: {missing}")
 
 
 class SafetyMapBuilder:
     def __init__(self, store: FirmStore) -> None:
         self.repository = SafetyArtifactRepository(store)
 
+    def candidate(self, request: SafetySetupRequest) -> SafetyArtifacts:
+        memory = build_memory_map(request)
+        rows = memory["regions"]
+        assert isinstance(rows, list)
+        regions = tuple(_region_from_document(row) for row in rows)
+        return SafetyArtifacts(request.board_id, _digest(memory), regions, memory)
+
     def build(self, request: SafetySetupRequest) -> SafetySetupResult:
         _require_board_id(request.board_id)
         if not request.continuation_id.strip():
             raise SafetyArtifactError("continuation_id must be non-empty")
-        fingerprints = FingerprintSet.build(request.inputs)
         if request.issues:
             issue = request.issues[0]
             prompt = f"{issue.message.strip()} {NO_INTERNALS}"
-            report = {
-                "schema_version": SAFETY_MAP_SCHEMA_VERSION,
-                "report_type": "safety",
-                "board_id": request.board_id,
-                "continuation_id": request.continuation_id,
-                "created_at": _timestamp(),
-                "status": issue.status,
-                "code": issue.code,
-                "agent_prompt": prompt,
-                "details": dict(issue.details),
-            }
-            report_path = self.repository.write_report(request.board_id, report)
             return SafetySetupResult(
                 issue.status,
                 request.board_id,
                 request.continuation_id,
                 prompt,
                 issue.choices,
-                {"code": issue.code, "report": str(report_path)},
-                report_path,
+                {"code": issue.code, **dict(issue.details)},
+                None,
                 None,
             )
-        if not request.regions:
-            issue = SafetyIssue(
-                "safety_setup_incomplete",
-                "safety/no-regions",
-                "No authoritative safety regions are available; write-capable actions remain closed.",
-            )
-            return self.build(
-                SafetySetupRequest(
-                    request.board_id,
-                    request.continuation_id,
-                    request.inputs,
-                    (),
-                    (issue,),
-                )
-            )
-        conflicts = region_conflicts(request.regions)
-        if conflicts:
-            issue = SafetyIssue(
-                "safety_setup_conflict",
-                "safety/region-conflict",
-                "Authoritative safety regions conflict; resolve the sources and rerun safety setup.",
-                details={"conflicts": conflicts},
-            )
-            return self.build(
-                SafetySetupRequest(
-                    request.board_id,
-                    request.continuation_id,
-                    request.inputs,
-                    request.regions,
-                    (issue,),
-                )
-            )
-        canonical_regions = tuple(
-            sorted(
-                request.regions,
-                key=lambda item: (
-                    item.region.address_range.start,
-                    item.region.address_range.end,
-                    item.region.kind.value,
-                    item.region.name,
-                ),
-            )
-        )
-        prompt = (
-            f"Safety setup completed. Run board_validate before any gate may open. {NO_INTERNALS}"
-        )
         try:
-            current = self.repository.load_current(request.board_id)
-        except (SafetyArtifactError, ValueError):
-            current = None
-        if (
-            current is not None
-            and current.fingerprints == fingerprints
-            and current.regions == canonical_regions
-        ):
-            report = {
-                "schema_version": SAFETY_MAP_SCHEMA_VERSION,
-                "report_type": "safety",
-                "board_id": request.board_id,
-                "continuation_id": request.continuation_id,
-                "created_at": _timestamp(),
-                "status": "safety_setup_completed",
-                "agent_prompt": prompt,
-                "aggregate_fingerprint": fingerprints.aggregate,
-                "conflicts": [],
-                "unchanged_rebuild": True,
-            }
-            report_path = self.repository.write_report(request.board_id, report)
-            paths = self.repository.paths(request.board_id)
+            candidate = self.candidate(request)
+        except SafetyArtifactError as exc:
+            prompt = f"Safety map construction failed: {exc}. {NO_INTERNALS}"
             return SafetySetupResult(
-                "safety_setup_completed",
+                "safety_setup_blocked",
                 request.board_id,
                 request.continuation_id,
                 prompt,
                 (),
-                {
-                    "memory_map": str(paths["memory_map"]),
-                    "source_manifest": str(paths["source_manifest"]),
-                    "report": str(report_path),
-                    "region_count": len(request.regions),
-                    "unchanged_rebuild": True,
-                },
-                report_path,
-                fingerprints.aggregate,
+                {"code": "safety/map-invalid", "reason": str(exc)},
+                None,
+                None,
             )
-        memory, manifest, report = build_documents(
-            request, fingerprints, status="safety_setup_completed", prompt=prompt
-        )
-        paths = self.repository.commit(
-            request.board_id,
-            memory_map=memory,
-            source_manifest=manifest,
-            safety_report=report,
+        try:
+            current = self.repository.load_current(request.board_id)
+        except SafetyArtifactError:
+            current = None
+        unchanged = current is not None and current.map_digest == candidate.map_digest
+        paths = self.repository.commit(request.board_id, memory_map=candidate.memory_map)
+        prompt = (
+            "Safety map is current. Run board_validate only when this server run has no valid "
+            f"live identity proof. {NO_INTERNALS}"
         )
         return SafetySetupResult(
             "safety_setup_completed",
@@ -657,10 +632,9 @@ class SafetyMapBuilder:
             (),
             {
                 "memory_map": str(paths["memory_map"]),
-                "source_manifest": str(paths["source_manifest"]),
-                "report": str(paths["safety_report"]),
-                "region_count": len(request.regions),
+                "region_count": len(candidate.regions),
+                "unchanged_rebuild": unchanged,
             },
-            paths["safety_report"],
-            fingerprints.aggregate,
+            None,
+            candidate.map_digest,
         )

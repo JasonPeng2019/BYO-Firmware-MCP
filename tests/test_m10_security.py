@@ -26,6 +26,7 @@ from pyocd_debug_mcp.setup_flow.research import (
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 SOURCE_ROOT = PROJECT_ROOT / "src" / "pyocd_debug_mcp"
 SERVER_PATH = SOURCE_ROOT / "server.py"
+SERVER_B_HTTP_PATH = SOURCE_ROOT / "server_b_http.py"
 
 
 def _schema_field_names(value: object) -> set[str]:
@@ -54,7 +55,7 @@ def _production_calls(function_name: str) -> list[tuple[Path, ast.Call]]:
     return matches
 
 
-def test_cc_1_server_entrypoint_is_stdio_only_and_opens_no_socket_listener() -> None:
+def test_cc_1_server_b_stdio_default_and_http_entrypoint_is_loopback_only() -> None:
     transport = inspect.signature(FastMCP.run).parameters["transport"]
     assert transport.default == "stdio"
 
@@ -76,13 +77,17 @@ def test_cc_1_server_entrypoint_is_stdio_only_and_opens_no_socket_listener() -> 
         node
         for node in ast.walk(main)
         if isinstance(node, ast.Call)
-        and isinstance(node.func, ast.Attribute)
-        and isinstance(node.func.value, ast.Name)
-        and node.func.value.id == "mcp"
-        and node.func.attr == "run"
+        and isinstance(node.func, ast.Name)
+        and node.func.id == "run_server_b"
     ]
     assert len(run_calls) == 1
-    assert run_calls[0].args == [] and run_calls[0].keywords == []
+    assert len(run_calls[0].args) == 1
+    assert isinstance(run_calls[0].args[0], ast.Constant)
+    assert run_calls[0].args[0].value == "stdio"
+
+    http_source = SERVER_B_HTTP_PATH.read_text(encoding="utf-8")
+    assert '{"127.0.0.1", "::1", "localhost"}' in http_source
+    assert "Server B HTTP host must remain loopback-only" in http_source
 
 
 def test_cc_4_and_cc_5_public_schemas_expose_no_shell_or_authority_write_route() -> None:

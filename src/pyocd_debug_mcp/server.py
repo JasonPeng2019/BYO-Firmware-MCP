@@ -1,15 +1,9 @@
-"""Minimal MCP server exposing pyOCD debug control to an LLM client.
+"""Guarded hardware manager (Server B) composition root.
 
-Design notes
-------------
-* Debug sessions are *stateful* (halt state, breakpoints, and live target
-  connections persist across calls), so each logical board owns one explicit
-  connection until it is disconnected.
-* pyOCD's target access is blocking and **not thread-safe**. FastMCP may invoke
-  tools concurrently, so accesses to the same board share a serialization lock.
-* pyOCD calls block; for fast operations (register/memory reads) that is fine.
-  Long operations such as flashing should be offloaded (e.g. ``anyio.to_thread``)
-  so they don't stall the event loop — left out here to keep the starter small.
+Board sessions persist until disconnect. Board-affecting calls enter one process-wide execution
+queue, run through finite managed-operation timeouts off the MCP event loop, and share mandatory
+cleanup for success, failure, cancellation, client EOF, and timeout. Metadata discovery remains
+concurrent. The user-facing turnkey brain is composed separately under ``pyocd_debug_mcp.turnkey``.
 """
 
 from __future__ import annotations
@@ -29,7 +23,11 @@ from typing import cast
 
 from pyocd.target.pack.cmsis_pack import CmsisPack  # type: ignore[import-untyped]
 
-from pyocd_debug_mcp.adapters.swd_interface import TargetSessionHandle
+from pyocd_debug_mcp.adapters.target_backend import (
+    MemoryAccessCapabilities,
+    RegisterDescriptor,
+    TargetSessionHandle,
+)
 from pyocd_debug_mcp.board_config import (
     DEFAULT_BOARD_CONFIG_DIR,
     BoardConfig,
@@ -57,10 +55,9 @@ from pyocd_debug_mcp.kernel.finalizers import build_finalizer
 from pyocd_debug_mcp.kernel.hygiene import cleanup_stale_owned_processes
 from pyocd_debug_mcp.kernel.processes import run_owned
 from pyocd_debug_mcp.kernel.run_state import create_server_run
-from pyocd_debug_mcp.pack_provision import load_manifest, pack_spec_document, sha256_file
+from pyocd_debug_mcp.kernel.singleton import ServerBLease
+from pyocd_debug_mcp.pack_provision import load_manifest, sha256_file
 from pyocd_debug_mcp.probe_inventory import (
-    list_connected_probes,
-    probe_family_from_pyocd_probe,
     resolve_probe_for_board,
 )
 from pyocd_debug_mcp.reference_artifacts import resolve_reference_artifacts
@@ -148,39 +145,31 @@ from pyocd_debug_mcp.setup_flow.validate import (
     ValidationSerial,
 )
 from pyocd_debug_mcp.safety.enforce import SafetyPolicy, SafetyPolicyError
+from pyocd_debug_mcp.safety.artifact_evidence import (
+    artifact_dependency_paths,
+    provider_for_artifact,
+)
 from pyocd_debug_mcp.safety.fingerprints import (
     FingerprintInputs,
-    FingerprintSet,
     FingerprintSource,
 )
 from pyocd_debug_mcp.safety.linker import (
-    BuildArtifactSelection,
     BuildRole,
     LinkerEvidenceError,
-    extract_build_evidence,
 )
 from pyocd_debug_mcp.safety.map_build import (
     RegionContribution,
     SafetyArtifactError,
     SafetyArtifactRepository,
     SafetyArtifacts,
-    SafetyIssue,
     SafetyMapBuilder,
     SafetySetupRequest,
-    build_documents,
     require_reconciled_authority,
     region_conflicts,
 )
 from pyocd_debug_mcp.safety.refresh import SafetyRefreshRequest, SafetyRefresher
 from pyocd_debug_mcp.safety.regions import (
-    ActionCategory,
-    AddressRange,
-    Provenance,
-    Refusal,
     RegionKind,
-    SafetyMap,
-    SafetyRegion,
-    SourceAuthority,
 )
 from pyocd_debug_mcp.target_errors import (
     LockedTargetError,
@@ -330,6 +319,39 @@ def _validate_plan_scope(
                 "disconnect before first-time setup.",
                 session_id=session_id,
             )
+        try:
+            _profile_repository.load(board_id, include_legacy=False)
+        except NameError:
+            pass
+        except ProfileError as exc:
+            if str(exc) != f"Board profile not found: {board_id}":
+                raise PlanRefusal(
+                    "plan/setup-profile-invalid",
+                    f"Board '{board_id}' already has invalid or conflicting saved profile data: "
+                    f"{exc}. Do not treat it as a new board or overwrite it through setup; repair "
+                    "the saved profile deliberately, then rerun setup_overview.",
+                    session_id=session_id,
+                ) from exc
+        else:
+            allowance = _setup_mismatch_allowances.get(board_id)
+            if allowance is None:
+                raise PlanRefusal(
+                    "plan/setup-established-board",
+                    f"Board '{board_id}' already has an established profile. Setup is not a "
+                    "safety recovery action. Use board_safety_refresh for any map problem and "
+                    "board_validate only at its documented identity triggers.",
+                    session_id=session_id,
+                )
+            _, expected, observed, _ = allowance
+            raise PlanRefusal(
+                "plan/setup-new-profile-required",
+                f"Board '{board_id}' expected MCU identity {expected}, but validation observed "
+                f"{observed}. Tell the user and ask what they want. If they choose to keep the "
+                "different hardware, ask for a new familiar board name, call setup_overview with "
+                "that name, and use its new board_id; the established profile is never "
+                "overwritten in place.",
+                session_id=session_id,
+            )
         return
     if definition.action_name in {"connect_override", "connect_under_reset"}:
         if connection is not None:
@@ -361,11 +383,93 @@ def _validate_plan_scope(
         )
 
 
+_ARTIFACT_BOUND_ACTIONS = frozenset(
+    {"flash_application", "flash_bootloader", "set_breakpoint"}
+)
+
+
+def _bind_plan_resources(
+    definition: PlanDefinition,
+    board_id: str,
+    parameters: Mapping[str, object],
+) -> object | None:
+    # Setup eligibility must be checked at plan acceptance, before permission is authorized and
+    # before hidden setup actions become visible. Execution repeats the check to close races.
+    if definition.action_name == "board_setup":
+        _validate_plan_scope(definition, board_id, None)
+        return None
+    if definition.action_name not in _ARTIFACT_BOUND_ACTIONS:
+        return None
+    value = parameters.get("artifact")
+    if not isinstance(value, str) or not value.strip():
+        raise PlanRefusal(
+            "plan/artifact-missing",
+            f"{definition.plan_tool_name} requires one existing local ELF or HEX artifact.",
+        )
+    artifact = Path(value).expanduser().resolve()
+    if not artifact.is_file():
+        raise PlanRefusal(
+            "plan/artifact-missing",
+            f"Plan artifact does not exist or is not a regular file: {artifact}",
+        )
+    if provider_for_artifact(artifact) is None:
+        raise PlanRefusal(
+            "plan/artifact-type",
+            "No installed artifact-evidence provider recognizes the selected artifact.",
+        )
+    try:
+        bound_paths = artifact_dependency_paths(artifact)
+    except LinkerEvidenceError as exc:
+        raise PlanRefusal(exc.code, str(exc)) from exc
+    return tuple((str(path), sha256_file(path)) for path in bound_paths)
+
+
+def _validate_plan_artifact_binding(
+    definition: PlanDefinition,
+    board_id: str,
+    parameters: Mapping[str, object],
+    binding: object | None,
+) -> None:
+    del board_id
+    if definition.action_name not in _ARTIFACT_BOUND_ACTIONS:
+        return
+    value = parameters.get("artifact")
+    artifact = Path(cast(str, value)).expanduser().resolve()
+    rows: tuple[object, ...]
+    if isinstance(binding, tuple):
+        rows = cast(tuple[object, ...], binding)
+    else:
+        rows = ()
+    first = next(iter(rows), None)
+    valid = isinstance(first, tuple) and len(first) == 2 and first[0] == str(artifact)
+    if valid:
+        for raw_row in rows:
+            if not isinstance(raw_row, tuple) or len(raw_row) != 2:
+                valid = False
+                break
+            path_text, expected_digest = raw_row
+            if not isinstance(path_text, str) or not isinstance(expected_digest, str):
+                valid = False
+                break
+            path = Path(path_text)
+            if not path.is_file() or sha256_file(path) != expected_digest:
+                valid = False
+                break
+    if not valid:
+        raise PlanRefusal(
+            "plan/artifact-changed",
+            "The selected artifact changed after plan approval. Submit a replacement plan for "
+            "the current bytes; no plan budget or permission was consumed.",
+        )
+
+
 plan_engine = PlanEngine(
     server_run,
     tool_registry,
     permission_provider=permission_store,
     scope_validator=_validate_plan_scope,
+    binding_provider=_bind_plan_resources,
+    binding_validator=_validate_plan_artifact_binding,
 )
 permission_store.set_revocation_handler(plan_engine.invalidate)
 
@@ -384,13 +488,17 @@ _WRITE_CAPABLE_ACTIONS = frozenset(
 )
 _safety_policy: SafetyPolicy
 _unlock_coordinator: UnlockCoordinator
+_setup_mismatch_allowances: dict[str, tuple[str, str, str, str]] = {}
 
 
 def _current_target(board_id: str) -> str:
     handle = _handle(board_id)
+    effective = (handle.target_override or "").strip()
+    if effective:
+        return effective
     if handle.board is not None:
-        return handle.board.pyocd_target
-    return (handle.target_override or "").strip()
+        return handle.board.target_identity
+    return ""
 
 
 def _check_memory_safety(board_id: str, address: int, width: int) -> None:
@@ -401,12 +509,18 @@ def _check_memory_read_safety(board_id: str, address: int, size_bytes: int) -> N
     _safety_policy.check_memory_read(board_id, address, size_bytes)
 
 
-def _check_register_safety(board_id: str, address: int) -> None:
-    _safety_policy.check_register_write(board_id, address)
+def _check_register_safety(board_id: str, address: int, size_bytes: int) -> None:
+    _safety_policy.check_register_write(board_id, address, size_bytes)
 
 
-def _check_breakpoint_safety(board_id: str, address: int) -> None:
-    _safety_policy.check_breakpoint(board_id, address)
+def _check_breakpoint_safety(board_id: str, address: int, artifact: Path) -> None:
+    handle = _handle(board_id)
+    _safety_policy.check_breakpoint(
+        board_id,
+        address,
+        artifact,
+        target_control.breakpoint_memory_span_bytes(handle, address),
+    )
 
 
 def _check_flash_safety(tool_name: str, board_id: str, artifact: Path) -> None:
@@ -455,14 +569,20 @@ def _enforce_action_containment(
 ) -> None:
     try:
         if tool_name == "register_write":
+            capabilities = _memory_capabilities_for(board_id)
+            width_bits = capabilities.peripheral_width_bits
+            if width_bits is None:
+                raise ValueError("connected backend does not support peripheral writes")
             _safety_policy.check_register_write(
-                board_id, _parse_action_integer(parameters["address"], "address")
+                board_id,
+                _parse_action_integer(parameters["address"], "address"),
+                width_bits // 8,
             )
         elif tool_name == "read_memory_address":
             address = _parse_action_integer(parameters["address"], "address")
             width = _parse_action_integer(parameters["width"], "width")
-            if width not in {8, 16, 32}:
-                raise ValueError("width must be one of: 8, 16, 32")
+            if width not in _memory_capabilities_for(board_id).read_width_bits:
+                raise ValueError("width is not supported by the connected backend")
             length_value = parameters.get("length")
             size_bytes = (
                 width // 8
@@ -480,6 +600,8 @@ def _enforce_action_containment(
                 handle = _handle(board_id)
                 address = resolve_symbol(_symbol_artifact_for_handle(handle), target).address
             width = _parse_action_integer(parameters["width"], "width")
+            if width not in _memory_capabilities_for(board_id).write_width_bits:
+                raise ValueError("width is not supported by the connected backend")
             _safety_policy.check_memory_write(board_id, address, width)
         elif tool_name == "set_breakpoint":
             target = parameters["symbol_or_address"]
@@ -488,9 +610,10 @@ def _enforce_action_containment(
             except (TypeError, ValueError):
                 if not isinstance(target, str) or not target.strip():
                     raise ValueError("symbol_or_address must be a symbol or address")
-                handle = _handle(board_id)
-                address = resolve_symbol(_symbol_artifact_for_handle(handle), target).address
-            _safety_policy.check_breakpoint(board_id, address)
+                artifact = Path(cast(str, parameters["artifact"])).expanduser().resolve()
+                address = resolve_symbol(artifact, target).address
+            artifact = Path(cast(str, parameters["artifact"])).expanduser().resolve()
+            _check_breakpoint_safety(board_id, address, artifact)
         elif tool_name in {"flash_application", "flash_bootloader"}:
             handle = _maybe_handle(board_id)
             context = _action_context(tool_name, board_id)
@@ -555,9 +678,14 @@ def _enforce_guarded_invocation(
     )
 
 
-def _supported_registers_for(board_id: str) -> tuple[str, ...]:
+def _register_descriptor_for(board_id: str, name: str) -> RegisterDescriptor | None:
     with connection_manager.lock_for(board_id):
-        return target_control.supported_core_registers(_handle(board_id))
+        return target_control.describe_core_register(_handle(board_id), name)
+
+
+def _memory_capabilities_for(board_id: str) -> MemoryAccessCapabilities:
+    with connection_manager.lock_for(board_id):
+        return target_control.memory_access_capabilities(_handle(board_id))
 
 
 def _masked_register_write(
@@ -576,12 +704,11 @@ def _masked_register_write(
 
         def operation() -> str:
             handle = _handle(board_id)
-            prior = target_control.read_memory(handle, address, 32)
-            updated = (prior & ~mask) | (value & mask)
-            target_control.write_memory(handle, address, updated, 32)
+            result = target_control.masked_register_write(handle, address, mask, value)
+            digits = (result.width_bits + 3) // 4
             return (
-                f"Peripheral register 0x{address:08X}: 0x{prior:08X} -> "
-                f"0x{updated:08X} with mask 0x{mask:08X}."
+                f"Peripheral register 0x{address:X}: 0x{result.prior:0{digits}X} -> "
+                f"0x{result.updated:0{digits}X} with mask 0x{mask:0{digits}X}."
             )
 
         return _run_logged_tool(board_id, "register_write", normalized_args, operation)
@@ -692,8 +819,8 @@ def _parse_int(text: str) -> int:
     return int(text, 0)
 
 
-def _word_size_is_valid(word_size: int) -> bool:
-    return word_size in {8, 16, 32}
+def _word_size_is_valid(board_id: str, word_size: int) -> bool:
+    return word_size in _memory_capabilities_for(board_id).read_width_bits
 
 
 def _run_cmd(
@@ -727,8 +854,8 @@ def resolve_board_config(
 ) -> BoardConfig | None:
     """Load one board definition through the shared loader, or None if unselected.
 
-    This is the server's single path to ``boards/<board>.yaml`` — the same loader
-    the Stage 0 CLI uses — so a custom ST/nRF board's facts (pyOCD target, recover
+    This is the server's single path to ``boards/<board>.yaml`` â€” the same loader
+    the Stage 0 CLI uses â€” so a custom ST/nRF board's facts (pyOCD target, recover
     policy, silicon id, baud) reach the MCP tools, not just the CLI.
 
     When ``allow_environment_overrides`` is true, ``board_id``/``board_config``
@@ -772,7 +899,7 @@ def format_board_info(b: BoardConfig) -> str:
         f"display_name: {b.display_name}",
         f"mcu_family: {b.mcu_family}",
         f"probe_family: {b.probe_family}",
-        f"pyocd_target: {b.pyocd_target}",
+        f"target_identity: {b.target_identity}",
         f"default_baudrate: {b.default_baudrate}",
         (
             f"test_read_address: 0x{b.test_addr:08X}"
@@ -820,6 +947,10 @@ def _resolve_probe_uid_for_connect(
 ) -> str | None:
     if unique_id is not None:
         return unique_id
+    if board is not None and board.debug_backend != "pyocd":
+        # Provider-neutral backends own their probe inventory and implicit-selection
+        # semantics. Do not route them through pyOCD environment variables or probe APIs.
+        return None
     env_uid = os.environ.get("PYOCD_PROBE_UID") or None if allow_environment_override else None
     if env_uid is not None:
         return env_uid
@@ -936,7 +1067,7 @@ def _connect_impl(
             )
             tgt = (
                 target
-                or (board.pyocd_target if board else None)
+                or (board.target_identity if board else None)
                 or (os.environ.get("PYOCD_TARGET") if allow_environment_overrides else None)
                 or None
             )
@@ -975,6 +1106,7 @@ def _connect_impl(
                 connection_id=connection_id,
             )
             gate_manager.clear(board_id, "new connection requires board_validate")
+            _setup_mismatch_allowances.pop(board_id, None)
         except ConnectionAssignmentError as exc:
             _record_event(
                 "connect",
@@ -990,7 +1122,7 @@ def _connect_impl(
             target_control.close_session(handle)
             raise
         suffix = f" [board config: {board.board_id}]" if board else ""
-        board_name = handle.session.board.name if handle.session.board is not None else "<unknown>"
+        board_name = target_control.describe_session(handle).board_name
         result = (
             f"Connected to board '{board_name}' via probe "
             f"{handle.probe_uid or '(unknown)'} via {handle.route_used}.{suffix} "
@@ -1009,7 +1141,6 @@ def _connect_impl(
         return result
 
 
-@mcp.tool()
 def connect(board_id: str) -> str:
     """Connect using only the named schema-v2 project profile.
 
@@ -1066,7 +1197,7 @@ def _connect_under_reset_impl(
         resolved_uid = _resolve_probe_uid_for_connect(board, probe_uid)
         resolved_target = (
             target_override
-            or (board.pyocd_target if board else None)
+            or (board.target_identity if board else None)
             or os.environ.get("PYOCD_TARGET")
             or None
         )
@@ -1091,6 +1222,7 @@ def _connect_under_reset_impl(
                 connection_id=connection_id,
             )
             gate_manager.clear(board_id, "new connection requires board_validate")
+            _setup_mismatch_allowances.pop(board_id, None)
         except Exception as exc:  # noqa: BLE001 - preserve typed backend failure
             _record_event(
                 "connect_under_reset",
@@ -1119,7 +1251,6 @@ def _connect_under_reset_impl(
         )
 
 
-@mcp.tool()
 def disconnect(board_id: str) -> str:
     """Close only the named board's debug session and release its probe."""
 
@@ -1127,6 +1258,7 @@ def disconnect(board_id: str) -> str:
         connection = connection_manager.maybe_connection(board_id)
         if connection is None:
             gate_manager.clear(board_id, "disconnect requested")
+            _setup_mismatch_allowances.pop(board_id, None)
             plan_engine.invalidate_board(board_id, "board disconnected")
             unlock = globals().get("_unlock_coordinator")
             if isinstance(unlock, UnlockCoordinator):
@@ -1154,6 +1286,7 @@ def disconnect(board_id: str) -> str:
         handle = connection.handle
         runtime_session = connection.runtime_session
         gate_manager.clear(board_id, "board disconnected")
+        _setup_mismatch_allowances.pop(board_id, None)
         plan_engine.invalidate_board(board_id, "board disconnected")
         unlock = globals().get("_unlock_coordinator")
         if isinstance(unlock, UnlockCoordinator):
@@ -1193,29 +1326,26 @@ def disconnect(board_id: str) -> str:
         return f"Disconnected board '{board_id}'."
 
 
-@mcp.tool()
 def get_board_info(board_id: str) -> str:
     """Return the facts from the board config the session was opened with.
 
-    Reports the ``boards/<board>.yaml`` definition active for this session —
+    Reports the ``boards/<board>.yaml`` definition active for this session â€”
     pyOCD target, MCU and probe family, recover policy, silicon-id expectation,
     default UART baud, and the smoke-test read address. Returns a notice when
     ``connect`` was called without a ``board_id`` (raw-target mode), where these
     facts were not loaded.
     """
-    with connection_manager.lock_for(board_id):
+    def operation() -> str:
+        connection = connection_manager.maybe_connection(board_id)
+        if connection is None:
+            return f"Board '{board_id}' is not connected. Call `connect` first."
+        handle = connection.handle
+        b = handle.board
+        if b is None:
+            return NO_BOARD_CONFIG_MESSAGE
+        return format_board_info(b)
 
-        def operation() -> str:
-            connection = connection_manager.maybe_connection(board_id)
-            if connection is None:
-                return f"Board '{board_id}' is not connected. Call `connect` first."
-            handle = connection.handle
-            b = handle.board
-            if b is None:
-                return NO_BOARD_CONFIG_MESSAGE
-            return format_board_info(b)
-
-        return _run_logged_tool(board_id, "get_board_info", {"board_id": board_id}, operation)
+    return _run_logged_tool(board_id, "get_board_info", {"board_id": board_id}, operation)
 
 
 def _require_loaded_board(handle: TargetSessionHandle) -> BoardConfig:
@@ -1305,7 +1435,6 @@ def _complete_effect(effect: Callable[[], None], result: str) -> str:
     return result
 
 
-@mcp.tool()
 def get_state(board_id: str) -> str:
     """Return the current core run state (e.g. HALTED, RUNNING, RESET)."""
     with connection_manager.lock_for(board_id):
@@ -1316,7 +1445,6 @@ def get_state(board_id: str) -> str:
         return _run_logged_tool(board_id, "get_state", {"board_id": board_id}, operation)
 
 
-@mcp.tool()
 def halt(board_id: str) -> str:
     """Halt the core."""
     with connection_manager.lock_for(board_id):
@@ -1327,7 +1455,6 @@ def halt(board_id: str) -> str:
         return _run_logged_tool(board_id, "halt", {"board_id": board_id}, operation)
 
 
-@mcp.tool()
 def resume(board_id: str) -> str:
     """Resume execution of the core."""
     with connection_manager.lock_for(board_id):
@@ -1338,7 +1465,6 @@ def resume(board_id: str) -> str:
         return _run_logged_tool(board_id, "resume", {"board_id": board_id}, operation)
 
 
-@mcp.tool()
 def step(board_id: str) -> str:
     """Single-step one instruction and return the new program counter."""
     with connection_manager.lock_for(board_id):
@@ -1349,7 +1475,6 @@ def step(board_id: str) -> str:
         return _run_logged_tool(board_id, "step", {"board_id": board_id}, operation)
 
 
-@mcp.tool()
 def reset(board_id: str, halt_after: bool = True) -> str:
     """Reset the target.
 
@@ -1373,7 +1498,6 @@ def reset(board_id: str, halt_after: bool = True) -> str:
         )
 
 
-@mcp.tool()
 def read_core_register(board_id: str, name: str) -> str:
     """Read a core register by name (e.g. "pc", "sp", "r0", "xpsr").
 
@@ -1392,7 +1516,6 @@ def read_core_register(board_id: str, name: str) -> str:
         )
 
 
-@mcp.tool()
 def write_core_register(board_id: str, name: str, value: str) -> str:
     """Write a core register by name. ``value`` may be hex (0x...) or decimal."""
     with connection_manager.lock_for(board_id):
@@ -1413,13 +1536,12 @@ def write_core_register(board_id: str, name: str, value: str) -> str:
         )
 
 
-@mcp.tool()
 def read_memory(board_id: str, address: str, word_size: int = 32) -> str:
     """Read a single value from memory.
 
     Args:
         address: Memory address, hex (0x...) or decimal.
-        word_size: Transfer size in bits: 8, 16, or 32.
+        word_size: Scalar transfer size supported by the connected backend.
     """
     with connection_manager.lock_for(board_id):
         started = time.monotonic()
@@ -1428,12 +1550,12 @@ def read_memory(board_id: str, address: str, word_size: int = 32) -> str:
             "address": address,
             "word_size": word_size,
         }
-        if not _word_size_is_valid(word_size):
+        if not _word_size_is_valid(board_id, word_size):
             return _refuse_invalid_argument(
                 "read_memory",
                 normalized_args,
                 code="memory/invalid-word-size",
-                message="word_size must be one of: 8, 16, 32.",
+                message="word_size is not supported by the connected backend.",
                 started=started,
                 board_id=board_id,
                 session=_runtime_for(board_id),
@@ -1451,7 +1573,6 @@ def read_memory(board_id: str, address: str, word_size: int = 32) -> str:
         )
 
 
-@mcp.tool()
 def read_memory_block(board_id: str, address: str, length: int) -> str:
     """Read ``length`` bytes from memory starting at ``address``.
 
@@ -1480,7 +1601,6 @@ def read_memory_block(board_id: str, address: str, length: int) -> str:
         return _run_logged_tool(board_id, "read_memory_block", normalized_args, operation)
 
 
-@mcp.tool()
 def read_symbol_u32(board_id: str, elf_path: str, symbol_name: str) -> str:
     """Resolve ``symbol_name`` in ``elf_path`` and read its 32-bit value from target memory."""
     with connection_manager.lock_for(board_id):
@@ -1506,7 +1626,6 @@ def read_symbol_u32(board_id: str, elf_path: str, symbol_name: str) -> str:
         return _run_logged_tool(board_id, "read_symbol_u32", normalized_args, operation)
 
 
-@mcp.tool()
 def write_memory(
     board_id: str,
     symbol_or_address: str | int,
@@ -1535,7 +1654,6 @@ def _symbol_artifact_for_handle(handle: TargetSessionHandle) -> Path:
     return resolve_reference_artifacts(handle.board).symbol_artifact
 
 
-@mcp.tool()
 def set_breakpoint(board_id: str, address: str) -> str:
     """Set a hardware/software breakpoint at ``address``."""
     with connection_manager.lock_for(board_id):
@@ -1554,7 +1672,6 @@ def set_breakpoint(board_id: str, address: str) -> str:
         )
 
 
-@mcp.tool()
 def remove_breakpoint(board_id: str, address: str) -> str:
     """Remove the breakpoint at ``address``."""
     with connection_manager.lock_for(board_id):
@@ -1573,7 +1690,6 @@ def remove_breakpoint(board_id: str, address: str) -> str:
         )
 
 
-@mcp.tool()
 def flash_firmware(
     board_id: str,
     path: str | None = None,
@@ -1672,7 +1788,6 @@ def flash_firmware(
         return f"Flashed {flashed} via {active_handle.route_used}; target left {state}."
 
 
-@mcp.tool()
 def read_serial(
     board_id: str,
     expected_text: str | None = None,
@@ -1714,7 +1829,6 @@ def read_serial(
     )
 
 
-@mcp.tool()
 def write_serial(
     board_id: str,
     text: str,
@@ -1756,39 +1870,40 @@ def write_serial(
     )
 
 
-_legacy_connect = connect
-_legacy_disconnect = disconnect
-_legacy_get_board_info = get_board_info
-_legacy_get_state = get_state
-_legacy_halt = halt
-_legacy_resume = resume
-_legacy_step = step
-_legacy_reset = reset
-_legacy_read_core_register = read_core_register
-_legacy_write_core_register = write_core_register
+_primitive_connect = connect
+_primitive_disconnect = disconnect
+_primitive_get_board_info = get_board_info
+_primitive_get_state = get_state
+_primitive_halt = halt
+_primitive_resume = resume
+_primitive_step = step
+_primitive_reset = reset
+_primitive_read_core_register = read_core_register
+_primitive_write_core_register = write_core_register
 
 session_tool_handlers = build_session_handlers(
     SessionToolServices(
-        connect=_legacy_connect,
+        connect=_primitive_connect,
         connect_override=_connect_override_impl,
-        disconnect=_legacy_disconnect,
-        get_board_info=_legacy_get_board_info,
-        get_state=_legacy_get_state,
+        disconnect=_primitive_disconnect,
+        get_board_info=_primitive_get_board_info,
+        get_state=_primitive_get_state,
     )
 )
 execution_tool_handlers = build_execution_handlers(
     ExecutionToolServices(
-        halt=_legacy_halt,
-        resume=_legacy_resume,
-        step=_legacy_step,
-        reset=lambda board_id, halt_after: _legacy_reset(board_id, halt_after=halt_after),
+        halt=_primitive_halt,
+        resume=_primitive_resume,
+        step=_primitive_step,
+        reset=lambda board_id, halt_after: _primitive_reset(board_id, halt_after=halt_after),
         connect_under_reset=_connect_under_reset_impl,
     )
 )
 register_services = RegisterToolServices(
-    supported_registers=_supported_registers_for,
-    read_register=_legacy_read_core_register,
-    write_register=lambda board_id, name, value: _legacy_write_core_register(
+    describe_register=_register_descriptor_for,
+    memory_capabilities=_memory_capabilities_for,
+    read_register=_primitive_read_core_register,
+    write_register=lambda board_id, name, value: _primitive_write_core_register(
         board_id, name, str(value)
     ),
     masked_register_write=_masked_register_write,
@@ -1809,6 +1924,7 @@ memory_services = MemoryToolServices(
     read_target_memory=target_control.read_memory,
     read_target_block=target_control.read_memory_block,
     write_target_memory=target_control.write_memory,
+    memory_capabilities=_memory_capabilities_for,
     check_memory_read=_check_memory_read_safety,
     check_memory_write=_check_memory_safety,
 )
@@ -1890,29 +2006,6 @@ misc_tool_handlers = build_misc_handlers(
 )
 artifact_tool_handlers = build_artifact_handlers()
 
-for _legacy_name in (
-    "connect",
-    "disconnect",
-    "get_board_info",
-    "get_state",
-    "halt",
-    "resume",
-    "step",
-    "reset",
-    "read_core_register",
-    "write_core_register",
-    "read_memory",
-    "read_memory_block",
-    "read_symbol_u32",
-    "write_memory",
-    "set_breakpoint",
-    "remove_breakpoint",
-    "flash_firmware",
-    "read_serial",
-    "write_serial",
-):
-    mcp.remove_tool(_legacy_name)
-
 for _handler_name, _handler in (
     session_tool_handlers
     | execution_tool_handlers
@@ -1948,6 +2041,8 @@ M5_LAYER2_ACTIONS = tuple(
 )
 for _layer2_action in M5_LAYER2_ACTIONS:
     mcp.configure_layer2(_layer2_action)
+for _metadata_action in ("get_board_info", "find_symbol", "wait"):
+    mcp.configure_metadata(_metadata_action)
 
 PILOT_PLAN_ACTIONS = ("read_serial", "write_serial", "write_memory")
 TASK7_GUARDED_ACTIONS = (
@@ -1979,7 +2074,6 @@ for _guarded_action in M5_GUARDED_ACTIONS:
     mcp.configure_guarded_dispatch(
         _guarded_action,
         guard=_enforce_guarded_invocation,
-        lock_for_board=lambda board_id: connection_manager.lock_for(board_id),
     )
 
 plan_tool_handlers = register_plan_tools(
@@ -1990,15 +2084,16 @@ plan_tool_handlers = register_plan_tools(
 )
 
 
-def _target_names() -> tuple[str, ...]:
-    # Use pyOCD's pinned in-process registry.  Parsing its human-formatted CLI
-    # table was locale-dependent on Windows and could turn a supported target
-    # into an empty inventory when a description contained non-ASCII text.
-    from pyocd.target.builtin import BUILTIN_TARGETS
-
-    names: set[str] = {str(name).casefold() for name in BUILTIN_TARGETS}
-    for pack in load_manifest(_firm_store.layout.pack_manifest):
-        names.update(target.casefold() for target in pack.provides_targets)
+def _target_names(backend_name: str | None = None) -> tuple[str, ...]:
+    backend = (
+        target_control.current_backend()
+        if backend_name is None
+        else target_control.backend_for_name(backend_name)
+    )
+    names: set[str] = set(backend.discover_targets())
+    if backend.backend_name == "pyocd":
+        for pack in load_manifest(_firm_store.layout.pack_manifest):
+            names.update(target.casefold() for target in pack.provides_targets)
     return tuple(sorted(names))
 
 
@@ -2006,11 +2101,12 @@ def _validation_inventory() -> ValidationInventory:
     probes_by_id = {
         probe.uid: ValidationProbe(
             probe.uid,
-            probe.description or probe.raw,
+            probe.description,
             probe.family,
             probe.uid or None,
         )
-        for probe in list_connected_probes(_run_cmd)
+        for backend in target_control.available_backends()
+        for probe in backend.discover_probes()
     }
     # pyOCD inventory intentionally omits probes already opened by this process.
     # Validation must still be able to select and stamp the server-owned active
@@ -2022,11 +2118,15 @@ def _validation_inventory() -> ValidationInventory:
         if not probe_uid or probe_uid in probes_by_id:
             continue
         board = handle.board
-        probe = getattr(handle.session, "probe", None)
-        description = str(getattr(probe, "description", "") or "").strip()
+        description = target_control.describe_session(handle).probe_description
         if not description:
             description = board.display_name if board is not None else f"Active probe {probe_uid}"
-        probe_family = probe_family_from_pyocd_probe(probe)
+        owner = getattr(handle, "backend_owner", None)
+        probe_family = (
+            board.probe_family
+            if board is not None
+            else str(getattr(owner, "backend_name", "unknown"))
+        )
         probes_by_id[probe_uid] = ValidationProbe(
             probe_uid,
             description,
@@ -2078,7 +2178,7 @@ def _validation_connect(profile, probe: ValidationProbe, timeout: float) -> obje
     handle = target_control.open_session(
         board=profile.board,
         unique_id=probe.usb_serial,
-        target=profile.board.pyocd_target,
+        target=profile.board.target_identity,
         server_timeouts=_staged_server_timeouts,
         connect_mode="attach",
     )
@@ -2163,122 +2263,21 @@ _report_writer = ReportWriter(_firm_store)
 _safety_repository = SafetyArtifactRepository(_firm_store)
 
 
-def _refresh_tracked_artifact_hashes(stored: object) -> object:
-    """Re-hash only paths already selected by authoritative setup evidence."""
-
-    if not isinstance(stored, Mapping):
-        return stored
-
-    def refreshed_artifact(raw: object) -> object:
-        if not isinstance(raw, Mapping):
-            return raw
-        updated = dict(raw)
-        path_value = raw.get("path")
-        if isinstance(path_value, str) and path_value.strip():
-            path = Path(path_value).expanduser()
-            updated["sha256"] = sha256_file(path) if path.is_file() else "missing"
-        return updated
-
-    updated = dict(stored)
-    nested = stored.get("artifact")
-    if nested is not None:
-        updated["artifact"] = refreshed_artifact(nested)
-    artifacts = stored.get("artifacts")
-    if isinstance(artifacts, list):
-        updated["artifacts"] = [refreshed_artifact(item) for item in artifacts]
-    return updated
+_safety_policy = SafetyPolicy(_safety_repository)
 
 
-def _live_safety_inputs(board_id: str, artifacts) -> FingerprintInputs:
-    sources = artifacts.source_manifest.get("sources")
-    if not isinstance(sources, Mapping):
-        raise SafetyPolicyError(
-            "safety/source-manifest-invalid",
-            "Safety source manifest has no source table.",
-            remedy=("board_safety_setup",),
-        )
-
-    def evidence(source: FingerprintSource) -> object:
-        row = sources.get(source.value)
-        if not isinstance(row, Mapping) or "evidence" not in row:
-            raise SafetyPolicyError(
-                "safety/source-manifest-invalid",
-                f"Safety source manifest has no {source.value} evidence.",
-                remedy=("board_safety_setup",),
-            )
-        return row["evidence"]
-
-    def update_tracked(
-        stored: object,
-        live: Mapping[str, object],
-        *,
-        preserve: frozenset[str] = frozenset(),
-    ) -> object:
-        if not isinstance(stored, Mapping):
-            return stored
-        updated = dict(stored)
-        for key in stored:
-            if key not in preserve and key in live:
-                updated[str(key)] = live[str(key)]
-        return updated
-
-    try:
-        profile = _profile_repository.load(board_id, include_legacy=False)
-    except ProfileError as exc:
-        raise SafetyPolicyError(
-            "safety/profile-stale",
-            f"The current schema-v2 profile cannot be loaded: {exc}",
-            remedy=("board_setup", "board_validate"),
-        ) from exc
-    profile_document = profile.to_document()
-    live_profile = update_tracked(
-        evidence(FingerprintSource.PROFILE),
-        profile_document,
-        preserve=frozenset({"created_at", "updated_at", "safety_ref"}),
-    )
-    live_part_target = update_tracked(
-        evidence(FingerprintSource.PART_TARGET),
-        {
-            "mcu_part_number": profile.mcu_part_number or "",
-            "target": profile.board.pyocd_target,
-        },
-    )
-    stored_pack = _refresh_tracked_artifact_hashes(evidence(FingerprintSource.PACK))
-    pack = next(
-        (
-            candidate
-            for candidate in load_manifest(_firm_store.layout.pack_manifest)
-            if profile.board.pyocd_target in candidate.provides_targets
-        ),
-        None,
-    )
-    if isinstance(stored_pack, Mapping) and "id" in stored_pack:
-        live_pack = (
-            update_tracked(stored_pack, pack_spec_document(pack))
-            if pack is not None
-            else {"missing_for_target": profile.board.pyocd_target}
-        )
-    else:
-        live_pack = stored_pack
-    return FingerprintInputs(
-        live_profile,
-        live_part_target,
-        live_pack,
-        evidence(FingerprintSource.EVIDENCE),
-        _refresh_tracked_artifact_hashes(evidence(FingerprintSource.APPLICATION_ARTIFACTS)),
-        _refresh_tracked_artifact_hashes(evidence(FingerprintSource.BOOTLOADER_ARTIFACTS)),
-        evidence(FingerprintSource.GEOMETRY),
-        evidence(FingerprintSource.SCHEMA),
-    )
-
-
-_safety_policy = SafetyPolicy(_safety_repository, live_inputs=_live_safety_inputs)
-
-
-def _restamp_after_refresh(board_id: str, aggregate: str) -> None:
+def _restamp_after_refresh(
+    board_id: str, aggregate: str, identity_unchanged: bool
+) -> bool:
+    if not identity_unchanged:
+        gate_manager.clear(board_id, "stable MCU or target identity changed during safety refresh")
+        return False
     connection = connection_manager.maybe_connection(board_id)
     if connection is not None:
-        gate_manager.refresh_fingerprint(board_id, connection.connection_id, aggregate)
+        return gate_manager.refresh_fingerprint(
+            board_id, connection.connection_id, aggregate
+        ) is not None
+    return False
 
 
 _safety_refresher = SafetyRefresher(_firm_store, on_commit=_restamp_after_refresh)
@@ -2289,855 +2288,127 @@ def _safety_continuation(prefix: str) -> str:
     return f"{prefix}-{secrets.token_hex(8)}"
 
 
-def _bootstrap_safety_inputs(board_id: str) -> FingerprintInputs:
+def _reviewed_safety_request(board_id: str, continuation: str) -> SafetySetupRequest:
+    """Rederive a complete v2 map from current server-owned reviewed sources."""
+
     profile = _profile_repository.load(board_id, include_legacy=False)
-    pack = next(
-        (
-            candidate
-            for candidate in load_manifest(_firm_store.layout.pack_manifest)
-            if profile.board.pyocd_target in candidate.provides_targets
-        ),
-        None,
-    )
-    return FingerprintInputs(
+    catalog = catalog_board_for_mcu(profile.mcu_part_number or "")
+    if catalog is None or not catalog.automatic_setup_reviewed:
+        raise SafetyArtifactError(
+            "complete packaged reviewed evidence is unavailable for this MCU; maintainers must "
+            "add reviewed catalog, target/SVD, and official-document evidence"
+        )
+    if profile.mcu_part_number != catalog.package_part_number:
+        raise SafetyArtifactError("profile MCU identity does not match reviewed catalog evidence")
+    if not catalog.application_partition_authoritative:
+        raise SafetyArtifactError("reviewed application partition authority is unavailable")
+    if not catalog.datasheet_sha256:
+        raise SafetyArtifactError("reviewed official-document digest is unavailable")
+    bundle = load_pinned_reviewed_evidence(catalog, catalog.datasheet_sha256[0])
+    erase = bundle.reconciliation.erase_geometry
+    if erase is None:
+        raise SafetyArtifactError("reviewed erase geometry did not reconcile")
+    sources = bundle.source_record()
+    inputs = FingerprintInputs(
         profile.to_document(),
         {
-            "mcu_part_number": profile.mcu_part_number or "",
-            "target": profile.board.pyocd_target,
+            "board_type": catalog.board_type,
+            "mcu_part_number": profile.mcu_part_number,
+            "target": catalog.target_identity,
         },
-        pack_spec_document(pack)
-        if pack is not None
-        else {"missing_for_target": profile.board.pyocd_target},
-        {},
-        {"configuration": None, "artifacts": []},
-        {"configuration": None, "artifacts": []},
-        {},
-        {"memory_map": 1, "fingerprints": 1, "evidence": 1},
-    )
-
-
-def _tracked_build_selection(document: object, role: BuildRole) -> BuildArtifactSelection | None:
-    if not isinstance(document, Mapping):
-        raise LinkerEvidenceError(
-            "build/tracked-evidence-invalid",
-            f"Tracked {role.value} artifact evidence must be an object.",
-        )
-    rows = document.get("artifacts")
-    if not isinstance(rows, list):
-        raise LinkerEvidenceError(
-            "build/tracked-evidence-invalid",
-            f"Tracked {role.value} artifact evidence has no artifact list.",
-        )
-    paths: dict[str, Path] = {}
-    for row in rows:
-        if not isinstance(row, Mapping):
-            raise LinkerEvidenceError(
-                "build/tracked-evidence-invalid", "Tracked artifact entries must be objects."
-            )
-        kind = row.get("kind")
-        path = row.get("path")
-        if isinstance(kind, str) and isinstance(path, str) and path.strip():
-            paths[kind.casefold()] = Path(path).expanduser()
-    if not paths:
-        return None
-    elf = paths.get("elf")
-    if elf is None:
-        raise LinkerEvidenceError(
-            "build/tracked-elf-missing",
-            f"Tracked {role.value} evidence does not include an ELF artifact.",
-        )
-    configuration = document.get("configuration")
-    if not isinstance(configuration, str) or not configuration.strip():
-        configuration = f"tracked_{role.value}"
-    return BuildArtifactSelection(
-        configuration,
-        role,
-        elf,
-        linker_map_path=paths.get("map") or paths.get("linker_map"),
-        hex_path=paths.get("hex"),
-    )
-
-
-def _build_region_replacements(
-    document: object,
-    role: BuildRole,
-) -> tuple[RegionContribution, ...]:
-    selection = _tracked_build_selection(document, role)
-    evidence = extract_build_evidence(selection)
-    if selection is None or not evidence.artifact_present:
-        return ()
-    source = (
-        FingerprintSource.APPLICATION_ARTIFACTS
-        if role is BuildRole.APPLICATION
-        else FingerprintSource.BOOTLOADER_ARTIFACTS
-    )
-    provenance = tuple(
-        Provenance(
-            SourceAuthority.BUILD,
-            item.artifact_kind,
-            f"{item.path} sha256 {item.sha256}",
-        )
-        for item in evidence.provenance
-    )
-    if not provenance:
-        raise LinkerEvidenceError(
-            "build/tracked-provenance-missing",
-            f"Tracked {role.value} evidence produced no content-addressed provenance.",
-        )
-    replacements: list[RegionContribution] = []
-    if evidence.flash_partition is not None:
-        kind = (
-            RegionKind.APPLICATION_FLASH
-            if role is BuildRole.APPLICATION
-            else RegionKind.BOOTLOADER_FLASH
-        )
-        replacements.append(
-            RegionContribution(
-                SafetyRegion(
-                    f"{role.value} flash",
-                    kind,
-                    evidence.flash_partition,
-                    provenance,
-                    executable=False,
-                ),
-                (source,),
-            )
-        )
-        replacements.extend(
-            RegionContribution(
-                SafetyRegion(
-                    f"{role.value} executable segment {segment.index}",
-                    kind,
-                    segment.runtime_range,
-                    provenance,
-                    executable=True,
-                ),
-                (source,),
-            )
-            for segment in evidence.loadable_segments
-            if segment.executable and evidence.flash_partition.contains(segment.runtime_range)
-        )
-    # RAM authority is hardware-owned. Linker RAM remains fingerprint evidence
-    # only and can never widen the reconciled writable-RAM boundary.
-    return tuple(replacements)
-
-
-def _run_board_safety_setup(board_id: str) -> Mapping[str, object]:
-    continuation = _safety_continuation("safety-setup")
-    try:
-        current = _safety_repository.load_current(board_id)
-        require_reconciled_authority(current)
-    except (SafetyArtifactError, ValueError):
-        try:
-            inputs = _bootstrap_safety_inputs(board_id)
-            profile = _profile_repository.load(board_id, include_legacy=False)
-        except (ProfileError, ValueError) as exc:
-            return {
-                "status": "safety_setup_blocked",
-                "agent_prompt": (
-                    f"The schema-v2 board profile is unavailable: {exc}. Complete board_setup "
-                    "before safety setup. Relay this guidance conversationally and do not "
-                    "expose structured internals."
-                ),
-                "choices": [],
-                "observed": {"board_id": board_id},
-                "constraints": ["No gate or authority state was created."],
-                "rejected_candidates": [],
-                "accepted_response": None,
-                "validation_plan": [
-                    "board_setup-plan",
-                    "board_setup",
-                    "board_safety_setup",
-                    "board_validate",
-                ],
-            }
-        catalog = catalog_board_for_mcu(profile.mcu_part_number or "")
-        if catalog is None or not catalog.automatic_setup_reviewed:
-            reviewed = reviewed_setup_board_types()
-            reviewed_text = ", ".join(reviewed) if reviewed else "none"
-            result = _safety_builder.build(
-                SafetySetupRequest(
-                    board_id,
-                    continuation,
-                    inputs,
-                    (),
-                    (
-                        SafetyIssue(
-                            "safety_setup_unsupported_board",
-                            "safety/unsupported-board",
-                            "Automatic safety setup is unavailable for this board type. "
-                            f"The reviewed automatic-safety board types are: {reviewed_text}. "
-                            "Extending this list requires maintainers to add pinned device-support "
-                            "and official-document evidence, exact runtime identities, deterministic "
-                            "two-source reconciliation, and reviewed catalog geometry. Caller-supplied "
-                            "allowed ranges are never accepted.",
-                            details={
-                                "board_type": (catalog.board_type if catalog is not None else None),
-                                "mcu_part_number": profile.mcu_part_number,
-                                "reviewed_board_types": list(reviewed),
-                            },
-                        ),
-                    ),
-                )
-            )
-            return result.to_payload()
-        result = _safety_builder.build(
-            SafetySetupRequest(
-                board_id,
-                continuation,
-                inputs,
-                (),
-                (
-                    SafetyIssue(
-                        "safety_setup_blocked",
-                        "safety/reviewed-setup-required",
-                        "This reviewed board has no current authoritative safety map. Run "
-                        "board_setup-plan and board_setup with the reviewed datasheet so the "
-                        "server can rebuild pinned two-source evidence, then retry "
-                        "board_safety_setup and board_validate. No caller-defined ranges are accepted.",
-                        details={
-                            "board_type": catalog.board_type,
-                            "remedy": [
-                                "board_setup-plan",
-                                "board_setup",
-                                "board_safety_setup",
-                                "board_validate",
-                            ],
-                        },
-                    ),
-                ),
-            )
-        )
-        return result.to_payload()
-
-    live_inputs = _live_safety_inputs(board_id, current)
-    changed = current.fingerprints.changed_sources(FingerprintSet.build(live_inputs))
-    if changed:
-        return _run_board_safety_refresh(board_id)
-
-    result = _safety_builder.build(
-        SafetySetupRequest(board_id, continuation, live_inputs, current.regions)
-    )
-    expected_ref = (
-        _firm_store.layout.safety_reference_prefix(board_id) / "memory_map.yaml"
-    ).as_posix()
-    profile = _profile_repository.load(board_id, include_legacy=False)
-    if result.status == "safety_setup_completed" and profile.safety_ref != expected_ref:
-        _profile_repository.commit_safety_ref(
-            _profile_repository.stage_safety_ref(board_id, expected_ref)
-        )
-    return result.to_payload()
-
-
-def _artifact_refresh_selection(
-    role: BuildRole,
-    elf: str | None,
-    hex_file: str | None,
-    linker_map: str | None,
-) -> BuildArtifactSelection:
-    if elf is None:
-        raise LinkerEvidenceError(
-            f"build/{role.value}-elf-required",
-            f"{role.value.title()} refresh requires an ELF path.",
-        )
-    return BuildArtifactSelection(
-        f"runtime_{role.value}",
-        role,
-        Path(elf).expanduser().resolve(),
-        Path(linker_map).expanduser().resolve() if linker_map else None,
-        Path(hex_file).expanduser().resolve() if hex_file else None,
-    )
-
-
-def _artifact_requested_ranges(evidence: object) -> tuple[AddressRange, ...]:
-    loadable_segments = getattr(evidence, "loadable_segments")
-    requested = [
-        segment.load_range for segment in loadable_segments if segment.load_range is not None
-    ]
-    requested.extend(segment.runtime_range for segment in loadable_segments if segment.executable)
-    requested.extend(getattr(evidence, "hex_ranges"))
-    flash_partition = getattr(evidence, "flash_partition")
-    if flash_partition is not None:
-        requested.append(flash_partition)
-    for value in (getattr(evidence, "entry_point"), getattr(evidence, "vector_table")):
-        if value is not None:
-            requested.append(AddressRange.from_start_size(value, 1))
-    return tuple(requested)
-
-
-def _artifact_refresh_contributions(
-    selection: BuildArtifactSelection,
-    evidence: object,
-) -> tuple[RegionContribution, ...]:
-    source = (
-        FingerprintSource.APPLICATION_ARTIFACTS
-        if selection.role is BuildRole.APPLICATION
-        else FingerprintSource.BOOTLOADER_ARTIFACTS
-    )
-    kind = (
-        RegionKind.APPLICATION_FLASH
-        if selection.role is BuildRole.APPLICATION
-        else RegionKind.BOOTLOADER_FLASH
-    )
-    flash_partition = getattr(evidence, "flash_partition")
-    if flash_partition is None:
-        raise LinkerEvidenceError(
-            "build/flash-partition-missing",
-            f"The selected {selection.role.value} build has no linker-owned flash partition.",
-        )
-    provenance = tuple(
-        Provenance(
-            SourceAuthority.BUILD,
-            item.artifact_kind,
-            f"{item.path} sha256 {item.sha256}",
-        )
-        for item in getattr(evidence, "provenance")
-    )
-    if not provenance:
-        raise LinkerEvidenceError(
-            "build/provenance-missing",
-            f"The selected {selection.role.value} build has no content-addressed provenance.",
-        )
-    partition = RegionContribution(
-        SafetyRegion(
-            f"{selection.role.value} flash",
-            kind,
-            flash_partition,
-            provenance,
-            executable=False,
-        ),
-        (source,),
-    )
-    executable = tuple(
-        RegionContribution(
-            SafetyRegion(
-                f"{selection.role.value} executable segment {segment.index}",
-                kind,
-                segment.runtime_range,
-                provenance,
-                executable=True,
-            ),
-            (source,),
-        )
-        for segment in getattr(evidence, "loadable_segments")
-        if segment.executable and flash_partition.contains(segment.runtime_range)
-    )
-    return (partition,) + executable
-
-
-def _validated_artifact_refresh(
-    current,
-    inputs: FingerprintInputs,
-    selection: BuildArtifactSelection,
-) -> tuple[FingerprintSource, object, tuple[RegionContribution, ...]]:
-    evidence = extract_build_evidence(selection)
-    requested = _artifact_requested_ranges(evidence)
-    if not requested:
-        raise LinkerEvidenceError(
-            "build/no-loadable-ranges",
-            f"The selected {selection.role.value} build has no loadable ranges.",
-        )
-    if selection.role is BuildRole.APPLICATION:
-        source_record = inputs.evidence
-        deployment = (
-            source_record.get("deployment_policy") if isinstance(source_record, Mapping) else None
-        )
-        if not isinstance(deployment, Mapping):
-            raise LinkerEvidenceError(
-                "build/deployment-policy-missing",
-                "The current source manifest has no reviewed application deployment ceiling.",
-            )
-        envelope = AddressRange(
-            int(deployment["application_start"]),
-            int(deployment["application_end"]),
-        )
-        if any(not envelope.contains(item) for item in requested):
-            raise LinkerEvidenceError(
-                "build/deployment-policy-exceeded",
-                "The application artifact would widen or exit the reviewed deployment envelope.",
-            )
-        envelope_document: object = envelope.to_document()
-        source = FingerprintSource.APPLICATION_ARTIFACTS
-    else:
-        bootloader_regions = tuple(
-            item.region
-            for item in current.regions
-            if item.region.kind is RegionKind.BOOTLOADER_FLASH
-            and FingerprintSource.BOOTLOADER_ARTIFACTS not in item.source_groups
-            and set(item.source_groups).intersection(
-                {FingerprintSource.PACK, FingerprintSource.EVIDENCE}
-            )
-            and all(
-                provenance.authority is SourceAuthority.RECONCILED
-                for provenance in item.region.provenance
-            )
-        )
-        if not bootloader_regions:
-            raise LinkerEvidenceError(
-                "build/bootloader-envelope-missing",
-                "The current map has no server-owned reviewed bootloader partition. Refresh "
-                "cannot create or widen bootloader authority; maintainers must add reviewed "
-                "bootloader evidence before a full safety setup can establish it.",
-            )
-        prohibited = tuple(
-            item.region for item in current.regions if item.region.kind is RegionKind.PROHIBITED
-        )
-        containment = SafetyMap([*bootloader_regions, *prohibited]).check(
-            ActionCategory.FLASH_BOOTLOADER,
-            requested,
-        )
-        if isinstance(containment, Refusal):
-            raise LinkerEvidenceError(
-                "build/bootloader-envelope-exceeded",
-                "The bootloader artifact would widen, exit, or cross a prohibited part of the "
-                f"existing reviewed bootloader partition: {containment.reason}",
-            )
-        envelope_document = [item.address_range.to_document() for item in bootloader_regions]
-        source = FingerprintSource.BOOTLOADER_ARTIFACTS
-    artifact_document = {
-        "configuration": selection.configuration_id,
-        "role": selection.role.value,
-        "artifacts": [
-            {
-                "kind": item.artifact_kind,
-                "path": str(item.path),
-                "sha256": item.sha256,
-            }
-            for item in getattr(evidence, "provenance")
-        ],
-        "deployment_envelope": envelope_document,
-    }
-    return source, artifact_document, _artifact_refresh_contributions(selection, evidence)
-
-
-def _blocked_artifact_refresh(
-    board_id: str,
-    role: BuildRole,
-    exc: Exception,
-    continuation: str,
-    inputs: FingerprintInputs,
-) -> Mapping[str, object]:
-    missing_authority = getattr(exc, "code", None) == "build/bootloader-envelope-missing"
-    source = (
-        FingerprintSource.APPLICATION_ARTIFACTS
-        if role is BuildRole.APPLICATION
-        else FingerprintSource.BOOTLOADER_ARTIFACTS
-    )
-    return _safety_refresher.blocked(
-        SafetyRefreshRequest(board_id, continuation, inputs),
-        message=(
-            f"The {role.value} build could not be proven inside existing server-owned safety "
-            f"authority: {exc} No safety state changed. Relay this plainly and do not expose "
-            "structured internals."
-        ),
-        classification=(
-            "bootloader_authority_missing" if missing_authority else f"{role.value}_change"
-        ),
-        changed=(source,),
-        remedy=(
-            () if missing_authority else ("select_valid_build_artifact", "board_safety_refresh")
-        ),
-        details={"reason": str(exc), "terminal": missing_authority},
-    ).to_payload()
-
-
-def _manifest_source_evidence(current, source: FingerprintSource) -> object:
-    sources = current.source_manifest.get("sources")
-    row = sources.get(source.value) if isinstance(sources, Mapping) else None
-    if not isinstance(row, Mapping) or "evidence" not in row:
-        raise SafetyArtifactError(f"{source.value} source evidence is missing")
-    return row["evidence"]
-
-
-def _contribution_documents(
-    contributions: tuple[RegionContribution, ...],
-) -> tuple[Mapping[str, object], ...]:
-    documents = [cast(Mapping[str, object], item.to_document()) for item in contributions]
-    return tuple(
-        sorted(
-            documents,
-            key=lambda item: (
-                str(item["kind"]),
-                str(item["start"]),
-                str(item["end"]),
-                str(item["name"]),
-            ),
-        )
-    )
-
-
-def _server_owned_hardware_authority_refresh(
-    board_id: str,
-    continuation: str,
-    current,
-) -> Mapping[str, object]:
-    """Migrate stale pinned pack/evidence only after current server sources reconcile."""
-
-    current_values = _live_safety_inputs(board_id, current).values()
-    part_target = current_values[FingerprintSource.PART_TARGET]
-    evidence_record = current_values[FingerprintSource.EVIDENCE]
-    if not isinstance(part_target, Mapping) or not isinstance(evidence_record, Mapping):
-        raise SafetyArtifactError("persisted safety anchors are malformed")
-    board_type = part_target.get("board_type")
-    if not isinstance(board_type, str):
-        raise SafetyArtifactError("persisted safety authority has no reviewed board type")
-    catalog = catalog_board(board_type)
-    profile = _profile_repository.load(board_id, include_legacy=False)
-    if (
-        profile.mcu_part_number != catalog.package_part_number
-        or profile.board.pyocd_target != catalog.pyocd_target
-        or part_target.get("mcu_part_number") != catalog.package_part_number
-        or part_target.get("target") != catalog.pyocd_target
-    ):
-        raise SafetyArtifactError(
-            "board, MCU, or target anchors changed; full safety setup and validation are required"
-        )
-    schema = current_values[FingerprintSource.SCHEMA]
-    if not isinstance(schema, Mapping) or schema.get("evidence") != 2 or schema.get("catalog") != 2:
-        raise SafetyArtifactError(
-            "legacy or changed safety schema requires full safety setup and validation"
-        )
-    official = evidence_record.get("official_document")
-    digest = official.get("datasheet_sha256") if isinstance(official, Mapping) else None
-    if not isinstance(digest, str):
-        raise SafetyArtifactError("persisted official evidence has no reviewed datasheet digest")
-    bundle = load_pinned_reviewed_evidence(catalog, digest)
-    source_record = bundle.source_record()
-    geometry = bundle.reconciliation.erase_geometry
-    if geometry is None:
-        raise SafetyArtifactError("current pinned evidence has no reconciled erase geometry")
-    current_values[FingerprintSource.PACK] = source_record["device_support"]
-    current_values[FingerprintSource.EVIDENCE] = {
-        "official_document": source_record["official_document"],
-        "reconciliation": source_record["reconciliation"],
-        "deployment_policy": {
-            "application_start": catalog.application_start,
-            "application_end": catalog.application_end,
-        },
-    }
-    current_values[FingerprintSource.GEOMETRY] = {
-        "flash_start": catalog.flash_start,
-        "flash_end": catalog.flash_end,
-        "ram_start": catalog.ram_start,
-        "ram_end": catalog.ram_end,
-        "erase_origin": geometry.erase_origin,
-        "erase_size": geometry.erase_size,
-    }
-    candidate = FingerprintInputs(
-        current_values[FingerprintSource.PROFILE],
-        current_values[FingerprintSource.PART_TARGET],
-        current_values[FingerprintSource.PACK],
-        current_values[FingerprintSource.EVIDENCE],
-        current_values[FingerprintSource.APPLICATION_ARTIFACTS],
-        current_values[FingerprintSource.BOOTLOADER_ARTIFACTS],
-        current_values[FingerprintSource.GEOMETRY],
-        current_values[FingerprintSource.SCHEMA],
-    )
-    changed = current.fingerprints.changed_sources(FingerprintSet.build(candidate))
-    changed_set = set(changed)
-    if changed_set.intersection(
+        sources["device_support"],
         {
-            FingerprintSource.PART_TARGET,
-            FingerprintSource.GEOMETRY,
-            FingerprintSource.SCHEMA,
-        }
-    ):
-        return _safety_refresher.blocked(
-            SafetyRefreshRequest(board_id, continuation, candidate),
-            message=(
-                "Current pinned evidence changes a board anchor, erase geometry, or schema. "
-                "Run full board_safety_setup and board_validate; scoped refresh did not commit."
-            ),
-            classification=(
-                "anchor_change"
-                if FingerprintSource.PART_TARGET in changed_set
-                else "geometry_change"
-                if FingerprintSource.GEOMETRY in changed_set
-                else "schema_change"
-            ),
-            changed=changed,
-            remedy=("board_safety_setup", "board_validate"),
-        ).to_payload()
-    if not changed_set or not changed_set.issubset(
-        {FingerprintSource.PACK, FingerprintSource.EVIDENCE}
-    ):
-        raise SafetyArtifactError("stale authority cannot be safely scoped to pack/evidence drift")
-
-    authority_groups = {
-        FingerprintSource.PACK,
-        FingerprintSource.EVIDENCE,
-        FingerprintSource.GEOMETRY,
-    }
-    retained = tuple(
-        item for item in current.regions if not authority_groups.intersection(item.source_groups)
+            "official_document": sources["official_document"],
+            "reconciliation": sources["reconciliation"],
+            "deployment_policy": {
+                "application_start": catalog.application_start,
+                "application_end": catalog.application_end,
+                "application_authoritative": catalog.application_partition_authoritative,
+                "bootloader_start": catalog.bootloader_start,
+                "bootloader_end": catalog.bootloader_end,
+                "bootloader_authoritative": catalog.bootloader_partition_authoritative,
+            },
+        },
+        {"configuration": None, "artifacts": []},
+        {"configuration": None, "artifacts": []},
+        {
+            "flash_start": catalog.flash_start,
+            "flash_end": catalog.flash_end,
+            "ram_start": catalog.ram_start,
+            "ram_end": catalog.ram_end,
+            "erase_origin": erase.erase_origin,
+            "erase_size": erase.erase_size,
+        },
+        {"memory_map": 2, "evidence": 2, "catalog": 2},
     )
-    for source, role in (
-        (FingerprintSource.APPLICATION_ARTIFACTS, BuildRole.APPLICATION),
-        (FingerprintSource.BOOTLOADER_ARTIFACTS, BuildRole.BOOTLOADER),
-    ):
-        document = current_values[source]
-        rows = document.get("artifacts") if isinstance(document, Mapping) else None
-        expected = () if rows == [] else _build_region_replacements(document, role)
-        observed = tuple(item for item in retained if source in item.source_groups)
-        if _contribution_documents(observed) != _contribution_documents(expected):
-            raise SafetyArtifactError(
-                f"persisted {role.value} regions cannot be reproduced from tracked artifacts"
-            )
-    if any(
-        not set(item.source_groups).intersection(
-            {
-                FingerprintSource.APPLICATION_ARTIFACTS,
-                FingerprintSource.BOOTLOADER_ARTIFACTS,
-            }
-        )
-        for item in retained
-    ):
-        raise SafetyArtifactError("persisted non-hardware regions have unclear ownership")
-
-    replacements = tuple(
+    regions = tuple(
         RegionContribution(
             region.to_safety_region(),
-            (
-                FingerprintSource.PACK,
-                FingerprintSource.EVIDENCE,
-                FingerprintSource.GEOMETRY,
-            ),
+            (FingerprintSource.EVIDENCE, FingerprintSource.GEOMETRY),
         )
         for region in bundle.reconciliation.regions
     )
-    retained_bootloader = tuple(
-        item.region
-        for item in retained
-        if FingerprintSource.BOOTLOADER_ARTIFACTS in item.source_groups
-    )
-    if retained_bootloader:
-        reviewed_bootloader = tuple(
-            item.region for item in replacements if item.region.kind is RegionKind.BOOTLOADER_FLASH
-        )
-        prohibited = tuple(
-            item.region for item in replacements if item.region.kind is RegionKind.PROHIBITED
-        )
-        if not reviewed_bootloader:
-            raise SafetyArtifactError(
-                "current pinned evidence has no independent bootloader envelope for the retained build"
-            )
-        bootloader_map = SafetyMap([*reviewed_bootloader, *prohibited])
-        for region in retained_bootloader:
-            containment = bootloader_map.check(
-                ActionCategory.FLASH_BOOTLOADER,
-                (region.address_range,),
-            )
-            if isinstance(containment, Refusal):
-                raise SafetyArtifactError(
-                    "retained bootloader build exceeds the newly reconciled bootloader envelope"
-                )
-    final_regions = tuple(
-        sorted(
-            (*retained, *replacements),
-            key=lambda item: (
-                item.region.address_range.start,
-                item.region.address_range.end,
-                item.region.kind.value,
-                item.region.name,
-            ),
-        )
-    )
-    conflicts = region_conflicts(final_regions)
-    if conflicts:
-        raise SafetyArtifactError("current pinned evidence conflicts with retained build regions")
-    candidate_fingerprints = FingerprintSet.build(candidate)
-    preflight_request = SafetySetupRequest(
-        board_id,
-        continuation,
-        candidate,
-        final_regions,
-    )
-    memory, manifest, _report = build_documents(
-        preflight_request,
-        candidate_fingerprints,
-        status="safety_refresh_preflight",
-        prompt="Server-owned candidate authority preflight.",
-    )
-    require_reconciled_authority(
-        SafetyArtifacts(
-            board_id,
-            candidate_fingerprints,
-            final_regions,
-            memory,
-            manifest,
-        )
-    )
-    migration_refresher = SafetyRefresher(
-        _firm_store,
-        on_commit=_restamp_after_refresh,
-        authority_verifier=lambda _artifacts: None,
-    )
-    result = migration_refresher.refresh(
-        SafetyRefreshRequest(
-            board_id,
-            continuation,
-            candidate,
-            (FingerprintSource.PACK, FingerprintSource.EVIDENCE),
-            replacements,
-        )
-    )
-    return result.to_payload()
+    return SafetySetupRequest(board_id, continuation, inputs, regions)
 
 
-def _run_board_safety_refresh(
-    board_id: str,
-    *,
-    application_elf: str | None = None,
-    application_hex: str | None = None,
-    application_map: str | None = None,
-    bootloader_elf: str | None = None,
-    bootloader_hex: str | None = None,
-    bootloader_map: str | None = None,
-) -> Mapping[str, object]:
+def _run_board_safety_refresh(board_id: str) -> Mapping[str, object]:
     continuation = _safety_continuation("safety-refresh")
     try:
-        current = _safety_repository.load_current(board_id)
-    except (SafetyArtifactError, ValueError):
-        inputs = _bootstrap_safety_inputs(board_id)
-        return _safety_refresher.refresh(
-            SafetyRefreshRequest(board_id, continuation, inputs)
-        ).to_payload()
-    try:
-        require_reconciled_authority(current)
-    except SafetyArtifactError as stale_exc:
-        try:
-            return _server_owned_hardware_authority_refresh(
-                board_id,
-                continuation,
-                current,
-            )
-        except (
-            BoardCatalogError,
-            LinkerEvidenceError,
-            ProfileError,
-            SafetyArtifactError,
-            ValueError,
-        ) as exc:
-            values = {
-                source: _manifest_source_evidence(current, source) for source in FingerprintSource
-            }
-            inputs = FingerprintInputs(
-                values[FingerprintSource.PROFILE],
-                values[FingerprintSource.PART_TARGET],
-                values[FingerprintSource.PACK],
-                values[FingerprintSource.EVIDENCE],
-                values[FingerprintSource.APPLICATION_ARTIFACTS],
-                values[FingerprintSource.BOOTLOADER_ARTIFACTS],
-                values[FingerprintSource.GEOMETRY],
-                values[FingerprintSource.SCHEMA],
-            )
-            return _safety_refresher.blocked(
-                SafetyRefreshRequest(board_id, continuation, inputs),
-                message=(
-                    "Pack or official-evidence authority could not be migrated from current "
-                    "server-owned reviewed sources. The old map remains closed; resolve the "
-                    "maintainer evidence issue, then run board_safety_refresh again."
-                ),
-                classification="pack_or_official_evidence_blocked",
-                changed=(FingerprintSource.PACK, FingerprintSource.EVIDENCE),
-                remedy=("resolve_reviewed_safety_sources", "board_safety_refresh"),
-                details={"reason": str(exc), "stale_reason": str(stale_exc)},
-            ).to_payload()
-    try:
-        live_inputs = _live_safety_inputs(board_id, current)
-    except (SafetyPolicyError, ProfileError, ValueError):
-        inputs = _bootstrap_safety_inputs(board_id)
-        return _safety_refresher.refresh(
-            SafetyRefreshRequest(board_id, continuation, inputs)
-        ).to_payload()
-
-    provided = {
-        BuildRole.APPLICATION: (application_elf, application_hex, application_map),
-        BuildRole.BOOTLOADER: (bootloader_elf, bootloader_hex, bootloader_map),
-    }
-    selected_roles = [role for role, paths in provided.items() if any(paths)]
-    if selected_roles:
-        values = live_inputs.values()
-        replacements_by_source: dict[FingerprintSource, tuple[RegionContribution, ...]] = {}
-        failing_role = selected_roles[0]
-        try:
-            for role in selected_roles:
-                failing_role = role
-                elf, hex_file, linker_map = provided[role]
-                selection = _artifact_refresh_selection(role, elf, hex_file, linker_map)
-                source, document, replacements = _validated_artifact_refresh(
-                    current, live_inputs, selection
-                )
-                values[source] = document
-                replacements_by_source[source] = replacements
-        except (LinkerEvidenceError, OSError, ValueError) as exc:
-            return _blocked_artifact_refresh(
-                board_id,
-                failing_role,
-                exc,
-                continuation,
-                live_inputs,
-            )
-        updated_inputs = FingerprintInputs(
-            values[FingerprintSource.PROFILE],
-            values[FingerprintSource.PART_TARGET],
-            values[FingerprintSource.PACK],
-            values[FingerprintSource.EVIDENCE],
-            values[FingerprintSource.APPLICATION_ARTIFACTS],
-            values[FingerprintSource.BOOTLOADER_ARTIFACTS],
-            values[FingerprintSource.GEOMETRY],
-            values[FingerprintSource.SCHEMA],
-        )
-        changed = set(current.fingerprints.changed_sources(FingerprintSet.build(updated_inputs)))
-        rebuilt = tuple(source for source in replacements_by_source if source in changed)
-        replacements = tuple(
-            contribution
-            for source, contributions in replacements_by_source.items()
-            if source in changed
-            for contribution in contributions
-        )
-        return _safety_refresher.refresh(
-            SafetyRefreshRequest(
-                board_id,
-                continuation,
-                updated_inputs,
-                rebuilt,
-                replacements,
-            )
-        ).to_payload()
-
-    changed = current.fingerprints.changed_sources(FingerprintSet.build(live_inputs))
-    changed_set = set(changed)
-    build_sources = {
-        FingerprintSource.APPLICATION_ARTIFACTS,
-        FingerprintSource.BOOTLOADER_ARTIFACTS,
-    }
-    rebuilt: tuple[FingerprintSource, ...] = ()
-    replacements: tuple[RegionContribution, ...] = ()
-    if changed_set and changed_set.issubset(build_sources):
-        rebuilt = changed
-        values = live_inputs.values()
-        try:
-            if FingerprintSource.APPLICATION_ARTIFACTS in changed_set:
-                replacements += _build_region_replacements(
-                    values[FingerprintSource.APPLICATION_ARTIFACTS], BuildRole.APPLICATION
-                )
-            if FingerprintSource.BOOTLOADER_ARTIFACTS in changed_set:
-                replacements += _build_region_replacements(
-                    values[FingerprintSource.BOOTLOADER_ARTIFACTS], BuildRole.BOOTLOADER
-                )
-        except LinkerEvidenceError:
-            rebuilt = ()
-            replacements = ()
+        request = _reviewed_safety_request(board_id, continuation)
+    except (BoardCatalogError, ProfileError, SafetyArtifactError, ValueError) as exc:
+        return {
+            "status": "safety_refresh_blocked",
+            "agent_prompt": (
+                f"The stable memory map could not be rebuilt: {exc}. Resolve the named reviewed "
+                "evidence problem and call board_safety_refresh again. Relay this guidance "
+                "conversationally and do not expose structured internals."
+            ),
+            "choices": [],
+            "observed": {
+                "board_id": board_id,
+                "reason": str(exc),
+                "validation_required": False,
+                "next_action": "resolve_reviewed_safety_sources",
+            },
+            "constraints": ["No gate, plan, permission, or caller-defined range was created."],
+            "rejected_candidates": [],
+            "accepted_response": None,
+            "validation_plan": [
+                "resolve_reviewed_safety_sources",
+                "board_safety_refresh",
+            ],
+        }
     return _safety_refresher.refresh(
         SafetyRefreshRequest(
             board_id,
             continuation,
-            live_inputs,
-            rebuilt,
-            replacements,
+            request.inputs,
+            (
+                FingerprintSource.PROFILE,
+                FingerprintSource.PART_TARGET,
+                FingerprintSource.PACK,
+                FingerprintSource.EVIDENCE,
+                FingerprintSource.GEOMETRY,
+                FingerprintSource.SCHEMA,
+            ),
+            request.regions,
         )
     ).to_payload()
+
+
+def _verify_live_map(artifacts: SafetyArtifacts) -> None:
+    require_reconciled_authority(artifacts)
+    candidate = _safety_builder.candidate(
+        _reviewed_safety_request(artifacts.board_id, "live-map-verification")
+    )
+    if candidate.map_digest != artifacts.map_digest:
+        raise SafetyArtifactError(
+            "current reviewed identity, geometry, partition policy, or evidence differs from "
+            "memory_map.yaml; run board_safety_refresh"
+        )
+
+
+_safety_policy = SafetyPolicy(_safety_repository, authority_verifier=_verify_live_map)
 
 
 _REQUIRED_BASE_SAFETY_KINDS = frozenset(
@@ -3148,6 +2419,7 @@ _REQUIRED_BASE_SAFETY_KINDS = frozenset(
         RegionKind.PHYSICAL_FLASH,
         RegionKind.PHYSICAL_RAM,
         RegionKind.RAM,
+        RegionKind.APPLICATION_FLASH,
     }
 )
 
@@ -3158,20 +2430,15 @@ def _missing_base_safety_kinds(regions: tuple[RegionContribution, ...]) -> tuple
 
 
 def _load_validation_layer0(profile) -> Layer0Snapshot:
-    expected_ref = (
-        _firm_store.layout.safety_reference_prefix(profile.board_id) / "memory_map.yaml"
-    ).as_posix()
-    if profile.safety_ref != expected_ref:
-        return Layer0Snapshot(
-            False,
-            False,
-            reason=(
-                "The profile has no current safety-map reference. Run board_safety_setup, "
-                "complete the safety-reference commit, then run board_validate."
-            ),
-        )
     try:
         artifacts = _safety_repository.load_current(profile.board_id)
+        if (
+            artifacts.identity.get("mcu_part_number") != profile.mcu_part_number
+            or artifacts.identity.get("target") != profile.board.target_identity
+        ):
+            raise SafetyArtifactError(
+                "memory-map identity does not match the current profile"
+            )
         missing_kinds = _missing_base_safety_kinds(artifacts.regions)
         if missing_kinds:
             return Layer0Snapshot(
@@ -3179,8 +2446,7 @@ def _load_validation_layer0(profile) -> Layer0Snapshot:
                 False,
                 reason=(
                     "The safety map lacks required base classifications "
-                    f"{', '.join(missing_kinds)}. Run board_safety_setup with complete "
-                    "authoritative evidence."
+                    f"{', '.join(missing_kinds)}. Run board_safety_refresh."
                 ),
             )
         conflicts = region_conflicts(artifacts.regions)
@@ -3188,18 +2454,21 @@ def _load_validation_layer0(profile) -> Layer0Snapshot:
             return Layer0Snapshot(
                 True,
                 False,
-                artifacts.fingerprints.aggregate,
+                artifacts.map_digest,
                 "The current safety map contains overlapping prohibited or ambiguous regions. "
-                "Resolve the evidence and run board_safety_setup.",
+                "Run board_safety_refresh.",
             )
         aggregate = _safety_policy.current_aggregate(profile.board_id)
     except (SafetyArtifactError, SafetyPolicyError, ValueError) as exc:
         return Layer0Snapshot(
             False,
             False,
-            reason=f"Safety map is missing, stale, or inconsistent: {exc}",
+            reason=(
+                f"Safety map is missing, stale, or inconsistent: {exc}. Run "
+                "board_safety_refresh; setup is not a safety recovery action."
+            ),
         )
-    return Layer0Snapshot(True, True, aggregate, "Safety map and source fingerprints agree.")
+    return Layer0Snapshot(True, True, aggregate, "The stable memory map matches this profile.")
 
 
 def _stamp_validation_session(
@@ -3207,6 +2476,7 @@ def _stamp_validation_session(
     hardware_result: str,
     probe_id: str,
     probe_uid: str | None,
+    observed_identity: str,
     aggregate_fingerprint: str,
 ) -> bool:
     connection = connection_manager.maybe_connection(board_id)
@@ -3226,8 +2496,23 @@ def _stamp_validation_session(
         hardware_result=hardware_result,
         probe_identity=stable_probe,
         aggregate_fingerprint=aggregate_fingerprint,
+        observed_identity=observed_identity,
     )
+    _setup_mismatch_allowances.pop(board_id, None)
     return True
+
+
+def _record_validation_mismatch(
+    board_id: str,
+    expected: str,
+    observed: str,
+    probe_id: str | None,
+    probe_uid: str | None,
+    detail: str,
+) -> None:
+    stable_probe = (probe_uid or probe_id or "unknown-probe").strip()
+    _setup_mismatch_allowances[board_id] = (stable_probe, expected, observed, detail)
+    gate_manager.clear(board_id, "live MCU identity does not match the saved profile")
 
 
 _board_validator = BoardValidator(
@@ -3242,7 +2527,11 @@ _board_validator = BoardValidator(
         _validation_close,
     ),
     cache=_attachment_cache,
-    hooks=ValidationHooks(_load_validation_layer0, _stamp_validation_session),
+    hooks=ValidationHooks(
+        _load_validation_layer0,
+        _stamp_validation_session,
+        _record_validation_mismatch,
+    ),
 )
 
 
@@ -3327,21 +2616,21 @@ def _setup_inventory(user_input: SetupUserInput) -> PreflightInventory:
                 for item in serial
             ],
         )
-    targets = _target_names()
-    exact: tuple[str, ...] = ()
-    # A fresh profile has no board YAML yet, but a complete reviewed catalog entry is itself
-    # authoritative for the exact pyOCD target. Package suffixes such as ``-QIAA`` must not
-    # force an unnecessary agent research round trip when the exact built-in target is present.
     try:
         catalog = catalog_board(user_input.board_type)
     except BoardCatalogError:
         catalog = None
+    targets = _target_names(catalog.debug_backend if catalog is not None else None)
+    exact: tuple[str, ...] = ()
+    # A fresh profile has no board YAML yet, but a complete reviewed catalog entry is itself
+    # authoritative for the exact pyOCD target. Package suffixes such as ``-QIAA`` must not
+    # force an unnecessary agent research round trip when the exact built-in target is present.
     if (
         catalog is not None
         and user_input.mcu_part_number == catalog.package_part_number
-        and catalog.pyocd_target.casefold() in targets
+        and catalog.target_identity.casefold() in targets
     ):
-        exact = (catalog.pyocd_target.casefold(),)
+        exact = (catalog.target_identity.casefold(),)
     manifest_targets = tuple(
         sorted(
             {
@@ -3354,7 +2643,7 @@ def _setup_inventory(user_input: SetupUserInput) -> PreflightInventory:
     target_override = _setup_target_overrides.get(user_input.board_id)
     if target_override is not None:
         supported = set(targets) | set(manifest_targets)
-        reviewed_target = catalog.pyocd_target.casefold() if catalog is not None else None
+        reviewed_target = catalog.target_identity.casefold() if catalog is not None else None
         if target_override in supported and target_override == reviewed_target:
             exact = (target_override,)
     return PreflightInventory(
@@ -3410,7 +2699,7 @@ def _setup_connection_phase(context: SetupPhaseContext) -> SetupPhaseOutcome:
             "setup/connection-input-missing",
             "Target or probe resolution is incomplete; stop before committing a profile.",
         )
-    if target.casefold() != catalog.pyocd_target or probe.probe_family != catalog.probe_family:
+    if target.casefold() != catalog.target_identity or probe.probe_family != catalog.probe_family:
         if probe.probe_family == "unknown":
             remedy = (
                 "The debug probe provider could not be identified. Choose a probe whose provider "
@@ -3428,7 +2717,7 @@ def _setup_connection_phase(context: SetupPhaseContext) -> SetupPhaseOutcome:
             remedy,
             details={
                 "selected_target": target,
-                "expected_target": catalog.pyocd_target,
+                "expected_target": catalog.target_identity,
                 "selected_probe_family": probe.probe_family,
                 "expected_probe_family": catalog.probe_family,
             },
@@ -3445,16 +2734,36 @@ def _setup_connection_phase(context: SetupPhaseContext) -> SetupPhaseOutcome:
         )
         opened.append(handle)
         try:
+            capabilities = target_control.memory_access_capabilities(handle)
+            required_widths = {catalog.test_read_width_bits}
             if catalog.silicon_id_address is not None:
-                observed = target_control.read_memory(handle, catalog.silicon_id_address, 32)
+                required_widths.add(catalog.silicon_id_width_bits)
+            unsupported_widths = required_widths.difference(capabilities.read_width_bits)
+            if unsupported_widths:
+                raise BoardCatalogError(
+                    "The live target backend does not support the reviewed setup read widths: "
+                    f"{sorted(unsupported_widths)} bits."
+                )
+            if catalog.silicon_id_address is not None:
+                observed = target_control.read_memory(
+                    handle,
+                    catalog.silicon_id_address,
+                    catalog.silicon_id_width_bits,
+                )
                 expected = catalog.silicon_id_expected
                 assert expected is not None
                 if (observed & catalog.silicon_id_mask) != (expected & catalog.silicon_id_mask):
+                    digits = (catalog.silicon_id_width_bits + 3) // 4
                     raise BoardCatalogError(
                         "Live silicon identity did not match the reviewed board catalog "
-                        f"(observed 0x{observed:08X}, expected 0x{expected:08X})."
+                        f"(observed 0x{observed:0{digits}X}, "
+                        f"expected 0x{expected:0{digits}X})."
                     )
-            target_control.read_memory(handle, catalog.test_read_address, 32)
+            target_control.read_memory(
+                handle,
+                catalog.test_read_address,
+                catalog.test_read_width_bits,
+            )
         finally:
             target_control.close_session(handle)
 
@@ -3467,7 +2776,8 @@ def _setup_connection_phase(context: SetupPhaseContext) -> SetupPhaseOutcome:
                 "mcu_part_number": context.user_input.mcu_part_number,
                 "mcu_family": _mcu_family(context.user_input.mcu_part_number, target),
                 "probe_family": probe.probe_family,
-                "pyocd_target": target,
+                "target_identity": target,
+                "debug_backend": catalog.debug_backend,
                 "serial_baudrate": context.user_input.serial_baudrate,
             }
         )
@@ -3491,6 +2801,7 @@ def _setup_connection_phase(context: SetupPhaseContext) -> SetupPhaseOutcome:
                             "silicon_id_address": catalog.silicon_id_address,
                             "silicon_id_expected": catalog.silicon_id_expected,
                             "silicon_id_mask": catalog.silicon_id_mask,
+                            "silicon_id_width_bits": catalog.silicon_id_width_bits,
                             "silicon_id_label": "silicon_id",
                         }
                         if catalog.silicon_id_address is not None
@@ -3560,7 +2871,7 @@ def _build_automatic_catalog_safety(context: SetupPhaseContext):
             "board_type": catalog.board_type,
             "mcu_part_number": profile.mcu_part_number or "",
             "package_part_number": catalog.package_part_number,
-            "target": catalog.pyocd_target,
+            "target": catalog.target_identity,
         },
         source_record["device_support"],
         {
@@ -3569,6 +2880,10 @@ def _build_automatic_catalog_safety(context: SetupPhaseContext):
             "deployment_policy": {
                 "application_start": catalog.application_start,
                 "application_end": catalog.application_end,
+                "application_authoritative": catalog.application_partition_authoritative,
+                "bootloader_start": catalog.bootloader_start,
+                "bootloader_end": catalog.bootloader_end,
+                "bootloader_authoritative": catalog.bootloader_partition_authoritative,
             },
         },
         {"configuration": None, "artifacts": []},
@@ -3581,12 +2896,10 @@ def _build_automatic_catalog_safety(context: SetupPhaseContext):
             "erase_origin": erase_geometry.erase_origin,
             "erase_size": erase_geometry.erase_size,
         },
-        {"memory_map": 1, "fingerprints": 1, "evidence": 2, "catalog": 2},
+        {"memory_map": 2, "evidence": 2, "catalog": 2},
     )
-    # The catalog deployment envelope is a ceiling used to validate a later
-    # selected linker/ELF.  It is intentionally not persisted as an application
-    # partition: New Brain makes firmware partitions build-owned, and flash must
-    # remain unavailable until board_safety_refresh selects real build evidence.
+    # V2 persists only this explicitly reviewed stable deployment partition. Individual firmware
+    # artifacts are checked against it at flash execution and never become map authority.
     regions = tuple(
         RegionContribution(
             region.to_safety_region(),
@@ -3628,12 +2941,10 @@ def _setup_safety_research_phase(context: SetupPhaseContext) -> SetupPhaseOutcom
                 "reported evidence issue before continuing setup.",
                 details={"reason": str(build_exc), "prior_reason": str(exc)},
             )
-    sources = artifacts.source_manifest.get("sources")
-    source_groups = sorted(str(source) for source in sources) if isinstance(sources, dict) else []
     return SetupPhaseOutcome.success(
         "setup/safety-sources-verified",
-        aggregate_fingerprint=artifacts.fingerprints.aggregate,
-        source_groups=source_groups,
+        map_digest=artifacts.map_digest,
+        source_groups=sorted(str(source) for source in artifacts.source_digests),
     )
 
 
@@ -3646,7 +2957,7 @@ def _setup_safety_map_phase(context: SetupPhaseContext) -> SetupPhaseOutcome:
         return SetupPhaseOutcome.stop(
             "setup_safety_incomplete",
             "setup/safety-map-incomplete",
-            "The safety map is incomplete. Run board_safety_setup before validation.",
+            "The safety map is incomplete. Run board_safety_refresh.",
             details={"reason": str(exc)},
         )
     if conflicts:
@@ -3654,7 +2965,7 @@ def _setup_safety_map_phase(context: SetupPhaseContext) -> SetupPhaseOutcome:
             "setup_safety_incomplete",
             "setup/safety-map-conflict",
             "The safety map has a region conflict. Resolve the reported safety sources and "
-            "rerun board_safety_setup.",
+            "rerun board_safety_refresh.",
             details={"conflicts": conflicts},
         )
     missing_kinds = _missing_base_safety_kinds(artifacts.regions)
@@ -3663,12 +2974,12 @@ def _setup_safety_map_phase(context: SetupPhaseContext) -> SetupPhaseOutcome:
             "setup_safety_incomplete",
             "setup/safety-map-kinds-missing",
             "The safety map lacks required prohibited, CPU/system, peripheral, flash, or RAM "
-            "classifications. Resolve the authoritative evidence and rerun board_safety_setup.",
+            "classifications. Resolve the authoritative evidence and rerun board_safety_refresh.",
             details={"missing_kinds": list(missing_kinds)},
         )
     return SetupPhaseOutcome.success(
         "setup/safety-map-consistent",
-        aggregate_fingerprint=artifacts.fingerprints.aggregate,
+        map_digest=artifacts.map_digest,
         region_count=len(artifacts.regions),
     )
 
@@ -3738,12 +3049,7 @@ def _get_setup_status(board_id: str) -> Mapping[str, object]:
     try:
         profile = _profile_repository.load(board_id, include_legacy=False)
         artifacts = _safety_repository.load_current(board_id)
-        if (
-            profile.safety_ref
-            != (_firm_store.layout.safety_reference_prefix(board_id) / "memory_map.yaml").as_posix()
-        ):
-            configuration_reason = "profile does not reference the current safety map"
-        elif region_conflicts(artifacts.regions):
+        if region_conflicts(artifacts.regions):
             configuration_reason = "current safety map has unresolved region conflicts"
         elif missing_kinds := _missing_base_safety_kinds(artifacts.regions):
             configuration_reason = (
@@ -3822,8 +3128,10 @@ def _get_setup_status(board_id: str) -> Mapping[str, object]:
                 uart_reason = "UART attachment is ambiguous; confirm one friendly choice in setup"
         except Exception as exc:  # noqa: BLE001 - readiness is diagnostic, never authority
             uart_reason = f"UART attachment could not be resolved: {exc}"
-    if not configuration_ready:
-        remedy = "Complete board_setup and authoritative safety setup."
+    if profile is None:
+        remedy = "Complete first-time board_setup for this unknown board."
+    elif not configuration_ready:
+        remedy = "Run board_safety_refresh; setup is not a safety recovery action."
     elif connection is None:
         remedy = "Connect this board and run board_validate in the current Server Run."
     elif not live_session_ready:
@@ -3847,16 +3155,20 @@ def _get_setup_status(board_id: str) -> Mapping[str, object]:
                     "hex_path": None,
                     "bin_path": None,
                     "map_path": "<matching native-build linker map>",
+                    "native_artifacts": {},
                     "expected_roles": ["elf", "map"],
                 },
                 "purpose": (
                     "Normalize explicit outputs from any build system into canonical hashed "
-                    "artifacts. Collection does not build, search, validate, or authorize."
+                    "artifacts. Put provider-specific formats in native_artifacts; an installed "
+                    "evidence provider determines whether they can be flashed safely. Collection "
+                    "does not build, search, validate, or authorize."
                 ),
             },
             "safety_boundary": (
-                "Build guidance is not safety authority; board_safety_refresh must inspect "
-                "the resulting ELF and map before flash_application."
+                "Build guidance is not safety authority. After collection, call the relevant "
+                "flash plan; each flash execution inspects the selected artifact against the "
+                "stable memory map. A routine rebuild does not require board_safety_refresh."
             ),
             "toolchain_fallback": None,
         }
@@ -4300,7 +3612,7 @@ def _setup_continue(
             "redirect": "Call board_fix_setup now under the active paired setup allowance.",
         }
 
-    target_fields = {"pyocd_target", "evidence", "reasoning_summary"}
+    target_fields = {"target_identity", "evidence", "reasoning_summary"}
     pack_fields = {
         "pack_id",
         "version",
@@ -4308,7 +3620,7 @@ def _setup_continue(
         "url",
         "source_path",
         "official_sha256",
-        "pyocd_target",
+        "target_identity",
         "evidence",
         "reasoning_summary",
     }
@@ -4318,9 +3630,9 @@ def _setup_continue(
             "response fields must exactly match the requested choice, target, or pack schema",
         )
     _validated_research_prose(response)
-    target = response.get("pyocd_target")
+    target = response.get("target_identity")
     if not isinstance(target, str) or not target.strip():
-        raise ResearchError("research/target-required", "pyocd_target must be non-empty text")
+        raise ResearchError("research/target-required", "target_identity must be non-empty text")
     target = target.strip().casefold()
     try:
         reviewed_board = catalog_board(user_input.board_type)
@@ -4334,18 +3646,18 @@ def _setup_continue(
             "target/reviewed-part-mismatch",
             "The exact MCU part does not match the reviewed board mapping.",
         )
-    reviewed_target = reviewed_board.pyocd_target.casefold()
+    reviewed_target = reviewed_board.target_identity.casefold()
 
     if fields == target_fields:
         request = make_research_request(
-            fact_id="pyocd_target",
+            fact_id="target_identity",
             continuation_token=continuation_id,
             board_id=board_id,
             mcu_part_number=user_input.mcu_part_number,
-            unresolved_fact="Resolve the exact pyOCD target for this MCU.",
-            requested_fields=("pyocd_target", "evidence", "reasoning_summary"),
+            unresolved_fact="Resolve the exact selected-backend target for this MCU.",
+            requested_fields=("target_identity", "evidence", "reasoning_summary"),
             authoritative_facts={"board_type": user_input.board_type},
-            acceptable_sources=("official pyOCD documentation", "official vendor CMSIS-Pack"),
+            acceptable_sources=("selected backend documentation", "official vendor support"),
             validation_plan=(
                 "Check exact MCU consistency.",
                 "Confirm built-in or promoted pack support.",
@@ -4356,9 +3668,9 @@ def _setup_continue(
         def validate(candidate: Mapping[str, object]) -> ValidationOutcome:
             try:
                 TargetResolver.validate_candidate(
-                    str(candidate["pyocd_target"]).casefold(),
+                    str(candidate["target_identity"]).casefold(),
                     expected_target=reviewed_target,
-                    built_in_targets=_target_names(),
+                    built_in_targets=_target_names(reviewed_board.debug_backend),
                     staged_targets=tuple(
                         target_name
                         for pack in load_manifest(_firm_store.layout.pack_manifest)
@@ -4436,7 +3748,7 @@ def _setup_continue(
         "status": "setup_continuation_accepted",
         "board_id": board_id,
         "accepted": "target_and_pack" if fields == pack_fields else "target",
-        "pyocd_target": target,
+        "target_identity": target,
         "redirect": "Call board_fix_setup now under the active paired setup allowance.",
     }
 
@@ -4471,7 +3783,6 @@ setup_tool_handlers = build_setup_handlers(
         plan_engine=plan_engine,
         workflow=_setup_workflow,
         validator=_board_validator,
-        safety_setup=_run_board_safety_setup,
         safety_refresh=_run_board_safety_refresh,
         setup_status=_get_setup_status,
         setup_overview=_setup_overview,
@@ -4502,6 +3813,9 @@ for _setup_name, _setup_handler in setup_tool_handlers.items():
     )
     if _setup_name.endswith("-plan"):
         forbid_unknown_tool_arguments(mcp, _setup_name)
+mcp.configure_metadata("get_setup_status")
+for _setup_hardware_action in ("board_setup", "board_fix_setup", "board_validate"):
+    mcp.configure_board_affecting(_setup_hardware_action)
 
 M6_GUARDED_ACTIONS = ("board_setup", "board_fix_setup")
 for _setup_action in M6_GUARDED_ACTIONS:
@@ -4514,7 +3828,6 @@ for _setup_action in M6_GUARDED_ACTIONS:
     mcp.configure_guarded_dispatch(
         _setup_action,
         guard=_enforce_guarded_invocation,
-        lock_for_board=lambda board_id: connection_manager.lock_for(board_id),
     )
 
 
@@ -4540,6 +3853,7 @@ _unlock_coordinator = UnlockCoordinator(
         connection_id_for=lambda board_id: _connection(board_id).connection_id,
         session_id_for=_active_session_id,
         current_fingerprint=_safety_policy.current_aggregate,
+        describe_session=target_control.describe_session,
         supports_recovery=target_control.supports_recovery,
         recover_target=lambda handle, mechanism: target_control.recover_target(
             handle, recover_mode=mechanism
@@ -4568,7 +3882,6 @@ tool_registry.configure(
 mcp.configure_guarded_dispatch(
     "target_unlock",
     guard=_enforce_guarded_invocation,
-    lock_for_board=lambda board_id: connection_manager.lock_for(board_id),
 )
 M8_GUARDED_ACTIONS = ("target_unlock",)
 
@@ -4623,10 +3936,7 @@ def _bind_managed_board_resources(operation: ManagedOperation) -> None:
             _session_store.close_session(connection.runtime_session)
 
     def release_reset() -> None:
-        probe = getattr(handle.session, "probe", None)
-        assert_reset = getattr(probe, "assert_reset", None)
-        if callable(assert_reset):
-            assert_reset(False)
+        target_control.release_reset(handle)
 
     operation.resources.close_debug.append(close_failed_connection)
     operation.resources.release_reset.append(release_reset)
@@ -4669,20 +3979,50 @@ mcp.configure_finalizers(_resolve_operation_finalizer)
 initialization_handshake = register_initialization_handshake(mcp, tool_registry, server_run)
 
 
+def _require_checkout_resources() -> None:
+    """Fail clearly when an installed entry point lacks project-owned hardware authority."""
+
+    required = (_checkout_root / "boards", _checkout_root / "packs")
+    missing = [path.name for path in required if not path.is_dir()]
+    if missing:
+        raise RuntimeError(
+            "This hardware server requires a complete BYO-Server checkout containing the "
+            f"project-owned {', '.join(missing)} roots. Run it with `uv run --project "
+            "C:\\path\\to\\BYO-Server --locked pyocd-debug-mcp`; the wheel alone does not "
+            "contain board authority."
+        )
+
+
+def run_server_b(transport: str = "stdio") -> None:
+    """Run Server B on stdio or streamable HTTP with identical cleanup."""
+
+    _require_checkout_resources()
+    with ServerBLease():
+        cleanup_stale_owned_processes()
+        try:
+            if transport == "stdio":
+                mcp.run(transport="stdio")
+            elif transport == "streamable-http":
+                mcp.run(transport="streamable-http")
+            else:
+                raise ValueError(f"unsupported Server B transport: {transport}")
+        finally:
+            for _board_id in connection_manager.assigned_board_ids():
+                try:
+                    disconnect(_board_id)
+                except Exception:
+                    pass
+            plan_engine.close_run()
+            tool_registry.reset()
+
+
 def main() -> None:
-    """Console entry point. Runs the server over stdio transport by default."""
-    cleanup_stale_owned_processes()
-    try:
-        mcp.run()
-    finally:
-        for _board_id in connection_manager.assigned_board_ids():
-            try:
-                disconnect(_board_id)
-            except Exception:
-                pass
-        plan_engine.close_run()
-        tool_registry.reset()
+    """Console entry point for direct single-client Server B stdio use."""
+
+    run_server_b("stdio")
 
 
 if __name__ == "__main__":
     main()
+
+

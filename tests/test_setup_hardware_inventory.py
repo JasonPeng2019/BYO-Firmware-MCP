@@ -8,6 +8,8 @@ import pytest
 from mcp.shared.memory import create_connected_server_and_client_session
 
 from pyocd_debug_mcp import probe_inventory, server
+from pyocd_debug_mcp.adapters import swd_pyocd
+from pyocd_debug_mcp.adapters.target_backend import BackendProbe
 from pyocd_debug_mcp.firmstore.cache import CacheResolution
 from pyocd_debug_mcp.setup_flow.preflight import (
     FriendlyChoice,
@@ -59,7 +61,7 @@ async def test_probe_provider_generic_and_cli_fallbacks_share_one_live_mcp_run(
 
     monkeypatch.setattr(server._profile_repository, "load_all", lambda **_kwargs: ())
     monkeypatch.setattr(server, "list_serial_ports", lambda: [])
-    monkeypatch.setattr(server, "_run_cmd", fake_run)
+    monkeypatch.setattr(swd_pyocd, "_run_cmd", fake_run)
     monkeypatch.setattr(probe_inventory, "ConnectHelper", FakeConnectHelper)
     monkeypatch.setitem(probe_inventory.PROBE_CLASSES, "futureprovider", FutureProbe)
     monkeypatch.setattr(
@@ -104,12 +106,12 @@ def test_setup_inventory_scopes_probe_and_uart_by_stable_connection_identity(
         ),
     )
     monkeypatch.setattr(server, "_validation_inventory", lambda: inventory)
-    monkeypatch.setattr(server, "_target_names", lambda: ("nrf52833",))
+    monkeypatch.setattr(server, "_target_names", lambda *_args: ("nrf52833",))
     monkeypatch.setattr(server, "load_manifest", lambda *_args, **_kwargs: ())
     monkeypatch.setattr(
         server,
         "resolve_board_config",
-        lambda _board_id, _path: SimpleNamespace(pyocd_target="nrf52833"),
+        lambda _board_id, _path: SimpleNamespace(target_identity="nrf52833"),
     )
     resolutions: list[tuple[str, str, tuple[str, ...]]] = []
 
@@ -149,7 +151,7 @@ def test_setup_inventory_rejects_a_different_sole_uart_from_explicit_binding(
             (ValidationSerial("OTHER-UART", "COM99", "Other UART", "OTHER-UART", 1, 2),),
         ),
     )
-    monkeypatch.setattr(server, "_target_names", lambda: ("nrf52840",))
+    monkeypatch.setattr(server, "_target_names", lambda *_args: ("nrf52840",))
     monkeypatch.setattr(server, "load_manifest", lambda *_args, **_kwargs: ())
     monkeypatch.setattr(server, "resolve_board_config", lambda *_args: None)
 
@@ -179,7 +181,7 @@ def test_setup_inventory_rejects_wrong_single_probe_and_port_path_as_uart_id(
             (ValidationSerial("683377322", "COM11", "J-Link UART", "683377322", 1, 2),),
         ),
     )
-    monkeypatch.setattr(server, "_target_names", lambda: ("nrf52840",))
+    monkeypatch.setattr(server, "_target_names", lambda *_args: ("nrf52840",))
     monkeypatch.setattr(server, "load_manifest", lambda *_args, **_kwargs: ())
     monkeypatch.setattr(server, "resolve_board_config", lambda *_args: None)
 
@@ -201,12 +203,12 @@ def test_setup_inventory_rejects_wrong_single_probe_and_port_path_as_uart_id(
 
 def test_reviewed_catalog_mapping_ignores_legacy_profile_target_authority(monkeypatch) -> None:
     monkeypatch.setattr(server, "_validation_inventory", lambda: ValidationInventory())
-    monkeypatch.setattr(server, "_target_names", lambda: ("stm32l476rgtx",))
+    monkeypatch.setattr(server, "_target_names", lambda *_args: ("stm32l476rgtx",))
     monkeypatch.setattr(server, "load_manifest", lambda *_args, **_kwargs: ())
     monkeypatch.setattr(
         server,
         "resolve_board_config",
-        lambda _board_id, _path: SimpleNamespace(pyocd_target="stm32l476rgtx"),
+        lambda _board_id, _path: SimpleNamespace(target_identity="stm32l476rgtx"),
     )
 
     matching = server._setup_inventory(
@@ -238,7 +240,7 @@ def test_fresh_reviewed_catalog_maps_exact_package_to_builtin_target_without_res
     monkeypatch,
 ) -> None:
     monkeypatch.setattr(server, "_validation_inventory", lambda: ValidationInventory())
-    monkeypatch.setattr(server, "_target_names", lambda: ("nrf52840", "nrf52833"))
+    monkeypatch.setattr(server, "_target_names", lambda *_args: ("nrf52840", "nrf52833"))
     monkeypatch.setattr(server, "load_manifest", lambda *_args, **_kwargs: ())
 
     def no_existing_profile(_board_id, _path):
@@ -284,7 +286,7 @@ def test_fresh_reviewed_catalog_maps_exact_package_to_builtin_target_without_res
 
 def test_broad_supported_prefix_is_not_part_target_evidence(monkeypatch) -> None:
     monkeypatch.setattr(server, "_validation_inventory", lambda: ValidationInventory())
-    monkeypatch.setattr(server, "_target_names", lambda: ("nrf5",))
+    monkeypatch.setattr(server, "_target_names", lambda *_args: ("nrf5",))
     monkeypatch.setattr(server, "load_manifest", lambda *_args, **_kwargs: ())
 
     result = server._setup_inventory(
@@ -313,14 +315,36 @@ def test_validation_inventory_includes_server_owned_active_probe(monkeypatch) ->
         connection_for=lambda board_id: connection,
     )
     monkeypatch.setattr(server, "connection_manager", manager)
-    monkeypatch.setattr(server, "list_connected_probes", lambda _run: [])
-    monkeypatch.setattr(server, "probe_family_from_pyocd_probe", lambda _probe: "stlink")
+    monkeypatch.setattr(server.target_control, "available_backends", lambda: ())
     monkeypatch.setattr(server, "list_serial_ports", lambda: [])
 
     inventory = server._validation_inventory()
 
     assert inventory.probes == (
         ValidationProbe("066ACTIVE", "ST-Link active session", "stlink", "066ACTIVE"),
+    )
+
+
+def test_validation_inventory_aggregates_installed_target_backends(monkeypatch) -> None:
+    backend = SimpleNamespace(
+        discover_probes=lambda: (
+            BackendProbe("vendor:probe-1", "Vendor-neutral probe", "vendor-debug"),
+        )
+    )
+    manager = SimpleNamespace(assigned_board_ids=lambda: ())
+    monkeypatch.setattr(server, "connection_manager", manager)
+    monkeypatch.setattr(server.target_control, "available_backends", lambda: (backend,))
+    monkeypatch.setattr(server, "list_serial_ports", lambda: [])
+
+    inventory = server._validation_inventory()
+
+    assert inventory.probes == (
+        ValidationProbe(
+            "vendor:probe-1",
+            "Vendor-neutral probe",
+            "vendor-debug",
+            "vendor:probe-1",
+        ),
     )
 
 
@@ -333,7 +357,7 @@ def test_public_setup_continuation_validates_and_routes_target_research(monkeypa
         "continuation_context",
         lambda _token: (user_input, "setup_research_required", None),
     )
-    monkeypatch.setattr(server, "_target_names", lambda: ("nrf52840",))
+    monkeypatch.setattr(server, "_target_names", lambda *_args: ("nrf52840",))
     monkeypatch.setattr(server, "load_manifest", lambda *_args, **_kwargs: ())
     server._setup_target_overrides.pop("nf_board", None)
 
@@ -341,7 +365,7 @@ def test_public_setup_continuation_validates_and_routes_target_research(monkeypa
         "nf_board",
         "continue-1",
         {
-            "pyocd_target": "nrf52840",
+            "target_identity": "nrf52840",
             "evidence": [{"source": "official pyOCD", "claim": "nRF52840 target"}],
             "reasoning_summary": "The official target exactly matches the supplied MCU.",
         },
@@ -355,7 +379,7 @@ def test_public_setup_continuation_validates_and_routes_target_research(monkeypa
             "other_board",
             "continue-1",
             {
-                "pyocd_target": "nrf52840",
+                "target_identity": "nrf52840",
                 "evidence": [{"source": "official", "claim": "target"}],
                 "reasoning_summary": "Exact match.",
             },
@@ -383,3 +407,4 @@ def test_public_setup_continuation_accepts_only_a_returned_friendly_choice(monke
     accepted = server._setup_continue("nf_board", "continue-1", {"choice_id": "probe-a"})
     assert accepted["status"] == "setup_continuation_accepted"
     assert server._setup_selections_by_board.pop("nf_board").probe_id == "probe-a"
+

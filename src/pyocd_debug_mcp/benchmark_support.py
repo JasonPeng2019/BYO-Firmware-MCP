@@ -560,7 +560,7 @@ def _prepare_target_state(prepared: PreparedCase) -> None:
     handle = target_control.open_session(
         board=prepared.board,
         unique_id=prepared.probe_uid,
-        target=prepared.board.pyocd_target,
+        target=prepared.board.target_identity,
     )
     try:
         if prepared.case.initial_prep.flash_mode == "reference":
@@ -1470,3 +1470,4 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
+

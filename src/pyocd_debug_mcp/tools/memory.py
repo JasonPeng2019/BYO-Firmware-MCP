@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from pyocd_debug_mcp.adapters.target_backend import MemoryAccessCapabilities
 from pyocd_debug_mcp.kernel.operations import wrap_layer2_response
 from pyocd_debug_mcp.services.session_runtime import PolicyRefusal, SessionRecord, ToolOutcome
 from pyocd_debug_mcp.services.symbols import ResolvedSymbol
@@ -29,6 +30,7 @@ class MemoryToolServices:
     read_target_memory: Callable[[Any, int, int], int]
     read_target_block: Callable[[Any, int, int], list[int]]
     write_target_memory: Callable[[Any, int, int, int], None]
+    memory_capabilities: Callable[[str], MemoryAccessCapabilities]
     check_memory_read: Callable[[str, int, int], None]
     check_memory_write: Callable[[str, int, int], None] | None = None
 
@@ -91,8 +93,18 @@ def _record_success(
     return wrap_layer2_response(result)
 
 
-def _valid_width(width: int) -> bool:
-    return not isinstance(width, bool) and width in {8, 16, 32}
+def _width_refusal(
+    services: MemoryToolServices, board_id: str, width: int, *, write: bool
+) -> PolicyRefusal | None:
+    capabilities = services.memory_capabilities(board_id)
+    supported = capabilities.write_width_bits if write else capabilities.read_width_bits
+    if isinstance(width, bool) or width not in supported:
+        rendered = ", ".join(str(item) for item in supported) or "none"
+        return PolicyRefusal(
+            "memory/invalid-width",
+            f"width must be supported by the connected backend ({rendered} bits).",
+        )
+    return None
 
 
 def build_memory_handlers(
@@ -135,13 +147,14 @@ def build_memory_handlers(
         started = time.monotonic()
         runtime = services.runtime_for(board_id)
         args = {"board_id": board_id, "symbol": symbol, "width": width}
-        if not _valid_width(width):
+        width_refusal = _width_refusal(services, board_id, width, write=False)
+        if width_refusal is not None:
             return _record_refusal(
                 services,
                 "read_memory_symbol",
                 board_id,
                 args,
-                PolicyRefusal("memory/invalid-width", "width must be one of: 8, 16, 32."),
+                width_refusal,
                 started,
                 runtime,
             )
@@ -184,13 +197,14 @@ def build_memory_handlers(
             "width": width,
             "length": length,
         }
-        if not _valid_width(width):
+        width_refusal = _width_refusal(services, board_id, width, write=False)
+        if width_refusal is not None:
             return _record_refusal(
                 services,
                 "read_memory_address",
                 board_id,
                 args,
-                PolicyRefusal("memory/invalid-width", "width must be one of: 8, 16, 32."),
+                width_refusal,
                 started,
                 runtime,
             )
@@ -231,6 +245,20 @@ def build_memory_handlers(
                 started,
                 runtime,
             )
+        address_bits = services.memory_capabilities(board_id).address_bits
+        if address_bits < 1 or parsed_address >= 1 << address_bits:
+            return _record_refusal(
+                services,
+                "read_memory_address",
+                board_id,
+                args,
+                PolicyRefusal(
+                    "memory/invalid-address",
+                    "address does not fit the connected backend's address space.",
+                ),
+                started,
+                runtime,
+            )
         size_bytes = width // 8 if length is None else length
         services.check_memory_read(board_id, parsed_address, size_bytes)
         handle = services.handle_for(board_id)
@@ -264,13 +292,14 @@ def build_memory_handlers(
             "allow_address_fallback": allow_address_fallback,
             "reason": reason,
         }
-        if not _valid_width(width):
+        width_refusal = _width_refusal(services, board_id, width, write=True)
+        if width_refusal is not None:
             return _record_refusal(
                 services,
                 "write_memory",
                 board_id,
                 args,
-                PolicyRefusal("memory/invalid-width", "width must be one of: 8, 16, 32."),
+                width_refusal,
                 started,
                 runtime,
             )
@@ -332,7 +361,14 @@ def build_memory_handlers(
                 started,
                 runtime,
             )
-        if address < 0 or parsed_value < 0 or parsed_value >= 1 << width:
+        address_bits = services.memory_capabilities(board_id).address_bits
+        if (
+            address_bits < 1
+            or address < 0
+            or address >= 1 << address_bits
+            or parsed_value < 0
+            or parsed_value >= 1 << width
+        ):
             return _record_refusal(
                 services,
                 "write_memory",
@@ -340,7 +376,7 @@ def build_memory_handlers(
                 args,
                 PolicyRefusal(
                     "memory/value-out-of-range",
-                    f"address must be non-negative and value must fit in {width} bits.",
+                    f"address must fit the backend address space and value must fit in {width} bits.",
                 ),
                 started,
                 runtime,
@@ -348,7 +384,7 @@ def build_memory_handlers(
         if services.check_memory_write is not None:
             services.check_memory_write(board_id, address, width)
         services.write_target_memory(handle, address, parsed_value, width)
-        target = f"0x{address:08X}" if is_address else str(symbol_or_address)
+        target = f"0x{address:X}" if is_address else str(symbol_or_address)
         result = f"Wrote 0x{parsed_value:X} to mapped RAM at {target}."
         return _record_success(services, "write_memory", board_id, args, result, started, runtime)
 

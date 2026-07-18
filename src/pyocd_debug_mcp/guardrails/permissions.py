@@ -10,6 +10,7 @@ from enum import Enum
 
 from pyocd_debug_mcp.guardrails.plan_defs import PermissionMode, PlanDefinition
 from pyocd_debug_mcp.kernel.run_state import ServerRun
+from pyocd_debug_mcp.kernel.caller import current_caller_principal
 from pyocd_debug_mcp.services.session_runtime import PolicyRefusal, utc_now_text
 
 
@@ -24,6 +25,7 @@ class PermissionGrant:
     run_id: str
     tool_name: str
     board_id: str
+    caller_principal: str
     mode: GrantMode
     granted_at: str
 
@@ -36,6 +38,7 @@ class PermissionAuthorization:
     run_id: str
     tool_name: str
     board_id: str
+    caller_principal: str
     mode: GrantMode
 
 
@@ -77,12 +80,12 @@ class PermissionStore:
             self._on_revoke = handler
 
     @staticmethod
-    def _key(tool_name: str, board_id: str) -> tuple[str, str]:
+    def _key(tool_name: str, board_id: str) -> tuple[str, str, str]:
         if not tool_name.strip():
             raise ValueError("tool_name must be non-empty")
         if not board_id.strip():
             raise ValueError("board_id must be non-empty")
-        return tool_name, board_id
+        return tool_name, board_id, current_caller_principal()
 
     @staticmethod
     def _permission_request(definition: PlanDefinition) -> PolicyRefusal:
@@ -99,7 +102,7 @@ class PermissionStore:
             "authorization.",
         )
 
-    def _current_state_locked(self, key: tuple[str, str]) -> PermissionGrant | None:
+    def _current_state_locked(self, key: tuple[str, str, str]) -> PermissionGrant | None:
         state = self.server_run.permissions.get(key)
         if not isinstance(state, PermissionGrant):
             return None
@@ -126,8 +129,9 @@ class PermissionStore:
                 key[1]
                 for key, value in self.server_run.permissions.items()
                 if isinstance(key, tuple)
-                and len(key) == 2
+                and len(key) == 3
                 and key[0] == definition.action_name
+                and key[2] == current_caller_principal()
                 and isinstance(value, PermissionGrant)
                 and value.run_id == self.server_run.run_id
                 and value.mode is GrantMode.FULL_SESSION
@@ -191,12 +195,13 @@ class PermissionStore:
                 run_id=grant.run_id,
                 tool_name=grant.tool_name,
                 board_id=grant.board_id,
+                caller_principal=grant.caller_principal,
                 mode=grant.mode,
             )
 
     def _grant_locked(
         self,
-        key: tuple[str, str],
+        key: tuple[str, str, str],
         mode: GrantMode,
     ) -> PermissionGrant:
         grant = PermissionGrant(
@@ -204,6 +209,7 @@ class PermissionStore:
             run_id=self.server_run.run_id,
             tool_name=key[0],
             board_id=key[1],
+            caller_principal=key[2],
             mode=mode,
             granted_at=utc_now_text(),
         )
@@ -229,6 +235,7 @@ class PermissionStore:
                 or authorization.run_id != self.server_run.run_id
                 or authorization.tool_name != definition.action_name
                 or authorization.board_id != board_id
+                or authorization.caller_principal != current_caller_principal()
                 or authorization.grant_id != active.grant_id
             ):
                 raise PolicyRefusal(
@@ -287,11 +294,11 @@ class PermissionStore:
                 key
                 for key, value in self.server_run.permissions.items()
                 if isinstance(key, tuple)
-                and len(key) == 2
+                and len(key) == 3
                 and isinstance(value, PermissionGrant)
             ]
             self.server_run.permissions.clear()
             callback = self._on_revoke
         if callback is not None:
-            for tool_name, board_id in keys:
+            for tool_name, board_id, _principal in keys:
                 callback(tool_name, board_id, "Server Run ended")

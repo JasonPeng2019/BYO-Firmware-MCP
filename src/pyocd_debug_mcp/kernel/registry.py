@@ -5,8 +5,10 @@ from __future__ import annotations
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, replace
 from functools import partial
+import secrets
 from threading import RLock
-from typing import Any, ContextManager
+from typing import Any
+import weakref
 
 import anyio
 from mcp.server.fastmcp import FastMCP
@@ -23,6 +25,11 @@ from pyocd_debug_mcp.kernel.operations import (
     operation_manager,
     operation_timeout_seconds,
     wrap_layer2_response,
+)
+from pyocd_debug_mcp.kernel.caller import (
+    current_caller_principal,
+    reset_caller_principal,
+    set_caller_principal,
 )
 
 
@@ -46,7 +53,7 @@ class ToolRegistry:
 
     def __init__(self) -> None:
         self._definitions: dict[str, ToolDefinition] = {}
-        self._unlocked_boards: dict[str, set[str]] = {}
+        self._unlocked_boards: dict[str, set[tuple[str, str]]] = {}
         self._guard = RLock()
         self._list_revision = 0
 
@@ -124,12 +131,12 @@ class ToolRegistry:
             if was_advertised:
                 self._list_revision += 1
 
-    def advertised(self) -> tuple[str, ...]:
+    def advertised(self, principal: str | None = None) -> tuple[str, ...]:
         with self._guard:
             return tuple(
                 name
                 for name, definition in self._definitions.items()
-                if self._is_advertised(definition)
+                if self._is_advertised(definition, principal)
             )
 
     def definition(self, name: str) -> ToolDefinition:
@@ -142,7 +149,7 @@ class ToolRegistry:
         with self._guard:
             return name in self._definitions
 
-    def unlock(self, name: str, board_id: str) -> None:
+    def unlock(self, name: str, board_id: str, principal: str | None = None) -> None:
         if not board_id:
             raise ValueError("board_id must not be empty")
         with self._guard:
@@ -150,15 +157,19 @@ class ToolRegistry:
             if not definition.locked_by_default:
                 return
             was_advertised = self._is_advertised(definition)
-            self._unlocked_boards[name].add(board_id)
+            self._unlocked_boards[name].add(
+                (board_id, principal or current_caller_principal())
+            )
             if was_advertised != self._is_advertised(definition):
                 self._list_revision += 1
 
-    def relock(self, name: str, board_id: str) -> None:
+    def relock(self, name: str, board_id: str, principal: str | None = None) -> None:
         with self._guard:
             definition = self._require_definition(name)
             was_advertised = self._is_advertised(definition)
-            self._unlocked_boards[name].discard(board_id)
+            self._unlocked_boards[name].discard(
+                (board_id, principal or current_caller_principal())
+            )
             if was_advertised != self._is_advertised(definition):
                 self._list_revision += 1
 
@@ -172,15 +183,22 @@ class ToolRegistry:
             if before != self.advertised():
                 self._list_revision += 1
 
-    def is_unlocked(self, name: str, board_id: str | None) -> bool:
+    def is_unlocked(
+        self, name: str, board_id: str | None, principal: str | None = None
+    ) -> bool:
         with self._guard:
             definition = self._require_definition(name)
             if not definition.locked_by_default:
                 return True
-            return board_id is not None and board_id in self._unlocked_boards[name]
+            return board_id is not None and (
+                board_id,
+                principal or current_caller_principal(),
+            ) in self._unlocked_boards[name]
 
-    def require_unlocked(self, name: str, board_id: str | None) -> None:
-        if self.is_unlocked(name, board_id):
+    def require_unlocked(
+        self, name: str, board_id: str | None, principal: str | None = None
+    ) -> None:
+        if self.is_unlocked(name, board_id, principal):
             return
         definition = self.definition(name)
         prerequisite = definition.prerequisite or f"{name}-plan"
@@ -195,13 +213,19 @@ class ToolRegistry:
         except KeyError as exc:
             raise ToolError(f"Unknown tool: {name}") from exc
 
-    def _is_advertised(self, definition: ToolDefinition) -> bool:
-        return not definition.hidden_by_default or bool(self._unlocked_boards[definition.name])
+    def _is_advertised(
+        self, definition: ToolDefinition, principal: str | None = None
+    ) -> bool:
+        if not definition.hidden_by_default:
+            return True
+        unlocked = self._unlocked_boards[definition.name]
+        if principal is None:
+            return bool(unlocked)
+        return any(owner == principal for _board_id, owner in unlocked)
 
 
 TimeoutResolver = Callable[[str, Mapping[str, object] | None], float]
 InvocationGuard = Callable[[str, str, Mapping[str, object]], None]
-ExecutionLockResolver = Callable[[str], ContextManager[object]]
 OperationResourceBinder = Callable[[ManagedOperation], None]
 OperationFinalizerResolver = Callable[[str, str, Mapping[str, object]], Callable[[], None] | None]
 
@@ -209,7 +233,6 @@ OperationFinalizerResolver = Callable[[str, str, Mapping[str, object]], Callable
 @dataclass(frozen=True, slots=True)
 class GuardedDispatchPolicy:
     guard: InvocationGuard
-    lock_for_board: ExecutionLockResolver
 
 
 class RegistryFastMCP(FastMCP):
@@ -227,8 +250,12 @@ class RegistryFastMCP(FastMCP):
         self._timeout_resolver = timeout_resolver
         self._guarded_dispatch: dict[str, GuardedDispatchPolicy] = {}
         self._layer2_tools: set[str] = set()
+        self._board_affecting_tools: set[str] = set()
         self._operation_resource_binder: OperationResourceBinder | None = None
         self._finalizer_resolver: OperationFinalizerResolver | None = None
+        self._client_principals: weakref.WeakKeyDictionary[object, str] = (
+            weakref.WeakKeyDictionary()
+        )
         super().__init__(name=name, **settings)
 
     def configure_operation_resources(self, binder: OperationResourceBinder) -> None:
@@ -246,18 +273,31 @@ class RegistryFastMCP(FastMCP):
 
         self.registry.definition(name)
         self._layer2_tools.add(name)
+        self._board_affecting_tools.add(name)
+
+    def configure_board_affecting(self, name: str) -> None:
+        """Place a tool that touches a probe, target, or UART on the global worker queue."""
+
+        self.registry.definition(name)
+        self._board_affecting_tools.add(name)
+
+    def configure_metadata(self, name: str) -> None:
+        """Exempt a cached/read-only metadata tool from the hardware worker queue."""
+
+        self.registry.definition(name)
+        self._board_affecting_tools.discard(name)
 
     def configure_guarded_dispatch(
         self,
         name: str,
         *,
         guard: InvocationGuard,
-        lock_for_board: ExecutionLockResolver,
     ) -> None:
-        """Bind one registered synchronous tool to plan enforcement and its board lock."""
+        """Bind a registered tool to enforcement inside the global board-worker boundary."""
 
         self.registry.definition(name)
-        self._guarded_dispatch[name] = GuardedDispatchPolicy(guard, lock_for_board)
+        self._guarded_dispatch[name] = GuardedDispatchPolicy(guard)
+        self._board_affecting_tools.add(name)
 
     def add_tool(
         self,
@@ -286,16 +326,29 @@ class RegistryFastMCP(FastMCP):
         super().remove_tool(name)
         self.registry.unregister(name)
 
+    def _principal_for_context(self, context: Any) -> str:
+        try:
+            session = context.session
+        except ValueError:
+            return current_caller_principal()
+        principal = self._client_principals.get(session)
+        if principal is None:
+            principal = f"mcp-client-{secrets.token_hex(16)}"
+            self._client_principals[session] = principal
+        return principal
+
     async def list_tools(self):  # type: ignore[no-untyped-def]
         tools = await super().list_tools()
-        advertised = frozenset(self.registry.advertised())
+        advertised = frozenset(self.registry.advertised(self._principal_for_context(self.get_context())))
         return [tool for tool in tools if tool.name in advertised]
 
     async def call_tool(self, name: str, arguments: dict[str, Any]):  # type: ignore[no-untyped-def]
+        context = self.get_context()
+        principal = self._principal_for_context(context)
         board_value = arguments.get("board_id")
         board_id = board_value if isinstance(board_value, str) and board_value else None
         try:
-            self.registry.require_unlocked(name, board_id)
+            self.registry.require_unlocked(name, board_id, principal)
         except ToolError as exc:
             if name in self._layer2_tools:
                 raise ToolError(wrap_layer2_response(str(exc))) from exc
@@ -303,7 +356,6 @@ class RegistryFastMCP(FastMCP):
         revision_before = self.registry.list_revision
         dispatch_policy = self._guarded_dispatch.get(name)
         before_execution = None
-        execution_lock = None
         if dispatch_policy is not None:
             if board_id is None:
                 raise ToolError(f"Guarded tool '{name}' requires a non-empty board_id.")
@@ -313,12 +365,11 @@ class RegistryFastMCP(FastMCP):
                 board_id,
                 dict(arguments),
             )
-            execution_lock = dispatch_policy.lock_for_board(board_id)
         tool = self._tool_manager.get_tool(name)
         if tool is None:
             raise ToolError(f"Unknown tool: {name}")
-        context = self.get_context()
         timeout = self._timeout_resolver(name, arguments)
+        serialize_board = board_id is not None and name in self._board_affecting_tools
         finalizer = None
         if "on_exit" in arguments:
             if board_id is None or self._finalizer_resolver is None:
@@ -327,6 +378,7 @@ class RegistryFastMCP(FastMCP):
                 finalizer = self._finalizer_resolver(name, board_id, arguments)
             except ValueError as exc:
                 raise ToolError(str(exc)) from exc
+        caller_token = set_caller_principal(principal)
         try:
             request_id = context.request_id
         except ValueError:
@@ -344,9 +396,8 @@ class RegistryFastMCP(FastMCP):
                     invoke_async,
                     timeout,
                     before_execution=before_execution,
-                    execution_lock=execution_lock,
                     request_id=request_id,
-                    serialize_board=name != "action_batch",
+                    serialize_board=serialize_board,
                     resource_binder=self._operation_resource_binder
                     if name in self._layer2_tools
                     else None,
@@ -364,8 +415,8 @@ class RegistryFastMCP(FastMCP):
                 invoke_sync,
                 timeout,
                 before_execution=before_execution,
-                execution_lock=execution_lock,
                 request_id=request_id,
+                serialize_board=serialize_board,
                 resource_binder=self._operation_resource_binder
                 if name in self._layer2_tools
                 else None,
@@ -385,6 +436,7 @@ class RegistryFastMCP(FastMCP):
                 raise ToolError(wrap_layer2_response(str(exc))) from exc
             raise
         finally:
+            reset_caller_principal(caller_token)
             if self.registry.list_revision != revision_before:
                 await self._send_tool_list_changed()
 

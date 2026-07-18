@@ -116,7 +116,8 @@ def test_action_schema_carries_format_constraints() -> None:
     read_fields = {
         field.name: field for field in PLAN_DEFINITIONS["read_memory_address"].action_fields
     }
-    assert read_fields["width"].choices == (8, 16, 32)
+    assert read_fields["width"].choices == ()
+    assert read_fields["width"].minimum == 1
     assert read_fields["length"].maximum == 65536
     serial_fields = {
         field.name: field for field in PLAN_DEFINITIONS["read_serial"].action_fields

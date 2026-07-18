@@ -209,19 +209,23 @@ def run_owned(
     timeout: float,
     marker_store: ProcessMarkerStore | None = None,
     stdin: int | IO[Any] | None = None,
+    stdout: int | IO[Any] | None = None,
+    stderr: int | IO[Any] | None = None,
 ) -> subprocess.CompletedProcess[Any]:
     if timeout <= 0 or not math.isfinite(timeout):
         raise ValueError("subprocess timeout must be positive and finite")
-    stdout = subprocess.PIPE if capture_output else None
-    stderr = subprocess.PIPE if capture_output else None
+    if capture_output and (stdout is not None or stderr is not None):
+        raise ValueError("capture_output cannot be combined with explicit stdout or stderr")
+    process_stdout = subprocess.PIPE if capture_output else stdout
+    process_stderr = subprocess.PIPE if capture_output else stderr
     process, marker = popen_owned(
         argv,
         marker_store=marker_store,
         cwd=cwd,
         env=env,
         stdin=stdin,
-        stdout=stdout,
-        stderr=stderr,
+        stdout=process_stdout,
+        stderr=process_stderr,
         text=text,
     )
     try:

@@ -223,7 +223,7 @@ def test_preflight_terminal_transitions_also_produce_immutable_attempt_reports(
     elif status == "setup_research_required":
         assert payload["accepted_response"]["tool"] == "continue_setup"
         assert set(payload["accepted_response"]["response"]) == {
-            "pyocd_target",
+            "target_identity",
             "evidence",
             "reasoning_summary",
         }

@@ -53,7 +53,16 @@ _RAM_SYMBOLS: Final = (
     ("__ram_region_start", "__ram_region_end"),
     ("__kernel_ram_start", "__kernel_ram_end"),
 )
-_VECTOR_SYMBOLS: Final = ("_vector_start", "_vector_table", "__vector_table")
+_VECTOR_SYMBOLS: Final = (
+    "_vector_start",       # Zephyr
+    "_vector_table",
+    "__vector_table",
+    "__Vectors",          # CMSIS / Arm toolchains
+    "__Vectors_Start",
+    "g_pfnVectors",       # STM32Cube GCC
+    "__isr_vector",
+    "_vectors",
+)
 _INTERESTING_SYMBOLS: Final = frozenset(
     {name for pairs in (*_FLASH_SYMBOLS.values(), _RAM_SYMBOLS) for pair in pairs for name in pair}
     | {"__rom_region_start", "__rom_region_size"}
@@ -72,6 +81,19 @@ class LinkerEvidenceError(ValueError):
 class BuildRole(str, Enum):
     APPLICATION = "application"
     BOOTLOADER = "bootloader"
+
+
+def elf_requires_vector_table(path: Path) -> bool:
+    """Return the bundled ELF provider's architecture-specific startup requirement."""
+
+    try:
+        with path.expanduser().resolve().open("rb") as stream:
+            architecture = ELFFile(stream).get_machine_arch()
+    except (OSError, ELFError) as exc:
+        raise LinkerEvidenceError(
+            "safety/linker-malformed-elf", f"ELF could not be parsed: {path}"
+        ) from exc
+    return architecture in {"ARM", "AArch64"}
 
 
 @dataclass(frozen=True, slots=True)
@@ -488,8 +510,19 @@ def _symbol_range(
     return None
 
 
-def extract_build_evidence(selection: BuildArtifactSelection | None) -> BuildEvidence:
-    """Extract only build-owned facts; absent artifacts never synthesize partitions."""
+def extract_build_evidence(
+    selection: BuildArtifactSelection | None,
+    *,
+    require_flash_partition: bool = True,
+    require_ram_partition: bool = True,
+    require_vector_table: bool = True,
+) -> BuildEvidence:
+    """Extract build facts without synthesizing missing evidence.
+
+    Map construction keeps the strict defaults because it is deriving build-owned partitions.
+    Runtime flash and breakpoint containment may disable partition requirements: their authority is
+    the stable server-owned map, so a vendor ELF need only provide the facts that action consumes.
+    """
 
     if selection is None:
         return BuildEvidence.absent()
@@ -516,38 +549,47 @@ def extract_build_evidence(selection: BuildArtifactSelection | None) -> BuildEvi
             raise LinkerEvidenceError(
                 "build/partition-range", f"Invalid ROM partition symbols: {exc}"
             ) from exc
-    if flash_partition is None:
+    if flash_partition is None and require_flash_partition:
         raise LinkerEvidenceError(
             "build/flash-partition-missing",
             "Selected ELF/map does not define a complete build-owned flash partition",
         )
 
     ram_partition = _symbol_range(symbols, _RAM_SYMBOLS)
-    if ram_partition is None:
+    if ram_partition is None and require_ram_partition:
         raise LinkerEvidenceError(
             "build/ram-partition-missing",
             "Selected ELF/map does not define a complete build-owned RAM allocation",
         )
     vector_table = next((symbols[name] for name in _VECTOR_SYMBOLS if name in symbols), None)
-    if vector_table is None:
+    if vector_table is None and require_vector_table:
         raise LinkerEvidenceError(
             "build/vector-table-missing", "Selected ELF/map does not define a vector table"
         )
 
     load_ranges = [segment.load_range for segment in segments if segment.load_range is not None]
-    if not load_ranges or any(
+    if not load_ranges:
+        raise LinkerEvidenceError(
+            "build/segment-outside-partition",
+            "The ELF has no loadable flash segment",
+        )
+    if flash_partition is not None and any(
         not flash_partition.contains(load_range) for load_range in load_ranges
     ):
         raise LinkerEvidenceError(
             "build/segment-outside-partition",
             "A loadable ELF segment lies outside the build-owned flash partition",
         )
-    if not flash_partition.contains_address(entry_point):
+    if flash_partition is not None and not flash_partition.contains_address(entry_point):
         raise LinkerEvidenceError(
             "build/entry-outside-partition",
             "ELF entry point lies outside the build-owned flash partition",
         )
-    if not flash_partition.contains_address(vector_table):
+    if (
+        flash_partition is not None
+        and vector_table is not None
+        and not flash_partition.contains_address(vector_table)
+    ):
         raise LinkerEvidenceError(
             "build/vector-outside-partition",
             "Vector table lies outside the build-owned flash partition",
@@ -580,7 +622,9 @@ def extract_build_evidence(selection: BuildArtifactSelection | None) -> BuildEvi
                 "build/hex-incomplete",
                 f"HEX omits meaningful ELF data at address 0x{missing_meaningful[0]:x}",
             )
-        if any(not flash_partition.contains(item) for item in hex_ranges):
+        if flash_partition is not None and any(
+            not flash_partition.contains(item) for item in hex_ranges
+        ):
             raise LinkerEvidenceError(
                 "build/hex-outside-partition",
                 "HEX data lies outside the build-owned flash partition",
@@ -599,7 +643,7 @@ def extract_build_evidence(selection: BuildArtifactSelection | None) -> BuildEvi
         artifact_present=True,
         flash_available=True,
         flash_partition=flash_partition,
-        ram_partitions=(ram_partition,),
+        ram_partitions=((ram_partition,) if ram_partition is not None else ()),
         loadable_segments=segments,
         hex_ranges=hex_ranges,
         entry_point=entry_point,

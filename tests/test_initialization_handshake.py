@@ -41,7 +41,7 @@ def assert_required_guidance(guidance: str) -> None:
     assert "permission values" in prose
     assert "existing profile name, including an incomplete profile, to validation" in prose
     assert "unknown name to setup" in prose
-    assert "only when validation returns that exact remedy" in prose
+    assert "Only a live MCU mismatch" in prose
     assert "Never silently choose, rename, reassign, or rewrite a profile" in prose
     assert "Ordinary conversation is never permission" in prose
     assert "pass approval only through the exact structured parameter" in prose
@@ -55,8 +55,9 @@ def assert_required_guidance(guidance: str) -> None:
     assert "network download only when no compatible local copy exists" in prose
     assert "always-visible collect_build_artifacts MCP tool" in prose
     assert 'expected_roles to ["elf", "map"]' in prose
-    assert "pass its returned ELF/HEX/MAP paths explicitly to board_safety_refresh" in prose
-    assert "never treat collection as validation" in prose
+    assert "pass the selected returned path to the matching flash plan" in prose
+    assert "does not require board_safety_refresh" in prose
+    assert "Collection is never validation" in prose
 
 
 def test_handshake_is_visible_at_server_run_start() -> None:
@@ -116,23 +117,20 @@ async def test_in_process_client_lists_and_uses_visible_artifact_collector(
     async with create_connected_server_and_client_session(server.mcp) as session:
         tools = {tool.name: tool for tool in (await session.list_tools()).tools}
         collector = tools["collect_build_artifacts"]
-        assert "after a native IDE or CLI build" in (collector.description or "")
+        assert "after any native IDE or CLI build" in (collector.description or "")
         assert set(collector.inputSchema.get("properties", {})) == {
             "output_dir",
             "elf_path",
             "hex_path",
             "bin_path",
             "map_path",
+            "native_artifacts",
             "expected_roles",
         }
-        assert set(
-            collector.inputSchema["properties"]["expected_roles"]["anyOf"][0]["items"]["enum"]
-        ) == {
-            "elf",
-            "hex",
-            "bin",
-            "map",
-        }
+        assert (
+            collector.inputSchema["properties"]["expected_roles"]["anyOf"][0]["items"]["type"]
+            == "string"
+        )
         result = await session.call_tool(
             "collect_build_artifacts",
             {

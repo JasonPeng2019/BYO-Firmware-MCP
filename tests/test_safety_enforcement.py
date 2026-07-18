@@ -6,6 +6,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from pyocd_debug_mcp.adapters.target_backend import MemoryAccessCapabilities
 from pyocd_debug_mcp.firmstore.store import FirmStore
 from pyocd_debug_mcp.guardrails.flash_gate import (
     FlashArtifactIdentity,
@@ -48,8 +49,18 @@ def _inputs(
     *,
     geometry: object | None = None,
     artifact: Path = NUCLEO_ELF,
+    application_end: int = 0x08008000,
 ) -> FingerprintInputs:
-    selected_geometry = geometry or {"erase_origin": 0x08000000, "erase_size": 0x800}
+    selected_geometry: dict[str, object] = {
+        "flash_start": 0x08000000,
+        "flash_end": 0x08100000,
+        "ram_start": 0x20000000,
+        "ram_end": 0x20010000,
+        "erase_origin": 0x08000000,
+        "erase_size": 0x800,
+    }
+    if isinstance(geometry, dict):
+        selected_geometry.update(geometry)
     artifact_records: dict[str, object] = {
         artifact.suffix.removeprefix("."): {
             "path": str(artifact),
@@ -63,8 +74,16 @@ def _inputs(
             "sha256": sha256(sibling_elf.read_bytes()).hexdigest(),
         }
     return FingerprintInputs(
-        profile={"board_id": "board_a"},
-        part_target={"mcu_part_number": "STM32L476RGT6", "target": "stm32l476rgtx"},
+        profile={
+            "board_id": "board_a",
+            "mcu_part_number": "STM32L476RGT6",
+            "pyocd_target": "stm32l476rgtx",
+        },
+        part_target={
+            "board_type": "nucleo_l476rg",
+            "mcu_part_number": "STM32L476RGT6",
+            "target": "stm32l476rgtx",
+        },
         pack={
             "id": "Keil.STM32L4xx_DFP",
             "version": "2.7.0",
@@ -77,11 +96,17 @@ def _inputs(
                 "status": "agreement",
                 "erase_geometry": selected_geometry,
             },
+            "deployment_policy": {
+                "application_start": 0x08000000,
+                "application_end": application_end,
+                "application_authoritative": True,
+                "bootloader_authoritative": False,
+            },
         },
         application_artifacts={"configuration": "reference", **artifact_records},
         bootloader_artifacts={"configuration": "reference", **artifact_records},
         geometry=selected_geometry,
-        schema={"memory_map": 1, "evidence": 2, "catalog": 2},
+        schema={"memory_map": 2, "evidence": 2, "catalog": 2},
     )
 
 
@@ -115,7 +140,7 @@ def _policy(
     request = SafetySetupRequest(
         "board_a",
         "task14-fixture",
-        _inputs(geometry=geometry, artifact=artifact),
+        _inputs(geometry=geometry, artifact=artifact, application_end=application_end),
         (
             _region(
                 "physical flash",
@@ -131,6 +156,13 @@ def _policy(
                 application_end,
                 FingerprintSource.APPLICATION_ARTIFACTS,
                 executable=True,
+            ),
+            _region(
+                "physical ram",
+                RegionKind.PHYSICAL_RAM,
+                0x20000000,
+                0x20010000,
+                FingerprintSource.PACK,
             ),
             _region(
                 "ram",
@@ -175,6 +207,7 @@ def test_ac_14_3_memory_writes_are_fully_contained_in_ram(tmp_path: Path) -> Non
     with pytest.raises(SafetyPolicyError) as flash:
         policy.check_memory_write("board_a", 0x08000000, 32)
     assert "safety/wrong-region-kind" == flash.value.code
+    assert flash.value.remedy == ("choose an address appropriate for this action",)
     with pytest.raises(SafetyPolicyError) as boundary:
         policy.check_memory_write("board_a", 0x2000FFFF, 32)
     assert boundary.value.code == "safety/unknown"
@@ -192,7 +225,7 @@ def test_gap_09_memory_reads_require_mapped_non_prohibited_containment(
         policy.check_memory_read("board_a", 0x60000000, 4)
     assert unknown.value.code == "safety/unknown"
     assert "region kind 'unknown'" in str(unknown.value)
-    assert unknown.value.remedy == ("board_safety_setup",)
+    assert unknown.value.remedy == ("board_safety_refresh",)
 
     with pytest.raises(SafetyPolicyError) as prohibited:
         policy.check_memory_read("board_a", 0x40001000, 4)
@@ -236,6 +269,9 @@ def test_memory_read_handlers_check_exact_spans_before_backend_access(
                 backend_calls.append(("block", address, length)) or []
             ),
             write_target_memory=lambda *args: None,
+            memory_capabilities=lambda board: MemoryAccessCapabilities(
+                (8, 16, 32), (8, 16, 32), 32, 32, 4
+            ),
             check_memory_read=check_read,
         )
     )
@@ -263,7 +299,7 @@ def test_memory_read_handlers_check_exact_spans_before_backend_access(
     assert backend_calls == []
 
 
-def test_persisted_legacy_authority_map_cannot_be_restored_after_restart(
+def test_persisted_legacy_map_cannot_be_restored_after_restart(
     tmp_path: Path,
 ) -> None:
     store = FirmStore(tmp_path)
@@ -296,12 +332,18 @@ def test_persisted_legacy_authority_map_cannot_be_restored_after_restart(
     )
     assert result.status == "safety_setup_completed"
 
-    restarted_policy = SafetyPolicy(SafetyArtifactRepository(FirmStore(tmp_path)))
+    repository = SafetyArtifactRepository(FirmStore(tmp_path))
+    path = repository.paths("board_a")["memory_map"]
+    path.write_text(
+        path.read_text(encoding="utf-8").replace("schema_version: 2", "schema_version: 1"),
+        encoding="utf-8",
+    )
+    restarted_policy = SafetyPolicy(repository)
     with pytest.raises(SafetyPolicyError) as caught:
         restarted_policy.current_aggregate("board_a")
 
-    assert caught.value.code == "safety/authority-migration-required"
-    assert caught.value.remedy == ("board_setup", "board_safety_setup", "board_validate")
+    assert caught.value.code == "safety/refresh-required"
+    assert caught.value.remedy == ("board_safety_refresh",)
 
 
 def test_ac_14_6_register_write_rejects_prohibited_overlap(tmp_path: Path) -> None:
@@ -311,15 +353,16 @@ def test_ac_14_6_register_write_rejects_prohibited_overlap(tmp_path: Path) -> No
     with pytest.raises(SafetyPolicyError) as prohibited:
         policy.check_register_write("board_a", 0x40000FFE)
     assert prohibited.value.code == "safety/prohibited"
+    assert prohibited.value.remedy == ("choose a mapped, non-prohibited address",)
 
 
 def test_ac_14_8_breakpoints_require_build_derived_executable_space(tmp_path: Path) -> None:
     policy = _policy(tmp_path)
 
-    assert policy.check_breakpoint("board_a", 0x08000020)
+    assert policy.check_breakpoint("board_a", 0x08000020, NUCLEO_ELF, 4)
     with pytest.raises(SafetyPolicyError) as ram:
-        policy.check_breakpoint("board_a", 0x20000020)
-    assert ram.value.code == "safety/wrong-region-kind"
+        policy.check_breakpoint("board_a", 0x20000020, NUCLEO_ELF, 4)
+    assert ram.value.code == "safety/breakpoint-wrong-region"
 
 
 def test_ac_14_4_and_14_10_flash_checks_target_segments_entry_vector_and_sectors(
@@ -455,13 +498,13 @@ def test_ac_14_4_and_14_10_crafted_flash_rejection_has_zero_backend_calls(
         }[case]
     )
     assert refusal.value.remedy in {
-        ("select_valid_build_artifact", "board_safety_refresh"),
-        ("select_correct_build", "board_safety_refresh"),
+        ("select_valid_build_artifact",),
+        ("select_correct_build",),
     }
     assert calls == []
 
 
-def test_declared_source_artifact_drift_is_detected_per_call(tmp_path: Path) -> None:
+def test_declared_source_artifact_drift_does_not_stale_the_stable_map(tmp_path: Path) -> None:
     store = FirmStore(tmp_path)
     artifact = tmp_path / "evidence.json"
     artifact.write_text("v1", encoding="utf-8")
@@ -502,13 +545,10 @@ def test_declared_source_artifact_drift_is_detected_per_call(tmp_path: Path) -> 
     assert policy.current_aggregate("board_a")
 
     artifact.write_text("v2", encoding="utf-8")
-    with pytest.raises(SafetyPolicyError) as stale:
-        policy.current_aggregate("board_a")
-    assert stale.value.code == "safety/artifact-stale"
-    assert stale.value.remedy == ("board_safety_refresh",)
+    assert policy.current_aggregate("board_a")
 
 
-def test_live_fingerprint_inputs_are_recomputed_on_every_write_check(tmp_path: Path) -> None:
+def test_legacy_live_fingerprint_callback_is_not_authority(tmp_path: Path) -> None:
     persisted = _policy(tmp_path)
     current: dict[str, FingerprintInputs] = {"value": _inputs()}
     calls: list[str] = []
@@ -525,7 +565,7 @@ def test_live_fingerprint_inputs_are_recomputed_on_every_write_check(tmp_path: P
     )
     policy.current_aggregate("board_a")
     policy.current_aggregate("board_a")
-    assert calls == ["board_a", "board_a"]
+    assert calls == []
 
     original = current["value"]
     current["value"] = FingerprintInputs(
@@ -538,14 +578,11 @@ def test_live_fingerprint_inputs_are_recomputed_on_every_write_check(tmp_path: P
         original.geometry,
         original.schema,
     )
-    with pytest.raises(SafetyPolicyError) as stale:
-        policy.current_aggregate("board_a")
-    assert stale.value.code == "safety/fingerprint-stale"
-    assert stale.value.remedy == ("board_safety_setup",)
+    assert policy.current_aggregate("board_a") == persisted.current_aggregate("board_a")
 
 
 @pytest.mark.parametrize("source", ["geometry", "schema"])
-def test_structural_drift_requires_full_safety_setup_then_validation(
+def test_legacy_live_structural_drift_cannot_override_single_map_authority(
     tmp_path: Path,
     source: str,
 ) -> None:
@@ -571,10 +608,7 @@ def test_structural_drift_requires_full_safety_setup_then_validation(
         authority_verifier=persisted.authority_verifier,
     )
 
-    with pytest.raises(SafetyPolicyError) as stale:
-        policy.current_aggregate("board_a")
-
-    assert stale.value.remedy == ("board_safety_setup", "board_validate")
+    assert policy.current_aggregate("board_a") == persisted.current_aggregate("board_a")
 
 
 def test_backend_mutations_are_never_called_after_containment_refusal(tmp_path: Path) -> None:
@@ -584,11 +618,11 @@ def test_backend_mutations_are_never_called_after_containment_refusal(tmp_path: 
     def check_memory(board: str, address: int, width: int) -> None:
         policy.check_memory_write(board, address, width)
 
-    def check_register(board: str, address: int) -> None:
-        policy.check_register_write(board, address)
+    def check_register(board: str, address: int, size_bytes: int) -> None:
+        policy.check_register_write(board, address, size_bytes)
 
-    def check_breakpoint(board: str, address: int) -> None:
-        policy.check_breakpoint(board, address)
+    def check_breakpoint(board: str, address: int, artifact: Path) -> None:
+        policy.check_breakpoint(board, address, artifact, 4)
 
     def check_flash(action: str, board: str, artifact: Path) -> None:
         del action
@@ -619,6 +653,9 @@ def test_backend_mutations_are_never_called_after_containment_refusal(tmp_path: 
             read_target_memory=lambda handle, address, width: 0,
             read_target_block=lambda handle, address, length: [],
             write_target_memory=lambda *args: calls.append("memory-write"),
+            memory_capabilities=lambda board: MemoryAccessCapabilities(
+                (8, 16, 32), (8, 16, 32), 32, 32, 4
+            ),
             check_memory_read=lambda board, address, size: None,
             check_memory_write=check_memory,
         )
@@ -628,7 +665,10 @@ def test_backend_mutations_are_never_called_after_containment_refusal(tmp_path: 
 
     registers = build_register_handlers(
         RegisterToolServices(
-            supported_registers=lambda board: (),
+            describe_register=lambda board, name: None,
+            memory_capabilities=lambda board: MemoryAccessCapabilities(
+                (8, 16, 32), (8, 16, 32), 32, 32, 4
+            ),
             read_register=lambda *args: "",
             write_register=lambda *args: "",
             masked_register_write=lambda *args: calls.append("register-write") or "",
@@ -652,7 +692,7 @@ def test_backend_mutations_are_never_called_after_containment_refusal(tmp_path: 
         )
     )
     with pytest.raises(SafetyPolicyError):
-        breakpoints["set_breakpoint"]("board_a", "ram_function")
+        breakpoints["set_breakpoint"]("board_a", "ram_function", str(NUCLEO_ELF))
 
     identity = FlashArtifactIdentity(
         NUCLEO_ELF,

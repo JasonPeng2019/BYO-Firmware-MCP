@@ -278,8 +278,8 @@ _DEFINITIONS = (
             _field(
                 "width",
                 FieldType.INTEGER,
-                "Transfer width: 8, 16, or 32 bits.",
-                choices=(8, 16, 32),
+                "Scalar transfer width supported by the connected target backend.",
+                minimum=1,
             ),
             _field(
                 "length",
@@ -306,8 +306,8 @@ _DEFINITIONS = (
             _field(
                 "width",
                 FieldType.INTEGER,
-                "Transfer width: 8, 16, or 32 bits.",
-                choices=(8, 16, 32),
+                "Scalar transfer width supported by the connected target backend.",
+                minimum=1,
             ),
             _field("allow_address_fallback", FieldType.BOOLEAN, "Explicit raw-address fallback."),
             _field("reason", FieldType.TEXT, "Reason symbol access is unsuitable.", nullable=True),
@@ -322,12 +322,20 @@ _DEFINITIONS = (
         "set_breakpoint",
         "set_breakpoint-plan",
         "Set a breakpoint at one mapped executable symbol or address.",
-        (_field("symbol_or_address", FieldType.TEXT_OR_INTEGER, "Exact symbol or address."),),
+        (
+            _field("symbol_or_address", FieldType.TEXT_OR_INTEGER, "Exact symbol or address."),
+            _field(
+                "artifact",
+                FieldType.TEXT,
+                "Current ELF artifact whose executable sections authorize this breakpoint.",
+            ),
+        ),
         BudgetMode.FIXED,
         PermissionMode.NONE,
         SafetyMode.FRESH_WRITE,
         30.0,
-        "The resolved location must be executable and supported by the connected core.",
+        "The resolved location must be inside an executable section of the exact plan-bound ELF "
+        "and supported by the connected core.",
     ),
     PlanDefinition(
         "flash_application",
@@ -566,7 +574,8 @@ _UART_PROTOCOL = (
     "such as [TRC-01], and what it proves; "
     "(3) treat captured tags as hardware observations and reconstruct what actually ran, not "
     "what the code should have done; (4) budget multiple captures and remember that changed "
-    "instrumentation requires rebuild, board_safety_refresh after relinking, and reflash; "
+    "instrumentation requires rebuild, a replacement flash plan, and reflash; ordinary builds "
+    "do not require board_safety_refresh; "
     "(5) at task completion remove every tracked print, grep for the tags until there are zero "
     "hits, rebuild and flash clean firmware, then delete or clear the tracking file."
 )
@@ -640,8 +649,8 @@ _GUIDANCE: Final = MappingProxyType(
             "replacement plan and, for one-time permission, a fresh user prompt.",
             example_hypothesis=(
                 "The board the user calls 'left controller' is a new nRF52840-QIAA build with no "
-                "existing profile; setup should resolve target and safety map from the attached "
-                "J-Link and this workspace's linker artifacts."
+                "existing profile; setup should resolve its target from the attached J-Link and "
+                "build its stable safety map from reviewed server-owned evidence."
             ),
             example_strategy=(
                 "Run board_setup once; if it reports a failed phase, use the paired "
@@ -674,10 +683,10 @@ _GUIDANCE: Final = MappingProxyType(
             },
         ),
         "write_cpu_register": _PromptGuidance(
-            "Use while halted to patch an ordinary R0-R12 or supported floating-point register. "
-            "Read it first with read_cpu_register. Do not use this for PC, SP/MSP/PSP, LR, xPSR, "
-            "CONTROL, PRIMASK, BASEPRI, FAULTMASK, or security/provisioning registers; use "
-            "set_execution_state for supported execution-state registers.",
+            "Use while halted to patch an ordinary register declared by the connected backend. "
+            "Read it first with read_cpu_register. Do not use this for a backend-declared "
+            "execution-state register or security/provisioning register; use set_execution_state "
+            "for supported execution-state registers.",
             "The server verifies a validated session, open fresh gate, exact plan match, and the "
             "connected core's supported ordinary-register class.",
             "A wrong value corrupts in-flight computation, normally recoverable by reset.",
@@ -728,8 +737,9 @@ _GUIDANCE: Final = MappingProxyType(
             "Use to change one variable for a bounded hypothesis test. Prefer a symbol. A raw address "
             "requires allow_address_fallback=true plus a concrete reason and is RAM-only. Do not use "
             "this for peripheral registers or flash.",
-            "The server verifies a validated session, open gate, fingerprint freshness, exact plan, "
-            "and full mapped-RAM containment. A raw address without the flag is rejected with 'Try a "
+            "The server verifies a validated session, an open gate associated with the current "
+            "stable memory map, the exact plan, and full mapped-RAM containment. A raw address "
+            "without the flag is rejected with 'Try a "
             "symbol first.' Prohibited and unknown regions are denied.",
             "A wrong memory write can crash the application; recover by reset or reflash.",
             (
@@ -753,8 +763,8 @@ _GUIDANCE: Final = MappingProxyType(
             "prints failed or cannot work—for example before UART initialization, timing perturbation, "
             "no UART path, or instruction-level inspection after logs localized the fault. "
             "remove_breakpoint is always available and needs no plan.",
-            "The server resolves the symbol/address and verifies a mapped executable region supported "
-            "by the target breakpoint mechanism.",
+            "The server resolves the symbol/address from the exact plan-bound current ELF and "
+            "requires it to lie inside an executable loadable segment supported by the target.",
             "Breakpoint resources are finite, and a forgotten breakpoint can halt the board later.",
             (
                 "Record the print-based attempt and why escalation is necessary.",
@@ -763,15 +773,16 @@ _GUIDANCE: Final = MappingProxyType(
                 "Name remove_breakpoint in the strategy and perform it afterward.",
             ),
             "Remove the breakpoint and leave the core in a deliberate state.",
-            {"symbol_or_address": "uart_rx_handler"},
+            {"symbol_or_address": "uart_rx_handler", "artifact": "build/firmware.elf"},
         ),
         "flash_application": _PromptGuidance(
             "Use only to deploy a rebuilt application artifact. Never use it for a bootloader or "
             "arbitrary flash. The server checks every loadable segment, required erase sector, entry "
             "point, vector table, target identity, and artifact-defined load addresses against the "
             "application partition. The request never supplies a target address.",
-            "A validated session and open fresh gate are required. After rebuilding/relinking, run "
-            "board_safety_refresh first or fingerprint freshness closes the gate.",
+            "A validated session, open gate, current stable map, and unchanged plan-bound artifact "
+            "bytes are required. A routine rebuild does not require board_safety_refresh; execution "
+            "checks the actual artifact against the map.",
             "Cancellation lets an in-progress flash finish safely. A wrong-but-contained image may run "
             "incorrectly; recover by flashing a correct application.",
             (
@@ -787,8 +798,8 @@ _GUIDANCE: Final = MappingProxyType(
             "Use only for an artifact intended for the bootloader partition. Application, prohibited, "
             "ROM-bootloader, and unknown regions are rejected. Prefer flash_application for ordinary "
             "firmware changes.",
-            "A validated session, open fresh gate, permission, current fingerprint, target identity, "
-            "and full bootloader segment/erase/entry/vector containment are required.",
+            "A validated session, open gate, permission, current stable map, unchanged plan-bound "
+            "artifact bytes, target identity, and full bootloader containment are required.",
             "A bad bootloader can make the application unbootable. It remains recoverable over SWD, "
             "but explain that consequence before requesting permission.",
             (
@@ -1109,7 +1120,8 @@ def _render_null_response(
         f"[PRECONDITIONS]\nSafety/session policy: {definition.safety_mode.value}; default timeout "
         f"{definition.timeout_seconds:g}s. {guidance.preconditions} Execution still checks active/current plan, "
         "exact board and parameters, remaining calls, assignment/session validity, and every applicable "
-        "validation, gate, and fingerprint condition; refusal names the remedy.\n\n"
+        "validation, gate, stable-map association, and plan-bound artifact condition; refusal names "
+        "the remedy.\n\n"
         f"[WARNINGS]\n{guidance.warnings}{special}\nExtra instructions: "
         f"{definition.extra_instructions}\n\n"
         f"[SOFT-GUARDRAILS — confirm before submitting]\n{soft}\n\n"
@@ -1121,7 +1133,7 @@ def _render_null_response(
         "a static callable tool list even after tools/list_changed. In that case, submit only the "
         "exact server-returned single-child action_batch fallback unchanged. Never invent a hidden "
         "tool name, alter its arguments, combine primary and paired actions, or treat the fallback "
-        "as permission; normal plan, permission, gate, freshness, timeout, budget, and cleanup "
+        "as permission; normal plan, permission, gate, map/artifact, timeout, budget, and cleanup "
         "checks still apply."
     )
 

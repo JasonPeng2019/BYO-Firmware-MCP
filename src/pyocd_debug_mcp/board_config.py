@@ -16,7 +16,7 @@ DEFAULT_BOARD_CONFIG_DIR = (
 )  # PROJECT-DEFINED (repo layout)
 BOARD_CONFIG_SUFFIXES = frozenset({".json", ".yaml", ".yml"})  # PROJECT-DEFINED (supported formats)
 
-# Typed recover-mode selector — board YAML names a backend, never a raw shell command.
+# Typed recover-mode selector â€” board YAML names a backend, never a raw shell command.
 # PROJECT-DEFINED (the recover policy vocabulary for board configs).
 RECOVER_MODE_BACKEND_MASS_ERASE = "backend_mass_erase"
 RECOVER_MODE_MANUAL_ONLY = "manual_only"
@@ -45,7 +45,7 @@ class BoardConfig:
     display_name: str
     mcu_family: str
     probe_family: str
-    pyocd_target: str
+    target_identity: str
     probe_type: str
     probe_hint_terms: tuple[str, ...]
     serial_hint_terms: tuple[str, ...]
@@ -63,6 +63,13 @@ class BoardConfig:
     debug_clock_hz: int | None = None
     expected_uart_substring: str | None = None
     source_path: Path | None = None
+    debug_backend: str = "pyocd"
+
+    @property
+    def pyocd_target(self) -> str:
+        """Compatibility alias for legacy callers and tracked board fixtures."""
+
+        return self.target_identity
 
 
 def normalize_list(value: object) -> list[str]:
@@ -95,8 +102,10 @@ def parse_int(value: object, field_name: str) -> int:
 
 
 def validate_width_bits(width_bits: int, field_name: str) -> int:
-    if width_bits not in {8, 16, 32}:
-        raise ConfigError(f"Field '{field_name}' must be one of: 8, 16, 32")
+    if width_bits < 8 or width_bits > 256 or width_bits % 8:
+        raise ConfigError(
+            f"Field '{field_name}' must be a byte-multiple width from 8 through 256 bits"
+        )
     return width_bits
 
 
@@ -188,7 +197,7 @@ def make_board_config(raw: dict[str, object], source_path: Path | None) -> Board
             f"{', '.join(present_forbidden)}. Supply these later as runtime/session inputs instead."
         )
 
-    required_fields = ["board_id", "display_name", "mcu_family", "probe_family", "pyocd_target"]
+    required_fields = ["board_id", "display_name", "mcu_family", "probe_family"]
     missing = [field for field in required_fields if not raw.get(field)]
     if missing:
         raise ConfigError(f"Missing required board config fields: {', '.join(missing)}")
@@ -202,7 +211,13 @@ def make_board_config(raw: dict[str, object], source_path: Path | None) -> Board
         raise ConfigError("display_name must be a non-empty string of at most 100 characters")
     mcu_family = str(raw["mcu_family"]).strip().lower()
     probe_family = str(raw["probe_family"]).strip().lower()
-    pyocd_target = str(raw["pyocd_target"]).strip()
+    target_value = raw.get("target_identity", raw.get("pyocd_target"))
+    if not isinstance(target_value, str) or not target_value.strip():
+        raise ConfigError("Missing required board config field: target_identity")
+    pyocd_target = target_value.strip()
+    debug_backend = str(raw.get("debug_backend", "pyocd")).strip().casefold()
+    if not re.fullmatch(r"[a-z0-9][a-z0-9_.-]{0,63}", debug_backend):
+        raise ConfigError("debug_backend must be a simple 1-64 character backend identifier")
     if "pack_name" in raw:
         source = f" in {source_path}" if source_path is not None else ""
         warnings.warn(
@@ -300,7 +315,7 @@ def make_board_config(raw: dict[str, object], source_path: Path | None) -> Board
         display_name=display_name,
         mcu_family=mcu_family,
         probe_family=probe_family,
-        pyocd_target=pyocd_target,
+        target_identity=pyocd_target,
         probe_type=probe_type,
         probe_hint_terms=tuple(sorted(term.lower() for term in probe_terms if term)),
         serial_hint_terms=tuple(sorted(term.lower() for term in serial_terms if term)),
@@ -318,6 +333,7 @@ def make_board_config(raw: dict[str, object], source_path: Path | None) -> Board
         debug_clock_hz=debug_clock_hz,
         expected_uart_substring=expected_uart_substring,
         source_path=source_path,
+        debug_backend=debug_backend,
     )
 
 
@@ -406,3 +422,5 @@ def load_selected_board_configs(
     custom_boards = load_board_configs_from_paths(extra_paths)
     boards = merge_board_lists(default_boards, custom_boards)
     return select_boards_by_id(boards, requested_ids)
+
+

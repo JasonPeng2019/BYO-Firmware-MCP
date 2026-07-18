@@ -17,7 +17,6 @@ from pyocd_debug_mcp.kernel.registry import RegistryFastMCP
 
 LOG_PATH = Path(os.environ["LIFECYCLE_FAKE_LOG"])
 _LOG_LOCK = threading.Lock()
-_BOARD_LOCKS: dict[str, threading.RLock] = {}
 
 
 def record(event: str, **details: object) -> None:
@@ -161,7 +160,6 @@ for guarded_name in ("slow_read", "flash_application", "quick", "halt", "cleanup
     server.configure_guarded_dispatch(
         guarded_name,
         guard=budget_guard,
-        lock_for_board=lambda board_id: _BOARD_LOCKS.setdefault(board_id, threading.RLock()),
     )
 
 

@@ -4,6 +4,7 @@ import asyncio
 import json
 import threading
 from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
 
 import pytest
 
@@ -95,6 +96,8 @@ def engine_for(
     server_run: ServerRun | None = None,
     permission_provider=None,
     scope_validator=None,
+    binding_provider=None,
+    binding_validator=None,
     registry: ToolRegistry | None = None,
 ) -> tuple[PlanEngine, ToolRegistry]:
     registry = registry or ToolRegistry()
@@ -109,6 +112,8 @@ def engine_for(
         registry,
         permission_provider=permission_provider,
         scope_validator=scope_validator,
+        binding_provider=binding_provider,
+        binding_validator=binding_validator,
     )
     return engine, registry
 
@@ -603,11 +608,11 @@ class FailNextUnlockRegistry(ToolRegistry):
         super().__init__()
         self.fail_next_unlock = False
 
-    def unlock(self, name: str, board_id: str) -> None:
+    def unlock(self, name: str, board_id: str, principal: str | None = None) -> None:
         if self.fail_next_unlock:
             self.fail_next_unlock = False
             raise RuntimeError("injected unlock failure")
-        super().unlock(name, board_id)
+        super().unlock(name, board_id, principal)
 
 
 def test_ac_4_9_failed_replacement_rolls_back_to_complete_prior_plan() -> None:
@@ -808,3 +813,61 @@ def test_a10_setup_plan_cycle_limit_relocks_after_three_replacements() -> None:
 
     assert exhausted.value.code == "plan/retry-exhausted"
     assert registry.is_unlocked("board_setup", "board_a") is False
+
+
+def test_artifact_binding_refuses_changed_bytes_before_budget_burn(tmp_path: Path) -> None:
+    artifact = tmp_path / "firmware.elf"
+    artifact.write_bytes(b"first")
+
+    def bind(_definition, _board, parameters):
+        selected = Path(str(parameters["artifact"]))
+        return selected.read_bytes()
+
+    def validate(_definition, _board, parameters, binding):
+        selected = Path(str(parameters["artifact"]))
+        if selected.read_bytes() != binding:
+            raise PlanRefusal("plan/artifact-changed", "artifact changed")
+
+    engine, _ = engine_for(
+        "flash_application",
+        binding_provider=bind,
+        binding_validator=validate,
+    )
+    initialize(engine, "flash_application-plan")
+    fields = common_fields(max_calls=1) | {
+        "action_parameters": {"artifact": str(artifact)},
+    }
+    engine.submit("flash_application-plan", fields, session_id=SESSION)
+    artifact.write_bytes(b"second")
+
+    with pytest.raises(PlanRefusal) as changed:
+        engine.enforce(
+            "flash_application",
+            "board_a",
+            {"artifact": str(artifact)},
+            session_id=SESSION,
+        )
+    assert changed.value.code == "plan/artifact-changed"
+    assert engine.active_plan("flash_application", "board_a") is None
+
+    # Restoring the original bytes cannot resurrect an invalidated approval. The refusal did not
+    # burn budget; a deliberate replacement plan for the current bytes is still required.
+    artifact.write_bytes(b"first")
+    with pytest.raises(PlanRefusal) as stale:
+        engine.enforce(
+            "flash_application",
+            "board_a",
+            {"artifact": str(artifact)},
+            session_id=SESSION,
+        )
+    assert stale.value.code == "plan/no-active-plan"
+
+    artifact.write_bytes(b"second")
+    engine.submit("flash_application-plan", fields, session_id=SESSION)
+    accepted = engine.enforce(
+        "flash_application",
+        "board_a",
+        {"artifact": str(artifact)},
+        session_id=SESSION,
+    )
+    assert accepted.remaining_calls == 0

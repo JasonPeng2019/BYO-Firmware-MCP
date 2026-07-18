@@ -2,12 +2,11 @@ board_id: nucleo_l476rg  # PROJECT-DEFINED (our canonical board id)
 display_name: "Nucleo-L476RG"  # PROJECT-DEFINED (human-facing board label)
 mcu_family: stm32l476  # HW-FIXED (the silicon family on the reference board)
 probe_family: stlink  # HW-FIXED (the onboard debug probe family)
-pyocd_target: stm32l476rgtx  # VENDOR-FIXED, BENCH-VERIFIED on the live Nucleo-L476RG Stage 0 path
+target_identity: stm32l476rgtx  # VENDOR-FIXED, BENCH-VERIFIED on the live Nucleo-L476RG Stage 0 path
 debug_connect_mode: under-reset  # BENCH-VERIFIED attach fact; consumed generically by the backend
 debug_clock_hz: 1000000  # BENCH-VERIFIED debug clock fact
 serial_baudrate: 115200  # PROJECT-DEFINED, BENCH-VERIFIED by the repo-owned reference firmware
 test_read_address: 0x08000000  # HW-FIXED (STM32 flash base; safe readable smoke-test address)
-pack_name: stm32l476  # VENDOR-FIXED, BENCH-VERIFIED (`pyocd pack install stm32l476` supplies the target)
 # Bench truth (macOS host): probe UID 0668FF514988525067213913, serial port /dev/cu.usbmodem144403,
 # reference artifact flash + UART `boot ok` both pass through the shared Stage 0 services.
 # The human operator confirmed that the visible ST-Link probe and `/dev/cu.usbmodem144403`

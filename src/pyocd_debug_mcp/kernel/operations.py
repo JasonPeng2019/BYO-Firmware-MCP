@@ -15,7 +15,7 @@ import threading
 import time
 from collections.abc import Awaitable, Callable, Mapping
 from contextlib import ContextDecorator, nullcontext
-from contextvars import ContextVar, copy_context
+from contextvars import ContextVar, Token, copy_context
 from dataclasses import dataclass, field
 from enum import Enum
 from itertools import count
@@ -54,6 +54,7 @@ BeforeExecution = Callable[[], None]
 Cleanup = Callable[[], None]
 ResourceBinder = Callable[["ManagedOperation"], None]
 Finalizer = Callable[[], None]
+_board_worker_held: ContextVar[bool] = ContextVar("board_worker_held", default=False)
 
 
 class OperationState(str, Enum):
@@ -234,14 +235,14 @@ class OperationSnapshot:
 
 
 class OperationManager:
-    """Track request/operation/resource ownership and one worker boundary per board."""
+    """Track resources and one process-wide board-affecting worker queue."""
 
     def __init__(self) -> None:
         self._guard = threading.RLock()
         self._sequence = count(1)
         self._operations: dict[str, ManagedOperation] = {}
         self._operations_by_request: dict[str, set[str]] = {}
-        self._board_workers: dict[str, threading.Lock] = {}
+        self._board_worker = threading.Lock()
 
     def create(
         self,
@@ -267,10 +268,9 @@ class OperationManager:
             return operation
 
     def worker_lock(self, board_id: str | None) -> threading.Lock | ContextManager[object]:
-        if board_id is None:
+        if board_id is None or _board_worker_held.get():
             return nullcontext()
-        with self._guard:
-            return self._board_workers.setdefault(board_id, threading.Lock())
+        return self._board_worker
 
     def finish(self, operation: ManagedOperation) -> None:
         with self._guard:
@@ -326,6 +326,12 @@ def current_operation() -> ManagedOperation | None:
     """Return the operation owning the current async task or worker thread."""
 
     return _current_operation.get()
+
+
+def board_worker_is_held() -> bool:
+    """Return whether this context already owns the one global board worker."""
+
+    return _board_worker_held.get()
 
 
 def cancellation_checkpoint() -> None:
@@ -451,12 +457,17 @@ def _acquire_worker_lock(
         return cast(ContextManager[object], lock)
 
     class _CooperativeLock(ContextDecorator):
+        held_token: Token[bool] | None = None
+
         def __enter__(self) -> object:
             while not lock.acquire(timeout=BOARD_LOCK_POLL_SECONDS):
                 operation.checkpoint()
+            self.held_token = _board_worker_held.set(True)
             return lock
 
         def __exit__(self, *exc_info: object) -> None:
+            if self.held_token is not None:
+                _board_worker_held.reset(self.held_token)
             lock.release()
 
     return _CooperativeLock()
@@ -469,7 +480,6 @@ async def dispatch(
     timeout: float,
     *,
     before_execution: BeforeExecution | None = None,
-    execution_lock: ContextManager[object] | None = None,
     request_id: str | None = None,
     serialize_board: bool = True,
     resource_binder: ResourceBinder | None = None,
@@ -492,7 +502,17 @@ async def dispatch(
             raise
     token = _current_operation.set(managed)
     if inspect.iscoroutinefunction(operation):
+        async_lock = manager.worker_lock(board_id) if serialize_board else nullcontext()
+        acquired_lock: threading.Lock | None = None
+        held_token = None
         try:
+            if isinstance(async_lock, type(threading.Lock())):
+                acquired_lock = async_lock
+                with anyio.fail_after(timeout):
+                    while not acquired_lock.acquire(blocking=False):
+                        managed.checkpoint()
+                        await anyio.sleep(BOARD_LOCK_POLL_SECONDS)
+                held_token = _board_worker_held.set(True)
             managed.mark_running()
             if before_execution is not None:
                 before_execution()
@@ -520,6 +540,10 @@ async def dispatch(
             managed.cleanup()
             managed.done.set()
             manager.finish(managed)
+            if held_token is not None:
+                _board_worker_held.reset(held_token)
+            if acquired_lock is not None:
+                acquired_lock.release()
             _current_operation.reset(token)
 
     sync_operation = cast(Callable[[], T], operation)
@@ -530,15 +554,14 @@ async def dispatch(
         try:
             with _acquire_worker_lock(worker_lock, managed):
                 try:
-                    with execution_lock or nullcontext():
-                        managed.checkpoint()
-                        managed.mark_running()
-                        if before_execution is not None:
-                            before_execution()
-                        managed.checkpoint()
-                        managed.mark_handler_started()
-                        managed.result = sync_operation()
-                        managed.checkpoint()
+                    managed.checkpoint()
+                    managed.mark_running()
+                    if before_execution is not None:
+                        before_execution()
+                    managed.checkpoint()
+                    managed.mark_handler_started()
+                    managed.result = sync_operation()
+                    managed.checkpoint()
                     managed.finish(OperationState.COMPLETED)
                 except OperationCancelledError as exc:
                     managed.error = exc

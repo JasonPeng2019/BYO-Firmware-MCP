@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import threading
 from collections.abc import Mapping
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
@@ -104,11 +103,9 @@ def make_server() -> RegistryFastMCP:
         parameters = {key: value for key, value in arguments.items() if key != "board_id"}
         engine.enforce(name, board_id, parameters, session_id=SESSION)
 
-    locks: dict[str, threading.Lock] = {}
     server.configure_guarded_dispatch(
         "read_serial",
         guard=guard,
-        lock_for_board=lambda board_id: locks.setdefault(board_id, threading.Lock()),
     )
     register_plan_tools(
         server,
@@ -283,6 +280,21 @@ class PilotHarness:
     started_failures: set[str] = field(default_factory=set)
 
 
+def _single_client_remaining_budget(
+    engine: PlanEngine, action_name: str, board_id: str
+) -> int:
+    matches = [
+        state.remaining_calls
+        for key, state in engine.server_run.plans.items()
+        if isinstance(key, tuple)
+        and len(key) == 3
+        and key[:2] == (action_name, board_id)
+        and hasattr(state, "remaining_calls")
+    ]
+    assert len(matches) == 1
+    return matches[0]
+
+
 def make_all_pilot_server() -> PilotHarness:
     server = RegistryFastMCP("all-m4-pilots")
     engine = PlanEngine(ServerRun(run_id="all-pilot-run"), server.registry)
@@ -357,8 +369,6 @@ def make_all_pilot_server() -> PilotHarness:
             },
         )
 
-    locks: dict[str, threading.Lock] = {}
-
     def guard(name: str, board_id: str, arguments: Mapping[str, object]) -> None:
         parameters = {key: value for key, value in arguments.items() if key != "board_id"}
 
@@ -381,11 +391,7 @@ def make_all_pilot_server() -> PilotHarness:
             locked=True,
             prerequisite=f"{action_name}-plan",
         )
-        server.configure_guarded_dispatch(
-            action_name,
-            guard=guard,
-            lock_for_board=lambda board_id: locks.setdefault(board_id, threading.Lock()),
-        )
+        server.configure_guarded_dispatch(action_name, guard=guard)
 
     register_plan_tools(
         server,
@@ -465,8 +471,7 @@ async def test_m4_cross_tool_and_cross_board_isolation_preserve_budget() -> None
 
         assert wrong_tool.isError is True
         assert wrong_board.isError is True
-        active = harness.engine.active_plan("read_serial", "board_a")
-        assert active is not None and active.remaining_calls == 2
+        assert _single_client_remaining_budget(harness.engine, "read_serial", "board_a") == 2
 
         exact = await session.call_tool("read_serial", arguments)
         assert exact.isError is not True
@@ -488,14 +493,12 @@ async def test_m4_prestart_refusal_does_not_burn_dispatch_budget() -> None:
         refused = await session.call_tool("read_serial", arguments)
         assert refused.isError is True
         assert harness.calls.get("read_serial", []) == []
-        active = harness.engine.active_plan("read_serial", "board_a")
-        assert active is not None and active.remaining_calls == 2
+        assert _single_client_remaining_budget(harness.engine, "read_serial", "board_a") == 2
 
         harness.prestart_refusals.clear()
         accepted = await session.call_tool("read_serial", arguments)
         assert accepted.isError is not True
-        active = harness.engine.active_plan("read_serial", "board_a")
-        assert active is not None and active.remaining_calls == 1
+        assert _single_client_remaining_budget(harness.engine, "read_serial", "board_a") == 1
 
 
 async def test_m4_failed_after_start_burns_final_budget_and_relocks() -> None:

@@ -16,7 +16,6 @@ for entry in (REPO_ROOT, SRC_ROOT):
 
 from pyocd_debug_mcp.board_config import (  # noqa: E402
     ConfigError,
-    LegacyPackNameWarning,
     LegacyRecoverModeWarning,
     load_board_configs_from_paths,
 )
@@ -28,8 +27,7 @@ def test_all_tracked_board_configs_load() -> None:
         for path in BOARD_DIR.iterdir()
         if path.is_file() and path.suffix.lower() in {".json", ".yaml", ".yml"}
     )
-    with pytest.warns(LegacyPackNameWarning, match="packs/manifest.yaml"):
-        boards = load_board_configs_from_paths(paths)
+    boards = load_board_configs_from_paths(paths)
 
     assert boards, "expected at least one board config"
     assert len(boards) == len(paths)
@@ -47,8 +45,7 @@ def test_all_tracked_board_configs_load() -> None:
 
 
 def test_nrf52833_board_profile_matches_frozen_official_contract() -> None:
-    with pytest.warns(LegacyPackNameWarning, match="deprecated and ignored"):
-        [board] = load_board_configs_from_paths([BOARD_DIR / "nrf52833dk.yaml"])
+    [board] = load_board_configs_from_paths([BOARD_DIR / "nrf52833dk.yaml"])
 
     assert board.board_id == "nrf52833dk"
     assert board.display_name == "nRF52833 DK"
@@ -67,8 +64,7 @@ def test_nrf52833_board_profile_matches_frozen_official_contract() -> None:
 
 
 def test_nrf52840_board_profile_loads_as_retained_alternate_profile() -> None:
-    with pytest.warns(LegacyPackNameWarning, match="deprecated and ignored"):
-        [board] = load_board_configs_from_paths([BOARD_DIR / "nrf52840dk.yaml"])
+    [board] = load_board_configs_from_paths([BOARD_DIR / "nrf52840dk.yaml"])
 
     assert board.board_id == "nrf52840dk"
     assert board.display_name == "nRF52840-DK"

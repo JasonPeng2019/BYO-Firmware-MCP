@@ -11,7 +11,10 @@ import json
 from dataclasses import dataclass
 from hashlib import sha256
 from importlib import resources
+from importlib.metadata import entry_points
 from pathlib import Path
+from collections.abc import Iterable
+from typing import Callable, cast
 
 from pyocd_debug_mcp.safety.regions import RegionKind
 
@@ -35,7 +38,8 @@ class CatalogBoard:
     board_type: str
     mcu_names: tuple[str, ...]
     package_part_number: str
-    pyocd_target: str
+    target_identity: str
+    debug_backend: str
     probe_family: str
     default_baudrate: int
     test_read_address: int
@@ -49,6 +53,10 @@ class CatalogBoard:
     erase_size: int
     application_start: int
     application_end: int
+    application_partition_authoritative: bool
+    bootloader_start: int | None
+    bootloader_end: int | None
+    bootloader_partition_authoritative: bool
     hardware_regions: tuple[CatalogHardwareRegion, ...]
     datasheet_sha256: tuple[str, ...] = ()
     document_revision: str = "repository-reviewed board support v1"
@@ -63,6 +71,15 @@ class CatalogBoard:
     pyocd_svd_bundle_sha256: str | None = None
     debug_connect_mode: str | None = None
     debug_clock_hz: int | None = None
+    test_read_width_bits: int = 32
+    silicon_id_width_bits: int = 32
+    reviewed_evidence_loader: Callable[[CatalogBoard, str], object] | None = None
+
+    @property
+    def pyocd_target(self) -> str:
+        """Backward-compatible spelling for old callers; new providers use target_identity."""
+
+        return self.target_identity
 
     def accepts_mcu(self, value: str) -> bool:
         normalized = value.strip().casefold().replace("-", "").replace("_", "")
@@ -108,6 +125,8 @@ class CatalogBoard:
 
     @property
     def automatic_setup_reviewed(self) -> bool:
+        if self.reviewed_evidence_loader is not None:
+            return bool(self.datasheet_sha256)
         return bool(
             self.datasheet_sha256
             and self.device_support_evidence_resource
@@ -122,6 +141,7 @@ class CatalogBoard:
 
 
 _CATALOG_RESOURCE_NAME = "reviewed_boards.json"
+_CATALOG_ENTRY_POINT_GROUP = "pyocd_debug_mcp.reviewed_board_support"
 
 
 def _required_string(raw: dict[str, object], name: str) -> str:
@@ -150,6 +170,23 @@ def _optional_string(raw: dict[str, object], name: str) -> str | None:
     if value is None:
         return None
     return _required_string(raw, name)
+
+
+def _required_bool(raw: dict[str, object], name: str) -> bool:
+    value = raw.get(name)
+    if not isinstance(value, bool):
+        raise BoardCatalogError(f"Catalog field '{name}' must be a boolean")
+    return value
+
+
+def _memory_width(raw: dict[str, object], name: str) -> int:
+    value = raw.get(name, 32)
+    width = _required_int({name: value}, name)
+    if width < 8 or width > 256 or width % 8:
+        raise BoardCatalogError(
+            f"Catalog field '{name}' must be a byte-multiple width from 8 through 256 bits"
+        )
+    return width
 
 
 def _string_tuple(raw: dict[str, object], name: str, *, required: bool = False) -> tuple[str, ...]:
@@ -221,6 +258,14 @@ def _load_catalog(path: Path | None = None) -> dict[str, CatalogBoard]:
         ram_end = _required_int(raw, "ram_end")
         application_start = _required_int(raw, "application_start")
         application_end = _required_int(raw, "application_end")
+        application_partition_authoritative = _required_bool(
+            raw, "application_partition_authoritative"
+        )
+        bootloader_start = _optional_int(raw, "bootloader_start")
+        bootloader_end = _optional_int(raw, "bootloader_end")
+        bootloader_partition_authoritative = _required_bool(
+            raw, "bootloader_partition_authoritative"
+        )
         erase_size = _required_int(raw, "erase_size")
         if not (0 <= flash_start < flash_end and 0 <= ram_start < ram_end):
             raise BoardCatalogError(f"{board_type}: flash and RAM ranges must be non-empty")
@@ -228,12 +273,33 @@ def _load_catalog(path: Path | None = None) -> dict[str, CatalogBoard]:
             raise BoardCatalogError(f"{board_type}: application range must be inside flash")
         if erase_size <= 0:
             raise BoardCatalogError(f"{board_type}: erase_size must be positive")
+        if bootloader_partition_authoritative:
+            if (
+                bootloader_start is None
+                or bootloader_end is None
+                or not flash_start <= bootloader_start < bootloader_end <= flash_end
+            ):
+                raise BoardCatalogError(
+                    f"{board_type}: authoritative bootloader partition must be inside flash"
+                )
+            if application_start < bootloader_end and bootloader_start < application_end:
+                raise BoardCatalogError(
+                    f"{board_type}: application and bootloader partitions must not overlap"
+                )
+        elif bootloader_start is not None or bootloader_end is not None:
+            raise BoardCatalogError(
+                f"{board_type}: non-authoritative bootloader partition must be null"
+            )
 
         result[key] = CatalogBoard(
             board_type=board_type,
             mcu_names=_string_tuple(raw, "mcu_names", required=True),
             package_part_number=_required_string(raw, "package_part_number"),
-            pyocd_target=_required_string(raw, "pyocd_target"),
+            target_identity=(
+                _optional_string(raw, "target_identity")
+                or _required_string(raw, "pyocd_target")
+            ),
+            debug_backend=_optional_string(raw, "debug_backend") or "pyocd",
             probe_family=_required_string(raw, "probe_family"),
             default_baudrate=_required_int(raw, "default_baudrate"),
             test_read_address=_required_int(raw, "test_read_address"),
@@ -247,6 +313,10 @@ def _load_catalog(path: Path | None = None) -> dict[str, CatalogBoard]:
             erase_size=erase_size,
             application_start=application_start,
             application_end=application_end,
+            application_partition_authoritative=application_partition_authoritative,
+            bootloader_start=bootloader_start,
+            bootloader_end=bootloader_end,
+            bootloader_partition_authoritative=bootloader_partition_authoritative,
             hardware_regions=tuple(regions),
             datasheet_sha256=_string_tuple(raw, "datasheet_sha256"),
             document_revision=_required_string(raw, "document_revision"),
@@ -265,11 +335,39 @@ def _load_catalog(path: Path | None = None) -> dict[str, CatalogBoard]:
             pyocd_svd_bundle_sha256=_optional_string(raw, "pyocd_svd_bundle_sha256"),
             debug_connect_mode=_optional_string(raw, "debug_connect_mode"),
             debug_clock_hz=_optional_int(raw, "debug_clock_hz"),
+            test_read_width_bits=_memory_width(raw, "test_read_width_bits"),
+            silicon_id_width_bits=_memory_width(raw, "silicon_id_width_bits"),
         )
     return result
 
 
+def _load_external_catalog() -> dict[str, CatalogBoard]:
+    result: dict[str, CatalogBoard] = {}
+    for entry in entry_points(group=_CATALOG_ENTRY_POINT_GROUP):
+        loaded = entry.load()
+        supplied = loaded() if callable(loaded) and not isinstance(loaded, CatalogBoard) else loaded
+        boards = (
+            (supplied,)
+            if isinstance(supplied, CatalogBoard)
+            else tuple(cast(Iterable[object], supplied))
+        )
+        for board in boards:
+            if not isinstance(board, CatalogBoard):
+                raise BoardCatalogError(
+                    f"Reviewed board-support entry point {entry.name!r} returned an invalid row"
+                )
+            key = board.board_type.casefold()
+            if key in result:
+                raise BoardCatalogError(f"Duplicate external reviewed board type: {board.board_type}")
+            result[key] = board
+    return result
+
+
 _CATALOG = _load_catalog()
+for _key, _external in _load_external_catalog().items():
+    if _key in _CATALOG:
+        raise BoardCatalogError(f"External reviewed board type shadows bundled support: {_key}")
+    _CATALOG[_key] = _external
 
 
 def catalog_board(board_type: str) -> CatalogBoard:

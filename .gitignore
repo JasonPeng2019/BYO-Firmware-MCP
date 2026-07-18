@@ -27,6 +27,10 @@ htmlcov/
 /scratch/
 /.firm/cache/
 /.firm/packs/files/
+/.firm/setup/
+/.firm/validation/
+/.firm/safety/**/source_manifest.json
+/.firm/safety/**/safety_report.json
 
 # OS and editor metadata
 .DS_Store

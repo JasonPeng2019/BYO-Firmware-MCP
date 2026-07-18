@@ -1,5 +1,9 @@
 #!/usr/bin/env python3
-"""Run the destructive-but-recoverable M7 Nucleo hardware acceptance.
+"""Historical M7 Nucleo acceptance retained only as pre-v2 evidence.
+
+Do not use this script to validate Safety Layer v2: it intentionally exercises the superseded
+application-fingerprint refresh workflow. Current acceptance uses a stable map plus direct
+per-flash artifact containment.
 
 The command requires a clean external artifact root plus prebuilt v1/v2 ELF and
 HEX pairs. It never mass-erases. The application partition is backed up before
