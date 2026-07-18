@@ -1,4 +1,4 @@
-"""Run-scoped, default-closed validation and write-gate lifecycle."""
+"""Run-scoped, default-closed live-identity and safety-map gate state."""
 
 from __future__ import annotations
 
@@ -6,15 +6,10 @@ import threading
 from collections.abc import MutableMapping
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Final
-
-_PASSED_RESULTS: Final = frozenset(
-    {"validation_passed", "validation_passed_uart_not_configured"}
-)
 
 
 class GateRefusal(RuntimeError):
-    """A validated session or fresh write gate is unavailable."""
+    """A validated session or current safety-map association is unavailable."""
 
     def __init__(self, code: str, message: str, *, remedy: tuple[str, ...]) -> None:
         self.code = code
@@ -24,17 +19,80 @@ class GateRefusal(RuntimeError):
 
 
 @dataclass(frozen=True, slots=True)
-class ValidationStamp:
+class LiveIdentityStamp:
+    """One validation run's proof of the silicon attached to a connection."""
+
     board_id: str
     connection_id: str
-    hardware_result: str
     probe_identity: str
-    aggregate_fingerprint: str
+    observed_mcu: str
+    validation_run: str
     validated_at: str
 
 
+@dataclass(frozen=True, slots=True)
+class SafetyMapStamp:
+    """The canonical digest currently associated with a live identity proof."""
+
+    board_id: str
+    map_digest: str
+
+
+@dataclass(frozen=True, slots=True)
+class ValidationStamp:
+    """Cohesive view of the two independently managed gate concepts."""
+
+    live_identity: LiveIdentityStamp
+    safety_map: SafetyMapStamp
+
+    @property
+    def board_id(self) -> str:
+        return self.live_identity.board_id
+
+    @property
+    def connection_id(self) -> str:
+        return self.live_identity.connection_id
+
+    @property
+    def probe_identity(self) -> str:
+        return self.live_identity.probe_identity
+
+    @property
+    def observed_mcu(self) -> str:
+        return self.live_identity.observed_mcu
+
+    @property
+    def validation_run(self) -> str:
+        return self.live_identity.validation_run
+
+    @property
+    def validated_at(self) -> str:
+        return self.live_identity.validated_at
+
+    @property
+    def map_digest(self) -> str:
+        return self.safety_map.map_digest
+
+
+@dataclass(frozen=True, slots=True)
+class MismatchAllowance:
+    """Exact, run-scoped evidence permitting only the new-profile adoption route."""
+
+    board_id: str
+    connection_id: str
+    probe_identity: str
+    expected_mcu: str
+    observed_mcu: str
+    validation_run: str
+    recorded_at: str
+
+
 class GateManager:
-    """Own validation stamps for one Server Run; no state is serializable by this API."""
+    """Own run-scoped identity, map, and mismatch state; none is serializable here."""
+
+    _IDENTITY = "live_identity"
+    _MAP = "safety_map"
+    _MISMATCH = "mismatch"
 
     def __init__(
         self,
@@ -51,127 +109,286 @@ class GateManager:
             raise ValueError(f"{label} must be non-empty")
         return normalized
 
+    @classmethod
+    def _identity_key(cls, board_id: str) -> tuple[str, str]:
+        return (cls._IDENTITY, board_id)
+
+    @classmethod
+    def _map_key(cls, board_id: str) -> tuple[str, str]:
+        return (cls._MAP, board_id)
+
+    @classmethod
+    def _mismatch_key(
+        cls,
+        board_id: str,
+        connection_id: str,
+        probe_identity: str,
+        expected_mcu: str,
+        observed_mcu: str,
+    ) -> tuple[str, str, str, str, str, str]:
+        return (
+            cls._MISMATCH,
+            board_id,
+            connection_id,
+            probe_identity,
+            expected_mcu,
+            observed_mcu,
+        )
+
     def stamp_validation(
         self,
         *,
         board_id: str,
         connection_id: str,
-        hardware_result: str,
         probe_identity: str,
-        aggregate_fingerprint: str,
+        observed_mcu: str,
+        validation_run: str,
+        map_digest: str,
     ) -> ValidationStamp:
-        """Create or replace a stamp only for a completed successful validation."""
+        """Atomically establish live identity and bind the current parsed map."""
 
         board = self._required(board_id, "board_id")
         connection = self._required(connection_id, "connection_id")
         probe = self._required(probe_identity, "probe_identity")
-        fingerprint = self._required(aggregate_fingerprint, "aggregate_fingerprint")
-        if hardware_result not in _PASSED_RESULTS:
-            raise ValueError("only a successful board_validate result may stamp a gate")
-        stamp = ValidationStamp(
+        observed = self._required(observed_mcu, "observed_mcu")
+        validation = self._required(validation_run, "validation_run")
+        digest = self._required(map_digest, "map_digest")
+        identity = LiveIdentityStamp(
             board,
             connection,
-            hardware_result,
             probe,
-            fingerprint,
+            observed,
+            validation,
             datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
         )
+        safety_map = SafetyMapStamp(board, digest)
         with self._guard:
-            self._state[board] = stamp
+            self._state[self._identity_key(board)] = identity
+            self._state[self._map_key(board)] = safety_map
+            self._clear_mismatches_locked(board_id=board)
             self._closure_reasons.pop(board, None)
-        return stamp
+        return ValidationStamp(identity, safety_map)
+
+    def live_identity(self, board_id: str) -> LiveIdentityStamp | None:
+        board = self._required(board_id, "board_id")
+        with self._guard:
+            value = self._state.get(self._identity_key(board))
+            return value if isinstance(value, LiveIdentityStamp) else None
+
+    def map_stamp(self, board_id: str) -> SafetyMapStamp | None:
+        board = self._required(board_id, "board_id")
+        with self._guard:
+            value = self._state.get(self._map_key(board))
+            return value if isinstance(value, SafetyMapStamp) else None
 
     def snapshot(self, board_id: str) -> ValidationStamp | None:
         board = self._required(board_id, "board_id")
         with self._guard:
-            value = self._state.get(board)
-            return value if isinstance(value, ValidationStamp) else None
+            identity = self._state.get(self._identity_key(board))
+            safety_map = self._state.get(self._map_key(board))
+            if not isinstance(identity, LiveIdentityStamp) or not isinstance(
+                safety_map, SafetyMapStamp
+            ):
+                return None
+            return ValidationStamp(identity, safety_map)
 
     def clear(self, board_id: str, reason: str) -> ValidationStamp | None:
+        """Clear all live proof and mismatch routing for one logical board."""
+
         board = self._required(board_id, "board_id")
         with self._guard:
-            value = self._state.pop(board, None)
+            previous = self.snapshot(board)
+            self._state.pop(self._identity_key(board), None)
+            self._state.pop(self._map_key(board), None)
+            self._clear_mismatches_locked(board_id=board)
             self._closure_reasons[board] = reason.strip() or "gate closed"
-            return value if isinstance(value, ValidationStamp) else None
+            return previous
 
     def clear_connection(self, connection_id: str, reason: str) -> tuple[str, ...]:
+        """Clear live proof and mismatch allowances tied to one connection."""
+
         connection = self._required(connection_id, "connection_id")
         with self._guard:
-            boards = tuple(
-                sorted(
-                    str(board)
-                    for board, value in self._state.items()
-                    if isinstance(value, ValidationStamp)
+            boards = {
+                value.board_id
+                for value in self._state.values()
+                if (
+                    isinstance(value, (LiveIdentityStamp, MismatchAllowance))
                     and value.connection_id == connection
                 )
-            )
+            }
             for board in boards:
-                self._state.pop(board, None)
+                self._state.pop(self._identity_key(board), None)
+                self._state.pop(self._map_key(board), None)
                 self._closure_reasons[board] = reason.strip() or "connection closed"
-            return boards
+            self._clear_mismatches_locked(connection_id=connection)
+            return tuple(sorted(boards))
 
     def require_validated(self, board_id: str, connection_id: str) -> ValidationStamp:
         board = self._required(board_id, "board_id")
         connection = self._required(connection_id, "connection_id")
-        stamp = self.snapshot(board)
-        if stamp is None:
-            reason = self._closure_reasons.get(board, "this Server Run has no validation stamp")
+        identity = self.live_identity(board)
+        if identity is None:
+            reason = self._closure_reasons.get(board, "this Server Run has no live identity proof")
             raise GateRefusal(
                 "gate/validation-required",
                 f"Board '{board}' is not validated for this connection ({reason}).",
                 remedy=("board_validate",),
             )
-        if stamp.connection_id != connection:
+        if identity.connection_id != connection:
             self.clear(board, "connection identity changed")
             raise GateRefusal(
                 "gate/connection-changed",
                 f"Board '{board}' was validated on a different connection.",
                 remedy=("board_validate",),
             )
-        return stamp
+        safety_map = self.map_stamp(board)
+        if safety_map is None:
+            raise GateRefusal(
+                "gate/safety-map-unbound",
+                f"Board '{board}' has live identity proof but no current safety-map binding.",
+                remedy=("board_safety_refresh",),
+            )
+        return ValidationStamp(identity, safety_map)
 
     def require_write(
         self,
         board_id: str,
         connection_id: str,
-        current_aggregate_fingerprint: str,
+        current_map_digest: str,
     ) -> ValidationStamp:
         stamp = self.require_validated(board_id, connection_id)
-        current = self._required(
-            current_aggregate_fingerprint, "current_aggregate_fingerprint"
-        )
-        if stamp.aggregate_fingerprint != current:
-            self.clear(board_id, "configuration fingerprint changed")
+        current = self._required(current_map_digest, "current_map_digest")
+        if stamp.map_digest != current:
+            # A stable-map change does not invalidate the independently proven live identity.
+            with self._guard:
+                self._state.pop(self._map_key(stamp.board_id), None)
             raise GateRefusal(
-                "gate/configuration-stale",
-                f"Board '{board_id}' safety inputs changed after validation.",
+                "gate/safety-map-stale",
+                f"Board '{board_id}' safety map changed after it was associated with validation.",
                 remedy=("board_safety_refresh",),
             )
         return stamp
 
-    def refresh_fingerprint(
+    def refresh_map_stamp(
         self,
         board_id: str,
         connection_id: str,
-        aggregate_fingerprint: str,
+        map_digest: str,
     ) -> ValidationStamp | None:
-        """Update an already-valid stamp; never create or reopen one."""
+        """Update only the map association; never create live identity authority."""
 
-        try:
-            current = self.require_validated(board_id, connection_id)
-        except GateRefusal:
-            return None
-        refreshed = ValidationStamp(
-            current.board_id,
-            current.connection_id,
-            current.hardware_result,
-            current.probe_identity,
-            self._required(aggregate_fingerprint, "aggregate_fingerprint"),
-            current.validated_at,
+        board = self._required(board_id, "board_id")
+        connection = self._required(connection_id, "connection_id")
+        digest = self._required(map_digest, "map_digest")
+        with self._guard:
+            identity = self._state.get(self._identity_key(board))
+            if not isinstance(identity, LiveIdentityStamp):
+                return None
+            if identity.connection_id != connection:
+                return None
+            safety_map = SafetyMapStamp(board, digest)
+            self._state[self._map_key(board)] = safety_map
+            return ValidationStamp(identity, safety_map)
+
+    def record_mismatch(
+        self,
+        *,
+        board_id: str,
+        connection_id: str,
+        probe_identity: str,
+        expected_mcu: str,
+        observed_mcu: str,
+        validation_run: str,
+    ) -> MismatchAllowance:
+        """Record exact mismatch evidence without permitting in-place profile mutation."""
+
+        board = self._required(board_id, "board_id")
+        connection = self._required(connection_id, "connection_id")
+        probe = self._required(probe_identity, "probe_identity")
+        expected = self._required(expected_mcu, "expected_mcu")
+        observed = self._required(observed_mcu, "observed_mcu")
+        validation = self._required(validation_run, "validation_run")
+        allowance = MismatchAllowance(
+            board,
+            connection,
+            probe,
+            expected,
+            observed,
+            validation,
+            datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
         )
         with self._guard:
-            if self._state.get(current.board_id) == current:
-                self._state[current.board_id] = refreshed
-                return refreshed
-        return None
+            self._state.pop(self._identity_key(board), None)
+            self._state.pop(self._map_key(board), None)
+            self._clear_mismatches_locked(board_id=board)
+            self._state[
+                self._mismatch_key(board, connection, probe, expected, observed)
+            ] = allowance
+            self._closure_reasons[board] = "live MCU identity mismatched the established profile"
+        return allowance
 
+    def mismatch_allowance(
+        self,
+        *,
+        board_id: str,
+        connection_id: str,
+        probe_identity: str,
+        expected_mcu: str,
+        observed_mcu: str,
+    ) -> MismatchAllowance | None:
+        """Return only an exact allowance; partial or fuzzy matching is prohibited."""
+
+        values = (
+            self._required(board_id, "board_id"),
+            self._required(connection_id, "connection_id"),
+            self._required(probe_identity, "probe_identity"),
+            self._required(expected_mcu, "expected_mcu"),
+            self._required(observed_mcu, "observed_mcu"),
+        )
+        with self._guard:
+            value = self._state.get(self._mismatch_key(*values))
+            return value if isinstance(value, MismatchAllowance) else None
+
+    def current_mismatch(
+        self,
+        board_id: str,
+        connection_id: str,
+        probe_identity: str,
+    ) -> MismatchAllowance | None:
+        """Find the one server-recorded exact mismatch without caller-supplied MCU facts."""
+
+        board = self._required(board_id, "board_id")
+        connection = self._required(connection_id, "connection_id")
+        probe = self._required(probe_identity, "probe_identity")
+        with self._guard:
+            matches = [
+                value
+                for value in self._state.values()
+                if isinstance(value, MismatchAllowance)
+                and value.board_id == board
+                and value.connection_id == connection
+                and value.probe_identity == probe
+            ]
+            return matches[0] if len(matches) == 1 else None
+
+    def clear_mismatch(self, board_id: str) -> None:
+        board = self._required(board_id, "board_id")
+        with self._guard:
+            self._clear_mismatches_locked(board_id=board)
+
+    def _clear_mismatches_locked(
+        self,
+        *,
+        board_id: str | None = None,
+        connection_id: str | None = None,
+    ) -> None:
+        matching = [
+            key
+            for key, value in self._state.items()
+            if isinstance(value, MismatchAllowance)
+            and (board_id is None or value.board_id == board_id)
+            and (connection_id is None or value.connection_id == connection_id)
+        ]
+        for key in matching:
+            self._state.pop(key, None)

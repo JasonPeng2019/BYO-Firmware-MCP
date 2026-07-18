@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import math
 import re
@@ -10,6 +11,7 @@ import threading
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from enum import Enum
+from pathlib import Path
 from typing import Protocol
 
 from pyocd_debug_mcp.guardrails.plan_defs import (
@@ -131,6 +133,24 @@ PreExecutionCheck = Callable[[], None]
 
 
 @dataclass(frozen=True, slots=True)
+class ArtifactDigestBinding:
+    """Run-scoped identity of operation bytes accepted by a populated plan."""
+
+    field_name: str
+    supplied_path: str
+    resolved_path: Path
+    sha256: str
+
+
+def _hash_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+@dataclass(frozen=True, slots=True)
 class ActivePlan:
     plan_id: str
     run_id: str
@@ -208,6 +228,19 @@ def accepted_plan_payload(plan: ActivePlan) -> dict[str, object]:
         return fallback
 
     definition = definition_for_action(plan.action_name)
+    reminders = [
+        definition.extra_instructions,
+        "Tool visibility is not authorization; the real action still enforces permission, "
+        "validation, safety, freshness, locking, timeout, and remaining budget.",
+        "Do not call this plan tool again unless replacing the plan is intentional.",
+    ]
+    if definition.artifact_binding_field is not None:
+        reminders.insert(
+            1,
+            f"The selected {definition.artifact_binding_field} bytes are bound to this plan. "
+            "If they change before execution starts, the server invalidates and relocks the plan; "
+            "submit a replacement plan for the new bytes.",
+        )
     return {
         "status": "plan_accepted",
         "message": (
@@ -219,12 +252,7 @@ def accepted_plan_payload(plan: ActivePlan) -> dict[str, object]:
             f"{definition.purpose} The action parameters are already bound by this accepted plan; "
             "do not alter them when making the real call."
         ),
-        "reminders": [
-            definition.extra_instructions,
-            "Tool visibility is not authorization; the real action still enforces permission, "
-            "validation, safety, freshness, locking, timeout, and remaining budget.",
-            "Do not call this plan tool again unless replacing the plan is intentional.",
-        ],
+        "reminders": reminders,
         "plan_id": plan.plan_id,
         "underlying_action": plan.action_name,
         "total_calls": plan.total_calls,
@@ -270,6 +298,7 @@ class _PlanState:
     canonical_parameters: str
     canonical_plan_fields: str
     authorization: object | None
+    artifact_binding: ArtifactDigestBinding | None
     status: PlanStatus = PlanStatus.ACTIVE
     close_reason: str | None = None
 
@@ -499,6 +528,11 @@ class PlanEngine:
         )
         canonical_parameters = canonical_json(action_parameters)
         canonical_plan_fields = canonical_json(dict(fields))
+        artifact_binding = self._bind_artifact(
+            definition,
+            action_parameters,
+            session_id=session_id,
+        )
 
         with self._guard:
             key = (definition.action_name, board_id)
@@ -537,6 +571,7 @@ class PlanEngine:
                 canonical_parameters=canonical_parameters,
                 canonical_plan_fields=canonical_plan_fields,
                 authorization=authorization,
+                artifact_binding=artifact_binding,
             )
             previous = self.server_run.plans.get(key)
             self.server_run.plans[key] = state
@@ -551,6 +586,7 @@ class PlanEngine:
             if isinstance(previous, _PlanState) and previous.status is PlanStatus.ACTIVE:
                 previous.status = PlanStatus.REPLACED
                 previous.close_reason = f"replaced by {state.plan_id}"
+                previous.artifact_binding = None
             self._accepted_cycles[key] = cycles + 1
             snapshot = state.snapshot()
 
@@ -810,6 +846,15 @@ class PlanEngine:
                 invoked_action=action_name,
             )
             plan_id = state.plan_id
+            artifact_binding = state.artifact_binding
+
+        if artifact_binding is not None:
+            self._verify_artifact_binding(
+                key,
+                plan_id,
+                artifact_binding,
+                session_id=session_id,
+            )
 
         try:
             self.scope_validator(definition, normalized_board, session_id)
@@ -871,8 +916,107 @@ class PlanEngine:
                     )
                 state.status = PlanStatus.EXHAUSTED
                 state.close_reason = "primary and paired call allowances exhausted at execution start"
+                state.artifact_binding = None
                 self._relock_definition(definition, normalized_board)
             return state.snapshot()
+
+    def _bind_artifact(
+        self,
+        definition: PlanDefinition,
+        parameters: Mapping[str, object],
+        *,
+        session_id: str | None,
+    ) -> ArtifactDigestBinding | None:
+        field_name = definition.artifact_binding_field
+        if field_name is None:
+            return None
+        supplied = parameters.get(field_name)
+        if not isinstance(supplied, str) or not supplied.strip():
+            raise _refuse(
+                "plan/artifact-unreadable",
+                f"{field_name} must name a non-empty local artifact path.",
+                session_id=session_id,
+            )
+        candidate = Path(supplied).expanduser()
+        try:
+            resolved = candidate.resolve(strict=True)
+        except (OSError, RuntimeError) as exc:
+            raise _refuse(
+                "plan/artifact-unreadable",
+                f"Cannot resolve the selected {field_name} artifact: {exc}",
+                session_id=session_id,
+            ) from exc
+        if not resolved.is_file():
+            raise _refuse(
+                "plan/artifact-unreadable",
+                f"The selected {field_name} artifact is not a regular file: {resolved}",
+                session_id=session_id,
+            )
+        suffix = resolved.suffix.casefold()
+        if definition.artifact_binding_suffixes and suffix not in {
+            item.casefold() for item in definition.artifact_binding_suffixes
+        }:
+            expected = ", ".join(definition.artifact_binding_suffixes)
+            raise _refuse(
+                "plan/artifact-type",
+                f"The selected {field_name} artifact must use one of: {expected}.",
+                session_id=session_id,
+            )
+        try:
+            digest = _hash_file(resolved)
+        except OSError as exc:
+            raise _refuse(
+                "plan/artifact-unreadable",
+                f"Cannot hash the selected {field_name} artifact: {exc}",
+                session_id=session_id,
+            ) from exc
+        return ArtifactDigestBinding(field_name, supplied, resolved, digest)
+
+    def _verify_artifact_binding(
+        self,
+        key: tuple[str, str],
+        plan_id: str,
+        expected: ArtifactDigestBinding,
+        *,
+        session_id: str | None,
+    ) -> None:
+        definition = _definition(key[0])
+        try:
+            observed = self._bind_artifact(
+                definition,
+                {expected.field_name: expected.supplied_path},
+                session_id=session_id,
+            )
+        except PlanRefusal as exc:
+            self._invalidate_for_artifact_change(key, plan_id)
+            raise _refuse(
+                "plan/artifact-changed",
+                "The plan-bound artifact is no longer readable at execution start; submit a "
+                "replacement plan for the current bytes.",
+                session_id=session_id,
+            ) from exc
+        assert observed is not None
+        if (
+            observed.resolved_path != expected.resolved_path
+            or observed.sha256 != expected.sha256
+        ):
+            self._invalidate_for_artifact_change(key, plan_id)
+            raise _refuse(
+                "plan/artifact-changed",
+                "The selected artifact changed after plan acceptance. The plan was invalidated "
+                "before execution; submit a replacement plan for the current bytes.",
+                session_id=session_id,
+            )
+
+    def _invalidate_for_artifact_change(
+        self,
+        key: tuple[str, str],
+        plan_id: str,
+    ) -> None:
+        with self._guard:
+            current = self.server_run.plans.get(key)
+            if isinstance(current, _PlanState) and current.plan_id == plan_id:
+                self._invalidate_locked(key, "plan-bound artifact changed")
 
     def _precheck_locked(
         self,
@@ -1006,6 +1150,7 @@ class PlanEngine:
             return
         state.status = PlanStatus.INVALIDATED
         state.close_reason = reason
+        state.artifact_binding = None
         self._relock_definition(state.definition, state.board_id)
 
     def _unlock_definition(self, definition: PlanDefinition, board_id: str) -> None:
@@ -1032,6 +1177,7 @@ class PlanEngine:
                 if isinstance(state, _PlanState) and state.status is PlanStatus.ACTIVE:
                     state.status = PlanStatus.RUN_CLOSED
                     state.close_reason = "Server Run ended"
+                    state.artifact_binding = None
                     self._relock_definition(state.definition, state.board_id)
             self.server_run.plans.clear()
             self._initialized_plan_tools.clear()

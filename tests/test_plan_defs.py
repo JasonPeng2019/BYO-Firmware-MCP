@@ -136,3 +136,12 @@ def test_action_schema_carries_format_constraints() -> None:
             field.name: field for field in PLAN_DEFINITIONS[action_name].action_fields
         }
         assert set(flash_fields) == {"artifact"}
+        assert PLAN_DEFINITIONS[action_name].artifact_binding_field == "artifact"
+
+    breakpoint = PLAN_DEFINITIONS["set_breakpoint"]
+    assert {field.name for field in breakpoint.action_fields} == {
+        "symbol_or_address",
+        "elf_artifact",
+    }
+    assert breakpoint.artifact_binding_field == "elf_artifact"
+    assert breakpoint.artifact_binding_suffixes == (".elf",)

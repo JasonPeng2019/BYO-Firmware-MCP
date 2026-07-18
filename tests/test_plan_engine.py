@@ -4,6 +4,7 @@ import asyncio
 import json
 import threading
 from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
 
 import pytest
 
@@ -86,6 +87,12 @@ def write_memory_parameters(value: object = 1) -> dict[str, object]:
         "width": 32,
         "allow_address_fallback": False,
         "reason": None,
+    }
+
+
+def flash_application_fields(artifact: Path) -> dict[str, object]:
+    return common_fields(max_calls=1) | {
+        "action_parameters": {"artifact": str(artifact)},
     }
 
 
@@ -493,6 +500,98 @@ def test_ac_4_8_exhaustion_relocks_and_requires_replacement() -> None:
     assert caught.value.code == "plan/no-active-plan"
 
 
+def test_v2_changed_artifact_invalidates_before_preconditions_or_budget(
+    tmp_path: Path,
+) -> None:
+    artifact = tmp_path / "firmware.elf"
+    original = b"accepted firmware bytes"
+    artifact.write_bytes(original)
+    engine, registry = engine_for("flash_application")
+    initialize(engine, "flash_application-plan")
+    fields = flash_application_fields(artifact)
+    parameters = {"artifact": str(artifact)}
+    engine.submit("flash_application-plan", fields, session_id=SESSION)
+    before = engine.active_plan("flash_application", "board_a")
+    assert before is not None and before.remaining_calls == 1
+
+    artifact.write_bytes(b"changed after acceptance")
+    reached_preconditions: list[bool] = []
+    with pytest.raises(PlanRefusal) as changed:
+        engine.enforce(
+            "flash_application",
+            "board_a",
+            parameters,
+            session_id=SESSION,
+            preconditions=lambda: reached_preconditions.append(True),
+        )
+
+    assert changed.value.code == "plan/artifact-changed"
+    assert reached_preconditions == []
+    assert engine.active_plan("flash_application", "board_a") is None
+    assert registry.is_unlocked("flash_application", "board_a") is False
+
+    # Restoring the accepted bytes cannot resurrect an invalidated plan.
+    artifact.write_bytes(original)
+    with pytest.raises(PlanRefusal) as restored:
+        engine.enforce(
+            "flash_application",
+            "board_a",
+            parameters,
+            session_id=SESSION,
+        )
+    assert restored.value.code == "plan/no-active-plan"
+
+
+def test_v2_replacement_plan_binds_the_replacement_artifact_bytes(tmp_path: Path) -> None:
+    artifact = tmp_path / "firmware.elf"
+    artifact.write_bytes(b"version one")
+    engine, registry = engine_for("flash_application")
+    initialize(engine, "flash_application-plan")
+    fields = flash_application_fields(artifact)
+    parameters = {"artifact": str(artifact)}
+    first = engine.submit("flash_application-plan", fields, session_id=SESSION)
+
+    artifact.write_bytes(b"version two")
+    second = engine.submit("flash_application-plan", fields, session_id=SESSION)
+    assert first.plan is not None and second.plan is not None
+    assert first.plan.plan_id != second.plan.plan_id
+
+    executed = engine.enforce(
+        "flash_application",
+        "board_a",
+        parameters,
+        session_id=SESSION,
+    )
+    assert executed.status is PlanStatus.EXHAUSTED
+    assert registry.is_unlocked("flash_application", "board_a") is False
+
+
+def test_v2_missing_artifact_cannot_replace_an_active_binding(tmp_path: Path) -> None:
+    artifact = tmp_path / "firmware.elf"
+    artifact.write_bytes(b"accepted")
+    engine, registry = engine_for("flash_application")
+    initialize(engine, "flash_application-plan")
+    accepted = engine.submit(
+        "flash_application-plan",
+        flash_application_fields(artifact),
+        session_id=SESSION,
+    )
+
+    missing = tmp_path / "missing.elf"
+    with pytest.raises(PlanRefusal) as refused:
+        engine.submit(
+            "flash_application-plan",
+            flash_application_fields(missing),
+            session_id=SESSION,
+        )
+
+    assert refused.value.code == "plan/artifact-unreadable"
+    active = engine.active_plan("flash_application", "board_a")
+    assert active is not None and accepted.plan is not None
+    assert active.plan_id == accepted.plan.plan_id
+    assert registry.is_unlocked("flash_application", "board_a") is True
+
+
 def test_ac_4_9_replacement_atomically_closes_old_parameter_binding() -> None:
     engine, registry = engine_for()
     initialize(engine)
@@ -747,6 +846,49 @@ class AllowPermissionProvider:
         self.consumed = 0
 
 
+class ArtifactPermissionProvider:
+    def __init__(self) -> None:
+        self.validated = 0
+        self.consumed = 0
+
+    def null_disclosure(self, definition: PlanDefinition) -> str | None:
+        del definition
+        return "Test disclosure."
+
+    def authorize_plan(
+        self,
+        definition: PlanDefinition,
+        board_id: str,
+        user_permission: object,
+        max_calls: int,
+        max_calls_buffer: int,
+    ) -> object:
+        del definition, board_id, user_permission, max_calls, max_calls_buffer
+        return object()
+
+    def validate_execution(
+        self,
+        definition: PlanDefinition,
+        board_id: str,
+        authorization: object,
+    ) -> None:
+        del definition, board_id, authorization
+        self.validated += 1
+
+    def consume_execution(
+        self,
+        definition: PlanDefinition,
+        board_id: str,
+        authorization: object,
+    ) -> None:
+        del definition, board_id, authorization
+        self.consumed += 1
+
+    def reset(self) -> None:
+        self.validated = 0
+        self.consumed = 0
+
+
 def execution_state_fields() -> dict[str, object]:
     return common_fields(max_calls=1) | {
         "user_permission": "one-time",
@@ -780,6 +922,34 @@ def test_permissions_remain_fail_closed_and_injectable_until_task_6() -> None:
         session_id=SESSION,
     )
     assert provider.consumed == 1
+
+
+def test_v2_bootloader_artifact_change_precedes_permission_validation(tmp_path: Path) -> None:
+    artifact = tmp_path / "bootloader.elf"
+    artifact.write_bytes(b"accepted bootloader")
+    provider = ArtifactPermissionProvider()
+    engine, registry = engine_for("flash_bootloader", permission_provider=provider)
+    initialize(engine, "flash_bootloader-plan")
+    fields = common_fields(max_calls=1) | {
+        "user_permission": "approved",
+        "action_parameters": {"artifact": str(artifact)},
+    }
+    engine.submit("flash_bootloader-plan", fields, session_id=SESSION)
+    artifact.write_bytes(b"changed bootloader")
+
+    with pytest.raises(PlanRefusal) as refused:
+        engine.enforce(
+            "flash_bootloader",
+            "board_a",
+            {"artifact": str(artifact)},
+            session_id=SESSION,
+        )
+
+    assert refused.value.code == "plan/artifact-changed"
+    assert provider.validated == 0
+    assert provider.consumed == 0
+    assert engine.active_plan("flash_bootloader", "board_a") is None
+    assert registry.is_unlocked("flash_bootloader", "board_a") is False
 
 
 def test_a10_setup_plan_cycle_limit_relocks_after_three_replacements() -> None:

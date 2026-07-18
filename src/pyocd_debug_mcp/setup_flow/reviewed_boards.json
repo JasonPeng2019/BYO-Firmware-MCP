@@ -1,5 +1,5 @@
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "boards": [
     {
       "board_type": "nrf52833dk",
@@ -58,7 +58,15 @@
       "pyocd_version": null,
       "pyocd_target_module": null,
       "pyocd_target_module_sha256": null,
-      "pyocd_svd_bundle_sha256": null
+      "pyocd_svd_bundle_sha256": null,
+      "application_partition_authoritative": true,
+      "bootloader_start": null,
+      "bootloader_end": null,
+      "bootloader_partition_authoritative": false,
+      "no_protected_resident_bootloader": true,
+      "silicon_id_width_bits": 32,
+      "silicon_id_label": "FICR INFO.PART exact part identifier",
+      "silicon_id_limitation": "The register identifies the device part/family; the package suffix remains a reviewed catalog and profile association."
     },
     {
       "board_type": "nrf52840dk",
@@ -125,7 +133,15 @@
       "pyocd_version": "0.45.0",
       "pyocd_target_module": "pyocd.target.builtin.target_nRF52840_xxAA",
       "pyocd_target_module_sha256": "c4713dea41facd880a92eb3b4a12924305290b36753e1fe592a463b856b9b29f",
-      "pyocd_svd_bundle_sha256": "e452ca593edadbb0d6f960c19f761977e35e2a33e027d7b84fbd4e82b2608d8c"
+      "pyocd_svd_bundle_sha256": "e452ca593edadbb0d6f960c19f761977e35e2a33e027d7b84fbd4e82b2608d8c",
+      "application_partition_authoritative": true,
+      "bootloader_start": null,
+      "bootloader_end": null,
+      "bootloader_partition_authoritative": false,
+      "no_protected_resident_bootloader": true,
+      "silicon_id_width_bits": 32,
+      "silicon_id_label": "FICR INFO.PART exact part identifier",
+      "silicon_id_limitation": "The register identifies the device part/family; the package suffix remains a reviewed catalog and profile association."
     },
     {
       "board_type": "nucleo_l476rg",
@@ -138,9 +154,9 @@
       "probe_family": "stlink",
       "default_baudrate": 115200,
       "test_read_address": 134217728,
-      "silicon_id_address": null,
-      "silicon_id_expected": null,
-      "silicon_id_mask": 4294967295,
+      "silicon_id_address": 3758366720,
+      "silicon_id_expected": 1045,
+      "silicon_id_mask": 4095,
       "flash_start": 134217728,
       "flash_end": 135266304,
       "ram_start": 536870912,
@@ -192,7 +208,15 @@
       "pyocd_target_module_sha256": null,
       "pyocd_svd_bundle_sha256": null,
       "debug_connect_mode": "under-reset",
-      "debug_clock_hz": 1000000
+      "debug_clock_hz": 1000000,
+      "application_partition_authoritative": true,
+      "bootloader_start": null,
+      "bootloader_end": null,
+      "bootloader_partition_authoritative": false,
+      "no_protected_resident_bootloader": true,
+      "silicon_id_width_bits": 32,
+      "silicon_id_label": "STM32 DBGMCU_IDCODE device-family identifier",
+      "silicon_id_limitation": "Masked device-family proof; package and density suffix are not electronically observable from DBGMCU_IDCODE."
     }
   ]
 }

@@ -5,20 +5,17 @@ from pathlib import Path
 
 import pytest
 
-from pyocd_debug_mcp.firmstore.cache import AttachmentCache
 from pyocd_debug_mcp.firmstore.profiles import ProfileRepository
 from pyocd_debug_mcp.firmstore.reports import ReportWriter
 from pyocd_debug_mcp.firmstore.store import FirmStore
 from pyocd_debug_mcp.setup_flow.validate import (
-    MAX_SERIAL_CAPTURE_BYTES,
     BoardValidator,
-    Layer0Snapshot,
+    SafetyMapSnapshot,
     ValidationBackend,
     ValidationHooks,
     ValidationInventory,
     ValidationProbe,
     ValidationRequest,
-    ValidationSerial,
 )
 
 
@@ -26,21 +23,10 @@ class FakeBackend:
     def __init__(self) -> None:
         self.calls: list[tuple[object, ...]] = []
         self.inventory_value = ValidationInventory(
-            probes=(ValidationProbe("probe-a", "ST-Link", "stlink", "PROBE-001"),),
-            serial_ports=(
-                ValidationSerial(
-                    "serial-a",
-                    "COM7",
-                    "ST-Link UART",
-                    "UART-001",
-                    0x0483,
-                    0x5740,
-                ),
-            ),
+            probes=(ValidationProbe("probe-a", "ST-Link", "stlink", "PROBE-001"),)
         )
         self.support: bool | None = True
-        self.values: dict[int, int] = {0x08000000: 0x12345678, 0xE0042000: 0x10016415}
-        self.serial_text = "boot ready\n"
+        self.values: dict[int, int] = {0xE0042000: 0x10016415}
 
     def inventory(self) -> ValidationInventory:
         self.calls.append(("inventory",))
@@ -59,14 +45,6 @@ class FakeBackend:
         self.calls.append(("read_memory", address, width, timeout))
         return self.values[address]
 
-    def capture_serial(
-        self, serial: ValidationSerial, baudrate: int, duration: float, max_bytes: int
-    ) -> str:
-        self.calls.append(
-            ("capture_serial", serial.serial_id, baudrate, duration, max_bytes)
-        )
-        return self.serial_text
-
     def close(self, connection: object) -> None:
         del connection
         self.calls.append(("close",))
@@ -77,12 +55,12 @@ class FakeBackend:
             self.target_supported,
             self.connect,
             self.read_memory,
-            self.capture_serial,
+            lambda _serial, _baud, _duration, _bytes: "",
             self.close,
         )
 
 
-def repository(tmp_path: Path, *, uart: bool = True, silicon: bool = False) -> ProfileRepository:
+def repository(tmp_path: Path, *, identity: bool = True) -> ProfileRepository:
     store = FirmStore(tmp_path)
     legacy = tmp_path / "boards"
     legacy.mkdir(exist_ok=True)
@@ -92,24 +70,22 @@ def repository(tmp_path: Path, *, uart: bool = True, silicon: bool = False) -> P
             {
                 "board_id": "bench_board",
                 "display_name": "Bench Board",
-                "mcu_part_number": "STM32L476RGT6-Exact",
+                "mcu_part_number": "STM32L476RGT6",
                 "mcu_family": "stm32l4",
                 "probe_family": "stlink",
                 "pyocd_target": "stm32l476rgtx",
             }
         )
     )
-    optional: dict[str, object] = {"test_read_address": 0x08000000}
-    if uart:
-        optional["expected_uart_substring"] = "boot ready"
-    if silicon:
+    optional: dict[str, object] = {}
+    if identity:
         optional.update(
             {
                 "silicon_id_address": 0xE0042000,
-                "silicon_id_expected": 0x10016400,
-                "silicon_id_mask": 0xFFFFFF00,
+                "silicon_id_expected": 0x415,
+                "silicon_id_mask": 0xFFF,
                 "silicon_id_width_bits": 32,
-                "silicon_id_label": "device id",
+                "silicon_id_label": "STM32 device-family identity",
             }
         )
     if optional:
@@ -117,34 +93,65 @@ def repository(tmp_path: Path, *, uart: bool = True, silicon: bool = False) -> P
     return profiles
 
 
-def open_hooks(events: list[str] | None = None) -> ValidationHooks:
+def open_hooks(
+    events: list[tuple[object, ...]] | None = None,
+    *,
+    map_present: bool = True,
+    map_consistent: bool = True,
+) -> ValidationHooks:
     def load(_profile):
         if events is not None:
-            events.append("load_layer0")
-        return Layer0Snapshot(True, True, "fingerprint-1")
+            events.append(("load_safety_map",))
+        return SafetyMapSnapshot(
+            map_present,
+            map_consistent,
+            "map-1" if map_present and map_consistent else None,
+            "map unavailable" if not map_present else "",
+        )
 
     def stamp(
         board: str,
-        hardware_result: str,
+        validation_run: str,
         probe_id: str,
         probe: str | None,
-        fingerprint: str,
+        observed_mcu: str,
+        map_digest: str,
     ) -> bool:
         assert board == "bench_board"
-        assert hardware_result in {
-            "validation_passed",
-            "validation_passed_uart_not_configured",
-        }
-        assert (probe_id, probe, fingerprint) == (
-            "probe-a",
-            "PROBE-001",
-            "fingerprint-1",
+        assert validation_run.startswith("validation-")
+        assert probe_id == "probe-a"
+        assert probe is not None
+        assert (observed_mcu, map_digest) == (
+            "STM32 device-family identity 0x10016415",
+            "map-1",
         )
         if events is not None:
-            events.append("stamp")
+            events.append(("stamp", validation_run))
         return True
 
-    return ValidationHooks(load, stamp)
+    def mismatch(
+        board: str,
+        validation_run: str,
+        probe_id: str,
+        probe: str | None,
+        expected_mcu: str,
+        observed_mcu: str,
+    ) -> bool:
+        if events is not None:
+            events.append(
+                (
+                    "mismatch",
+                    board,
+                    validation_run,
+                    probe_id,
+                    probe,
+                    expected_mcu,
+                    observed_mcu,
+                )
+            )
+        return True
+
+    return ValidationHooks(load, stamp, mismatch)
 
 
 def validator(
@@ -153,14 +160,12 @@ def validator(
     backend: FakeBackend,
     *,
     hooks: ValidationHooks | None = None,
-    cache: AttachmentCache | None = None,
 ) -> BoardValidator:
     return BoardValidator(
         profiles,
         ReportWriter(FirmStore(tmp_path)),
         backend.services(),
         hooks=hooks,
-        cache=cache,
     )
 
 
@@ -168,7 +173,6 @@ def validator(
     ("case", "expected"),
     [
         ("passed", "validation_passed"),
-        ("uart_not_configured", "validation_passed_uart_not_configured"),
         ("needs_input", "validation_needs_user_input"),
         ("research", "validation_research_required"),
         ("blocked", "validation_blocked"),
@@ -176,14 +180,10 @@ def validator(
         ("incomplete", "validation_incomplete"),
     ],
 )
-def test_exact_seven_status_vocabulary(tmp_path: Path, case: str, expected: str) -> None:
+def test_validation_status_vocabulary(tmp_path: Path, case: str, expected: str) -> None:
     case_root = tmp_path / case
     case_root.mkdir()
-    profiles = repository(
-        case_root,
-        uart=case != "uart_not_configured",
-        silicon=case == "failed",
-    )
+    profiles = repository(case_root)
     backend = FakeBackend()
     hooks = open_hooks()
     if case == "needs_input":
@@ -210,7 +210,6 @@ def test_exact_seven_status_vocabulary(tmp_path: Path, case: str, expected: str)
     assert result.to_payload()["code"] == result.code
     assert result.status in {
         "validation_passed",
-        "validation_passed_uart_not_configured",
         "validation_needs_user_input",
         "validation_research_required",
         "validation_blocked",
@@ -223,10 +222,12 @@ def test_exact_seven_status_vocabulary(tmp_path: Path, case: str, expected: str)
     assert report["terminal_status"] == expected
 
 
-def test_validation_backend_call_order_is_bounded_and_non_destructive(tmp_path: Path) -> None:
-    profiles = repository(tmp_path, silicon=True)
+def test_validation_backend_call_order_is_lean_bounded_and_non_destructive(
+    tmp_path: Path,
+) -> None:
+    profiles = repository(tmp_path)
     backend = FakeBackend()
-    hook_events: list[str] = []
+    hook_events: list[tuple[object, ...]] = []
 
     result = validator(
         tmp_path, profiles, backend, hooks=open_hooks(hook_events)
@@ -238,102 +239,93 @@ def test_validation_backend_call_order_is_bounded_and_non_destructive(tmp_path: 
         "target_supported",
         "connect",
         "read_memory",
-        "read_memory",
-        "capture_serial",
         "close",
     ]
-    capture = next(call for call in backend.calls if call[0] == "capture_serial")
-    assert capture[3:] == (3.0, MAX_SERIAL_CAPTURE_BYTES)
-    assert hook_events == ["load_layer0", "stamp"]
+    assert hook_events[0] == ("load_safety_map",)
+    assert hook_events[1][0] == "stamp"
     assert all(
-        call[0] not in {"write", "flash", "erase", "reset", "recover"}
+        call[0] not in {"capture_serial", "write", "flash", "erase", "reset", "recover"}
         for call in backend.calls
     )
+    assert "UART readiness" in result.agent_prompt
 
 
-def test_missing_test_read_evidence_blocks_before_backend_connect(tmp_path: Path) -> None:
-    profiles = repository(tmp_path)
-    current = profiles.load("bench_board", include_legacy=False)
-    document = current.to_document()
-    document.pop("test_read_address", None)
-    profiles.store.atomic_write_yaml(
-        profiles.store.layout.board_profile("bench_board"), document
-    )
+def test_missing_live_identity_evidence_is_stamp_ineligible(tmp_path: Path) -> None:
+    profiles = repository(tmp_path, identity=False)
     backend = FakeBackend()
+    events: list[tuple[object, ...]] = []
 
-    result = validator(tmp_path, profiles, backend, hooks=open_hooks()).validate(
+    result = validator(tmp_path, profiles, backend, hooks=open_hooks(events)).validate(
         ValidationRequest("bench_board")
     )
 
     assert result.status == "validation_blocked"
-    assert "board_fix_setup" in result.agent_prompt
+    assert result.code == "validation/live-identity-evidence-missing"
+    assert "maintainers" in result.agent_prompt
+    assert "board_setup" not in result.agent_prompt
     assert not any(call[0] == "connect" for call in backend.calls)
+    assert all(event[0] != "stamp" for event in events)
 
 
-def test_silicon_mismatch_does_not_mutate_profile_and_only_offers_assignment_remedy(
+def test_silicon_mismatch_is_neutral_records_allowance_and_never_mutates_profile(
     tmp_path: Path,
 ) -> None:
-    profiles = repository(tmp_path, silicon=True)
+    profiles = repository(tmp_path)
     path = profiles.store.layout.board_profile("bench_board")
     before = path.read_bytes()
     backend = FakeBackend()
     backend.values[0xE0042000] = 0xFFFFFFFF
+    events: list[tuple[object, ...]] = []
 
-    result = validator(tmp_path, profiles, backend, hooks=open_hooks()).validate(
+    result = validator(tmp_path, profiles, backend, hooks=open_hooks(events)).validate(
         ValidationRequest("bench_board")
     )
 
     assert result.status == "validation_failed"
     assert result.code == "validation/silicon-mismatch"
     assert path.read_bytes() == before
-    assert "Correct the physical assignment or attach the intended board" in result.agent_prompt
+    assert "Expected MCU STM32L476RGT6" in result.agent_prompt
+    assert "observed STM32 device-family identity 0xFFFFFFFF" in result.agent_prompt
+    assert "ask what they want to do" in result.agent_prompt
+    assert "board_setup" not in result.agent_prompt
+    mismatch = next(event for event in events if event[0] == "mismatch")
+    assert mismatch[5:] == (
+        "STM32L476RGT6",
+        "STM32 device-family identity 0xFFFFFFFF",
+    )
 
 
-def test_missing_safety_map_runs_hardware_but_never_stamps(tmp_path: Path) -> None:
+def test_missing_safety_map_runs_identity_check_but_never_stamps(tmp_path: Path) -> None:
     profiles = repository(tmp_path)
     backend = FakeBackend()
+    events: list[tuple[object, ...]] = []
 
-    result = validator(tmp_path, profiles, backend).validate(ValidationRequest("bench_board"))
+    result = validator(
+        tmp_path,
+        profiles,
+        backend,
+        hooks=open_hooks(events, map_present=False),
+    ).validate(ValidationRequest("bench_board"))
 
     assert result.status == "validation_incomplete"
     assert result.code == "validation/safety-missing"
-    assert result.observed["hardware_result"] == "validation_passed"
-    assert all(step.number != 9 for step in result.steps)
+    assert any(call[0] == "read_memory" for call in backend.calls)
+    assert all(event[0] != "stamp" for event in events)
 
 
-def test_successful_hardware_validation_confirms_stable_attachment_cache(tmp_path: Path) -> None:
-    profiles = repository(tmp_path)
-    backend = FakeBackend()
-    cache = AttachmentCache(FirmStore(tmp_path))
-
-    validator(tmp_path, profiles, backend, hooks=open_hooks(), cache=cache).validate(
-        ValidationRequest("bench_board")
-    )
-
-    records = cache.load_records()
-    assert len(records) == 1
-    assert records[0].board_id == "bench_board"
-    assert records[0].probe_usb_serial == "PROBE-001"
-
-
-def test_validation_choice_retry_preserves_prior_selector_through_both_ambiguities(
-    tmp_path: Path,
-) -> None:
+def test_probe_choice_retry_preserves_only_probe_selector(tmp_path: Path) -> None:
     profiles = repository(tmp_path)
     backend = FakeBackend()
     backend.inventory_value = ValidationInventory(
         probes=(
-            ValidationProbe("probe-a", "First probe", "stlink", "PROBE-001"),
+            ValidationProbe("probe-a", "First probe", "stlink", "PROBE-A"),
             ValidationProbe("probe-b", "Second probe", "stlink", "PROBE-B"),
-        ),
-        serial_ports=(
-            ValidationSerial("serial-a", "COM7", "First UART", "UART-A"),
-            ValidationSerial("serial-b", "COM8", "Second UART", "UART-B"),
-        ),
+        )
     )
     service = validator(tmp_path, profiles, backend, hooks=open_hooks())
 
     choose_probe = service.validate(ValidationRequest("bench_board"))
+
     assert choose_probe.status == "validation_needs_user_input"
     assert choose_probe.to_payload()["accepted_response"] == {
         "tool": "board_validate",
@@ -342,45 +334,6 @@ def test_validation_choice_retry_preserves_prior_selector_through_both_ambiguiti
             "probe_id": "<one choice_id from choices>",
         },
     }
-
-    choose_serial = service.validate(ValidationRequest("bench_board", probe_id="probe-a"))
-    assert choose_serial.status == "validation_needs_user_input"
-    assert choose_serial.to_payload()["accepted_response"] == {
-        "tool": "board_validate",
-        "arguments": {
-            "board_id": "bench_board",
-            "probe_id": "probe-a",
-            "serial_id": "<one choice_id from choices>",
-        },
-    }
-
-    passed = service.validate(
-        ValidationRequest("bench_board", probe_id="probe-a", serial_id="serial-a")
-    )
+    passed = service.validate(ValidationRequest("bench_board", probe_id="probe-a"))
     assert passed.status == "validation_passed"
     assert passed.to_payload()["accepted_response"] is None
-
-
-def test_probe_retry_preserves_a_preselected_serial_identity(tmp_path: Path) -> None:
-    profiles = repository(tmp_path)
-    backend = FakeBackend()
-    backend.inventory_value = ValidationInventory(
-        probes=(
-            ValidationProbe("probe-a", "First probe", "stlink", "PROBE-A"),
-            ValidationProbe("probe-b", "Second probe", "stlink", "PROBE-B"),
-        ),
-        serial_ports=(ValidationSerial("serial-a", "COM7", "UART", "UART-A"),),
-    )
-
-    result = validator(tmp_path, profiles, backend, hooks=open_hooks()).validate(
-        ValidationRequest("bench_board", serial_id="serial-a")
-    )
-
-    assert result.to_payload()["accepted_response"] == {
-        "tool": "board_validate",
-        "arguments": {
-            "board_id": "bench_board",
-            "serial_id": "serial-a",
-            "probe_id": "<one choice_id from choices>",
-        },
-    }

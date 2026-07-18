@@ -314,14 +314,24 @@ def test_known_unknown_incomplete_and_mismatch_name_routes_do_not_mutate_profile
     known = route_board_name("Be\u0301nch Board", profiles)
     unknown = route_board_name("New Board", profiles)
     repair = route_board_name("Repair Me", profiles)
-    mismatch = route_board_name("Bénch Board", profiles, hardware_mismatch=True)
+    mismatch = route_board_name(
+        "Bénch Board",
+        profiles,
+        hardware_mismatch=True,
+        expected_mcu="expected-mcu",
+        observed_mcu="observed-mcu",
+    )
     no_board = route_board_name("no board", profiles)
 
     assert (known.kind, known.board_id) == ("validate", "bench_board")
     assert unknown.kind == "setup"
     assert (repair.kind, repair.board_id) == ("validate", "repair_board")
     assert "Validate" in repair.agent_prompt
-    assert mismatch.kind == "correct_assignment"
+    assert mismatch.kind == "mismatch"
+    assert "Expected MCU expected-mcu" in mismatch.agent_prompt
+    assert "observed MCU observed-mcu" in mismatch.agent_prompt
+    assert "ask what they want" in mismatch.agent_prompt
+    assert "new logical" in mismatch.agent_prompt
     assert "do not rewrite" in mismatch.agent_prompt.casefold()
     assert no_board.kind == "no_board"
     assert profiles == original
@@ -343,7 +353,9 @@ def test_run_assignments_are_one_to_one_and_mismatch_only_clears_memory() -> Non
         assignments.assign("probe:1", "board_b")
 
     route: AssignmentRoute = assignments.mismatch("probe:1", "board_a")
-    assert route.kind == "correct_assignment"
+    assert route.kind == "mismatch"
+    assert "ask what they want" in route.agent_prompt
+    assert "new logical" in route.agent_prompt
     assert run.assignments == {}
 
 

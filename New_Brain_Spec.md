@@ -1,5 +1,22 @@
 # Server B Design
 
+## Normative Authority
+
+This document is the canonical product behavior specification for Server B. It incorporates the
+accepted single-file safety-authority decision in `decisions/ADR-0001-single-file-safety-authority.md`,
+the behavior specified by `docs/safety-layer-v2-spec.md`, and deliberate runtime contract upgrades
+recorded in `tests/contracts/product-server-tools.json`.
+
+When historical implementation notes or archived action lists disagree with the behavior below, the
+following order controls:
+
+1. Accepted ADRs for one-way safety-authority decisions.
+2. This specification for product behavior and agent-facing workflow.
+3. The active product tool contract for exact MCP names and schemas.
+4. Historical extraction and gap-audit documents as evidence only.
+
+Normative tool names use lowercase `snake_case`; the `*-plan` suffix is retained exactly. Historical Title Case or hyphenated spellings in archived evidence are non-authoritative aliases.
+
 ## Server B Main
 
 ### Capabilities
@@ -33,97 +50,88 @@ The main danger with the server and models, is, given regular SWD/JTAG and UART 
 
 We have determined a few  types of safety level actions when SWD/JTAG is enabled:
 
-1. Flash-Application
-2. Flash-Bootloader
-3. Register-Write (for peripheral/config registers)
-4. Memory_Access:
+1. flash_application
+2. flash_bootloader
+3. register_write (for peripheral/config registers)
+4. memory access:
    1. Find_symbol
    2. Write (takes Symbol or Address)
    3. Read (takes Symbol or Address)
-5. Write-CPU-Register (normal)
-6. Set-Execution-State
-7. Reset-Device:
+5. write_cpu_register (normal)
+6. set_execution_state
+7. reset device:
    1. reset_and_run
    2. reset_and_halt
    3. connect_under_reset
 
 These need different safety levels for these different level of actions.
 
-##### Safety Setup
+##### Stable Safety Authority
 
-There should be a command that locks all memory/flash/SWD-JTAG write operations: Safety-Setup
+The server keeps write-capable actions closed until it has a complete, reviewed safety map for the
+selected logical board and a live identity proof for the current connection.
 
-This should make a memory map in the workspace of the user for the following regions using the Pack/Target + Datasheet:
+The only persisted safety-authority file is:
 
-1) Prohibited Registers: option bytes, UICR, OTP, or other registers that render the board in lockout memory. Most security/provisioning registers. These should be entered into the server and the server will prevent any actions that include these addresses within the range.
-2) CPU Registers (from pack/target and datasheet for specific types of CPU, like cortex-M)
-3) Peripheral Register Window (from pack/target and datasheet)
-4) Flash (from datasheet and target/pack)
-5) ROM Bootloader
-6) Bootloader Flash (linker)
-7) Application (linker)
-8) RAM
+```text
+.firm/safety/<board_id>/memory_map.yaml
+```
 
-Following flash, read/write register operations, etc., can be safe if using this memory map as a reference. A compact implementation of unsafe operations can be safe with these checks:
+It contains stable board/MCU identity, reviewed source digests, physical flash/RAM geometry, erase
+geometry, deployment partitions, typed regions, and provenance. Gates, plans, permissions, live
+identity, and map stamps are never restored from disk. `source_manifest.json`, `safety_report.json`,
+persisted aggregate fingerprints, and persisted gates are not authority and must not be read or
+written by the current design.
 
-* MCU identity matches the selected board definition.
-* Artifact segments fit entirely inside the selected partition.
-* Required erase sectors fit entirely inside that partition.
-* Entry point and vector table are inside the expected application or bootloader range.
-* No loadable segment targets option bytes, UICR, OTP, or unknown memory.
-* Bootloader flashing and application flashing are separate commands.
-* Security configuration are unavailable to the ordinary agent.
-  * Mass-erase must require user permission *every time*; mass erase when requesting permission should tell the user the memory range it will erase.
+The safety map classifies at least:
 
-##### Flash-Application
+1. Prohibited option-byte, UICR, OTP, provisioning, lifecycle, protection, and debug-authentication
+   regions.
+2. CPU and system-control registers.
+3. Peripheral register windows.
+4. Physical flash and erase geometry.
+5. ROM bootloader/system memory.
+6. A reviewed stable application deployment partition.
+7. An optional separately reviewed user-bootloader deployment partition.
+8. Physical RAM and writable RAM regions.
 
-flash_application
-    May write only the application slot.
+Callers and agents never provide allowed ranges, erase geometry, or authority-bearing evidence.
+Unknown memory is denied, and prohibited classifications override broader flash, RAM, or peripheral
+classifications.
 
-Treat the existing application linker script as the intended application boundary. The server only needs to check:
+A normal firmware build does not change persistent safety authority. Firmware artifacts are
+per-operation inputs. Every flash independently parses the actual ELF and optional matching HEX and
+checks target identity, segments, entry point, vector table, partition containment, erase-sector
+containment, prohibited overlap, and unknown-memory overlap before backend mutation.
 
-* Final ELF/HEX write ranges ⊆ linker-defined application FLASH region ⊆ Datasheet and Pack/Target defined application RAM or FLASH region (wherever the application is designed to run from)
+##### flash_application
 
-That is tighter and more useful than merely checking against the MCU’s total flash range. It also prevents accidental bootloader overwrite.
+`flash_application` may write only the stable reviewed application deployment partition.
 
-This works well when:
+At populated-plan acceptance the server hashes the selected artifact and binds the digest to the
+plan. Immediately before execution it hashes the artifact again. Changed bytes cause a pre-execution
+refusal, invalidate/relock the plan, consume no call budget or permission, and invoke no backend
+erase or write.
 
-* The linker script was established before normal application work.
-* The agent normally edits source code, not the linker.
-* Linker changes are treated as exceptional and reviewed separately.
+The ELF is authoritative for entry point, vector table, executable segments, and build metadata. A
+selected HEX must have a matching ELF companion collected from the same build. Raw BIN and HEX-only
+inputs may be retained as provenance but are not eligible for guarded flash.
 
-Do not let the agent provide arbitrary allowed ranges per request. The board definition should supply the ranges, while the agent selects a named operation such as `flash_application`.
+The complete required erase footprint and every loadable range must fit inside the application
+partition. The image must not touch bootloader, prohibited, ROM, or unknown space. The build can
+prove that it fits the stable partition but can never widen that partition.
 
-For custom layouts, generate the policy from the project’s authoritative linker configuration during the build, then compare it with a checked-in board layout. For example:
+##### flash_bootloader
 
-* linker-defined application range must equal board-policy application range
+`flash_bootloader` follows the same execution-time artifact inspection and digest-binding rules but
+may write only a separately reviewed user-bootloader partition. If no authoritative bootloader
+partition exists, the action remains unavailable.
 
-Then inspect the resulting ELF to ensure the linker actually produced segments inside that range.
+Bootloader flashing requires its L1 plan and user permission. It rejects application, prohibited,
+ROM-bootloader, and unknown ranges and never accepts caller-provided allowed ranges. Ordinary
+firmware work should use `flash_application`.
 
-##### Flash-Bootloader
-
-flash_bootloader
-    May write only the bootloader slot.
-    Default:
-
-* Return failure and ask for the agent to use `flash_bootloader-plan` with user permission first.
-* `flash_bootloader-plan` takes whether the user picked access this one time or for all future calls this MCP-server live run. Only once the plan is approved does flash_bootloader stop returning a failure.
-
-For bootloader work, use the bootloader’s linker script and confirm that its output lands in ordinary flash according to the pyOCD target/pack:
-
-Final bootloader ELF ranges ⊆ bootloader linker FLASH region ⊆ target-reported physical flash
-
-The pack confirms that the address is real programmable flash. The linker defines where your bootloader belongs.
-
-Do not let the agent provide arbitrary allowed ranges per request. The board definition should supply the ranges, while the agent selects a named operation such as `flash_bootloader`.
-
-For custom layouts, generate the policy from the project’s authoritative linker configuration during the build, then compare it with a checked-in board layout. For example:
-
-* linker-defined bootloader range must equal board-policy bootloader range
-
-Then inspect the resulting ELF to ensure the linker actually produced segments inside that range.
-
-##### Register-Write
+##### register_write
 
 The server does not need intelligence or knowledge of every board.
 
@@ -187,7 +195,7 @@ set_execution_state
            xPSR, CONTROL, PRIMASK,
            BASEPRI, FAULTMASK
 
-**Set_execution state should require special permission from the user:**
+**set_execution_state should require special permission from the user:**
 
 * Just like bootloader flash, through a separate tool that unlocks it and takes a parameter: the user either requested to give it access just one time, or access for the rest of the live server run.
 * Just like bootloader flash, should default to returning a failure + a request for unlock with user permission so that the model asks the user first.
@@ -225,177 +233,45 @@ Use this when the firmware crashes immediately and the model needs to inspect st
 
 Use this when firmware quickly enters sleep, reconfigures clocks or pins, crashes, or otherwise makes normal debugger attachment difficult. This requires the probe’s reset line to be connected and supported.
 
-#### Server Cleanup
+#### Managed Operations, Cancellation, and Cleanup
 
-For clean MCP server exit:
+Every blocking hardware action runs inside a request-bound managed operation with:
 
-You only need a few simple lifecycle rules:
+1. a finite timeout;
+2. one logical board/probe lock while preserving cross-board concurrency;
+3. an operation/request identity and cooperative cancellation token;
+4. explicit ownership of UART handles, debug sessions, reset lines, and helper processes; and
+5. one idempotent server-owned cleanup path.
 
-1. Start each external command in its own process group.
-2. Give every operation a timeout.
-3. On success, failure, cancellation, or server shutdown:
-   * close UART and pyOCD sessions;
-   * terminate the entire process group;
-   * force-kill it if it does not exit.
-4. Allow only one active operation per physical probe or board.
-5. On server startup, clean up helper processes left from the previous run.
-6. Define the intended final board state, such as `reset and run`, rather than accidentally leaving it halted.”
+In-process pyOCD and serial calls may run in managed worker threads so persistent handles retain
+correct ownership. External commands alone run as owned subprocesses with validated argv, a separate
+process group, a marker tying the process to this Server Run, and bounded terminate/force-kill
+cleanup. Startup hygiene terminates only a still-matching owned helper; it never kills by name alone.
 
-#### Action Cleanup
+Each request maps to its managed worker, owned subprocesses, UART/debug resources, and board lock.
+When MCP cancellation, timeout, client EOF, or server shutdown occurs, the server marks the operation
+cancelled, requests cooperative cancellation, terminates owned process groups, closes resources when
+safe, releases reset/control lines, and releases the board lock in `finally` logic.
 
-##### Mandatory Action Cleanup
+Flash becomes non-interruptible after the backend transaction begins. Cancellation then waits for
+bounded safe completion before closing the session, avoiding a deliberately half-written image.
+Pre-transaction validation remains interruptible.
 
-Always run this on success, error, cancellation, or timeout:
-stop active reads/writes
-close UART
-close pyOCD session
-terminate owned subprocesses (see below)\*
-release reset/control lines
-release the board lock
+Mandatory cleanup always stops owned I/O, closes operation-owned UART/debug resources, terminates
+owned processes, releases reset lines, and releases locks. It does not depend on model-supplied
+cleanup and continues after an individual cleanup error.
 
-This must be deterministic and must not depend on the model providing anything.
+Successful ordinary work preserves the action's documented MCU state. Cleanup does not silently
+reset the board or erase volatile state. Reset-and-run is explicit through `reset_and_run` or an
+eligible structured `on_exit` finalizer. Intentional halt actions preserve halt; abnormal started
+failure, timeout, cancellation, EOF, and shutdown still release all server-owned resources.
 
-MCP cancellation tells the server to stop processing and free associated resources. A client disconnect automatically kills Server B.
+Optional device finalizers are a small closed union such as bounded `uart_write` or `reset_and_run`.
+They are supplied in the original request, short, best-effort, and run before mandatory cleanup.
+Arbitrary model-provided shell commands are forbidden, and finalizer failure never prevents cleanup.
 
-**Cancellation Handling (Claude CLI only right now - cancellation notifications not supported on codex):**
-For a normal tool call, the client sends:
-
-```json
-{
-  "method": "notifications/cancelled",
-  "params": {
-    "requestId": 123,
-    "reason": "User interrupted"
-  }
-}
-```
-The server should then stop the corresponding operation and free its resources. MCP clients are also expected to send this notification when their request timeout expires.
-
-**Cancellation Handling: What the server should do:**
-
-All MCP tool actions should be wrapped in a subprocess.\*
-
-Associate every running operation with its MCP request ID:
-
-request ID
-    → running subprocess or pyOCD session
-    → serial connection
-    → board/probe lock
-When cancellation arrives:
-1. Mark the operation cancelled
-2. Stop or terminate its worker
-3. Close pyOCD
-4. Close UART
-5. Release the board lock
-Put that cleanup in server-owned finally logic. Python explicitly recommends try/finally for cleanup when asynchronous tasks are cancelled, and pyOCD recommends closing its session in a finally block or context manager.
-
-```python
-Conceptually:
-async def flash_tool(..., request_id):
-    async with board_lock:
-        operation = ManagedBoardOperation()
-        active_operations[request_id] = operation
-
-        try:
-            return await operation.run()
-        finally:
-            # Runs after success, error, or MCP cancellation.
-            await operation.cleanup()
-            active_operations.pop(request_id, None)
-```
-
-Your MCP framework should connect the cancellation notification to cancellation of operation.run(). For example, the TypeScript MCP SDK exposes an AbortSignal to each handler specifically for this purpose.
-
-**A disconnected stdio client automatically kills Server B.**
-
-**Flashing caveat**
-For UART monitoring, GDB servers, and ordinary debugging, cancellation can normally stop the action immediately.
-For an active flash operation, a safer interpretation is:
-Cancellation requested
-→ let flash finish
-→ close the pyOCD session
-→ release the probe
-Killing a flash process halfway through may leave incomplete firmware, but it should still be recoverable through another SWD flash as long as security configuration was not changed. However, we still would like to avoid incomplete firmware.
-The critical requirement is to verify that the particular MCP client you plan to use actually sends notifications/cancelled when the user presses Stop. MCP supports it, but a server cannot force every client implementation to send it.
-
-##### Optional device-specific finalizer tools
-
- Examples: send a UART “exit bootloader,” “stop test,” or “reset” command.
-
-* **Different from mandatory deterministic cleanup, which is:** close UART, close pyOCD, kill subprocesses, release locks, and optionally reset/run through SWD.
-
-The finalizer should run first when safe, followed by deterministic cleanup regardless of whether the finalizer succeeds.
-
-```text
-Process:
-tool completes or is cancelled
-        ↓
-optional device finalizer
-        ↓
-close/kill/release everything
-```
-
-*Don’t accept arbitrary cleanup shell commands*
-
-Regarding optional device specific finalizers, the best design is:
-
-**Server-owned deterministic cleanup for every tool; optional structured device finalizers only for tools that genuinely require protocol-level exit behavior.**
-
-You do not need a general model-provided cleanup parameter on every tool. Add it only to long-running or stateful tools such as UART sessions, custom bootloader sessions, manufacturing tests, and interactive debug operations
-
-The server should always be able to **release its own resources without knowing every device-specific exit sequence**.
-
-That makes the board and probe available to the next tool call. The MCU might remain:
-
-* Halted
-* Running old firmware
-* Inside a custom bootloader
-* Waiting for UART input
-* In reset
-
-But none of those normally prevents the next call from reconnecting through SWD or reopening UART.
-
-**Optional structured finalizer format**
-
-The original tool call may include something like:
-
-```json
-{
-  "on_exit": {
-    "action": "uart_write",
-    "data": "exit\\r\\n",
-    "timeout_ms": 300
-  }
-}
-```
-
-Or later:
-
-```json
-{
-  "on_exit": {
-    "action": "reset_and_run"
-  }
-
-}
-```
-
-The sequence becomes:
-
-```text
-try optional finalizer
-
-always perform mandatory cleanup
-```
-
-The finalizer should be:
-
-* Supplied in the original request, because the model may not get another turn after cancellation
-* Best-effort and short
-* Structured rather than an arbitrary shell command
-* Allowed to fail without preventing resource cleanup
-
-You can initially support no finalizers, then add `uart_write`, `reset_and_run`, or other actions as genuine use cases appear as deterministic finalizer actions.
+Only one active operation may own a physical probe/board. Assignments and locks are board-local so
+independent physical boards may proceed concurrently.
 
 ## Setup
 
@@ -473,34 +349,42 @@ General agent prose is never authorization for a guarded action. The agent gathe
 
 #### Setup and Validation Tools
 
-Load_setup_tool
- Board_setup-plan
- Board_setup
- Board_fix_setup
- Board_safety_setup
- Board_safety_refresh
- Board_validate
- target_unlock-plan
+The public setup and readiness surface is:
 
-- Board_setup-plan: the initially visible, permission-locked plan gate for setup and repair.
+- `setup_overview`
+- `load_setup_tool`
+- `board_setup-plan`
+- hidden `board_setup` and `board_fix_setup` after an accepted setup plan
+- `continue_setup`
+- `board_safety_refresh`
+- `board_validate`
+- `get_setup_status`
+- `target_unlock-plan`
 
-- Board_setup: first-time setup for a repository/board-profile pair; creates the core profile and complete safety map.
+`setup_overview` is the server-owned route from familiar names to profiles, friendly physical
+connections, server-generated IDs, and exact next-call templates. The agent never invents or asks
+the user for internal IDs.
 
-- Board_fix_setup: resumes the first unverified phase of an incomplete or failed setup.
+`continue_setup` accepts only the exact server-requested friendly choice or official-source research
+reply for one live continuation. It grants no plan, permission, safety authority, or gate state.
 
-- Board_safety_setup: performs a full safety-map build or rebuild.
+`board_safety_refresh` is the only public safety-map creation, maintenance, and recovery tool. It
+accepts only `board_id`, deterministically rebuilds one complete candidate map from server-owned
+reviewed sources, and atomically promotes it only after full validation. Initial setup may invoke the
+same internal rebuild. There is no separate public `board_safety_setup` path in the current design.
 
-- Board_safety_refresh: rebuilds only map regions affected by identifiable configuration drift.
+`board_validate` proves live MCU identity and associates the current canonical map digest with that
+live proof. `get_setup_status` reports durable configuration readiness, live-session readiness, and
+UART readiness separately without opening a connection or gate.
 
-- Board_validate: validates a completed profile against one assigned hardware connection and opens that board’s session gate.
-
-- target_unlock / target_unlock-plan: separate action governed by its own specification. Setup and validation only report locked state.
+`target_unlock-plan` and its underlying action remain separate. Setup and validation only report a
+locked target; destructive recovery requires exact live disclosure and fresh one-time permission.
 
 There is no separate research provider and no user-facing terminal-command layer.
 
 #### Session Startup, Board Assignment, and Tool Choice
 
-At the start of every MCP Server Live Run, before board-specific work, the agent asks the user conversationally which boards are connected. The user gives each board its unique familiar name, or says **“no board.”** The user never supplies board_id, connection IDs, permission enums, or JSON.
+At the start of every Server Run, before board-specific work, the agent asks the user conversationally which boards are connected. The user gives each board its unique familiar name, or says **“no board.”** The user never supplies board_id, connection IDs, permission enums, or JSON.
 
 The server enumerates every connection separately and returns friendly probe, port, and read-only board details. The agent maps the user-supplied names to profiles and connections. Exact attachment-cache matches may resolve silently; ambiguous assignments are presented conversationally. Names and active connections must match one-to-one before validation or setup proceeds.
 
@@ -523,7 +407,7 @@ connection_1 → board_id: left_controller
  connection_2 → board_id: right_controller
 ```
 
-Each active connection has exactly one board_id, and one board_id cannot address two active connections. Assignments and gates clear on disconnect or at the end of the MCP Server Live Run.
+Each active connection has exactly one board_id, and one board_id cannot address two active connections. Assignments and gates clear on disconnect or at the end of the Server Run.
 
 ##### Explicit per-board startup flow
 
@@ -531,31 +415,31 @@ The following flow runs independently for every user-named connection:
 
 1. Resolve the supplied name against display_name in .firm/boards/\*.yaml.
 
-2. If exactly one matching profile exists, assign the selected connection provisionally, call Load_setup_tool, and call Board_validate only.
+2. If exactly one matching profile exists, assign the selected connection provisionally, call load_setup_tool, and call board_validate only.
 
 3. If validation succeeds, bind that connection to the profile’s board_id and name for the rest of the active session and open only that board’s gate.
 
 4. If validation reports a hardware/profile mismatch, ask the user to correct the connection-to-name assignment. Do not rewrite or silently reassign the profile.
 
-5. If no matching profile exists, begin the Board_setup-plan flow below.
+5. If no matching profile exists, begin the board_setup-plan flow below.
 
 6. If the profile exists but setup state is incomplete or failed, begin the same flow in repair mode.
 
 A matching board name therefore means **validate, not setup**. A missing name/profile means **plan, then setup**. Setup and validation of one board never apply to another connection.
 
-##### Board_setup-plan scope
+##### board_setup-plan scope
 
-Board_setup-plan follows the permission-locked plan flow. Setup-specific behavior:
+board_setup-plan follows the permission-locked plan flow. Setup-specific behavior:
 
 - A setup plan is scoped to one intended connection and one logical profile. For a new profile it uses the requested display_name and a proposed/generated board_id; for repair it uses the existing board_id and recorded setup state.
 
 - The plan’s underlying-tool parameters identify the connection, the profile, and setup versus repair mode.
 
-- One valid setup plan permits one Board_setup call and one Board_fix_setup call. The plan’s redirect names Board_setup for a new profile or Board_fix_setup when recorded state already requires repair.
+- One valid setup plan permits one board_setup call and one board_fix_setup call. The plan’s redirect names board_setup for a new profile or board_fix_setup when recorded state already requires repair.
 
 - When setup completes, validation follows and both actions are relocked behind a new plan.
 
-- If Board_setup fails or is incomplete, the same plan’s single Board_fix_setup call remains available for the first repair attempt without asking the user again — even under one-time permission.
+- If board_setup fails or is incomplete, the same plan’s single board_fix_setup call remains available for the first repair attempt without asking the user again — even under one-time permission.
 
 - Any further setup or repair attempt requires a replacement setup plan. With one-time permission the agent must ask the user again first; with full-session permission it continues without re-prompting, within deterministic retry limits.
 
@@ -565,60 +449,70 @@ Board_setup-plan follows the permission-locked plan flow. Setup-specific behavio
 
 When no matching profile name exists:
 
-1. Call Load_setup_tool, then complete the Board_setup-plan flow, gathering one-time or full-session permission through normal conversation.
+1. Call load_setup_tool, then complete the board_setup-plan flow, gathering one-time or full-session permission through normal conversation.
 
-2. Call the exposed Board_setup once.
+2. Call the exposed board_setup once.
 
-3. If setup completes, call Board_validate.
+3. If setup completes, call board_validate.
 
-4. If setup fails or is incomplete, call the already-authorized Board_fix_setup once.
+4. If setup fails or is incomplete, call the already-authorized board_fix_setup once.
 
-5. If repair completes, call Board_validate.
+5. If repair completes, call board_validate.
 
 6. If repair cannot complete, submit a replacement setup plan — asking the user again only under one-time permission. Stop on a deterministic blocked/unresolved result or retry-budget exhaustion.
 
-When a matching profile name exists, skip setup and repair and call Board_validate directly.
+When a matching profile name exists, skip setup and repair and call board_validate directly.
 
 ##### Mid-session gate closure
 
-The gate closes automatically when configuration or hardware freshness is lost:
+The run-scoped gate keeps two distinct concepts:
 
-- **Fingerprint change:** compare source sub-fingerprints. Call Board_safety_refresh for isolated linker/ELF, pack, or evidence drift; call Board_safety_setup for anchor/schema changes or unclear scope. A configuration-only refresh may re-stamp an otherwise valid hardware session. Changes to the part/target or other hardware anchor require Board_validate after Safety Setup.
+- `LiveIdentityStamp`: board, connection, probe, observed MCU identity, and validation run.
+- `SafetyMapStamp`: canonical digest of the current parsed stable map.
 
-- **Disconnect or closed connection:** immediately clear that connection’s assignment, validation stamp, and gate. After reconnection and reassignment, call Board_validate before any guarded action becomes available again.
+Disconnect, connection replacement, server restart, identity repair, and destructive recovery clear
+the live identity proof. A stable-map refresh can update only the map stamp when the same live proof
+still applies; it can never create live identity authority.
 
-- **End of the MCP Server Live Run:** all in-memory assignments and gates are lost; repeat startup naming/assignment and validate every connected board.
+Ordinary rebuilds, artifact-path changes, flash, reset/halt, UART activity, and successful
+non-destructive actions do not invalidate live identity. A map digest mismatch closes the write gate
+until `board_safety_refresh` rebinds the current map, while loss of live proof requires
+`board_validate`.
 
-There is no standalone open-gate action. The responsible successful validation, safety refresh, or safety setup/validation sequence reopens only the affected board’s gate.
+There is no standalone open-gate action. A successful validation establishes live proof and map
+association; refresh may update the association only for an already valid same-board connection.
 
 #### Scope and Persistence
 
-Board and run ownership is defined later. All project-specific artifacts live under .firm/:
+Server-owned project state lives under `.firm/`:
 
 ```text
 .firm/
    boards/<board_id>.yaml
    packs/manifest.yaml
    packs/files/
-   setup/<setup_id>/setup_report.json
-   setup/<setup_id>/setup.log
+   setup/<setup_id>/report.json
+   setup/<setup_id>/events.jsonl
    safety/<board_id>/memory_map.yaml
-   safety/<board_id>/source_manifest.json
-   safety/<board_id>/safety_report.json
-   validation/<validation_id>/validation_report.json
-   validation/<validation_id>/validation.log
+   validation/<validation_id>/report.json
+   validation/<validation_id>/events.jsonl
    cache/attachments.yaml
 ```
 
-.firm/boards/\<board_id\>.yaml stores portable board facts, including unique board_id and display_name; its filename stem must match the internal ID. Profiles are logical, while current connection_id → board_id assignments remain in-memory only.
+Exact report filenames may evolve under the active product contract, but the ownership boundary may
+not: profiles, pack pins, safety authority, setup/validation evidence, and attachment hints belong to
+FirmStore; live gates and authorization do not.
 
-.firm/packs/manifest.yaml is the sole owner of external-pack URL, filename, version, checksum, and provided-target metadata. Board YAML stores no pack identifier.
+Native build outputs and provenance-only firmware bundles deliberately remain outside `.firm`.
+`collect_build_artifacts` copies explicit ELF, HEX, BIN, and linker-map outputs into a caller-chosen
+new or empty directory and writes a deterministic portable `build-manifest.json`. The collector
+performs no build, search, download, or hardware access, and its manifest contains no allowed
+ranges, plans, permissions, gates, or safety authority. Artifact paths are passed explicitly to the
+applicable flash plan; collection alone never authorizes deployment.
 
-The host-local attachment cache is excluded from source control. It may resolve a likely assignment but does not permanently bind a profile to physical hardware.
-
-The safety map stores source fingerprints so the server can cheaply detect whether it is current.
-
-The gate is never persisted as open. It is maintained separately per assigned connection and starts closed whenever that connection or the MCP Server Live Run starts.
+Board YAML stores portable logical profile facts. Current connection assignments, validation stamps,
+map stamps, plans, and permissions remain in memory and reset with the Server Run. The host-local
+attachment cache is excluded from source control and is only an assignment hint.
 
 #### Source Authority and Double Verification
 
@@ -636,55 +530,44 @@ The user supplies only:
 
 - Physical probe/UART selection when ambiguous.
 
-- Intended linker/build configuration when several are valid.
 
 The user does not supply pyOCD targets, register ranges, flash geometry, or protected addresses.
 
-##### Linker-owned firmware ranges
+##### Stable deployment partitions and per-build artifacts
 
-Firmware partitions and loadable firmware ranges come from linker/build artifacts:
+Application and optional user-bootloader deployment partitions are stable reviewed policy recorded
+in `memory_map.yaml`. They come from server-owned reviewed board/device evidence and explicitly state
+whether a full-flash application partition is safe or whether a resident bootloader partition must
+be preserved. Missing partition authority keeps the corresponding flash action unavailable.
 
-- Application flash partition.
+Linker scripts, linker maps, ELF files, and HEX files describe one build. They are not persistent
+safety authority and do not widen deployment policy. At each flash operation the server parses the
+actual selected build and proves its loadable segments, entry point, vector table, target, and erase
+footprint fit the stable partition.
 
-- User bootloader flash partition.
+For executable debugging, the current ELF supplies executable sections. A stable application
+partition is not assumed executable in its entirety.
 
-- Application and bootloader RAM allocations.
+##### Independently reviewed hardware evidence
 
-- Entry point, vector table, and loadable ELF segments.
+Persistent hardware classifications require two distinct, pinned, hashed, server-owned evidence
+roles:
 
-The server parses linker scripts, linker maps, ELF files, or equivalent build metadata. The agent may help the user choose a build configuration, but must not invent partition addresses.
+1. reviewed device-support evidence derived from the applicable Pack/CMSIS/SVD/target support; and
+2. reviewed official vendor datasheet/reference-manual evidence.
 
-Pack/datasheet data defines physical memory, not the project’s application-versus-bootloader partitioning.
+The server parses both through strict schemas and deterministically reconciles exact part/target
+identity, physical flash/RAM, erase geometry, prohibited/security regions, CPU/system ranges,
+peripheral windows, ROM/system memory, aliases, banks, and deployment policy. Empty allowlists or a
+missing role mean unavailable/unreviewed, not "accept any source."
 
-##### Pack/CMSIS plus datasheet-owned hardware ranges
+The agent may research an official target, pack, or document candidate only when the server requests
+it. Research can help maintainers acquire evidence but does not promote arbitrary address facts into
+safety authority. An unreviewed/custom board remains non-writable until maintainers add independent
+reviewed evidence. The user supplies neither hardware ranges nor evidence hashes.
 
-The following require two independently obtained sources:
-
-1. The server deterministically loads the applicable Pack/CMSIS/SVD/target data.
-
-2. The agent supplies facts from the official datasheet or reference manual when requested.
-
-3. The server compares them and accepts the region only when they agree or a representation difference can be deterministically reconciled.
-
-This applies to:
-
-- Option bytes, UICR, OTP, provisioning, lifecycle, protection, and debug-authentication regions.
-
-- CPU and system-control register ranges.
-
-- Peripheral register windows.
-
-- Physical flash and RAM geometry.
-
-- ROM bootloader/system-memory ranges.
-
-- Erase page/sector geometry used to classify physical flash.
-
-The agent supplies datasheet-guided information; the server supplies the Pack/CMSIS side; the user supplies neither.
-
-The comparison checks the exact device variant, addresses, aliases, region type, bank boundaries, register-block identity, pack version, and document revision. Conflicts are recorded and affected actions remain closed.
-
-Prohibited classifications override broader peripheral, flash, or writable classifications. Unknown memory is denied by default.
+Prohibited classifications override broader peripheral, flash, or writable classifications. Unknown
+memory is denied by default.
 
 #### Field Ownership
 
@@ -700,11 +583,11 @@ Prohibited classifications override broader peripheral, flash, or writable class
 | Probe/serial hints | Built-in rules | No | Board YAML |
 | test_read_address | Family default or validated candidate | Unsupported families only | Optional Board YAML |
 | silicon_id_\* | Pack/CMSIS, official docs, live read | Sometimes | Optional Board YAML |
-| expected_uart_substring | Optional user input | No | Optional Board YAML |
+| expected_uart_substring | Optional user behavior expectation used by setup status/serial workflows, not identity validation | No | Optional Board YAML |
 | External pack pin | Staged and verified pack | If support unavailable | Pack manifest |
 | Probe/UART association | Stable local hardware identities | User confirms ambiguity | Host cache |
-| Application/bootloader firmware ranges | Linker/build artifacts | No address research | Safety map |
-| ROM bootloader, physical memory, registers | Pack/CMSIS plus official docs | Datasheet evidence | Safety map |
+| Stable application/bootloader deployment partitions | Reviewed server-owned policy | No | Safety map |
+| ROM bootloader, physical memory, registers | Independently reviewed device-support plus official-document evidence | Research candidates only; maintainer review required | Safety map |
 
 probe_type remains required compatibility/display data, for example stlink → ST-Link.
 
@@ -719,7 +602,6 @@ The agent never writes Board YAML, manifests, maps, reports, or cache records di
 | Custom board | Board name, exact MCU part number, UART baud rate |
 | Multiple probes/UARTs | Selection from friendly descriptions |
 | Unprovable external UART mapping | Confirmation that it is attached to the board |
-| Multiple build configurations | Intended configuration |
 | L1-protected operation | Permission required by that action’s plan tool |
 
 #### Host-Local Attachment Cache
@@ -747,7 +629,7 @@ The cache is an assignment hint, not permanent ownership. The user may assign a 
 
 #### Deterministic Preflight
 
-Before research, setup inventories hardware and workspace state: user input, connected probes and serial ports, attachment-cache matches, built-in and manifest pyOCD targets, auto-detected target, and discovered linker artifacts.
+Before research, setup inventories hardware and workspace state: user input, connected probes and serial ports, attachment-cache matches, reviewed catalog eligibility, built-in and manifest pyOCD targets, and exact auto-detected target evidence.
 
 | Condition | Deterministic result | Research? |
 | :--- | :--- | ---: |
@@ -756,7 +638,6 @@ Before research, setup inventories hardware and workspace state: user input, con
 | No required UART | setup/no-uart | No |
 | Multiple UARTs | Exact cache match or conversational selection | No |
 | External adapter cannot be mapped | Conversational confirmation and cache | No |
-| Multiple linker artifacts | Conversational build selection | No |
 | pyOCD returns one exact target | Use it | Optional enrichment only |
 | pyOCD returns no exact target | Target-research prompt | Yes |
 
@@ -764,22 +645,25 @@ Selected hardware identities belong in reports/cache, never portable Board YAML.
 
 #### Core Board YAML
 
-Setup creates a draft in memory:
+Setup creates a draft profile in memory and commits it only after deterministic target support,
+reviewed safety eligibility, and live connection checks succeed:
 
 ```yaml
+schema_version: 2
 board_id: my_board
 display_name: "My Board"
 mcu_part_number: STM32L476RGT6
 mcu_family: stm32l476
 probe_family: stlink
 probe_type: ST-Link
-pyocd_target: <resolved later>
+pyocd_target: stm32l476rgtx
 serial_baudrate: 115200
-probe_hint_terms: [st-link, stlink]
-serial_hint_terms: [st-link, stlink, virtual com]
 ```
 
-The profile is stored at .firm/boards/my_board.yaml; the file stem and internal board_id must match. Core fields are committed after successful target support and connection. Optional test-read/silicon fields are committed only after live validation. The safety-profile reference/hash is committed only after Safety Setup completes.
+The profile is stored at `.firm/boards/my_board.yaml`; its filename stem and internal `board_id`
+must match. It stores no live probe/port assignment and no external-pack identifier. The safety map
+is a separate server-owned authority keyed by `board_id`; profile timestamps, display-name changes,
+UART settings, report identifiers, and artifact paths do not stale that map.
 
 #### Agent Research Handoff
 
@@ -828,1079 +712,371 @@ The agent may supply one complete official pack candidate. The server stages it,
 
 A failed candidate is recorded with observed target-listing output; the next prompt requires a materially different candidate.
 
-#### Optional Validation Enrichment
+#### Exact Live Identity Support
 
-Optional research may supply a test-read address or silicon-identity definition after the target exists. Absence of enrichment does not block core setup when required identity checks can otherwise be completed.
+Every automatically writable board profile requires reviewed live identity evidence. This may be an
+exact part register or a documented masked family identifier when package information is not
+electronically observable; the limitation is explicit in reviewed catalog data.
 
-A test-read candidate must classify as safely readable and succeed live.
+A generic readable test address is not an identity substitute. Optional safe-read diagnostics may be
+recorded, but missing identity evidence makes validation stamp-ineligible and keeps guarded writes
+closed. Failed candidates remain out of the profile and are recorded only as evidence.
 
-A silicon-identity candidate must match using the requested width and mask:
+#### Stable Safety Map and Refresh
+
+`board_safety_refresh(board_id)` is the sole public safety maintenance operation. It accepts no build
+artifacts or caller-supplied ranges.
+
+Every refresh:
+
+1. Loads the exact schema-v2 profile.
+2. Loads independently reviewed device-support and official-document evidence.
+3. Reconciles identity, physical memory, prohibited regions, register windows, ROM, erase geometry,
+   and deployment-partition policy.
+4. Builds one complete deterministic candidate map.
+5. Applies prohibited precedence, overlap checks, schema checks, and exact-part checks.
+6. Atomically replaces only `memory_map.yaml` after the whole candidate passes.
+7. Deletes or ignores legacy `source_manifest.json` and `safety_report.json` authority.
+8. Reports semantic change groups for explanation without maintaining a second partial-mutation
+   algorithm.
+9. Updates the map stamp only if the same board/connection still has valid live identity proof.
+
+Refresh is required for a missing, malformed, old-schema, or inconsistent map and when stable safety
+facts may have changed: MCU/target evidence, reviewed pack/SVD/target or official-document evidence,
+physical geometry, erase policy, deployment partitions, or map-generator schema.
+
+Refresh is not required for a normal application rebuild, artifact path or timestamp change, image
+size change that remains inside policy, flash, reset, halt, UART use, or report bookkeeping.
+
+Outcomes include:
 
 ```text
-(actual_value & mask) == (expected_value & mask)
-```
-
-Failed optional values remain out of Board YAML and are recorded with evidence, observed output, and candidate hash.
-
-#### Safety Setup
-
-Board_safety_setup creates the map used to classify hardware requests. It is required during first-time setup and after anchor changes.
-
-Until it completes, write-capable actions remain unavailable or behind their plan tools.
-
-##### Required regions
-
-The map classifies:
-
-- Prohibited persistent configuration/security registers.
-
-- CPU/system-control registers.
-
-- Peripheral register windows.
-
-- Physical flash and erase geometry.
-
-- ROM bootloader/system memory.
-
-- Linker-derived user bootloader firmware.
-
-- Linker-derived application firmware.
-
-- Physical RAM and linker-derived RAM allocations.
-
-###### Prohibited, CPU, peripheral, physical memory, and ROM bootloader
-
-These use server-loaded Pack/CMSIS/SVD/target data plus agent-supplied official datasheet/reference-manual facts. The server accepts them only after deterministic comparison for the exact part.
-
-Prohibited regions include option bytes, UICR equivalents, OTP, provisioning/lifecycle, protection, debug-authentication, and other settings that can persistently configure or lock the MCU. Most are unavailable to ordinary actions.
-
-ROM bootloader/system memory is distinct from user firmware and is not a project flash partition.
-
-###### Application and user bootloader firmware
-
-These ranges are linker-owned. The server derives them from the selected linker script, linker map, ELF, and build configuration. It does not replace linker partitions with Pack or datasheet guesses.
-
-Application and bootloader flashing are distinct action types because each is checked against a different linker-derived partition.
-
-##### Example map
-
-```yaml
-schema_version: 1
-board_id: my_board
-mcu_part_number: STM32L476RGT6
-pyocd_target: stm32l476rgtx
-fingerprints:
-  aggregate: "sha256:..."
-  board_profile: "sha256:..."
-  pack_cmsis: "sha256:..."
-  datasheet_evidence: "sha256:..."
-  linker_application: "sha256:..."
-  linker_bootloader: "sha256:..."
-  safety_schema: "sha256:..."
-regions:
-  - name: option_bytes
-    kind: prohibited_registers
-    start: "0x1FFF7800"
-    end: "0x1FFF783F"
-    verified_by: [pack_cmsis, datasheet]
-  - name: rom_bootloader
-    kind: rom_bootloader
-    start: "0x1FFF0000"
-    end: "0x1FFF77FF"
-    verified_by: [pack_cmsis, datasheet]
-  - name: bootloader
-    kind: bootloader_flash
-    start: "0x08000000"
-    end: "0x08007FFF"
-    derived_from: linker
-  - name: application
-    kind: application_flash
-    start: "0x08008000"
-    end: "0x080FFFFF"
-    derived_from: linker
-  - name: sram
-    kind: ram
-    start: "0x20000000"
-    end: "0x20017FFF"
-```
-
-Addresses are illustrative only.
-
-##### Safety Setup results
-
-safety_setup_completed
- safety_setup_needs_user_input
- safety_setup_research_required
- safety_setup_incomplete
- safety_setup_conflict
- safety_setup_blocked
-
-needs_user_input tells the agent to ask conversationally about an ambiguous build. research_required includes a datasheet prompt for the agent. Non-complete results keep affected actions closed.
-
-#### Hardware and Configuration Freshness
-
-Hardware identity changes rarely and is expensive to recheck. Linker, ELF, pack, and partition inputs may change repeatedly within one run. The server separates these concerns.
-
-##### Hardware freshness
-
-Board_setup and Board_validate establish that an assigned connection is compatible with its selected profile. Successful validation stamps that connection/session with its board_id, live MCU result, probe identity, and current aggregate safety fingerprint. Hardware freshness applies only to that connection; one board’s validation never covers another.
-
-##### Configuration freshness
-
-The map stores an aggregate fingerprint and source sub-fingerprints for Board YAML, part/target, Pack/CMSIS, datasheet evidence, application linker/ELF, bootloader linker/ELF, flash geometry, and safety schema.
-
-Every write-capable guarded action checks two cheap conditions:
-
-1. Hardware was validated during the current active session.
-
-2. Current inputs still hash to the stamped fingerprint.
-
-A relevant change closes the gate automatically. A purely configuration-side change does not require reconnecting while the active hardware validation remains intact.
-
-#### Board_safety_refresh
-
-Board_safety_refresh handles routine configuration drift:
-
-1. Compare per-source fingerprints.
-
-2. Identify changed source groups.
-
-3. Rebuild only affected map regions.
-
-4. Re-run partition-versus-prohibited overlap checks.
-
-5. Create a new aggregate fingerprint.
-
-6. Re-stamp and reopen the active session when hardware validation is still valid.
-
-Examples:
-
-- Linker/ELF change: rebuild linker-derived application, bootloader, and RAM allocation regions.
-
-- Pack hash change: reload Pack/CMSIS-derived hardware regions and re-run required double verification.
-
-- Datasheet-evidence change: revalidate corresponding hardware regions.
-
 safety_refresh_completed
- refresh_scope_unclear
- safety_conflict
- safety_refresh_blocked
+safety_refresh_blocked
+safety_conflict
+safety_evidence_unavailable
+```
 
-refresh_scope_unclear directs the agent to call Board_safety_setup for a full rebuild.
-
-Refresh cannot reopen a gate after disconnect, server restart, target change, or lost hardware validation. Those require Board_validate.
+A failed rebuild never promotes a partial map. Missing independent reviewed evidence keeps guarded
+writes closed and names the unavailable evidence; setup and agent-provided address ranges are not
+fallback authority.
 
 #### Write-Gate Lifecycle
 
-Each board’s gate is session- and connection-bound, closes automatically, and has no standalone open command. Setup, validation, or refresh reopens only the gate associated with the successfully assigned board_id and connection.
+Each board gate is run-, board-, and connection-scoped and begins closed.
 
-##### Group 1 — Never opened: setup-side
-
-| State | Required action |
+| State or event | Required action |
 | :--- | :--- |
-| No Board YAML/profile-name match | Run the Board_setup-plan flow, then Board_setup, its paired Board_fix_setup attempt if needed, and Board_validate after completion |
-| Recorded failed/incomplete core setup | Run the Board_setup-plan flow in repair mode, then call the exposed Board_fix_setup; further attempts require a replacement plan under the one-time/full-session rules |
-| Core committed; safety incomplete | Board_safety_setup, then Board_validate |
-| Safety research/incomplete/conflict/blocked | Resolve the returned cause and continue Board_safety_setup |
+| Unknown profile name | `board_setup-plan`, then the paired setup/fix workflow |
+| Existing profile, no current map or invalid/old map | `board_safety_refresh` |
+| New Server Run or no live identity proof | `board_validate` |
+| Disconnect, probe replacement, or connection identity change | Reassign, reconnect, then `board_validate` |
+| Destructive recovery or explicit MCU identity repair | `board_validate` after recovery/repair |
+| Stable map changed while live identity remains valid | `board_safety_refresh`; it may update only the map stamp |
+| Ordinary new firmware build | Proceed to artifact collection when useful, then the applicable flash plan |
+| Artifact does not fit stable partition | Fix or select the build; do not refresh or widen policy |
+| Live MCU differs from established profile | Tell the user expected versus observed identity and ask what to do |
+| User elects to adopt different silicon | Create a new logical profile through an explicitly authorized setup route; never rewrite the established profile in place |
 
-##### Group 2 — New session
-
-| Event | Required action |
-| :--- | :--- |
-| New MCP Server Live Run | Ask for connected board names and assignments, then run Board_validate for each |
-| Disconnect, connection close, or connection termination | Immediately clear that assignment, validation stamp, and gate; after reconnecting/reassigning, run Board_validate before reopening |
-| Compatible replacement or same board replugged | Assign the intended existing profile and Board_validate; cache matches may resolve the port silently |
-
-Setup artifacts on disk do not restore an open gate.
-
-##### Group 3 — Configuration drift
-
-| Change | Required action |
-| :--- | :--- |
-| Firmware rebuilt; linker/ELF changed | Board_safety_refresh |
-| Pack re-pinned/hash changed | Board_safety_refresh |
-| Part number or target changed | Board_safety_setup, then Board_validate |
-| Flash geometry, major partition model, or schema changed | Board_safety_setup; validate when the hardware/session anchor is invalidated |
-| Unknown fingerprint mismatch | Board_safety_refresh; on refresh_scope_unclear, use Board_safety_setup |
-
-##### Group 4 — Hardware and identity
-
-| State | Required action |
-| :--- | :--- |
-| Live MCU mismatch | Attach correct board and call Board_validate |
-| Target locked | Use target_unlock, then Board_validate |
-| Backend/probe unavailable | Restore hardware/host and call Board_validate |
-
-The part number is never changed to match an unexpected target.
+A compatible replacement with the same reviewed identity may reuse an existing logical profile after
+validation. An MCU mismatch never silently changes `mcu_part_number` or safety authority.
 
 #### Action Surface
 
-The always-available and always-L1-guarded action lists are defined by the plan design.
+Normal connection is profile-only: `connect(board_id)` resolves the named persisted profile and does
+not accept probe, target, board-config, or launch-environment overrides. Exceptional manual values
+are available only through plan-guarded `connect_override`; they are run-scoped and never rewrite a
+profile or conceal a validation mismatch.
 
-Connect_override may accept manual values such as probe unique_id, pyOCD target, board_id, or external board_config, but these do not silently rewrite persistent profile state.
+Always-visible non-authorizing workflow tools include `setup_overview`, `continue_setup`,
+`get_setup_status`, and `collect_build_artifacts`. Their outputs may route or describe work but never
+supply safety authority, permission, or an open gate.
+
+The exact visible/hidden tool schema is governed by the active product contract and the L1 plan
+section below.
 
 #### Type-Specific Request Validation
 
-The map is a region/type reference, not a universal checklist or heavy per-write logging framework. Each guarded action validates only what its operation requires.
+The map is stable policy, while per-operation inputs prove the actual requested access.
 
-##### Examples
+##### `flash_application` and `flash_bootloader`
 
-###### Flash_application
+Hash-bind the artifact at plan acceptance and recheck it before execution. Require a coherent ELF
+(and matching HEX when selected), exact live target identity, valid entry/vector metadata, complete
+segment containment, and complete erase-sector containment inside the correct stable partition.
+Reject the other partition, prohibited, ROM, and unknown memory before backend mutation.
 
-Parse the firmware ELF/build artifact and require all loadable flash segments and any explicit target address to fit inside the linker-derived application region. Reject bootloader, prohibited, ROM bootloader, and unknown regions. Require current session validation and fingerprint freshness.
+##### `write_memory`
 
-###### flash_bootloader
+Resolve the address or symbol. Symbol access is preferred. Raw addresses require the explicit
+fallback flag and reason and are RAM-only. The complete backend access width must fit mapped writable
+RAM and remain outside prohibited/unknown regions.
 
-Require all loadable segments and any explicit address to fit inside the linker-derived bootloader region. Reject application, prohibited, ROM bootloader, and unknown regions. Apply flash_bootloader-plan permissions.
+##### `register_write`
 
-###### write_memory
+Require the complete word to be inside a mapped peripheral window and outside prohibited
+security/provisioning subranges. Apply the plan-bound mask/value as a read-modify-write; a caller
+cannot classify an address merely by naming it a register.
 
-Resolve the address or symbol. An address-based RAM write must fit completely inside mapped RAM. A symbol write uses symbol/ELF metadata to determine the region and must match the requested write type. Reject prohibited and unknown regions.
+##### `write_cpu_register` and `set_execution_state`
 
-###### register_write
+Require a runtime-supported register in the correct category. Ordinary data/FPU registers use
+`write_cpu_register`; control-flow, stack, masking, and CPU-mode registers use
+`set_execution_state`, which additionally requires user permission.
 
-Require the complete range to be inside a mapped peripheral-register region and outside prohibited security/provisioning subranges. A caller cannot make an address a register by labeling it one.
+##### `set_breakpoint`
 
-###### write_cpu_register
+Bind the current ELF artifact digest to the plan and require the requested symbol/address to fall
+inside an executable ELF section. Do not treat the entire stable application partition as executable.
 
-Require a recognized CPU register supported by the connected architecture/target and apply its L1 plan and permission rules.
+##### `action_batch`
 
-###### Set_breakpoint
+All children use the same `board_id`; nested and multi-board batches are rejected. Each child is
+validated against the exact direct tool schema before execution and traverses the ordinary dispatch
+path.
 
-Resolve the symbol/address and require a mapped executable region supported by the target’s breakpoint mechanism.
+A guarded child requires its own active immutable plan and consumes that plan exactly as a direct
+call would. Batch cannot bypass permission, validation, map/identity stamps, artifact digest,
+containment, locks, timeout, event recording, budget, finalizer, or cleanup.
 
-###### Action_batch
-
-Validate every contained action under its own rule. A batch cannot bypass freshness checks or region classification.
-
-The same model applies elsewhere: verify that the actual target of the request matches the category claimed by the action.
-
-Action-specific responses and errors are sufficient unless that action’s own specification requires more auditing.
+For a static client, the agent may submit only the unchanged one-child fallback returned by an
+accepted plan. The general batch surface does not authorize guessing hidden tool names.
 
 #### Connection, Commit, and Checkpoints
 
 | Result | Action |
 | :--- | :--- |
-| Connection fails | Record exact error; do not commit unresolved fields or promote staged pack |
-| Connection succeeds | Commit core Board YAML and validated pack |
-| Optional enrichment succeeds | Persist validated optional fields |
-| Safety needs research/incomplete | Return agent prompt; gate remains closed |
-| Core and Safety Setup succeed | Commit map/reference, relock setup/fix tools, and call Board_validate |
-| Validation succeeds | Bind the assigned profile and open the gate for the active connection/current fingerprint |
+| Connection fails | Record the exact error; do not commit unresolved identity or promote a staged pack |
+| Core setup and reviewed safety eligibility succeed | Atomically commit the profile and current single-file map |
+| Map missing, malformed, inconsistent, or old-schema | Run `board_safety_refresh` |
+| Validation succeeds | Bind live identity and current map digest for only that board/connection |
+| Validation reports MCU mismatch | Preserve the profile, report expected/observed identity, and ask the user what to do |
+| Ordinary build completes | Optionally collect outputs, then create the applicable flash plan; do not refresh merely because bytes changed |
+| Artifact changes after plan acceptance | Refuse before execution, invalidate/relock the plan, and require a replacement plan |
 
-Every attempt writes a structured report under .firm/setup/. Reports include inventories, selected hardware, cache outcome, target/pack resolution, research exchanges, candidate validation, connection, safety sources, fingerprints, and terminal status.
-
-Board_fix_setup resumes the first unverified phase and reruns current hardware preflight before trusting recorded state.
-
-| Failed phase | First step | Agent may provide |
-| :--- | :--- | :--- |
-| Input | Ask user conversationally | Missing user fact |
-| Preflight | Re-enumerate | Nothing |
-| Probe/UART selection | Present friendly choices | Choice derived from answer |
-| Linker selection | Rediscover artifacts | Intended configuration |
-| Target resolution | Retry exact detection | One target candidate |
-| Target support/pack staging | Recheck support | One materially different pack candidate |
-| Connection | Reconnect | Revised part-consistent target only |
-| Validation | Rerun failed optional checks | Requested optional fields |
-| Safety research | Reload Pack/CMSIS and evidence | Missing official-document facts |
-| Safety map | Rebuild/compare | No arbitrary ranges |
-| Commit | Retry atomic writes | Nothing |
-
-The tool never trusts old inventory as current fact or blindly resumes a previous hardware operation.
+Every setup and validation attempt writes immutable structured evidence under `.firm/setup/` or
+`.firm/validation/`. Reports are evidence, not live authority. Repair resumes the first unverified
+same-identity setup phase after current hardware preflight; it never turns a safety failure or a
+different MCU into an in-place profile rewrite.
 
 #### Research and Retry Rules
 
-The agent may propose only fields requested by the tool:
+The agent may submit only fields explicitly requested by a strict continuation schema. Target and
+pack candidates must be exact, official, part-consistent, materially different from recorded failed
+candidates, and deterministically validated. Research never authorizes execution, supplies allowed
+ranges, changes the authoritative MCU, or promotes unreviewed evidence.
 
-- Target research: pyocd_target only.
-
-- Pack research: one complete manifest candidate.
-
-- Validation research: requested test-read/silicon fields only.
-
-- Safety research: official-document facts needed to compare with server-loaded Pack/CMSIS data.
-
-The agent may not change the exact MCU part, invent linker partitions, relax prohibited regions, mark unknown memory writable, authorize hardware actions, persist state directly, or open the gate.
-
-Every candidate is staged and deterministically validated. Separate candidate hashes and retry budgets prevent identical failed proposals. Repeated prompts include prior failures.
-
-Locked targets, missing drivers, and vanished probes do not trigger research prompts when research cannot solve them.
-
-#### Setup, Safety, and Refresh Outcomes
-
-```text
-setup_completed
- setup_needs_user_input
- setup_research_required
- setup_blocked
- setup_unresolved
- setup_connection_failed
- setup_validation_failed
- setup_safety_incomplete
-
- safety_setup_completed
- safety_setup_needs_user_input
- safety_setup_research_required
- safety_setup_incomplete
- safety_setup_conflict
- safety_setup_blocked
-
- safety_refresh_completed
- refresh_scope_unclear
- safety_conflict
- safety_refresh_blocked
-```
-
-Each response includes an agent_prompt explaining how to communicate or proceed without exposing server JSON to the user. The report remains the structured source of truth.
+Locked targets, missing drivers, vanished probes, unsupported reviewed safety evidence, and physical
+ambiguity are reported as their actual blocked/user-choice states rather than mislabeled as open-ended
+research.
 
 #### Board Validation
 
-Board_validate is the repeatable Stage 0 board-health gate and is called separately for every assigned connection. It validates profile compatibility, not immutable device identity, so a compatible replacement may use an existing board_id. Success binds that connection to the profile’s name and ID for the session. Validation does not recreate Board YAML or rebuild the map.
+`board_validate` is a bounded, non-destructive live-identity and map-association gate for one assigned
+connection. It does not rebuild the map, inspect build artifacts, capture UART, assert firmware
+behavior, install packs, reset/halt, flash/erase, recover, or rewrite the profile.
 
-Default validation is safe and non-destructive:
+Validation:
 
-1. Load Board YAML and the matching safety map/fingerprints.
+1. Loads the schema-v2 logical profile.
+2. Resolves the intended stable probe identity from inventory and attachment hints.
+3. Opens or reuses a bounded non-destructive connection.
+4. Reads reviewed silicon identity and compares it with the profile.
+5. Loads the single stable map and proves its identity matches the profile.
+6. Creates a run-scoped live identity stamp and binds the canonical map digest separately.
+7. Releases temporary resources without silently resetting the MCU.
 
-2. Re-enumerate probes and UARTs.
+Call validation only when no current live proof exists, connection/probe identity changed, or hardware
+identity may have changed after explicit repair or destructive recovery. Do not call it merely
+because of build, flash, reset/halt, UART use, refresh, or bookkeeping.
 
-3. Resolve hardware through current inventory and the attachment cache.
+UART attachment readiness and optional console behavior belong to `get_setup_status` and planned
+serial actions. Projects that do not need UART are not blocked by UART readiness; console workflows
+can require the stronger `ready_for_uart_work` barrier.
 
-4. Confirm target support through built-in pyOCD or .firm/packs/manifest.yaml.
-
-5. Connect and verify live MCU identity.
-
-6. Perform configured safe test-memory and silicon checks.
-
-7. Open UART and optionally require expected_uart_substring within a bounded capture.
-
-8. Confirm the safety map is complete and internally consistent.
-
-9. Stamp the active connection/session with its assigned board_id, hardware result, and aggregate fingerprint, opening only that board’s gate.
-
-Validation writes:
-
-```text
-.firm/validation/<validation_id>/
-   validation_report.json
-   validation.log
-```
-
-| Result | Meaning |
-| :--- | :--- |
-| validation_passed | Checks passed; session gate opened |
-| validation_passed_uart_not_configured | Hardware passed; no expected UART behavior configured |
-| validation_needs_user_input | Physical selection ambiguous; agent asks conversationally |
-| validation_research_required | Requested validation metadata needs research |
-| validation_blocked | Locked target, missing backend, unavailable pack, or invalid safety state |
-| validation_failed | A configured check ran and failed |
-| validation_incomplete | Required profile/safety data absent |
-
-Ordinary validation does not install packs, flash firmware, or perform recovery. Those are explicit actions governed by their own plan rules.
+On MCU mismatch, preserve the established profile and map, report expected and observed identity,
+and ask the user what to do. Only an explicit user choice may enter a new-profile setup route.
 
 #### Acceptance Criteria
 
-- At the start of every MCP Server Live Run, the agent asks for unique names of all connected boards, or “no board”; the user handles no JSON or internal IDs.
-
-- The server enumerates connections separately, and the agent maps each name one-to-one to a profile and connection.
-
-- Board YAML stores unique board_id and display_name; the filename stem equals board_id.
-
-- Profiles are logical rather than immutable physical identities; compatible replacement hardware may reuse a profile after validation.
-
-- Session assignments, validation stamps, fingerprints, and gates are isolated per board and never apply to another connection.
-
-- User-input and research responses explicitly tell the agent not to expose JSON, continuation IDs, or internal fields; there is no separate research provider.
-
-- A matching display_name selects validation only; a missing profile-name match enters the Board_setup-plan flow.
-
-- One valid setup plan permits one Board_setup call and one Board_fix_setup call; completed setup relocks both and proceeds to Board_validate.
-
-- Exhausting the paired allowance requires a replacement plan: a new user prompt under one-time permission, none under full-session permission.
-
-- The gate is in-memory, closes on disconnect or the end of the MCP Server Live Run, and validation opens it only for the active connection and current fingerprint.
-
-- Every guarded write checks current-session hardware validation and configuration-fingerprint freshness; a relevant fingerprint change closes the affected gate and requires the applicable refresh or full safety-setup path.
-
-- Board_safety_refresh rebuilds only affected groups and can re-stamp an active validated session without reconnecting; unknown scope falls back to Board_safety_setup; a lost connection requires Board_validate after reconnection.
-
-- Part, target, geometry, major partition model, or schema changes require full safety setup.
-
-- Application and user bootloader firmware ranges come from linker/build artifacts; ROM bootloader, physical memory, and register regions require Pack/CMSIS plus official-document double verification; the exact MCU part remains authoritative.
-
-- Type-specific validation confirms request targets match the declared action category: application flash to application space, bootloader flash to bootloader space, RAM writes inside mapped RAM, register writes inside permitted windows; unknown memory is denied.
-
-- Security/provisioning regions remain unavailable to ordinary actions; target_unlock remains separate and governed by its own specification.
-
-- No research result or normal conversation authorizes a guarded action; no candidate is persisted without deterministic validation.
-
-- All project artifacts live under .firm/; failures, research exchanges, and fingerprint changes are structurally recorded.
-
-#### Verified and Pending Verification
-
-Verified from current repository context:
-
-- probe_type is a current BoardConfig runtime field used by Stage 0 output.
-
-- Removed per-board pack metadata did not control pack provisioning.
-
-- Target availability is based on pyocd_target and locally pinned manifest packs.
-
-- Probe/UART association may require manual confirmation when physical mapping is ambiguous.
-
-Pending implementation and hardware proof:
-
-- MCP setup, safety-refresh, and validation schemas.
-
-- Agent prompts that preserve the natural-language user boundary.
-
-- Resumable continuations and research-response validation.
-
-- mcu_part_number schema migration.
-
-- Target, pack, validation, and datasheet-research handoffs.
-
-- Pack/CMSIS versus datasheet comparison.
-
-- Linker/ELF partition extraction and source fingerprints.
-
-- Scoped safety refresh and in-memory session gate.
-
-- Setup plan-tool state machine and paired setup/fix allowances.
-
-- Attachment-cache persistence/matching and compatibility migration.
-
-- Live-board testing across MCU and probe families.
-
-#### Tool Boundaries
-
-- Board_setup-plan: permission-locked plan gate for one connection/profile; each valid plan permits one setup call and one fix call.
-
-- Board_setup: after a valid plan, establish first-time core setup and a complete safety map; on success, proceed to validation.
-
-- Board_fix_setup: use the paired repair call after setup failure, or a newly planned allowance for later repair attempts, without repeating verified work.
-
-- Board_safety_setup: fully rebuild the map after missing or anchor-changing inputs.
-
-- Board_safety_refresh: cheaply rebuild map groups affected by configuration drift and re-anchor an active validated session.
-
-- Board_validate: verify one assigned connection against its logical profile, bind its session name/ID, and open only that board’s gate for the current fingerprint.
-
-- target_unlock: independent plan-guarded action; validate again after it succeeds.
-
-This makes Stage 0 a repeatable hardware preflight rather than first-run-only onboarding, while allowing the firmware rebuild loop to update linker-derived partitions cheaply within one active session.
-
-## Server B Current Action List
-
-Server B L1 acts as guardrails for the actions in Server B L2.
-
-### Current Server B Layer 2 Actions
-
-Parameters without defaults are required. Every tool returns a string.
-
-#### Session and board
-
-1. `connect(unique_id: string | null = null, target: string | null = null, board_id: string | null = null, board_config: string | null = null)`
-
-   Opens a persistent debug session.
-
-   - `unique_id`: Full or partial probe ID. Falls back to `PYOCD_PROBE_UID`.
-   - `target`: pyOCD target override, such as `nrf52833`. Falls back to the board config, `PYOCD_TARGET`, or auto-detection.
-   - `board_id`: Board definition from `boards/\<board_id\>.yaml`. Falls back to `PYOCD_BOARD_ID`.
-   - `board_config`: External board-config path. Falls back to `PYOCD_BOARD_CONFIG`.
-
-2. `disconnect()`
-
-   Closes the active session and releases the probe.
-
-3. `get_board_info()`
-
-   Returns the active board’s target, MCU/probe family, recovery policy, silicon ID expectation, UART baud rate, and test-read address (`test_read_address`).
-
-#### Core execution
-
-4. `get_state()`
-
-   Returns the core state, such as `HALTED`, `RUNNING`, or `RESET`.
-
-5. `halt()`
-
-   Halts the processor core.
-
-6. `resume()`
-
-   Resumes processor execution.
-
-7. `step()`
-
-   Executes one instruction and returns the new program counter.
-
-8. `reset(halt_after: boolean = true)`
-
-   Resets the target.
-
-   - `halt_after`: `true` performs reset-and-halt; `false` resets and resumes execution.
-
-#### Registers and memory
-
-9. `read_core_register(name: string)`
-
-   Reads a register such as `pc`, `sp`, `r0`, or `xpsr`.
-
-   - `name`: Core register name.
-
-10. `write_core_register(name: string, value: string)`
-
-    Writes a core register.
-
-    - `name`: Core register name.
-    - `value`: Hexadecimal (`0x...`) or decimal value.
-
-11. `read_memory(address: string, word_size: integer = 32)`
-
-    Reads one value from memory.
-
-    - `address`: Hexadecimal or decimal address.
-    - `word_size`: Transfer width; runtime accepts `8`, `16`, or `32`.
-
-12. `read_memory_block(address: string, length: integer)`
-
-    Reads a byte block and returns space-separated hexadecimal bytes.
-
-    - `address`: Starting address in hexadecimal or decimal.
-    - `length`: Number of bytes; must be greater than zero.
-
-13. `read_symbol_u32(elf_path: string, symbol_name: string)`
-
-    Resolves a symbol from an ELF file and reads its 32-bit value from target memory.
-
-    - `elf_path`: Path to the ELF binary.
-    - `symbol_name`: Symbol to resolve.
-
-14. `write_memory(address: string, value: string, word_size: integer = 32)`
-
-    Writes one value to memory.
-
-    - `address`: Hexadecimal or decimal address.
-    - `value`: Hexadecimal or decimal value.
-    - `word_size`: Transfer width; runtime accepts `8`, `16`, or `32`.
-
-#### Breakpoints
-
-15. `set_breakpoint(address: string)`
-
-    Sets a hardware or software breakpoint.
-
-    - `address`: Hexadecimal or decimal address.
-
-16. `remove_breakpoint(address: string)`
-
-    Removes a breakpoint.
-
-    - `address`: Hexadecimal or decimal address.
-
-#### Firmware and UART
-
-17. `flash_firmware(path: string | null = null, halt_after_reset: boolean = false)`
-
-    Flashes firmware through pyOCD.
-
-    - `path`: Explicit artifact path. If omitted, uses the connected board’s configured default artifact.
-    - `halt_after_reset`: Whether to leave the target halted after flashing.
-
-18. `read_serial(expected_text: string | null = null, read_seconds: number = 3.0, baudrate: integer | null = null, port: string | null = null, reset_on_open: boolean = false)`
-
-    Captures bounded UART output.
-
-    - `expected_text`: Optional text to look for. With `null`, any output counts as a match.
-    - `read_seconds`: Capture duration; must be greater than zero.
-    - `baudrate`: UART baud rate; defaults to the board configuration and must be positive.
-    - `port`: Explicit serial-port override.
-    - `reset_on_open`: Reset the target after opening UART to capture early boot output.
-
-19. `write_serial(text: string, baudrate: integer | null = null, port: string | null = null, append_newline: boolean = false, timeout_seconds: number = 1.0)`
-
-    Writes bounded UTF-8 text to the board UART.
-
-    - `text`: Required text to send.
-    - `baudrate`: UART baud rate; defaults to the board configuration and must be positive.
-    - `port`: Explicit serial-port override.
-    - `append_newline`: Append a newline to the transmitted text.
-    - `timeout_seconds`: Write timeout; must be greater than zero.
-
-#### Recovery
-
-20. `unlock_recover(confirm: boolean = false)`
-
-    Runs the board-specific unlock/recovery operation.
-
-    - `confirm`: Must be `true` to authorize the destructive operation. Unsupported board recovery modes fail explicitly.
-
-The extraction manifest records `_brain_sync_timeouts` as intentionally excluded, so it is **not** available in this BYO server. The implementation is in `BYO-Server/src/pyocd_debug_mcp/server.py` (approximately lines 390–1210).
-
-## Server B Changes Proposed
-
-### Locked Targets/Recovery
-
-Any supported unlock or recovery operation must be planned through the separate `target_unlock-plan` MCP tool and performed through the underlying `target_unlock` MCP tool.
-
-`target_unlock-plan` is limited to documented vendor recovery operations. It does not permit arbitrary writes to security or provisioning registers.
-
-The tool must first be called with every parameter set to `NULL`. It must not accept a populated plan until this initial call has occurred.
-
-The initial call returns instructions to call target_unlock-plan again with:
-board_id
-hypothesis
-strategy
-hypothesis_made
-strategy_evaluated
-expected_fail_return
-expected_success_return
-max_calls = 1
-max_calls_buffer = 0
-additional target-unlock parameters
-user_permission
-
-target_unlock-plan must reject plans with call-budget values other than:
-max_calls = 1
-max_calls_buffer = 0
-
-When the recovery mechanism is unknown, `target_unlock-plan` may return a research prompt asking the agent to identify the documented vendor recovery procedure. The returned candidate must describe a recovery mechanism supported by the server’s underlying probe or target tooling.
-
-Research does not authorize execution.
-Before any destructive action, the tool returns a permission request containing:
-
-* Exact live MCU and board identity.
-* Proposed recovery mechanism.
-* Whether the operation performs a mass erase.
-* Every known memory range or partition that will be erased.
-* Applicable erase banks or sectors.
-* Whether all nonvolatile memory will be erased.
-* Expected loss of application, bootloader, configuration, or user data.
-* Plan identifier.
-
-Example:
-
-```json
-{
-  "status": "permission_required",
-  "plan_id": "unlock_...",
-  "operation": "mass_erase",
-  "board_id": "my_board",
-  "mcu_part_number": "STM32L476RGT6",
-  "erase_ranges": [
-    {
-      "start": "0x08000000",
-      "end": "0x080FFFFF",
-      "description": "Entire internal flash"
-    }
-  ],
-  "warning": "This operation will erase the bootloader and application."
-}
-```
-
-If the device exposes only a full-chip erase primitive, the request must explicitly state that the entire addressable nonvolatile memory will be erased and list every known affected region.
-
-Mass erase requires fresh user permission every time.
-
-After permission is granted, the agent calls `target_unlock-plan` again with the complete unchanged plan and one-time user permission. The tool then closes any previous plan, activates the approved plan, changes the tool list to include the real `target_unlock`, and returns an instruction redirecting the agent to call it.
-
-Approval must be:
-
-* Specific to one plan.
-* Single-use.
-* Short-lived.
-* Bound to the target identity and erase ranges.
-* Invalidated if the target, probe, safety map, or plan changes.
-
-Prior approval, general workspace permission, conversational assent, agent recommendation, or approval for another board must not be reused.
-
-**Multi-board Configuring:**
-Each action should have the target board as a parameter, its id rendered from the board id in the board yaml - for example, if I want to read out of board 1, I don’t want to read out of board 2 on accident. This way, the agent can work on multiple boards.
-
-**Proposed Changes to memory access/writing for L1 safety:**
-
-1. Flash-Application
-   1. **Replaces flash_firmware**
-2. Flash-Bootloader
-   1. **Replaces flash_firmware**
-3. Read/Write-Register (for peripheral/config registers)
-   1. **Replaces write-memory**
-4. Memory_Access Tools:
-   1. **Replaces write-memory, read memory,**
-   2. Find_symbol
-   3. Write (takes Symbol or Address)
-   4. Read (takes Symbol or Address or Block)
-   5. Prefers Symbol by default, needs specific parameter override to write directly to address; limited to only RAM access
-5. Read/Write-CPU-Register (normal)
-   1. **Replace Read/Write core register**
-   2. **Specifically prohibits security/provisioning/non-volatile registers**
-6. Read/Write-Execution-State
-   1. **Replace Read/Write core-register**
-7. Reset-Device Tools:
-   1. **Replaces specific unlock recover, and reset**
-   2. reset_and_run
-   3. reset_and_halt
-   4. Connect_under_reset
-   5. Target_unlock
-      1. None of b,c,d unlock locked targets; they merely reset and start executing from the reset vector. They only reset the chip or perform a safe reset operation. If something needs to be wiped that’s locked, target_unlock is used instead.
-8. Wait (ms)
-9. Action-Batch
-   1. Batch call of other tools all executed back to back in the order they are listed
-
-**In summary:**
-
-Here is the full revision of desired changes:
-
-### Revised Actions
-
-#### Notes
-
-Persistent locks reset every MCP Server Live Run. When the server dies or restarts, all active plans, user-permission locks, and temporary tool unlocks reset.
-
-User permission may be:
-
-```text
-user_permission = "one-time"
-user_permission = "full-session"
-```
-
-* `one-time` applies to one underlying tool call.
-* `full-session` applies to that permission-locked tool and `board_id` for the current MCP Server Live Run.
-
-User permission is a soft gate: the client agent must obtain legitimate user approval, but Server B cannot hard-enforce it without Claude Code special elicitations, which are buggy on Codex.
-
-Every plan and hardware action requires `board_id`. The initial all-`NULL` plan-details call is the only exception.
-
-L1 plan tools provide reasoning scaffolding. L2 independently enforces hardware safety.
-
-Hidden tools must also be physically locked by their server handlers. Tool-list visibility is not authorization.
-
-#### L1 Plan Tools
-
-L1 reasoning tools use the `*-plan` suffix and remain visible while their underlying hardware actions are hidden.
-
-Examples:
-
-read_serial-plan
-write_memory-plan
-set_execution_state-plan
-flash_bootloader-plan
-
-Plans are immutable. Submitting another valid plan for the same underlying tool and `board_id` closes the previous plan and atomically replaces it.
-
-##### Initial `NULL` Call
-
-Every `*-plan` description must instruct the model to call the plan tool with every parameter set to `NULL` before submitting a plan.
-
-The server must reject any populated plan call until the all-`NULL` call has occurred for that plan tool during the current MCP Server Live Run.
-
-The all-`NULL` response must explain:
-
-* the purpose of the underlying tool;
-* the required plan fields;
-* what each field should contain;
-* the additional underlying-tool parameters;
-* whether the plan uses fixed `1,0` or permits multiple calls;
-* any user-permission requirement;
-* any additional instructions for the underlying tool.
-
-The response instructs the model to call the plan tool again with:
-
-```text
-board_id
-hypothesis
-strategy
-hypothesis_made
-strategy_evaluated
-expected_fail_return
-expected_success_return
-max_calls
-max_calls_buffer
-additional underlying-tool parameters
-```
-
-`hypothesis_made` and `strategy_evaluated` must be `true`, and the corresponding text fields must contain the actual reasoning.
-
-##### Creating or Replacing a Plan
-
-A populated `*-plan` call must include correctly formatted values for all required fields.
-
-When valid, the server must:
-
-1. Close any existing plan for the same underlying tool and `board_id`.
-2. Create the new plan.
-3. Bind it to the underlying tool, exact action parameters, and `board_id`.
-4. Physically unlock the underlying handler.
-5. Add the underlying tool to the tool list.
-6. Return instructions redirecting the model to call the underlying tool.
-
-The response should include:
-
-```text
-plan_id
-underlying_tool
-total_calls
-instructions
-```
-
-Changing any plan field or underlying action parameter requires a complete new call to the corresponding `*-plan` tool. The new plan replaces the old plan; plans are never edited in place.
-
-##### Plan Call Budgets
-
-Every plan contains:
-
-```text
-max_calls
-max_calls_buffer
-```
-
-The total available calls are:
-
-```text
-total_calls = max_calls + max_calls_buffer
-```
-
-`max_calls` represents expected calls. `max_calls_buffer` provides leeway for calls that execute but return empty, mistimed, inconclusive, timed-out, or otherwise unhelpful results.
-
-The server internally tracks the remaining calls.
-
-Each plan tool’s all-`NULL` response must state whether its underlying action is:
-
-* fixed to `max_calls = 1` and `max_calls_buffer = 0`; or
-* permitted to request multiple calls and buffer calls.
-
-For fixed `1,0` tools, the server must reject any plan containing different values.
-
-Every accepted underlying call consumes one call, including calls that fail, time out, are cancelled after beginning, or return no useful result. Requests rejected before execution do not consume a call.
-
-##### Fixed `1,0` Actions
-
-* `Board_setup`
-* `Board_fix_setup`
-* `write_cpu_register`
-* `set_execution_state`
-* `write_memory`
-* `Set_breakpoint`
-* `Flash_application`
-* `flash_bootloader`
-* `register_write`
-* `target_unlock`
-
-##### Multiple-Call Actions
-
-* `Connect_override`
-* `read_memory_address`
-* `reset_and_halt`
-* `connect_under_reset`
-* `read_serial`
-* `write_serial`
-
-All calls within a plan must use the exact parameters declared in that plan. Different parameters require a replacement plan.
-
-##### Permission-Locked Plan Tools
-
-Permission-locked tools require both an active L1 plan and valid user permission.
-
-They include:
-
-* `Board_setup-plan`
-* `set_execution_state-plan`
-* `flash_bootloader-plan`
-* `target_unlock-plan` when recovery is destructive
-
-These tools follow the same all-`NULL`-then-populated flow.
-
-After the initial all-`NULL` call, the populated plan call must include:
-
-user_permission
-
-When valid permission and plan fields are supplied, the plan tool unlocks the real underlying tool and returns instructions redirecting the model to call it.
-
-##### One-Time Permission
-
-One-time permission requires:
-
-max_calls = 1
-max_calls_buffer = 0
-
-The permission is consumed by the one accepted underlying call.
-
-Exception — paired setup actions: a `Board_setup-plan` authorizes two paired fixed-`1,0` actions (one `Board_setup` and one `Board_fix_setup`) under a single grant, because they are two phases of one setup workflow. Under one-time permission this means one-time for *each* of the two paired actions; each is still consumed exactly once, and the `Board_fix_setup` call stays available for the first repair attempt without re-prompting the user. Any further setup or repair attempt requires a replacement plan, and under one-time permission that replacement requires a fresh user prompt.
-
-##### Full-Session Permission
-
-After full-session permission is granted for a tool and `board_id`, later all-`NULL` responses must state that permission is already active and that `user_permission` may be left `NULL`.
-
-A later populated plan with `user_permission = NULL` succeeds when all other fields are correct.
-
-Without active full-session permission, a missing, `NULL`, or invalid permission value causes the plan call to return instructions requesting valid permission and corrected fields.
-
-Full-session permission removes only the repeated permission request. Every underlying use still requires an active L1 plan.
-
-##### Server Enforcement
-
-Before executing an L1-guarded action, its server handler must verify:
-
-* an active plan exists;
-* the plan authorizes that exact tool;
-* the supplied `board_id` matches the plan;
-* the action parameters exactly match the plan;
-* the plan belongs to the current MCP Server Live Run;
-* the plan has remaining calls;
-* the board and session remain valid;
-* any required user permission is active;
-* all L2 safety checks pass.
-
-The remaining-call count must be decremented atomically when execution begins.
-
-When a plan is replaced, exhausted, invalidated, or the server ends, the handler must be physically relocked. The tool should also be removed from the tool list when no other active plan exposes it.
-
-##### Always Available
-
-These tools should remain visible:
-
-* `Board_setup-plan`
-* `Board_safety_setup`
-* `Board_safety_refresh`
-* `Board_validate`
-* `Connect`
-* `Disconnect`
-* `Halt`
-* `Step`
-* `get_board_info`
-* `get_state`
-* `resume`
-* `read_cpu_register`
-* `read_execution_state`
-* `find_symbol`
-* `read_memory_symbol`
-* `remove_breakpoint`
-* `Reset_and_run`
-* `Action_batch`
-* `Load_setup_tool`
-* `Connect_override-plan`
-* `write_cpu_register-plan`
-* `set_execution_state-plan`
-* `read_memory_address-plan`
-* `write_memory-plan`
-* `Set_breakpoint-plan`
-* `Flash_application-plan`
-* `flash_bootloader-plan`
-* `register_write-plan`
-* `reset_and_halt-plan`
-* `connect_under_reset-plan`
-* `target_unlock-plan`
-* `read_serial-plan`
-* `write_serial-plan`
-
-**Setup Tools**
-
-`Board_setup-plan`, `Board_safety_setup`, `Board_safety_refresh`, and `Board_validate` require:
-
-Load_setup_tool(board_id, tool)
-
-before use.
-
-`Load_setup_tool` returns the detailed setup workflow and unlocks the selected setup tool for that MCP Server Live Run.
-
-`Board_setup-plan` follows the permission-locked flow and guards both `Board_setup` and `Board_fix_setup`. One valid setup plan permits each action once. When setup completes, both actions are relocked behind a new plan.
-
-#### `Action_batch`
-
-All batch children must use the same `board_id`.
-
-A guarded child action requires an active plan and consumes one call from that plan. The batch handler must perform the same plan, permission, parameter, and L2 checks as a direct call.
-
-Nested and multi-board batches must be rejected.
+- Startup uses familiar board names or the literal `no board` sentinel; users never handle JSON or internal IDs.
+- `setup_overview` supplies exact server-owned routing and one-to-one board/connection assignments.
+- Profiles are logical and portable; live assignments, stamps, gates, plans, and permissions are run-scoped.
+- `memory_map.yaml` is the only persisted safety-authority file below each board safety directory.
+- Display names, UART settings, timestamps, report IDs, artifact paths, and ordinary firmware bytes do not stale the stable map.
+- `board_safety_refresh(board_id)` rebuilds one complete map and never accepts caller ranges or build artifacts.
+- Missing, malformed, old-schema, or inconsistent maps recover through refresh, not setup.
+- Refresh updates a map stamp only when same-connection live identity remains valid; it never creates live proof.
+- Validation performs bounded identity/map proof only and has the documented trigger categories.
+- MCU mismatch cannot rewrite an established profile; adopting different silicon creates a new logical profile after explicit user choice and authorization.
+- Normal `connect` is profile-only; manual overrides are plan-guarded, run-scoped, and non-persistent.
+- Every flash rehashes its plan-bound artifact and checks target, segments, entry/vector, erase sectors, partition, prohibited, ROM, and unknown space before mutation.
+- Changed bytes or failed containment produce zero backend erase/write calls and consume no pre-start budget or permission.
+- ELF provides executable/entry/vector evidence; a selected HEX requires a matching ELF companion.
+- Breakpoints require current ELF executable-section evidence.
+- Build artifacts and provenance bundles remain outside `.firm`; collection grants no memory authority or gate state.
+- Exact plan envelopes reject unknown/flattened fields and bind nested action parameters immutably.
+- Static clients use only the exact server-generated one-child `action_batch` fallback from an accepted plan.
+- Stateful UART workflows use bounded one-open `serial_exchange` when protocol state must survive.
+- Successful ordinary actions preserve documented MCU state; reset-and-run is explicit.
+- Destructive recovery discloses exact live identity and affected ranges and requires fresh one-time permission.
+
+#### Contract and Verification Status
+
+Exact MCP schemas are versioned in `tests/contracts/product-server-tools.json`; the human plan
+contract is generated from `guardrails/plan_defs.py`. Historical extraction contracts and old action
+lists are evidence only.
+
+A behavior is not implemented merely because a spec, ADR, plan, or completion record says so. Before
+release, the implementation must pass focused suites, the full locked test suite, Ruff, Pyright,
+package build/import, bounded stdio startup/shutdown, contract synchronization, and an independent
+agent-facing workflow check. Bench claims remain separately labeled.
+
+## Canonical Server B Action Surface
+
+The active product contract controls exact schemas.
+
+### Always-visible ordinary actions
+
+`connect`, `disconnect`, `get_board_info`, `get_state`, `halt`, `resume`, `step`, `reset_and_run`,
+`read_cpu_register`, `read_execution_state`, `find_symbol`, `read_memory_symbol`,
+`remove_breakpoint`, `wait`, and `action_batch`.
+
+### Always-visible workflow and evidence actions
+
+`initialization_handshake`, `setup_overview`, `load_setup_tool`, `continue_setup`,
+`board_safety_refresh`, `board_validate`, `get_setup_status`, and `collect_build_artifacts`.
+
+### Visible plan tools and hidden underlying actions
+
+- `board_setup-plan` -> `board_setup` and paired `board_fix_setup`
+- `connect_override-plan` -> `connect_override`
+- `write_cpu_register-plan` -> `write_cpu_register`
+- `set_execution_state-plan` -> `set_execution_state`
+- `read_memory_address-plan` -> `read_memory_address`
+- `write_memory-plan` -> `write_memory`
+- `set_breakpoint-plan` -> `set_breakpoint`
+- `flash_application-plan` -> `flash_application`
+- `flash_bootloader-plan` -> `flash_bootloader`
+- `register_write-plan` -> `register_write`
+- `reset_and_halt-plan` -> `reset_and_halt`
+- `connect_under_reset-plan` -> `connect_under_reset`
+- `target_unlock-plan` -> `target_unlock`
+- `read_serial-plan` -> `read_serial`
+- `write_serial-plan` -> `write_serial`
+- `serial_exchange-plan` -> `serial_exchange`
+
+Legacy `flash_firmware`, unrestricted core/memory writes, public connection overrides, public
+`board_safety_setup`, and `unlock_recover(confirm=true)` are not canonical actions.
+
+## Guarded Action and Recovery Contract
+
+### Target unlock
+
+`target_unlock-plan` is limited to documented backend/vendor recovery mechanisms. It never permits
+arbitrary security/provisioning writes. Destructive recovery uses fixed `1,0`, exact live board/MCU
+identity, the mechanism, every known erased range/bank/sector, whether all nonvolatile memory is
+lost, and expected loss of application, bootloader, configuration, and user data.
+
+Research does not authorize recovery. Mass erase always requires fresh, plan-specific, single-use,
+short-lived one-time permission bound to target, probe, map, mechanism, and erase ranges. Prior or
+full-session approval cannot be reused. Recovery clears live identity and the gate; successful
+recovery must be followed by `board_validate`.
+
+### L1 plan envelope
+
+Every plan begins with the complete NULL-envelope call. The populated call contains the exact
+reasoning fields, budgets, nested `action_parameters`, and `user_permission` only when required.
+Unknown top-level fields, flattened action fields, unknown nested fields, and populated permission on
+non-permission plans are rejected.
+
+Plans are immutable and scoped to exact action, parameters, board, Server Run, gate/session state,
+budget, and permission. Replacing a plan atomically closes the old one. Fixed actions require
+`max_calls=1` and `max_calls_buffer=0`; flexible diagnostic actions may request bounded multiple
+calls. Accepted calls consume budget atomically at execution start; pre-start refusals do not.
+
+One accepted `board_setup-plan` grants one `board_setup` plus its paired first `board_fix_setup`
+attempt. One-time permission applies once to each phase of that one workflow. Further attempts need a
+replacement plan and, under one-time permission, a fresh user prompt.
+
+Full-session permission only suppresses repeated user prompting for that permission-locked action and
+board during the current Server Run. Every use still needs a new valid plan. Destructive recovery is
+never eligible for reusable full-session permission.
+
+### Accepted-plan execution transport
+
+An accepted plan returns `plan_id`, action, total calls, exact `preferred_call`, exact one-child
+`stable_client_fallback`, conditional paired setup fallbacks, and instructions. Dynamic clients use
+the preferred direct action after it becomes visible. Static clients may use only the unchanged
+fallback returned by that accepted plan. It carries no permission and passes the identical child
+dispatch checks. This is the sole exception to the no-unlisted-call rule.
+
+Before execution the server verifies the active immutable plan, exact action/board/parameters,
+remaining budget, Server Run, board/connection and gate state, required permission, artifact digest
+when applicable, and all L2 safety rules. Replacement, exhaustion, invalidation, disconnect, or run
+closure physically relocks the handler.
 
 #### Always L1-Guarded
 
-Only the corresponding `*-plan` tool is initially available. The real action becomes visible and server-unlocked after a valid plan.
+Only the corresponding plan tool is initially visible. The underlying action remains physically
+locked until an accepted plan authorizes the exact board and parameters.
 
-##### Setup
+- Setup: `board_setup`, paired `board_fix_setup`.
+- Connection: `connect_override`; manual probe/target/external-config values are run-scoped.
+- CPU/execution: `write_cpu_register`, `set_execution_state`; execution-state writes require permission.
+- Memory/breakpoints: `read_memory_address`, `write_memory`, `set_breakpoint`.
+- Firmware/registers: `flash_application`, `flash_bootloader`, `register_write`; bootloader flash requires permission.
+- Reset/recovery: `reset_and_halt`, `connect_under_reset`, `target_unlock`; destructive recovery requires fresh one-time permission.
+- UART: `read_serial`, `write_serial`, `serial_exchange`.
 
-* `Board_setup`
-* `Board_fix_setup`
-
-##### Connection
-
-* `Connect_override`
-
-Allows manual probe `unique_id`, pyOCD target, board definition, and external board configuration.
-
-##### CPU and Execution
-
-* `write_cpu_register`
-* `set_execution_state`
-
-`set_execution_state` requires user permission and is used to write PC, SP, LR, xPSR, CONTROL, PRIMASK, BASEPRI, FAULTMASK, and related execution-state registers.
-
-##### Memory and Breakpoints
-
-* `read_memory_address`
-* `write_memory`
-* `Set_breakpoint`
-
-`remove_breakpoint` remains always available.
-
-##### Firmware and Registers
-
-* `Flash_application`
-* `flash_bootloader`
-* `register_write`
-
-`flash_bootloader` requires user permission.
-
-##### Reset and Recovery
-
-* `reset_and_halt`
-* `connect_under_reset`
-* `target_unlock`
-
-Destructive recovery requires user permission.
-
-##### UART
-
-* `read_serial`
-* `write_serial`
+`remove_breakpoint` remains always available. Reset actions do not unlock a protected target.
 
 ## Initialization Handshake
 
-Initialization Handshake - description that says to call it when the agent first connects to the MCP server. Its a prompt return that describes what the agent should do:
+`initialization_handshake` is called first. It returns the current Server Run identity, the bounded
+visible tool index and descriptions, the two-call plan protocol, static-client fallback rule,
+setup-first routing, local-first dependency guidance, native-build/artifact workflow, and natural
+language user boundary.
 
-1. Setup
-   1. Ask the user for the board_names of the connected boards, or say “no board” if no board is connected
-   2. If setup was completed in a prior session for that board_name, use board_validate to unlock the write gate.
-   3. Load the appropriate setup tool (Board_setup-plan (user_permission=) [loaded details should detail both setup and fix setup, as well as explicit \*-plan call for user permission], Board_safety_setup, Board_safety_refresh, Board_validate) before calling it.
-2. Prompt injection to tell agent what the context and instructions to operate the server are.
-   1. Prompt Injection:
-      1. Index of the tools available (tools/list) that excludes the hidden ones, as well as what \*-plan means
-      2. Instruction to use \*-plan for tools that are hidden - the plan will provide the instructions
+The agent then:
+
+1. Asks for one unique familiar name per connected board, or the literal `no board` sentinel.
+2. Calls `setup_overview` with those names; the server supplies profile/connection routes and IDs.
+3. For an existing profile, loads and calls `board_validate` only when live identity proof is needed.
+4. For an unknown profile, initializes `board_setup-plan`, asks for required setup permission, and
+   follows the exact new-profile route.
+5. Uses `board_safety_refresh` only when the server reports a stable-map problem, never merely after a build.
+6. Uses profile-only `connect`; exceptional manual overrides require `connect_override-plan`.
+7. Builds with the project's native validated CLI/IDE, optionally calls `collect_build_artifacts`,
+   and proceeds to the applicable flash plan.
 
 #### Good example injection:
-A good injection for initialization handshake:
-“This server intentionally does not show every hardware-control tool when it starts.
 
-Use the currently visible tool list as authoritative. Do not guess, request, or call a tool that is not currently listed.
-
-Start by asking the user, in normal conversation, which boards are connected. Ask for a unique familiar name for each board, or “no board.” Never ask the user for JSON, board IDs, connection IDs, or permission values. 
-
-If no board is connected, do not begin board setup, validation, or hardware actions.
-
-For each named board, follow the setup or validation instructions returned by the visible server tools. Existing board profiles must be validated; unknown boards must be set up; incomplete profiles must be repaired. If the server reports an ambiguous physical-board choice, present its friendly choices to the user conversationally.
-
-For each user-named board:
-
-- If its name matches one known board profile, treat it as an existing board. Assign the matching physical connection, call `Load_setup_tool` for `Board_validate`, then call `Board_validate`. Do not run first-time setup merely because this is a new server run.
-
-- If the known profile is incomplete or previously failed setup, treat it as a repair case. Load the setup instructions, then follow the returned repair flow.
-
-- If its name does not match a known board profile, treat it as a new board. Load the setup instructions, begin `Board_setup-plan`, obtain the required user approval conversationally, then follow the returned setup flow. Validate the board after setup completes.
-
-- If the physical connection or profile match is ambiguous, ask the user using only the server-provided friendly choices. Do not silently choose, rename, or rewrite a profile.
-
-Some visible tools end in `-plan`. They are preparation tools for a currently unavailable action. When you need one, first call the *-plan with every parameter set to NULL. Follow the returned instructions exactly. If it succeeds, it will name the next tool to call and make that tool available.
-
-Do not treat normal conversation as permission. If a preparation tool asks for user approval, ask the user clearly, then pass the resulting one-time or full-session approval only as instructed by that tool.
-
-Keep every board separate. Never reuse another board’s validation, approval, plan, or hardware result. When a board disconnects or this server run ends, repeat the applicable setup and validation flow before using guarded actions again.”
+> This server intentionally hides some hardware-control tools at startup. Treat the current visible
+> tool list as authoritative. Do not invent hidden calls. A visible `*-plan` is a preparation tool:
+> first send its complete NULL envelope, then submit only the exact populated envelope and nested
+> `action_parameters` it describes.
+>
+> After an accepted plan, prefer the exact returned direct call. If this client keeps static callable
+> bindings and the action is unavailable, use only the unchanged one-child `action_batch` fallback
+> returned by that accepted plan. Never invent or edit a hidden child; it still passes every normal
+> authorization and safety check.
+>
+> Ask the user in ordinary conversation for one unique familiar name for each connected board, or
+> `no board`. Never ask for JSON, board IDs, connection IDs, or permission enums. Call
+> `setup_overview` with the familiar names and copy its server-generated routing values into later
+> MCP calls. Existing profiles validate when live proof is absent; unknown profiles use the
+> authorized setup route; incomplete same-identity setup uses the returned repair route.
+>
+> Normal connection is profile-only. Manual probe, target, or external-config values require the
+> guarded override plan and never rewrite a profile. A live MCU mismatch is reported to the user and
+> never silently adopted.
+>
+> Build with the native validated project workflow. Optionally normalize explicit outputs with
+> `collect_build_artifacts`; collection is provenance only. An ordinary rebuild does not require
+> safety refresh. The applicable flash plan binds the selected artifact, and the server rechecks its
+> bytes and complete containment immediately before any erase or write.
+>
+> Ordinary conversation is not permission. Ask clearly when a plan requires approval and pass only
+> the allowed structured permission value. Keep every board separate, and repeat validation after
+> restart, disconnect/reconnect, connection identity change, or destructive recovery.

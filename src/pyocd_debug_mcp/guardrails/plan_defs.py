@@ -71,6 +71,8 @@ class PlanDefinition:
     paired_actions: tuple[str, ...] = ()
     max_plan_cycles_per_board: int | None = None
     action_validator: Callable[[Mapping[str, object]], str | None] | None = None
+    artifact_binding_field: str | None = None
+    artifact_binding_suffixes: tuple[str, ...] = ()
 
     @property
     def common_fields(self) -> tuple[FieldDefinition, ...]:
@@ -322,12 +324,22 @@ _DEFINITIONS = (
         "set_breakpoint",
         "set_breakpoint-plan",
         "Set a breakpoint at one mapped executable symbol or address.",
-        (_field("symbol_or_address", FieldType.TEXT_OR_INTEGER, "Exact symbol or address."),),
+        (
+            _field("symbol_or_address", FieldType.TEXT_OR_INTEGER, "Exact symbol or address."),
+            _field(
+                "elf_artifact",
+                FieldType.TEXT,
+                "Current local ELF whose executable sections contain the breakpoint.",
+            ),
+        ),
         BudgetMode.FIXED,
         PermissionMode.NONE,
         SafetyMode.FRESH_WRITE,
         30.0,
-        "The resolved location must be executable and supported by the connected core.",
+        "The resolved location must be in an executable section of the plan-bound current ELF and "
+        "supported by the connected core.",
+        artifact_binding_field="elf_artifact",
+        artifact_binding_suffixes=(".elf",),
     ),
     PlanDefinition(
         "flash_application",
@@ -340,6 +352,8 @@ _DEFINITIONS = (
         120.0,
         "Load addresses come only from the artifact; no caller-supplied address or allowed range "
         "is accepted.",
+        artifact_binding_field="artifact",
+        artifact_binding_suffixes=(".elf", ".hex"),
     ),
     PlanDefinition(
         "flash_bootloader",
@@ -352,6 +366,8 @@ _DEFINITIONS = (
         120.0,
         "Load addresses come only from the artifact. Permission is partition-specific and never "
         "authorizes application or prohibited ranges.",
+        artifact_binding_field="artifact",
+        artifact_binding_suffixes=(".elf", ".hex"),
     ),
     PlanDefinition(
         "register_write",
@@ -566,7 +582,7 @@ _UART_PROTOCOL = (
     "such as [TRC-01], and what it proves; "
     "(3) treat captured tags as hardware observations and reconstruct what actually ran, not "
     "what the code should have done; (4) budget multiple captures and remember that changed "
-    "instrumentation requires rebuild, board_safety_refresh after relinking, and reflash; "
+    "instrumentation requires rebuild, artifact collection, a replacement flash plan, and reflash; "
     "(5) at task completion remove every tracked print, grep for the tags until there are zero "
     "hits, rebuild and flash clean firmware, then delete or clear the tracking file."
 )
@@ -728,7 +744,7 @@ _GUIDANCE: Final = MappingProxyType(
             "Use to change one variable for a bounded hypothesis test. Prefer a symbol. A raw address "
             "requires allow_address_fallback=true plus a concrete reason and is RAM-only. Do not use "
             "this for peripheral registers or flash.",
-            "The server verifies a validated session, open gate, fingerprint freshness, exact plan, "
+            "The server verifies a validated session, open gate, current safety-map stamp, exact plan, "
             "and full mapped-RAM containment. A raw address without the flag is rejected with 'Try a "
             "symbol first.' Prohibited and unknown regions are denied.",
             "A wrong memory write can crash the application; recover by reset or reflash.",
@@ -753,8 +769,8 @@ _GUIDANCE: Final = MappingProxyType(
             "prints failed or cannot work—for example before UART initialization, timing perturbation, "
             "no UART path, or instruction-level inspection after logs localized the fault. "
             "remove_breakpoint is always available and needs no plan.",
-            "The server resolves the symbol/address and verifies a mapped executable region supported "
-            "by the target breakpoint mechanism.",
+            "The server binds the current ELF when this plan is accepted, resolves the symbol/address, "
+            "and verifies an executable ELF section supported by the target breakpoint mechanism.",
             "Breakpoint resources are finite, and a forgotten breakpoint can halt the board later.",
             (
                 "Record the print-based attempt and why escalation is necessary.",
@@ -763,22 +779,27 @@ _GUIDANCE: Final = MappingProxyType(
                 "Name remove_breakpoint in the strategy and perform it afterward.",
             ),
             "Remove the breakpoint and leave the core in a deliberate state.",
-            {"symbol_or_address": "uart_rx_handler"},
+            {
+                "symbol_or_address": "uart_rx_handler",
+                "elf_artifact": "firmware/app/build/firmware.elf",
+            },
         ),
         "flash_application": _PromptGuidance(
             "Use only to deploy a rebuilt application artifact. Never use it for a bootloader or "
             "arbitrary flash. The server checks every loadable segment, required erase sector, entry "
             "point, vector table, target identity, and artifact-defined load addresses against the "
             "application partition. The request never supplies a target address.",
-            "A validated session and open fresh gate are required. After rebuilding/relinking, run "
-            "board_safety_refresh first or fingerprint freshness closes the gate.",
+            "A validated session and open gate are required. Collect the current build artifacts, "
+            "then plan and flash them. An ordinary rebuild does not require safety refresh; use "
+            "board_safety_refresh only when the stable map itself is missing, invalid, or stale.",
             "Cancellation lets an in-progress flash finish safely. A wrong-but-contained image may run "
             "incorrectly; recover by flashing a correct application.",
             (
                 "Build the artifact freshly from the stated configuration.",
                 "Confirm the named board is the artifact's intended board.",
                 "State the observable post-flash behavior and how UART or another read will verify it.",
-                "If the linker changed, rebuild the safety map instead of flashing immediately.",
+                "If runtime containment rejects the build, fix or select the artifact; refresh only "
+                "when the refusal identifies a stable-map problem.",
             ),
             "The target runs after flashing; verify the planned observable behavior.",
             {"artifact": "firmware/app/build/firmware.elf"},
@@ -787,7 +808,7 @@ _GUIDANCE: Final = MappingProxyType(
             "Use only for an artifact intended for the bootloader partition. Application, prohibited, "
             "ROM-bootloader, and unknown regions are rejected. Prefer flash_application for ordinary "
             "firmware changes.",
-            "A validated session, open fresh gate, permission, current fingerprint, target identity, "
+            "A validated session, open gate, permission, reviewed map identity, target identity, "
             "and full bootloader segment/erase/entry/vector containment are required.",
             "A bad bootloader can make the application unbootable. It remains recoverable over SWD, "
             "but explain that consequence before requesting permission.",
@@ -851,8 +872,8 @@ _GUIDANCE: Final = MappingProxyType(
             "Use only for a server-confirmed locked target after every non-destructive route is exhausted. "
             "It performs one typed documented vendor recovery operation, usually mass erase. Reset tools "
             "never unlock and arbitrary security/provisioning writes are never accepted.",
-            "The server binds the plan to current run, board, target, probe, connection, safety-map "
-            "fingerprint, recovery mechanism, and complete erase disclosure.",
+            "The server binds the plan to current run, board, target, probe, connection, canonical "
+            "safety-map digest, recovery mechanism, and complete erase disclosure.",
             "Recovery erases exactly the disclosed ranges. If the device only supports full-chip erase, "
             "all nonvolatile application, bootloader, configuration, and user data is lost.",
             (
@@ -1109,7 +1130,7 @@ def _render_null_response(
         f"[PRECONDITIONS]\nSafety/session policy: {definition.safety_mode.value}; default timeout "
         f"{definition.timeout_seconds:g}s. {guidance.preconditions} Execution still checks active/current plan, "
         "exact board and parameters, remaining calls, assignment/session validity, and every applicable "
-        "validation, gate, and fingerprint condition; refusal names the remedy.\n\n"
+        "validation, gate, and safety-map-currentness condition; refusal names the remedy.\n\n"
         f"[WARNINGS]\n{guidance.warnings}{special}\nExtra instructions: "
         f"{definition.extra_instructions}\n\n"
         f"[SOFT-GUARDRAILS — confirm before submitting]\n{soft}\n\n"

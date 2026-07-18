@@ -25,12 +25,39 @@ def test_nrf52840_catalog_separates_live_family_from_package_evidence() -> None:
     assert board.silicon_id_expected == 0x00052840
     assert board.application_start >= board.flash_start
     assert board.application_end <= board.flash_end
+    assert board.application_partition_authoritative is True
+    assert board.application_partition is not None
+    assert board.bootloader_partition is None
+    assert board.no_protected_resident_bootloader is True
+    assert board.live_identity_reviewed is True
+    assert board.deployment_partition_policy_document() == {
+        "application": {"authoritative": True, "start": 0, "end": 0x100000},
+        "bootloader": {"authoritative": False, "start": None, "end": None},
+        "no_protected_resident_bootloader": True,
+    }
     assert {region.kind for region in board.hardware_regions} >= {
         RegionKind.PROHIBITED,
         RegionKind.PERIPHERAL,
         RegionKind.CPU_SYSTEM,
     }
     assert all(region.start < region.end for region in board.hardware_regions)
+
+
+def test_every_catalog_entry_has_explicit_partition_and_live_identity_policy() -> None:
+    for board_type in catalog_board_types():
+        board = catalog_board(board_type)
+        assert board.application_partition is not None
+        assert board.live_identity_reviewed
+        assert board.silicon_id_address is not None
+        assert board.silicon_id_expected is not None
+        assert board.silicon_id_label
+        assert board.silicon_id_limitation
+
+    stm32 = catalog_board("nucleo_l476rg")
+    assert stm32.silicon_id_address == 0xE0042000
+    assert stm32.silicon_id_expected == 0x415
+    assert stm32.silicon_id_mask == 0xFFF
+    assert "package and density suffix" in stm32.silicon_id_limitation
 
 
 def test_catalog_is_closed_and_requires_reviewed_datasheet_hash(tmp_path: Path) -> None:
@@ -73,9 +100,9 @@ def test_catalog_rejects_non_pdf_evidence(tmp_path: Path) -> None:
 
 
 def test_reviewed_board_facts_are_packaged_data_not_python_branches(tmp_path: Path) -> None:
-    module_text = Path(
-        "src/pyocd_debug_mcp/setup_flow/board_catalog.py"
-    ).read_text(encoding="utf-8")
+    module_text = Path("src/pyocd_debug_mcp/setup_flow/board_catalog.py").read_text(
+        encoding="utf-8"
+    )
     assert "nrf52840dk" not in module_text
     assert "nucleo_l476rg" not in module_text
     assert "0x10000000" not in module_text
@@ -84,3 +111,18 @@ def test_reviewed_board_facts_are_packaged_data_not_python_branches(tmp_path: Pa
     bad.write_text('{"schema_version": 1, "boards": [{"board_type": "x"}]}', encoding="utf-8")
     with pytest.raises(BoardCatalogError):
         _load_catalog(bad)
+
+
+def test_full_flash_ceiling_without_explicit_no_resident_bootloader_is_rejected(
+    tmp_path: Path,
+) -> None:
+    import json
+
+    source = Path("src/pyocd_debug_mcp/setup_flow/reviewed_boards.json")
+    document = json.loads(source.read_text(encoding="utf-8"))
+    document["boards"][0]["no_protected_resident_bootloader"] = False
+    path = tmp_path / "bad-policy.json"
+    path.write_text(json.dumps(document), encoding="utf-8")
+
+    with pytest.raises(BoardCatalogError, match="full-flash application authority"):
+        _load_catalog(path)

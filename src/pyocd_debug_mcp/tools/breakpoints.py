@@ -20,11 +20,13 @@ class BreakpointToolServices:
     record_event: Callable[..., object]
     format_refusal: Callable[..., str]
     handle_for: Callable[[str], Any]
-    symbol_artifact_for: Callable[[Any], Path]
     resolve_symbol: Callable[[Path, str], ResolvedSymbol]
     set_target_breakpoint: Callable[[Any, int], None]
     remove_target_breakpoint: Callable[[Any, int], None]
-    check_breakpoint: Callable[[str, int], None] | None = None
+    check_breakpoint: Callable[[str, int, Path], None] | None = None
+    # Transitional construction compatibility only. The selected ELF now comes
+    # from the immutable action parameters, never from the connected handle.
+    symbol_artifact_for: Callable[[Any], Path] | None = None
 
 
 def _parse_address(value: str | int) -> int:
@@ -67,12 +69,40 @@ def build_breakpoint_handlers(
             )
         )
 
-    def set_breakpoint(board_id: str, symbol_or_address: str | int) -> str:
+    def set_breakpoint(
+        board_id: str,
+        symbol_or_address: str | int,
+        elf_artifact: str,
+    ) -> str:
         """Set one symbol-backed or explicit breakpoint under a fixed plan."""
 
         started = time.monotonic()
         runtime = services.runtime_for(board_id)
-        args = {"board_id": board_id, "symbol_or_address": symbol_or_address}
+        args = {
+            "board_id": board_id,
+            "symbol_or_address": symbol_or_address,
+            "elf_artifact": elf_artifact,
+        }
+        try:
+            artifact = Path(elf_artifact).expanduser().resolve(strict=True)
+        except (OSError, RuntimeError):
+            return refuse(
+                "set_breakpoint",
+                board_id,
+                args,
+                "elf_artifact must name the current local ELF file.",
+                started,
+                runtime,
+            )
+        if artifact.suffix.casefold() != ".elf" or not artifact.is_file():
+            return refuse(
+                "set_breakpoint",
+                board_id,
+                args,
+                "elf_artifact must name the current local ELF file.",
+                started,
+                runtime,
+            )
         handle = services.handle_for(board_id)
         try:
             address = _parse_address(symbol_or_address)
@@ -86,10 +116,9 @@ def build_breakpoint_handlers(
                     started,
                     runtime,
                 )
-            artifact = services.symbol_artifact_for(handle)
             address = services.resolve_symbol(artifact, symbol_or_address).address
         if services.check_breakpoint is not None:
-            services.check_breakpoint(board_id, address)
+            services.check_breakpoint(board_id, address, artifact)
         services.set_target_breakpoint(handle, address)
         services.record_event(
             "set_breakpoint",

@@ -795,7 +795,7 @@ AssignmentRouteKind = Literal[
     "validate",
     "setup",
     "repair",
-    "correct_assignment",
+    "mismatch",
     "conflict",
 ]
 
@@ -812,6 +812,8 @@ def route_board_name(
     profiles: Sequence[ProfileRouteView],
     *,
     hardware_mismatch: bool = False,
+    expected_mcu: str | None = None,
+    observed_mcu: str | None = None,
 ) -> AssignmentRoute:
     """Route a conversational name without mutating or silently reassigning profiles."""
 
@@ -847,12 +849,17 @@ def route_board_name(
         )
     profile = matches[0]
     if hardware_mismatch:
+        identities = ""
+        if expected_mcu and observed_mcu:
+            identities = f" Expected MCU {expected_mcu}; observed MCU {observed_mcu}."
         return AssignmentRoute(
-            "correct_assignment",
+            "mismatch",
             profile.board_id,
             _relay_prompt(
-                "The attached hardware does not match this profile. Ask the user to correct "
-                "the physical assignment; do not rewrite, rename, or silently reassign the profile."
+                "The attached hardware does not match this established profile."
+                f"{identities} Tell the user and ask what they want to do. If they elect to keep "
+                "the different hardware, obtain a new familiar name and create a new logical "
+                "board/profile; do not rewrite, rename, or silently reassign this profile."
             ),
         )
     return AssignmentRoute(
@@ -903,10 +910,11 @@ class RunAssignmentStore:
     def mismatch(self, connection_id: str, board_id: str) -> AssignmentRoute:
         self.clear_connection(connection_id)
         return AssignmentRoute(
-            "correct_assignment",
+            "mismatch",
             board_id,
             _relay_prompt(
-                "The live hardware does not match the selected profile. Correct the assignment; "
-                "the stored profile has not been changed."
+                "The live hardware does not match the selected profile. Tell the user and ask "
+                "what they want to do. Keeping the different hardware requires a new logical "
+                "board/profile; the established profile has not been changed."
             ),
         )

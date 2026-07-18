@@ -13,7 +13,7 @@ from hashlib import sha256
 from importlib import resources
 from pathlib import Path
 
-from pyocd_debug_mcp.safety.regions import RegionKind
+from pyocd_debug_mcp.safety.regions import AddressRange, RegionKind
 
 
 class BoardCatalogError(ValueError):
@@ -42,6 +42,9 @@ class CatalogBoard:
     silicon_id_address: int | None
     silicon_id_expected: int | None
     silicon_id_mask: int
+    silicon_id_width_bits: int
+    silicon_id_label: str
+    silicon_id_limitation: str
     flash_start: int
     flash_end: int
     ram_start: int
@@ -49,6 +52,11 @@ class CatalogBoard:
     erase_size: int
     application_start: int
     application_end: int
+    application_partition_authoritative: bool
+    bootloader_start: int | None
+    bootloader_end: int | None
+    bootloader_partition_authoritative: bool
+    no_protected_resident_bootloader: bool
     hardware_regions: tuple[CatalogHardwareRegion, ...]
     datasheet_sha256: tuple[str, ...] = ()
     document_revision: str = "repository-reviewed board support v1"
@@ -118,7 +126,61 @@ class CatalogBoard:
             and self.pyocd_target_module
             and self.pyocd_target_module_sha256
             and self.pyocd_svd_bundle_sha256
+            and self.live_identity_reviewed
+            and self.application_partition is not None
         )
+
+    @property
+    def live_identity_reviewed(self) -> bool:
+        """Whether validation has an explicit reviewed electronic identity proof."""
+
+        return bool(
+            self.silicon_id_address is not None
+            and self.silicon_id_expected is not None
+            and self.silicon_id_mask > 0
+            and self.silicon_id_width_bits in {8, 16, 32, 64}
+            and self.silicon_id_label
+            and self.silicon_id_limitation
+        )
+
+    @property
+    def application_partition(self) -> AddressRange | None:
+        """Return application authority only when the reviewed policy explicitly grants it."""
+
+        if not self.application_partition_authoritative:
+            return None
+        if (
+            self.application_start == self.flash_start
+            and self.application_end == self.flash_end
+            and not self.no_protected_resident_bootloader
+        ):
+            return None
+        return AddressRange(self.application_start, self.application_end)
+
+    @property
+    def bootloader_partition(self) -> AddressRange | None:
+        if not self.bootloader_partition_authoritative:
+            return None
+        if self.bootloader_start is None or self.bootloader_end is None:
+            return None
+        return AddressRange(self.bootloader_start, self.bootloader_end)
+
+    def deployment_partition_policy_document(self) -> dict[str, object]:
+        """Return the explicit reviewed partition policy for map-source hashing."""
+
+        return {
+            "application": {
+                "authoritative": self.application_partition_authoritative,
+                "start": self.application_start,
+                "end": self.application_end,
+            },
+            "bootloader": {
+                "authoritative": self.bootloader_partition_authoritative,
+                "start": self.bootloader_start,
+                "end": self.bootloader_end,
+            },
+            "no_protected_resident_bootloader": self.no_protected_resident_bootloader,
+        }
 
 
 _CATALOG_RESOURCE_NAME = "reviewed_boards.json"
@@ -152,6 +214,13 @@ def _optional_string(raw: dict[str, object], name: str) -> str | None:
     return _required_string(raw, name)
 
 
+def _required_bool(raw: dict[str, object], name: str) -> bool:
+    value = raw.get(name)
+    if not isinstance(value, bool):
+        raise BoardCatalogError(f"Catalog field '{name}' must be a boolean")
+    return value
+
+
 def _string_tuple(raw: dict[str, object], name: str, *, required: bool = False) -> tuple[str, ...]:
     value = raw.get(name)
     if value is None and not required:
@@ -171,16 +240,16 @@ def _load_catalog(path: Path | None = None) -> dict[str, CatalogBoard]:
         text = (
             path.read_text(encoding="utf-8")
             if path is not None
-            else resources.files(__package__).joinpath(_CATALOG_RESOURCE_NAME).read_text(
-                encoding="utf-8"
-            )
+            else resources.files(__package__)
+            .joinpath(_CATALOG_RESOURCE_NAME)
+            .read_text(encoding="utf-8")
         )
         document = json.loads(text)
     except (OSError, json.JSONDecodeError) as exc:
         source = str(path) if path is not None else _CATALOG_RESOURCE_NAME
         raise BoardCatalogError(f"Reviewed board catalog is unreadable: {source}") from exc
-    if not isinstance(document, dict) or document.get("schema_version") != 1:
-        raise BoardCatalogError("Reviewed board catalog must use schema_version 1")
+    if not isinstance(document, dict) or document.get("schema_version") != 2:
+        raise BoardCatalogError("Reviewed board catalog must use schema_version 2")
     rows = document.get("boards")
     if not isinstance(rows, list):
         raise BoardCatalogError("Reviewed board catalog 'boards' must be a list")
@@ -221,6 +290,11 @@ def _load_catalog(path: Path | None = None) -> dict[str, CatalogBoard]:
         ram_end = _required_int(raw, "ram_end")
         application_start = _required_int(raw, "application_start")
         application_end = _required_int(raw, "application_end")
+        application_authoritative = _required_bool(raw, "application_partition_authoritative")
+        bootloader_start = _optional_int(raw, "bootloader_start")
+        bootloader_end = _optional_int(raw, "bootloader_end")
+        bootloader_authoritative = _required_bool(raw, "bootloader_partition_authoritative")
+        no_resident_bootloader = _required_bool(raw, "no_protected_resident_bootloader")
         erase_size = _required_int(raw, "erase_size")
         if not (0 <= flash_start < flash_end and 0 <= ram_start < ram_end):
             raise BoardCatalogError(f"{board_type}: flash and RAM ranges must be non-empty")
@@ -228,6 +302,28 @@ def _load_catalog(path: Path | None = None) -> dict[str, CatalogBoard]:
             raise BoardCatalogError(f"{board_type}: application range must be inside flash")
         if erase_size <= 0:
             raise BoardCatalogError(f"{board_type}: erase_size must be positive")
+        if application_authoritative and (
+            application_start == flash_start
+            and application_end == flash_end
+            and not no_resident_bootloader
+        ):
+            raise BoardCatalogError(
+                f"{board_type}: full-flash application authority requires an explicit "
+                "no-protected-resident-bootloader assertion"
+            )
+        if bootloader_authoritative != (
+            bootloader_start is not None and bootloader_end is not None
+        ):
+            raise BoardCatalogError(
+                f"{board_type}: authoritative bootloader policy requires one explicit range"
+            )
+        if bootloader_start is not None and bootloader_end is not None:
+            if not (flash_start <= bootloader_start < bootloader_end <= flash_end):
+                raise BoardCatalogError(f"{board_type}: bootloader range must be inside flash")
+            if application_start < bootloader_end and bootloader_start < application_end:
+                raise BoardCatalogError(
+                    f"{board_type}: application and bootloader ranges must not overlap"
+                )
 
         result[key] = CatalogBoard(
             board_type=board_type,
@@ -240,6 +336,9 @@ def _load_catalog(path: Path | None = None) -> dict[str, CatalogBoard]:
             silicon_id_address=_optional_int(raw, "silicon_id_address"),
             silicon_id_expected=_optional_int(raw, "silicon_id_expected"),
             silicon_id_mask=_required_int(raw, "silicon_id_mask"),
+            silicon_id_width_bits=_required_int(raw, "silicon_id_width_bits"),
+            silicon_id_label=_required_string(raw, "silicon_id_label"),
+            silicon_id_limitation=_required_string(raw, "silicon_id_limitation"),
             flash_start=flash_start,
             flash_end=flash_end,
             ram_start=ram_start,
@@ -247,6 +346,11 @@ def _load_catalog(path: Path | None = None) -> dict[str, CatalogBoard]:
             erase_size=erase_size,
             application_start=application_start,
             application_end=application_end,
+            application_partition_authoritative=application_authoritative,
+            bootloader_start=bootloader_start,
+            bootloader_end=bootloader_end,
+            bootloader_partition_authoritative=bootloader_authoritative,
+            no_protected_resident_bootloader=no_resident_bootloader,
             hardware_regions=tuple(regions),
             datasheet_sha256=_string_tuple(raw, "datasheet_sha256"),
             document_revision=_required_string(raw, "document_revision"),
@@ -254,9 +358,7 @@ def _load_catalog(path: Path | None = None) -> dict[str, CatalogBoard]:
             device_support_evidence_resource=_optional_string(
                 raw, "device_support_evidence_resource"
             ),
-            device_support_evidence_sha256=_optional_string(
-                raw, "device_support_evidence_sha256"
-            ),
+            device_support_evidence_sha256=_optional_string(raw, "device_support_evidence_sha256"),
             official_evidence_resource=_optional_string(raw, "official_evidence_resource"),
             official_evidence_sha256=_optional_string(raw, "official_evidence_sha256"),
             pyocd_version=_optional_string(raw, "pyocd_version"),

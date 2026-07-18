@@ -289,6 +289,7 @@ def test_breakpoint_symbol_and_address_paths_are_wrapped(tmp_path: Path) -> None
     artifact = tmp_path / "firmware.elf"
     artifact.write_bytes(b"elf")
     calls: list[tuple[str, int]] = []
+    checked: list[tuple[str, int, Path]] = []
     handlers = build_breakpoint_handlers(
         BreakpointToolServices(
             runtime_for=lambda board: None,
@@ -297,16 +298,17 @@ def test_breakpoint_symbol_and_address_paths_are_wrapped(tmp_path: Path) -> None
             record_event=lambda *args, **kwargs: None,
             format_refusal=_format_refusal,
             handle_for=lambda board: object(),
-            symbol_artifact_for=lambda handle: artifact,
             resolve_symbol=lambda selected, name: ResolvedSymbol(name, 0x08000100, 4, "STT_FUNC"),
             set_target_breakpoint=lambda handle, address: calls.append(("set", address)),
             remove_target_breakpoint=lambda handle, address: calls.append(("remove", address)),
+            check_breakpoint=lambda board, address, elf: checked.append((board, address, elf)),
         )
     )
 
-    set_result = handlers["set_breakpoint"]("board_b", "main")
+    set_result = handlers["set_breakpoint"]("board_b", "main", str(artifact))
     remove_result = handlers["remove_breakpoint"]("board_b", "0x08000100")
     assert calls == [("set", 0x08000100), ("remove", 0x08000100)]
+    assert checked == [("board_b", 0x08000100, artifact.resolve())]
     assert "executable space" in set_result
     assert SAFE_EXIT_REMINDER in set_result
     assert SAFE_EXIT_REMINDER in remove_result
