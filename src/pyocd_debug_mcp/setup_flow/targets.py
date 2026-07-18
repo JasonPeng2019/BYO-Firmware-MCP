@@ -203,9 +203,11 @@ class ProfileCommitCoordinator:
         repository: ProfileRepository,
         *,
         live_connect: Callable[[str, str | None], None],
+        before_commit: Callable[[], None] | None = None,
     ) -> None:
         self._repository = repository
         self._live_connect = live_connect
+        self._before_commit = before_commit or (lambda: None)
 
     def commit_core(
         self,
@@ -222,10 +224,12 @@ class ProfileCommitCoordinator:
                 "target/live-connect-failed",
                 f"Live target connection failed before profile commit: {exc}",
             ) from exc
+        self._before_commit()
         return self._repository.commit_core(staged)
 
     def commit_optional(self, board_id: str, result: EnrichmentResult) -> BoardProfile:
         if not result.fields:
             return self._repository.load(board_id, include_legacy=False)
         staged = self._repository.stage_optional(board_id, result.fields)
+        self._before_commit()
         return self._repository.commit_optional(staged)

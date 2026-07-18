@@ -8,6 +8,7 @@ import pytest
 from pyocd_debug_mcp.firmstore.profiles import ProfileRepository
 from pyocd_debug_mcp.firmstore.reports import ReportWriter
 from pyocd_debug_mcp.firmstore.store import FirmStore
+from pyocd_debug_mcp.kernel.operations import OperationCancelledError
 from pyocd_debug_mcp.setup_flow.validate import (
     BoardValidator,
     SafetyMapSnapshot,
@@ -160,12 +161,14 @@ def validator(
     backend: FakeBackend,
     *,
     hooks: ValidationHooks | None = None,
+    cancellation_checkpoint=None,
 ) -> BoardValidator:
     return BoardValidator(
         profiles,
         ReportWriter(FirmStore(tmp_path)),
         backend.services(),
         hooks=hooks,
+        cancellation_checkpoint=cancellation_checkpoint,
     )
 
 
@@ -248,6 +251,91 @@ def test_validation_backend_call_order_is_lean_bounded_and_non_destructive(
         for call in backend.calls
     )
     assert "UART readiness" in result.agent_prompt
+
+
+def test_cancellation_after_blocking_identity_read_cannot_stamp_authority(
+    tmp_path: Path,
+) -> None:
+    profiles = repository(tmp_path)
+    backend = FakeBackend()
+    events: list[tuple[object, ...]] = []
+
+    def checkpoint() -> None:
+        if any(call[0] == "read_memory" for call in backend.calls):
+            raise OperationCancelledError("validation request cancelled")
+
+    service = validator(
+        tmp_path,
+        profiles,
+        backend,
+        hooks=open_hooks(events),
+        cancellation_checkpoint=checkpoint,
+    )
+
+    with pytest.raises(OperationCancelledError, match="validation request cancelled"):
+        service.validate(ValidationRequest("bench_board"))
+
+    assert ("close",) in backend.calls
+    assert all(event[0] not in {"stamp", "mismatch"} for event in events)
+
+
+def test_report_failure_rolls_back_a_new_validation_stamp(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    profiles = repository(tmp_path)
+    backend = FakeBackend()
+    events: list[tuple[object, ...]] = []
+    hooks = open_hooks(events)
+    rolled_back: list[tuple[str, str]] = []
+    hooks = ValidationHooks(
+        hooks.load_safety_map,
+        hooks.stamp_session,
+        hooks.record_mismatch,
+        lambda board, validation: rolled_back.append((board, validation)),
+    )
+    service = validator(tmp_path, profiles, backend, hooks=hooks)
+
+    def fail_report(*_args, **_kwargs):
+        raise OSError("report disk unavailable")
+
+    monkeypatch.setattr(service._reports, "create_validation", fail_report)
+
+    with pytest.raises(OSError, match="report disk unavailable"):
+        service.validate(ValidationRequest("bench_board"))
+
+    stamp_event = next(event for event in events if event[0] == "stamp")
+    assert rolled_back == [("bench_board", stamp_event[1])]
+
+
+def test_report_failure_rolls_back_a_new_mismatch_allowance(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    profiles = repository(tmp_path)
+    backend = FakeBackend()
+    backend.values[0xE0042000] = 0xFFFFFFFF
+    events: list[tuple[object, ...]] = []
+    hooks = open_hooks(events)
+    rolled_back: list[tuple[str, str]] = []
+    hooks = ValidationHooks(
+        hooks.load_safety_map,
+        hooks.stamp_session,
+        hooks.record_mismatch,
+        lambda board, validation: rolled_back.append((board, validation)),
+    )
+    service = validator(tmp_path, profiles, backend, hooks=hooks)
+
+    def fail_report(*_args, **_kwargs):
+        raise OSError("report disk unavailable")
+
+    monkeypatch.setattr(service._reports, "create_validation", fail_report)
+
+    with pytest.raises(OSError, match="report disk unavailable"):
+        service.validate(ValidationRequest("bench_board"))
+
+    mismatch_event = next(event for event in events if event[0] == "mismatch")
+    assert rolled_back == [("bench_board", mismatch_event[2])]
 
 
 def test_missing_live_identity_evidence_is_stamp_ineligible(tmp_path: Path) -> None:

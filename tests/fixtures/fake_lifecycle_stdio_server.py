@@ -11,6 +11,7 @@ from pathlib import Path
 
 from pyocd_debug_mcp.kernel.operations import (
     cancellation_checkpoint,
+    current_operation,
     operation_resources,
 )
 from pyocd_debug_mcp.kernel.registry import RegistryFastMCP
@@ -91,6 +92,9 @@ def flash_application(
 
     del operation_timeout_seconds
     bind_resources(board_id, label)
+    operation = current_operation()
+    assert operation is not None
+    operation.begin_non_interruptible()
     record("handler-start", board_id=board_id, label=label)
     deadline = time.monotonic() + duration_seconds
     chunks = 0

@@ -15,6 +15,7 @@ from pyocd_debug_mcp.kernel.operations import (
     OperationManager,
     OperationTimeoutError,
     cancellation_checkpoint,
+    current_operation,
     dispatch,
     operation_resources,
     start_owned_subprocess,
@@ -178,6 +179,9 @@ async def test_cancelled_flash_finishes_before_cleanup_and_release() -> None:
 
     def flash() -> str:
         operation_resources().close_debug.append(lambda: events.append("cleanup"))
+        operation = current_operation()
+        assert operation is not None
+        operation.begin_non_interruptible()
         started.set()
         while not allow_finish.wait(0.01):
             # A flash checkpoint deliberately does not interrupt the transaction.
@@ -197,6 +201,71 @@ async def test_cancelled_flash_finishes_before_cleanup_and_release() -> None:
     with pytest.raises(asyncio.CancelledError):
         await task
     assert events == ["flash-complete", "cleanup"]
+    assert manager.snapshots() == ()
+
+
+async def test_timed_out_flash_waits_for_non_interruptible_completion() -> None:
+    manager = OperationManager()
+    events: list[str] = []
+
+    def flash() -> str:
+        operation_resources().close_debug.append(lambda: events.append("cleanup"))
+        operation = current_operation()
+        assert operation is not None
+        operation.begin_non_interruptible()
+        time.sleep(0.075)
+        events.append("flash-complete")
+        return "flashed"
+
+    started = time.monotonic()
+    with pytest.raises(OperationTimeoutError):
+        await dispatch("flash_application", "board_a", flash, 0.05, manager=manager)
+
+    assert time.monotonic() - started >= 0.07
+    assert events == ["flash-complete", "cleanup"]
+    assert manager.snapshots() == ()
+
+
+async def test_linearized_authority_commit_completes_instead_of_reporting_timeout() -> None:
+    manager = OperationManager()
+    authority_committed = threading.Event()
+
+    def validation() -> str:
+        operation = current_operation()
+        assert operation is not None
+        operation.run_if_not_cancelled(authority_committed.set)
+        time.sleep(0.075)
+        return "validated"
+
+    result = await dispatch("board_validate", "board_a", validation, 0.05, manager=manager)
+
+    assert result == "validated"
+    assert authority_committed.is_set()
+    assert manager.snapshots() == ()
+
+
+async def test_linearized_authority_commit_completes_after_client_cancellation() -> None:
+    manager = OperationManager()
+    authority_committed = threading.Event()
+    allow_finish = threading.Event()
+
+    def validation() -> str:
+        operation = current_operation()
+        assert operation is not None
+        operation.run_if_not_cancelled(authority_committed.set)
+        assert allow_finish.wait(timeout=1.0)
+        return "validated"
+
+    task = asyncio.create_task(
+        dispatch("board_validate", "board_a", validation, 1.0, manager=manager)
+    )
+    assert await asyncio.to_thread(authority_committed.wait, 1.0)
+    task.cancel()
+    await asyncio.sleep(0.05)
+    assert not task.done()
+    allow_finish.set()
+
+    assert await task == "validated"
     assert manager.snapshots() == ()
 
 

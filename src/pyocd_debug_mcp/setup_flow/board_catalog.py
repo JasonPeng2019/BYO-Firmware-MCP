@@ -20,6 +20,18 @@ class BoardCatalogError(ValueError):
     """A requested supported-board identity does not match reviewed evidence."""
 
 
+class ReviewedSupportNotFoundError(BoardCatalogError):
+    """No reviewed record accepts the exact MCU and server-computed datasheet digest."""
+
+    code = "setup/reviewed-support-not-found"
+
+
+class ReviewedSupportAmbiguityError(BoardCatalogError):
+    """More than one reviewed record accepts the same exact setup evidence."""
+
+    code = "setup/reviewed-support-ambiguous"
+
+
 @dataclass(frozen=True, slots=True)
 class CatalogHardwareRegion:
     """One range independently reviewed against device support and official documentation."""
@@ -79,40 +91,20 @@ class CatalogBoard:
             for item in self.mcu_names
         )
 
-    def validate_datasheet(self, path: Path, digest: str) -> None:
+    def validate_datasheet(self, path: Path) -> str:
+        """Validate and hash one local PDF using only server-read bytes."""
+
         if not self.datasheet_sha256:
             raise BoardCatalogError(
                 f"No reviewed datasheet is configured for {self.board_type}; "
                 "automatic setup remains unavailable."
             )
-        if path.is_symlink():
-            raise BoardCatalogError("datasheet_path must not be a symbolic link")
-        try:
-            resolved = path.expanduser().resolve(strict=True)
-        except OSError as exc:
-            raise BoardCatalogError("datasheet_path must name an existing local PDF") from exc
-        if resolved.suffix.casefold() != ".pdf" or not resolved.is_file():
-            raise BoardCatalogError("datasheet_path must name an existing local PDF")
-        size = resolved.stat().st_size
-        if not 5 <= size <= 64 * 1024 * 1024:
-            raise BoardCatalogError("datasheet PDF size must be between 5 bytes and 64 MiB")
-        with resolved.open("rb") as stream:
-            if stream.read(5) != b"%PDF-":
-                raise BoardCatalogError("datasheet_path does not contain a PDF document")
-            stream.seek(0)
-            actual = sha256()
-            for chunk in iter(lambda: stream.read(1024 * 1024), b""):
-                actual.update(chunk)
-        actual_digest = actual.hexdigest()
-        normalized = digest.strip().casefold()
-        if len(normalized) != 64 or any(ch not in "0123456789abcdef" for ch in normalized):
-            raise BoardCatalogError("datasheet_sha256 must be exactly 64 hexadecimal characters")
-        if normalized != actual_digest:
-            raise BoardCatalogError("The supplied datasheet SHA-256 does not match the PDF bytes.")
-        if normalized not in self.datasheet_sha256:
+        _, digest = hash_local_datasheet(path)
+        if digest not in self.datasheet_sha256:
             raise BoardCatalogError(
-                f"The supplied datasheet hash is not reviewed for {self.board_type}."
+                f"The server-computed datasheet hash is not reviewed for {self.board_type}."
             )
+        return digest
 
     @property
     def automatic_setup_reviewed(self) -> bool:
@@ -374,8 +366,88 @@ def _load_catalog(path: Path | None = None) -> dict[str, CatalogBoard]:
 _CATALOG = _load_catalog()
 
 
+@dataclass(frozen=True, slots=True)
+class ResolvedReviewedSupport:
+    """Internal setup support selected without a caller-owned catalog identifier."""
+
+    catalog: CatalogBoard
+    datasheet_path: Path
+    datasheet_sha256: str
+
+
+def hash_local_datasheet(path: Path) -> tuple[Path, str]:
+    """Resolve, validate, and hash a bounded local PDF from its actual bytes."""
+
+    expanded = path.expanduser()
+    if expanded.is_symlink():
+        raise BoardCatalogError("datasheet_path must not be a symbolic link")
+    try:
+        resolved = expanded.resolve(strict=True)
+    except OSError as exc:
+        raise BoardCatalogError("datasheet_path must name an existing local PDF") from exc
+    if resolved.suffix.casefold() != ".pdf" or not resolved.is_file():
+        raise BoardCatalogError("datasheet_path must name an existing local PDF")
+    size = resolved.stat().st_size
+    if not 5 <= size <= 64 * 1024 * 1024:
+        raise BoardCatalogError("datasheet PDF size must be between 5 bytes and 64 MiB")
+    digest = sha256()
+    with resolved.open("rb") as stream:
+        if stream.read(5) != b"%PDF-":
+            raise BoardCatalogError("datasheet_path does not contain a PDF document")
+        stream.seek(0)
+        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return resolved, digest.hexdigest()
+
+
+def resolve_reviewed_support(
+    mcu_part_number: str,
+    datasheet_sha256: str,
+    *,
+    candidates: tuple[CatalogBoard, ...] | None = None,
+) -> CatalogBoard:
+    """Resolve exactly one complete reviewed record from server-owned evidence."""
+
+    records = candidates if candidates is not None else tuple(_CATALOG.values())
+    matches = tuple(
+        record
+        for record in records
+        if record.automatic_setup_reviewed
+        and record.package_part_number == mcu_part_number
+        and datasheet_sha256 in record.datasheet_sha256
+    )
+    if not matches:
+        raise ReviewedSupportNotFoundError(
+            "No reviewed support accepts the exact MCU part number and server-computed "
+            "datasheet digest."
+        )
+    if len(matches) != 1:
+        raise ReviewedSupportAmbiguityError(
+            "The exact MCU part number and server-computed datasheet digest match multiple "
+            "reviewed support records; setup remains unavailable until the catalog is unambiguous."
+        )
+    return matches[0]
+
+
+def resolve_reviewed_support_from_datasheet(
+    mcu_part_number: str,
+    datasheet_path: Path,
+    *,
+    candidates: tuple[CatalogBoard, ...] | None = None,
+) -> ResolvedReviewedSupport:
+    """Hash a local datasheet and resolve one internal reviewed support record."""
+
+    resolved_path, digest = hash_local_datasheet(datasheet_path)
+    catalog = resolve_reviewed_support(
+        mcu_part_number,
+        digest,
+        candidates=candidates,
+    )
+    return ResolvedReviewedSupport(catalog, resolved_path, digest)
+
+
 def catalog_board(board_type: str) -> CatalogBoard:
-    """Return one reviewed catalog entry by its exact public board type."""
+    """Return one reviewed catalog entry by its internal repository identifier."""
 
     key = board_type.strip().casefold()
     try:

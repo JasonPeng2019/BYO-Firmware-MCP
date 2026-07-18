@@ -10,8 +10,8 @@ Status: accepted for implementation
 
 ## Desired behavior
 
-- The current automatic setup path accepts a part-to-target relationship only from the
-  server-owned reviewed catalog entry selected by `board_type`. This matches the existing
+- The current automatic setup path accepts a part-to-target relationship only from the one
+  server-owned reviewed catalog entry resolved from exact MCU plus server-hashed datasheet. This matches the existing
   connection/safety gate and avoids pretending arbitrary target research is authoritative.
 - A staged CMSIS-Pack may supply the catalog's exact missing target, but it cannot change the
   reviewed part-to-target mapping. Its enumerated device record proves target presence only.
@@ -24,7 +24,8 @@ Status: accepted for implementation
 - Replace `_part_matches_target` and every normalized auto-detection/profile/override branch in
   `server.py` with the exact selected catalog entry.
 - Simplify `TargetResolver.validate_candidate` to require that exact reviewed target.
-- MCP tool names and schemas do not change. Research failures explain that reviewed/provider
+- MCP tool names do not change. The setup schema no longer exposes the internal catalog identifier;
+  research failures explain that reviewed/provider
   mapping evidence is missing instead of claiming a spelling mismatch.
 
 ## Non-goals

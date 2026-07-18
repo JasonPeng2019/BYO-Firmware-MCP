@@ -168,12 +168,10 @@ async def test_m5_in_process_surface_is_exact_and_every_hidden_handler_is_locked
                 "mode": "setup",
                 "connection_id": "probe:001",
                 "display_name": "Bench Board",
-                "board_type": "nucleo_l476rg",
                 "mcu_part_number": "Part-Exact",
                 "serial_baudrate": 115200,
                 "serial_id": "UART-001",
                 "datasheet_path": "board-datasheet.pdf",
-                "datasheet_sha256": None,
             }
             for name in sorted(M6_GUARDED):
                 result = await session.call_tool(name, setup_arguments)
@@ -256,31 +254,29 @@ def test_m5_every_revised_runtime_and_plan_schema_is_exact() -> None:
         "wait": {"board_id", "ms"},
         "target_unlock": {"board_id", "recovery_mechanism"},
         "load_setup_tool": {"board_id", "tool_name"},
-        "setup_overview": {"board_names"},
+        "setup_overview": {"board_names", "connection_assignments"},
         "continue_setup": {"board_id", "continuation_id", "response"},
         "board_setup": {
             "board_id",
             "mode",
             "connection_id",
             "display_name",
-            "board_type",
             "mcu_part_number",
+            "requires_uart",
             "serial_baudrate",
             "serial_id",
             "datasheet_path",
-            "datasheet_sha256",
         },
         "board_fix_setup": {
             "board_id",
             "mode",
             "connection_id",
             "display_name",
-            "board_type",
             "mcu_part_number",
+            "requires_uart",
             "serial_baudrate",
             "serial_id",
             "datasheet_path",
-            "datasheet_sha256",
         },
         "board_validate": {"board_id", "probe_id"},
         "board_safety_refresh": {"board_id"},
@@ -293,7 +289,10 @@ def test_m5_every_revised_runtime_and_plan_schema_is_exact() -> None:
         if name != "setup_overview":
             assert "board_id" in tools[name].parameters["required"], name
     for setup_action in ("board_setup", "board_fix_setup"):
-        assert "datasheet_sha256" in tools[setup_action].parameters["required"]
+        assert "datasheet_path" in tools[setup_action].parameters["required"]
+        assert "board_type" not in tools[setup_action].parameters["properties"]
+        assert "datasheet_sha256" not in tools[setup_action].parameters["properties"]
+        assert tools[setup_action].parameters["additionalProperties"] is False
 
     common_plan_fields = {
         "board_id",

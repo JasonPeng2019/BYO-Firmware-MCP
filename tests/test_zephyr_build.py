@@ -974,6 +974,7 @@ def test_ensure_runtime_uses_complete_local_ncs_offline_before_private_venv(
         zephyr_ref="unused",
         skip_workspace_bootstrap=False,
         skip_sdk_install=False,
+        allow_provisioning=True,
     )
 
     runtime = zephyr_build.ensure_runtime(args)
@@ -1059,6 +1060,7 @@ def test_external_workspace_and_standalone_sdk_fall_back_from_incomplete_vendor_
         zephyr_ref="unused",
         skip_workspace_bootstrap=False,
         skip_sdk_install=False,
+        allow_provisioning=True,
     )
 
     first = zephyr_build.ensure_runtime(args)

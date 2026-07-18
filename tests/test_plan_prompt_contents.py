@@ -146,6 +146,7 @@ def _read_serial_plan() -> dict[str, object]:
             "baudrate": None,
             "port": None,
             "reset_on_open": False,
+            "on_exit": None,
         },
     }
 
@@ -273,8 +274,6 @@ def test_rendered_serial_exchange_example_round_trips_and_invalid_replacements_a
 
 
 def test_rendered_setup_example_uses_current_reviewed_automatic_board() -> None:
-    from pyocd_debug_mcp.setup_flow.board_catalog import reviewed_setup_board_types
-
     definition = PLAN_DEFINITIONS["board_setup"]
     rendered = definition.render_null_response()
     example_start = rendered.index("{", rendered.index("[EXAMPLE-PLAN]"))
@@ -285,13 +284,11 @@ def test_rendered_setup_example_uses_current_reviewed_automatic_board() -> None:
         "mode": "setup",
         "connection_id": "connection_1",
         "display_name": "left controller",
-        "board_type": "nrf52840dk",
-        "mcu_part_number": "nRF52840-QIAA",
-        "serial_baudrate": 115200,
+            "mcu_part_number": "nRF52840-QIAA",
+            "requires_uart": True,
+            "serial_baudrate": 115200,
         "serial_id": "683377322",
         "datasheet_path": "C:/firmware/docs/nRF52840_PS_v1.1.pdf",
-        "datasheet_sha256": None,
     }
-    assert action["board_type"] in reviewed_setup_board_types()
     assert example["max_calls"] == 1
     assert example["max_calls_buffer"] == 0

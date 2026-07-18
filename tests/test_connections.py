@@ -309,7 +309,10 @@ def test_a4_reads_require_validation_without_freshness_and_writes_require_both(
     calls.clear()
     server._require_layer0("write_memory", "board-a")
     server._require_layer0("write_serial", "board-a")
+    server._require_layer0("serial_exchange", "board-a")
     assert calls == [
+        ("freshness", "board-a"),
+        ("write", "board-a", connection.connection_id, "aggregate-a"),
         ("freshness", "board-a"),
         ("write", "board-a", connection.connection_id, "aggregate-a"),
         ("freshness", "board-a"),

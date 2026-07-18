@@ -43,12 +43,10 @@ class SetupUserInput:
     connection_id: str
     display_name: str
     mcu_part_number: str
-    serial_baudrate: int
-    requires_uart: bool = True
-    board_type: str = ""
+    serial_baudrate: int | None
     datasheet_path: str = ""
-    datasheet_sha256: str = ""
     serial_id: str = ""
+    requires_uart: bool = True
 
     def __post_init__(self) -> None:
         if not _BOARD_ID.fullmatch(self.board_id):
@@ -61,12 +59,16 @@ class SetupUserInput:
             raise PreflightError("display_name must be at most 100 characters")
         # Deliberately validate without normalizing or replacing the exact value.
         _nonempty(self.mcu_part_number, "mcu_part_number")
-        if (
+        if not isinstance(self.requires_uart, bool):
+            raise PreflightError("requires_uart must be a boolean")
+        if self.serial_baudrate is not None and (
             not isinstance(self.serial_baudrate, int)
             or isinstance(self.serial_baudrate, bool)
             or self.serial_baudrate < 1
         ):
-            raise PreflightError("serial_baudrate must be a positive integer")
+            raise PreflightError("serial_baudrate must be a positive integer or null")
+        if self.requires_uart and self.serial_baudrate is None:
+            raise PreflightError("serial_baudrate is required when requires_uart is true")
 
 
 @dataclass(frozen=True, slots=True)
@@ -126,6 +128,14 @@ class PreflightSelections:
 
 
 @dataclass(frozen=True, slots=True)
+class PreflightBlock:
+    """Typed server-owned reason setup must stop before hardware discovery."""
+
+    code: str
+    message: str
+
+
+@dataclass(frozen=True, slots=True)
 class PreflightInventory:
     """One complete, already-enumerated view of current setup inputs."""
 
@@ -138,6 +148,7 @@ class PreflightInventory:
     manifest_targets: tuple[str, ...] = ()
     exact_detected_targets: tuple[str, ...] = ()
     build_configurations: tuple[BuildConfiguration, ...] = ()
+    blocking_error: PreflightBlock | None = None
 
     def normalized(self) -> PreflightInventory:
         """Return a stable-order, duplicate-free inventory for reporting/routing."""
@@ -155,6 +166,7 @@ class PreflightInventory:
             build_configurations=tuple(
                 sorted(self.build_configurations, key=lambda item: item.configuration_id)
             ),
+            blocking_error=self.blocking_error,
         )
 
     def to_report(self, user_input: SetupUserInput) -> dict[str, Any]:
@@ -250,6 +262,14 @@ class PreflightEngine:
         selections = selections or PreflightSelections()
         current = inventory.normalized()
         observed = current.to_report(user_input)
+
+        if current.blocking_error is not None:
+            return PreflightDecision(
+                "setup_blocked",
+                current.blocking_error.code,
+                self._prompt(current.blocking_error.message),
+                observed=observed,
+            )
 
         # 1. A missing probe is deterministic and never researchable.
         if not current.probes:

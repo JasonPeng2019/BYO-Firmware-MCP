@@ -6,24 +6,20 @@ from pathlib import Path
 
 import pytest
 
-from pyocd_debug_mcp.pack_provision import sha256_file
 from pyocd_debug_mcp.safety.verify2 import ReconciliationResult, VerificationConflict
 from pyocd_debug_mcp.safety.regions import ActionCategory, AddressRange, Allowed, Refusal, SafetyMap
 from pyocd_debug_mcp.setup_flow import reviewed_evidence
 from pyocd_debug_mcp.setup_flow.board_catalog import BoardCatalogError, catalog_board
 
 
-def _datasheet() -> tuple[Path, str]:
-    path = Path("Nano_BLE_MCU-nRF52840_PS_v1.1.pdf").resolve()
-    return path, sha256_file(path)
+def _datasheet() -> Path:
+    return Path("Nano_BLE_MCU-nRF52840_PS_v1.1.pdf").resolve()
 
 
 def test_reviewed_evidence_checks_runtime_and_reconciles_distinct_authorities() -> None:
-    path, digest = _datasheet()
+    path = _datasheet()
 
-    bundle = reviewed_evidence.load_reviewed_evidence(
-        catalog_board("nrf52840dk"), path, digest
-    )
+    bundle = reviewed_evidence.load_reviewed_evidence(catalog_board("nrf52840dk"), path)
 
     assert bundle.reconciliation.accepted
     assert {
@@ -52,10 +48,8 @@ def test_reviewed_evidence_checks_runtime_and_reconciles_distinct_authorities() 
     [0x4001E504, 0x4001E50C, 0x4001E514, 0x4001E518],
 )
 def test_reviewed_nrf_nonvolatile_control_registers_are_prohibited(address: int) -> None:
-    path, digest = _datasheet()
-    bundle = reviewed_evidence.load_reviewed_evidence(
-        catalog_board("nrf52840dk"), path, digest
-    )
+    path = _datasheet()
+    bundle = reviewed_evidence.load_reviewed_evidence(catalog_board("nrf52840dk"), path)
     safety_map = SafetyMap(
         [item.to_safety_region() for item in bundle.reconciliation.regions]
     )
@@ -69,10 +63,8 @@ def test_reviewed_nrf_nonvolatile_control_registers_are_prohibited(address: int)
 
 
 def test_reviewed_nrf_gpio_register_write_window_remains_available() -> None:
-    path, digest = _datasheet()
-    bundle = reviewed_evidence.load_reviewed_evidence(
-        catalog_board("nrf52840dk"), path, digest
-    )
+    path = _datasheet()
+    bundle = reviewed_evidence.load_reviewed_evidence(catalog_board("nrf52840dk"), path)
     safety_map = SafetyMap(
         [item.to_safety_region() for item in bundle.reconciliation.regions]
     )
@@ -86,9 +78,9 @@ def test_reviewed_nrf_gpio_register_write_window_remains_available() -> None:
 
 
 def test_persisted_reviewed_authority_rejects_self_asserted_documents() -> None:
-    path, digest = _datasheet()
+    path = _datasheet()
     catalog = catalog_board("nrf52840dk")
-    bundle = reviewed_evidence.load_reviewed_evidence(catalog, path, digest)
+    bundle = reviewed_evidence.load_reviewed_evidence(catalog, path)
     record = bundle.source_record()
     pack = deepcopy(record["device_support"])
     authority = {
@@ -107,7 +99,7 @@ def test_persisted_reviewed_authority_rejects_self_asserted_documents() -> None:
 
 
 def test_reviewed_evidence_fails_closed_on_every_missing_pin() -> None:
-    path, digest = _datasheet()
+    path = _datasheet()
     original = catalog_board("nrf52840dk")
 
     for field in (
@@ -121,37 +113,33 @@ def test_reviewed_evidence_fails_closed_on_every_missing_pin() -> None:
         "pyocd_svd_bundle_sha256",
     ):
         with pytest.raises(BoardCatalogError, match="lacks complete reviewed"):
-            reviewed_evidence.load_reviewed_evidence(
-                replace(original, **{field: None}), path, digest
-            )
+            reviewed_evidence.load_reviewed_evidence(replace(original, **{field: None}), path)
 
 
 def test_reviewed_evidence_rejects_asset_and_runtime_identity_drift() -> None:
-    path, digest = _datasheet()
+    path = _datasheet()
     original = catalog_board("nrf52840dk")
 
     with pytest.raises(BoardCatalogError, match="evidence resource failed"):
         reviewed_evidence.load_reviewed_evidence(
-            replace(original, official_evidence_sha256="0" * 64), path, digest
+            replace(original, official_evidence_sha256="0" * 64), path
         )
     with pytest.raises(BoardCatalogError, match="does not match reviewed version"):
-        reviewed_evidence.load_reviewed_evidence(
-            replace(original, pyocd_version="0.0.0"), path, digest
-        )
+        reviewed_evidence.load_reviewed_evidence(replace(original, pyocd_version="0.0.0"), path)
     with pytest.raises(BoardCatalogError, match="target implementation failed"):
         reviewed_evidence.load_reviewed_evidence(
-            replace(original, pyocd_target_module_sha256="0" * 64), path, digest
+            replace(original, pyocd_target_module_sha256="0" * 64), path
         )
     with pytest.raises(BoardCatalogError, match="SVD bundle failed"):
         reviewed_evidence.load_reviewed_evidence(
-            replace(original, pyocd_svd_bundle_sha256="0" * 64), path, digest
+            replace(original, pyocd_svd_bundle_sha256="0" * 64), path
         )
 
 
 def test_reviewed_evidence_calls_strict_reconciliation_and_rejects_conflict(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    path, digest = _datasheet()
+    path = _datasheet()
     called: dict[str, object] = {}
 
     def conflict(**kwargs: object) -> ReconciliationResult:
@@ -176,9 +164,7 @@ def test_reviewed_evidence_calls_strict_reconciliation_and_rejects_conflict(
     monkeypatch.setattr(reviewed_evidence, "reconcile_hardware_evidence", conflict)
 
     with pytest.raises(BoardCatalogError, match="verify/address: ranges conflict"):
-        reviewed_evidence.load_reviewed_evidence(
-            catalog_board("nrf52840dk"), path, digest
-        )
+        reviewed_evidence.load_reviewed_evidence(catalog_board("nrf52840dk"), path)
     assert called["expected_mcu_part_number"] == "nRF52840-QIAA"
     assert called["expected_target"] == "nrf52840"
 
@@ -186,7 +172,11 @@ def test_reviewed_evidence_calls_strict_reconciliation_and_rejects_conflict(
 @pytest.mark.parametrize(
     ("changed_label", "replacement", "message"),
     [
-        ("official-document", "sha256:" + "0" * 64, "not bound to the supplied datasheet"),
+        (
+            "official-document",
+            "sha256:" + "0" * 64,
+            "not bound to the server-computed datasheet",
+        ),
         ("device-support", "sha256:" + "0" * 64, "not bound to the installed pyOCD"),
     ],
 )
@@ -196,7 +186,7 @@ def test_reviewed_evidence_cross_binds_documents_to_live_source_hashes(
     replacement: str,
     message: str,
 ) -> None:
-    path, digest = _datasheet()
+    path = _datasheet()
     original_load = reviewed_evidence._load_asset
 
     def changed_asset(
@@ -213,6 +203,4 @@ def test_reviewed_evidence_cross_binds_documents_to_live_source_hashes(
     monkeypatch.setattr(reviewed_evidence, "_load_asset", changed_asset)
 
     with pytest.raises(BoardCatalogError, match=message):
-        reviewed_evidence.load_reviewed_evidence(
-            catalog_board("nrf52840dk"), path, digest
-        )
+        reviewed_evidence.load_reviewed_evidence(catalog_board("nrf52840dk"), path)

@@ -54,6 +54,7 @@ def read_serial_parameters(expected_text: str | None = "boot ok") -> dict[str, o
         "baudrate": 115200,
         "port": "COM7",
         "reset_on_open": False,
+        "on_exit": None,
     }
 
 
@@ -962,12 +963,11 @@ def test_a10_setup_plan_cycle_limit_relocks_after_three_replacements() -> None:
             "mode": "setup",
             "connection_id": "connection-1",
             "display_name": "Bench Board",
-            "board_type": "nucleo_l476rg",
-            "mcu_part_number": "STM32L476RGT6",
-            "serial_baudrate": 115200,
+                "mcu_part_number": "STM32L476RGT6",
+                "requires_uart": True,
+                "serial_baudrate": 115200,
             "serial_id": "UART-001",
             "datasheet_path": "board-datasheet.pdf",
-            "datasheet_sha256": None,
         },
     }
     for _ in range(3):

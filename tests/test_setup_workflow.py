@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import threading
 from pathlib import Path
 
 import pytest
@@ -8,7 +9,9 @@ import pytest
 from pyocd_debug_mcp.firmstore.reports import ReportWriter
 from pyocd_debug_mcp.firmstore.store import FirmStore, ImmutableArtifactError
 from pyocd_debug_mcp.kernel.run_state import ServerRun
+from pyocd_debug_mcp.kernel.operations import OperationCancelledError
 from pyocd_debug_mcp.setup_flow.preflight import (
+    PreflightBlock,
     NO_INTERNALS_RELAY_INSTRUCTION,
     PreflightInventory,
     PreflightSelections,
@@ -138,6 +141,94 @@ def test_failed_setup_gets_one_fix_with_fresh_preflight_and_first_unverified_res
         setup.reports.create_setup(first.attempt_id, {"terminal_status": "changed"})
 
 
+def test_revocation_serializes_with_phases_and_cannot_precede_a_later_commit(
+    tmp_path: Path,
+) -> None:
+    phase_started = threading.Event()
+    release_phase = threading.Event()
+    revoke_finished = threading.Event()
+    commit_called = threading.Event()
+    handlers = success_handlers()
+
+    def connection(_context) -> SetupPhaseOutcome:
+        phase_started.set()
+        assert release_phase.wait(timeout=5.0)
+        return SetupPhaseOutcome.success("test/connection-verified")
+
+    def commit(_context) -> SetupPhaseOutcome:
+        assert not revoke_finished.is_set()
+        commit_called.set()
+        return SetupPhaseOutcome.success("test/commit-verified")
+
+    handlers[SetupPhase.CONNECTION] = connection
+    handlers[SetupPhase.COMMIT] = commit
+    setup = workflow(tmp_path, lambda _user_input: inventory(), handlers=handlers)
+    setup.begin_plan("allowance-1", USER_INPUT, mode="setup")
+    responses = []
+
+    setup_thread = threading.Thread(
+        target=lambda: responses.append(setup.board_setup("allowance-1", USER_INPUT))
+    )
+    setup_thread.start()
+    assert phase_started.wait(timeout=5.0)
+
+    def revoke() -> None:
+        setup.revoke(USER_INPUT.board_id)
+        revoke_finished.set()
+
+    revoke_thread = threading.Thread(target=revoke)
+    revoke_thread.start()
+    assert not revoke_finished.wait(timeout=0.05)
+    release_phase.set()
+    setup_thread.join(timeout=5.0)
+    revoke_thread.join(timeout=5.0)
+
+    assert not setup_thread.is_alive()
+    assert not revoke_thread.is_alive()
+    assert revoke_finished.is_set()
+    assert responses[0].status in {"setup_completed", "setup_blocked"}
+    if commit_called.is_set():
+        assert responses[0].status == "setup_completed"
+
+
+def test_managed_cancellation_checkpoint_stops_before_later_setup_phases(
+    tmp_path: Path,
+) -> None:
+    cancelled = False
+    commit_called = False
+    handlers = success_handlers()
+
+    def checkpoint() -> None:
+        if cancelled:
+            raise OperationCancelledError("test cancellation")
+
+    def connection(_context) -> SetupPhaseOutcome:
+        nonlocal cancelled
+        cancelled = True
+        return SetupPhaseOutcome.success("test/connection-returned-after-cancel")
+
+    def commit(_context) -> SetupPhaseOutcome:
+        nonlocal commit_called
+        commit_called = True
+        return SetupPhaseOutcome.success("test/commit-should-not-run")
+
+    handlers[SetupPhase.CONNECTION] = connection
+    handlers[SetupPhase.COMMIT] = commit
+    setup = SetupWorkflow(
+        ReportWriter(FirmStore(tmp_path)),
+        lambda _user_input: inventory(),
+        phase_handlers=handlers,  # type: ignore[arg-type]
+        cancellation_checkpoint=checkpoint,
+    )
+    setup.begin_plan("allowance-1", USER_INPUT, mode="setup")
+
+    with pytest.raises(OperationCancelledError, match="test cancellation"):
+        setup.board_setup("allowance-1", USER_INPUT)
+
+    assert commit_called is False
+    assert setup.allowance_closed("allowance-1") is True
+
+
 @pytest.mark.parametrize(
     ("phase", "status"),
     [
@@ -175,6 +266,16 @@ def test_later_phase_terminal_statuses_record_the_first_unverified_transition(
     [
         (
             PreflightInventory(),
+            "setup_blocked",
+            SetupPhase.PREFLIGHT,
+        ),
+        (
+            PreflightInventory(
+                blocking_error=PreflightBlock(
+                    "setup/reviewed-support-not-found",
+                    "No reviewed support accepts the exact MCU and datasheet.",
+                )
+            ),
             "setup_blocked",
             SetupPhase.PREFLIGHT,
         ),
@@ -357,6 +458,14 @@ def test_run_assignments_are_one_to_one_and_mismatch_only_clears_memory() -> Non
     assert "ask what they want" in route.agent_prompt
     assert "new logical" in route.agent_prompt
     assert run.assignments == {}
+
+    assignments.replace({"probe:1": "board_a", "probe:2": "board_b"})
+    assignments.require("probe:1", "board_a")
+    with pytest.raises(SetupWorkflowError, match="setup_overview assignment"):
+        assignments.require("probe:2", "board_a")
+    assignments.clear_board("board_a")
+    with pytest.raises(SetupWorkflowError, match="setup_overview assignment"):
+        assignments.require("probe:1", "board_a")
 
 
 def test_external_confirmation_callback_runs_only_after_explicit_confirmation(

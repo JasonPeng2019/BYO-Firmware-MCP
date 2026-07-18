@@ -1,17 +1,21 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
 
 from pyocd_debug_mcp.setup_flow.board_catalog import (
     BoardCatalogError,
+    ReviewedSupportAmbiguityError,
+    ReviewedSupportNotFoundError,
     _load_catalog,
     catalog_board,
     catalog_board_types,
+    resolve_reviewed_support,
+    resolve_reviewed_support_from_datasheet,
     reviewed_setup_board_types,
 )
-from pyocd_debug_mcp.pack_provision import sha256_file
 from pyocd_debug_mcp.safety.regions import RegionKind
 
 
@@ -68,8 +72,8 @@ def test_catalog_is_closed_and_requires_reviewed_datasheet_hash(tmp_path: Path) 
 
     fake_pdf = tmp_path / "device.pdf"
     fake_pdf.write_bytes(b"%PDF-1.7\nnot the reviewed document")
-    with pytest.raises(BoardCatalogError, match="does not match"):
-        catalog_board("nrf52840dk").validate_datasheet(fake_pdf, "0" * 64)
+    with pytest.raises(BoardCatalogError, match="not reviewed"):
+        catalog_board("nrf52840dk").validate_datasheet(fake_pdf)
 
 
 @pytest.mark.parametrize("board_type", ["nrf52833dk", "nucleo_l476rg"])
@@ -80,23 +84,61 @@ def test_empty_datasheet_allowlist_is_unavailable_not_accept_anything(
     fake_pdf.write_bytes(b"%PDF-1.7\nwell formed but unreviewed")
 
     with pytest.raises(BoardCatalogError, match="No reviewed datasheet"):
-        catalog_board(board_type).validate_datasheet(fake_pdf, sha256_file(fake_pdf))
+        catalog_board(board_type).validate_datasheet(fake_pdf)
 
 
 def test_reviewed_datasheet_requires_exact_bytes_and_internally_computed_hash() -> None:
     datasheet = Path("Nano_BLE_MCU-nRF52840_PS_v1.1.pdf").resolve()
-    digest = sha256_file(datasheet)
 
-    catalog_board("nrf52840dk").validate_datasheet(datasheet, digest)
-    with pytest.raises(BoardCatalogError, match="does not match"):
-        catalog_board("nrf52840dk").validate_datasheet(datasheet, "0" * 64)
+    digest = catalog_board("nrf52840dk").validate_datasheet(datasheet)
+
+    assert digest in catalog_board("nrf52840dk").datasheet_sha256
 
 
 def test_catalog_rejects_non_pdf_evidence(tmp_path: Path) -> None:
     text = tmp_path / "device.txt"
     text.write_text("not a PDF", encoding="utf-8")
     with pytest.raises(BoardCatalogError, match="local PDF"):
-        catalog_board("nrf52840dk").validate_datasheet(Path(text), "0" * 64)
+        catalog_board("nrf52840dk").validate_datasheet(Path(text))
+
+
+def test_reviewed_support_is_resolved_only_from_exact_package_and_server_hash(
+    tmp_path: Path,
+) -> None:
+    pdf = tmp_path / "custom-controller.pdf"
+    pdf.write_bytes(b"%PDF-1.7\ncustom PCB official datasheet")
+    original = catalog_board("nrf52840dk")
+    import hashlib
+
+    digest = hashlib.sha256(pdf.read_bytes()).hexdigest()
+    reviewed = replace(original, datasheet_sha256=(digest,))
+
+    resolved = resolve_reviewed_support_from_datasheet(
+        "nRF52840-QIAA",
+        pdf,
+        candidates=(reviewed,),
+    )
+
+    assert resolved.catalog is reviewed
+    assert resolved.datasheet_sha256 == digest
+    assert resolved.datasheet_path == pdf.resolve()
+    with pytest.raises(ReviewedSupportNotFoundError, match="exact MCU"):
+        resolve_reviewed_support("nRF52840", digest, candidates=(reviewed,))
+    with pytest.raises(ReviewedSupportNotFoundError, match="exact MCU"):
+        resolve_reviewed_support("nRF52840-QIAA", "0" * 64, candidates=(reviewed,))
+
+
+def test_reviewed_support_ambiguity_fails_closed() -> None:
+    original = catalog_board("nrf52840dk")
+    duplicate = replace(original, board_type="alternate_internal_record")
+    digest = original.datasheet_sha256[0]
+
+    with pytest.raises(ReviewedSupportAmbiguityError, match="multiple"):
+        resolve_reviewed_support(
+            original.package_part_number,
+            digest,
+            candidates=(original, duplicate),
+        )
 
 
 def test_reviewed_board_facts_are_packaged_data_not_python_branches(tmp_path: Path) -> None:

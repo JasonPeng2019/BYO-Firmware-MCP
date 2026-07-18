@@ -128,3 +128,11 @@ A distinct restarted Server Run loaded the disk artifacts but initially reported
 flash, erase, bootloader write, or target unlock action ran. The evidence contains both MCP
 timelines, exact commands, profile/report identifiers, SHA-256 hashes, readiness payloads, and the
 two distinct run IDs.
+# Live acceptance gap: exact general native-build helper (2026-07-18)
+
+- **Observed:** `get_setup_status.build_guidance` described native builds but returned no exact
+  general helper command, while the only executable helper was Zephyr-specific.
+- **Required:** a local-only, provider-neutral native-build helper and exact returned command that
+  discovers an installed NCS environment without download or toolchain mutation.
+- **Closure:** tracked by `docs/general-native-build-helper-spec.md` and
+  `docs/general-native-build-helper-plan.md`.

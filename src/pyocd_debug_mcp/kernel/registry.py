@@ -320,7 +320,7 @@ class RegistryFastMCP(FastMCP):
         context = self.get_context()
         timeout = self._timeout_resolver(name, arguments)
         finalizer = None
-        if "on_exit" in arguments:
+        if arguments.get("on_exit") is not None:
             if board_id is None or self._finalizer_resolver is None:
                 raise ToolError(f"Tool '{name}' cannot accept an on_exit finalizer.")
             try:

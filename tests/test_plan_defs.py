@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from pyocd_debug_mcp.guardrails.plan_defs import (
     BudgetMode,
+    FieldType,
     PermissionMode,
     PLAN_DEFINITIONS,
     SafetyMode,
@@ -128,8 +129,12 @@ def test_action_schema_carries_format_constraints() -> None:
         field.name: field for field in PLAN_DEFINITIONS["board_setup"].action_fields
     }
     assert "serial_port" not in setup_fields
-    assert setup_fields["serial_id"].nullable is False
-    assert setup_fields["datasheet_sha256"].nullable is True
+    assert "board_type" not in setup_fields
+    assert "datasheet_sha256" not in setup_fields
+    assert setup_fields["requires_uart"].field_type is FieldType.BOOLEAN
+    assert setup_fields["serial_id"].nullable is True
+    assert setup_fields["serial_baudrate"].nullable is True
+    assert "datasheet_path" in setup_fields
 
     for action_name in ("flash_application", "flash_bootloader"):
         flash_fields = {

@@ -5,7 +5,7 @@ Status: implemented and focused-verification green
 ## Approach
 
 Use the one identity source already authoritative on the live automatic setup path: the exact
-reviewed catalog mapping selected by `board_type`. A staged pack may make that target executable,
+reviewed catalog mapping resolved internally from exact MCU plus server-hashed datasheet. A staged pack may make that target executable,
 but cannot redefine the mapping. Old profiles and pyOCD's spelling normalizer are never mapping
 authority. This is smaller and safer than an alias registry or more naming heuristics.
 

@@ -18,7 +18,6 @@ import os
 import hashlib
 import re
 import secrets
-import shlex
 import subprocess
 import sys
 import time
@@ -52,12 +51,17 @@ from pyocd_debug_mcp.firmstore.reports import ReportWriter
 from pyocd_debug_mcp.firmstore.store import FirmStore
 from pyocd_debug_mcp.local_env import load_local_env
 from pyocd_debug_mcp.kernel.registry import RegistryFastMCP
-from pyocd_debug_mcp.kernel.operations import ManagedOperation, OperationState
+from pyocd_debug_mcp.kernel.operations import (
+    ManagedOperation,
+    OperationState,
+    cancellation_checkpoint,
+    run_if_not_cancelled,
+)
 from pyocd_debug_mcp.kernel.finalizers import build_finalizer
 from pyocd_debug_mcp.kernel.hygiene import cleanup_stale_owned_processes
 from pyocd_debug_mcp.kernel.processes import run_owned
 from pyocd_debug_mcp.kernel.run_state import create_server_run
-from pyocd_debug_mcp.pack_provision import load_manifest, sha256_file
+from pyocd_debug_mcp.pack_provision import load_manifest
 from pyocd_debug_mcp.probe_inventory import (
     list_connected_probes,
     probe_family_from_pyocd_probe,
@@ -98,6 +102,7 @@ from pyocd_debug_mcp.services.uart_capture import (
     write_uart_output,
 )
 from pyocd_debug_mcp.setup_flow.preflight import (
+    PreflightBlock,
     PreflightSelections,
     PreflightInventory,
     ProbeCandidate,
@@ -117,20 +122,22 @@ from pyocd_debug_mcp.setup_flow.research import (
 )
 from pyocd_debug_mcp.setup_flow.board_catalog import (
     BoardCatalogError,
-    catalog_board,
-    catalog_board_for_mcu,
-    catalog_board_types,
-    reviewed_setup_board_types,
+    ReviewedSupportAmbiguityError,
+    ReviewedSupportNotFoundError,
+    hash_local_datasheet,
+    resolve_reviewed_support,
+    resolve_reviewed_support_from_datasheet,
 )
 from pyocd_debug_mcp.setup_flow.reviewed_evidence import (
     load_pinned_reviewed_evidence,
-    load_reviewed_evidence,
 )
 from pyocd_debug_mcp.setup_flow.setup import (
+    RunAssignmentStore,
     SetupPhase,
     SetupPhaseContext,
     SetupPhaseOutcome,
     SetupWorkflow,
+    SetupWorkflowError,
 )
 from pyocd_debug_mcp.setup_flow.targets import (
     ProfileCommitCoordinator,
@@ -233,6 +240,7 @@ load_local_env()
 mcp = RegistryFastMCP("pyocd-debug")
 tool_registry = mcp.registry
 server_run = create_server_run()
+assignment_store = RunAssignmentStore(server_run.assignments)
 
 connection_manager = ConnectionManager()
 gate_manager = GateManager(server_run.gates)
@@ -310,18 +318,25 @@ def _validate_plan_scope(
 ) -> None:
     connection = connection_manager.maybe_connection(board_id)
     if definition.action_name == "board_setup":
+        try:
+            profile = _profile_repository.load(board_id, include_legacy=True)
+        except ProfileError:
+            profile = None
         existing_profile_paths = tuple(
             _profile_repository.store.layout.board_profile(board_id, suffix=suffix)
             for suffix in (".yaml", ".yml", ".json")
         )
-        if any(path.exists() for path in existing_profile_paths):
-            raise PlanRefusal(
-                "plan/setup-established-profile",
-                f"Board '{board_id}' already has a profile. Setup cannot rewrite established "
-                "identity; validate it, or use setup_overview to create a new logical board after "
-                "the user elects to adopt mismatched hardware.",
-                session_id=session_id,
-            )
+        if profile is not None or any(path.exists() for path in existing_profile_paths):
+            active = plan_engine.active_plan("board_setup", board_id)
+            mode = active.action_parameters.get("mode") if active is not None else None
+            if mode != "repair" or profile is None or not _profile_needs_repair(profile):
+                raise PlanRefusal(
+                    "plan/setup-established-profile",
+                    f"Board '{board_id}' already has a profile. Only an incomplete, parseable "
+                    "same-identity profile can use mode=repair; established identity cannot be "
+                    "rewritten.",
+                    session_id=session_id,
+                )
         if session_id is not None or connection is not None:
             raise PlanRefusal(
                 "plan/setup-session-active",
@@ -379,6 +394,7 @@ _WRITE_CAPABLE_ACTIONS = frozenset(
         "flash_application",
         "flash_bootloader",
         "write_serial",
+        "serial_exchange",
     }
 )
 _safety_policy: SafetyPolicy
@@ -521,11 +537,25 @@ def _enforce_guarded_invocation(
     board_id: str,
     arguments: Mapping[str, object],
 ) -> None:
-    parameters = {
-        name: value for name, value in arguments.items() if name not in {"board_id", "on_exit"}
-    }
+    parameters = {name: value for name, value in arguments.items() if name != "board_id"}
 
     def validate_layer0_and_action() -> None:
+        if tool_name in {"board_setup", "board_fix_setup"}:
+            connection_id = parameters.get("connection_id")
+            if not isinstance(connection_id, str):
+                raise PlanRefusal(
+                    "plan/setup-assignment-invalid",
+                    "Setup requires the exact connection_id returned by setup_overview.",
+                    session_id=_active_session_id(board_id),
+                )
+            try:
+                assignment_store.require(connection_id, board_id)
+            except SetupWorkflowError as exc:
+                raise PlanRefusal(
+                    "plan/setup-assignment-invalid",
+                    str(exc),
+                    session_id=_active_session_id(board_id),
+                ) from exc
         _require_layer0(tool_name, board_id)
         if tool_name == "target_unlock":
             _unlock_coordinator.validate_execution(board_id, parameters)
@@ -1125,6 +1155,7 @@ def disconnect(board_id: str) -> str:
     with connection_manager.lock_for(board_id):
         connection = connection_manager.maybe_connection(board_id)
         if connection is None:
+            assignment_store.clear_board(board_id)
             gate_manager.clear(board_id, "disconnect requested")
             plan_engine.invalidate_board(board_id, "board disconnected")
             unlock = globals().get("_unlock_coordinator")
@@ -1153,6 +1184,7 @@ def disconnect(board_id: str) -> str:
         handle = connection.handle
         runtime_session = connection.runtime_session
         gate_manager.clear(board_id, "board disconnected")
+        assignment_store.clear_board(board_id)
         plan_engine.invalidate_board(board_id, "board disconnected")
         unlock = globals().get("_unlock_coordinator")
         if isinstance(unlock, UnlockCoordinator):
@@ -2178,15 +2210,19 @@ def _derive_reviewed_safety_map(board_id: str):
     """Reproduce one complete candidate from profile plus packaged reviewed evidence."""
 
     profile = _profile_repository.load(board_id, include_legacy=False)
-    catalog = catalog_board_for_mcu(profile.mcu_part_number or "")
-    if catalog is None or not catalog.automatic_setup_reviewed:
-        raise SafetyMapError(
-            "the board type lacks complete reviewed identity, partition, and evidence authority"
-        )
     profile_document = profile.to_document()
     datasheet_digest = profile_document.get("datasheet_sha256")
     if not isinstance(datasheet_digest, str) or not datasheet_digest.strip():
         raise SafetyMapError("the profile has no reviewed datasheet SHA-256 anchor")
+    try:
+        catalog = resolve_reviewed_support(
+            profile.mcu_part_number or "",
+            datasheet_digest,
+        )
+    except BoardCatalogError as exc:
+        raise SafetyMapError(
+            "the profile lacks one unambiguous reviewed MCU/datasheet authority"
+        ) from exc
     bundle = load_pinned_reviewed_evidence(catalog, datasheet_digest)
     erase = bundle.reconciliation.erase_geometry
     if erase is None:
@@ -2340,23 +2376,31 @@ def _stamp_validation_session(
 ) -> bool:
     connection = connection_manager.maybe_connection(board_id)
     stable_probe = (probe_uid or probe_id).strip()
+    if connection is None:
+        return False
     if (
-        connection is not None
-        and connection.handle.probe_uid
+        connection.handle.probe_uid
         and connection.handle.probe_uid.casefold() != stable_probe.casefold()
     ):
         return False
-    connection_id = (
-        connection.connection_id if connection is not None else f"probe:{stable_probe.casefold()}"
-    )
-    gate_manager.stamp_validation(
-        board_id=board_id,
-        connection_id=connection_id,
-        probe_identity=stable_probe,
-        observed_mcu=observed_mcu,
-        validation_run=validation_run,
-        map_digest=map_digest,
-    )
+    provisional_connection_id = f"probe:{probe_uid or probe_id}"
+    try:
+        assignment_store.run_if_current(
+            provisional_connection_id,
+            board_id,
+            lambda: run_if_not_cancelled(
+                lambda: gate_manager.stamp_validation(
+                    board_id=board_id,
+                    connection_id=connection.connection_id,
+                    probe_identity=stable_probe,
+                    observed_mcu=observed_mcu,
+                    validation_run=validation_run,
+                    map_digest=map_digest,
+                )
+            ),
+        )
+    except SetupWorkflowError:
+        return False
     return True
 
 
@@ -2368,20 +2412,50 @@ def _record_validation_mismatch(
     expected_mcu: str,
     observed_mcu: str,
 ) -> bool:
-    connection = connection_manager.maybe_connection(board_id)
-    stable_probe = (probe_uid or probe_id).strip()
-    connection_id = (
-        connection.connection_id if connection is not None else f"probe:{stable_probe.casefold()}"
-    )
-    gate_manager.record_mismatch(
-        board_id=board_id,
-        connection_id=connection_id,
-        probe_identity=stable_probe,
-        expected_mcu=expected_mcu,
-        observed_mcu=observed_mcu,
-        validation_run=validation_run,
-    )
+    def commit_mismatch() -> None:
+        assignment_store.clear_board(board_id)
+        connection = connection_manager.maybe_connection(board_id)
+        stable_probe = (probe_uid or probe_id).strip()
+        connection_id = (
+            connection.connection_id
+            if connection is not None
+            else f"probe:{stable_probe.casefold()}"
+        )
+        gate_manager.record_mismatch(
+            board_id=board_id,
+            connection_id=connection_id,
+            probe_identity=stable_probe,
+            expected_mcu=expected_mcu,
+            observed_mcu=observed_mcu,
+            validation_run=validation_run,
+        )
+
+    provisional_connection_id = f"probe:{probe_uid or probe_id}"
+    try:
+        assignment_store.run_if_current(
+            provisional_connection_id,
+            board_id,
+            lambda: run_if_not_cancelled(commit_mismatch),
+        )
+    except SetupWorkflowError:
+        return False
     return True
+
+
+def _rollback_validation_session(board_id: str, validation_run: str) -> None:
+    """Remove only the failed validation's newly created live authority and connection."""
+
+    with connection_manager.lock_for(board_id):
+        if not gate_manager.rollback_validation(board_id, validation_run):
+            return
+        connection = connection_manager.maybe_connection(board_id)
+        if connection is None:
+            return
+        connection_manager.clear(board_id)
+        try:
+            target_control.close_session(connection.handle)
+        finally:
+            _session_store.close_session(connection.runtime_session)
 
 
 _board_validator = BoardValidator(
@@ -2399,7 +2473,9 @@ _board_validator = BoardValidator(
         _load_validation_safety_map,
         _stamp_validation_session,
         _record_validation_mismatch,
+        _rollback_validation_session,
     ),
+    cancellation_checkpoint=cancellation_checkpoint,
 )
 
 
@@ -2436,7 +2512,28 @@ _setup_selections_by_board: dict[str, PreflightSelections] = {}
 _setup_pack_pipelines: dict[tuple[str, str], PackCandidatePipeline] = {}
 
 
+def _resolve_setup_support(user_input: SetupUserInput):
+    """Resolve internal reviewed support without a caller-owned catalog identifier."""
+
+    return resolve_reviewed_support_from_datasheet(
+        user_input.mcu_part_number,
+        Path(user_input.datasheet_path),
+    )
+
+
 def _setup_inventory(user_input: SetupUserInput) -> PreflightInventory:
+    try:
+        support = _resolve_setup_support(user_input)
+    except (ReviewedSupportNotFoundError, ReviewedSupportAmbiguityError) as exc:
+        return PreflightInventory(blocking_error=PreflightBlock(exc.code, str(exc)))
+    except (BoardCatalogError, OSError, ValueError) as exc:
+        return PreflightInventory(
+            blocking_error=PreflightBlock(
+                "setup/datasheet-evidence-invalid",
+                f"The local official datasheet could not be accepted: {exc}",
+            )
+        )
+    catalog = support.catalog
     validation_inventory = _validation_inventory()
     probes = tuple(
         ProbeCandidate(
@@ -2489,13 +2586,8 @@ def _setup_inventory(user_input: SetupUserInput) -> PreflightInventory:
     # A fresh profile has no board YAML yet, but a complete reviewed catalog entry is itself
     # authoritative for the exact pyOCD target. Package suffixes such as ``-QIAA`` must not
     # force an unnecessary agent research round trip when the exact built-in target is present.
-    try:
-        catalog = catalog_board(user_input.board_type)
-    except BoardCatalogError:
-        catalog = None
     if (
-        catalog is not None
-        and user_input.mcu_part_number == catalog.package_part_number
+        user_input.mcu_part_number == catalog.package_part_number
         and catalog.pyocd_target.casefold() in targets
     ):
         exact = (catalog.pyocd_target.casefold(),)
@@ -2511,7 +2603,7 @@ def _setup_inventory(user_input: SetupUserInput) -> PreflightInventory:
     target_override = _setup_target_overrides.get(user_input.board_id)
     if target_override is not None:
         supported = set(targets) | set(manifest_targets)
-        reviewed_target = catalog.pyocd_target.casefold() if catalog is not None else None
+        reviewed_target = catalog.pyocd_target.casefold()
         if target_override in supported and target_override == reviewed_target:
             exact = (target_override,)
     return PreflightInventory(
@@ -2531,34 +2623,19 @@ def _mcu_family(mcu_part_number: str, target: str) -> str:
 
 def _setup_connection_phase(context: SetupPhaseContext) -> SetupPhaseOutcome:
     try:
-        catalog = catalog_board(context.user_input.board_type)
-        if context.user_input.mcu_part_number != catalog.package_part_number:
-            raise BoardCatalogError(
-                f"MCU part '{context.user_input.mcu_part_number}' is not the exact reviewed "
-                f"package '{catalog.package_part_number}' for {catalog.board_type}. Ask for "
-                "the package marking; do not guess or rewrite it."
-            )
-        datasheet = Path(context.user_input.datasheet_path).expanduser().resolve()
-        actual_datasheet_hash = sha256_file(datasheet)
-        supplied_datasheet_hash = (context.user_input.datasheet_sha256 or "").strip()
-        if supplied_datasheet_hash and (
-            actual_datasheet_hash.casefold() != supplied_datasheet_hash.casefold()
-        ):
-            raise BoardCatalogError("The supplied datasheet SHA-256 does not match the PDF.")
-        catalog.validate_datasheet(datasheet, actual_datasheet_hash)
+        support = _resolve_setup_support(context.user_input)
+        catalog = support.catalog
+        actual_datasheet_hash = support.datasheet_sha256
     except (BoardCatalogError, OSError, ValueError) as exc:
         return SetupPhaseOutcome.stop(
             "setup_blocked",
-            "setup/catalog-evidence-mismatch",
-            f"Board, MCU, or datasheet evidence did not match reviewed setup support: {exc}",
+            getattr(exc, "code", "setup/catalog-evidence-mismatch"),
+            f"The exact MCU and server-hashed datasheet did not match reviewed support: {exc}",
         )
     try:
-        existing = _profile_repository.load(context.user_input.board_id, include_legacy=False)
-        return SetupPhaseOutcome.success(
-            "setup/core-profile-already-committed", profile=existing.source_path.name
-        )
+        existing = _profile_repository.load(context.user_input.board_id, include_legacy=True)
     except ProfileError:
-        pass
+        existing = None
     target = context.preflight.selected_target
     probe = context.preflight.selected_probe
     if target is None or probe is None:
@@ -2567,17 +2644,16 @@ def _setup_connection_phase(context: SetupPhaseContext) -> SetupPhaseOutcome:
             "setup/connection-input-missing",
             "Target or probe resolution is incomplete; stop before committing a profile.",
         )
-    if target.casefold() != catalog.pyocd_target or probe.probe_family != catalog.probe_family:
+    if target.casefold() != catalog.pyocd_target or probe.probe_family == "unknown":
         if probe.probe_family == "unknown":
             remedy = (
-                "The debug probe provider could not be identified. Choose a probe whose provider "
-                f"is reported as '{catalog.probe_family}', or extend the reviewed probe-provider "
-                "compatibility data before retrying setup."
+                "The debug probe provider could not be identified. Choose a recognized pyOCD "
+                "probe provider before retrying setup."
             )
         else:
             remedy = (
-                "The selected target or probe provider does not match the reviewed board type. "
-                "Choose the matching reviewed target and probe before retrying setup."
+                "The selected target does not match the resolved reviewed MCU/device support. "
+                "Choose the matching reviewed target before retrying setup."
             )
         return SetupPhaseOutcome.stop(
             "setup_connection_failed",
@@ -2587,7 +2663,27 @@ def _setup_connection_phase(context: SetupPhaseContext) -> SetupPhaseOutcome:
                 "selected_target": target,
                 "expected_target": catalog.pyocd_target,
                 "selected_probe_family": probe.probe_family,
-                "expected_probe_family": catalog.probe_family,
+            },
+        )
+
+    if existing is not None and (
+        (
+            existing.mcu_part_number is not None
+            and existing.mcu_part_number != context.user_input.mcu_part_number
+        )
+        or _profile_name_key(existing.display_name)
+        != _profile_name_key(context.user_input.display_name)
+        or existing.board.pyocd_target.casefold() != target.casefold()
+    ):
+        return SetupPhaseOutcome.stop(
+            "setup_connection_failed",
+            "setup/existing-profile-identity-mismatch",
+            "Repair inputs do not match the established profile identity. Stop rather than "
+            "rewriting the profile; restart from setup_overview with the recorded board name.",
+            details={
+                "expected_display_name": existing.display_name,
+                "expected_mcu_part_number": existing.mcu_part_number,
+                "expected_target": existing.board.pyocd_target,
             },
         )
 
@@ -2615,47 +2711,70 @@ def _setup_connection_phase(context: SetupPhaseContext) -> SetupPhaseOutcome:
         finally:
             target_control.close_session(handle)
 
-    coordinator = ProfileCommitCoordinator(_profile_repository, live_connect=connect)
-    try:
-        committed = coordinator.commit_core(
+    optional_fields = {
+        "test_read_address": catalog.test_read_address,
+        "datasheet_sha256": actual_datasheet_hash,
+        **(
+            {"debug_connect_mode": catalog.debug_connect_mode}
+            if catalog.debug_connect_mode is not None
+            else {}
+        ),
+        **(
+            {"debug_clock_hz": catalog.debug_clock_hz}
+            if catalog.debug_clock_hz is not None
+            else {}
+        ),
+        **(
             {
-                "board_id": context.user_input.board_id,
-                "display_name": context.user_input.display_name,
-                "mcu_part_number": context.user_input.mcu_part_number,
-                "mcu_family": _mcu_family(context.user_input.mcu_part_number, target),
-                "probe_family": probe.probe_family,
-                "pyocd_target": target,
-                "serial_baudrate": context.user_input.serial_baudrate,
+                "silicon_id_address": catalog.silicon_id_address,
+                "silicon_id_expected": catalog.silicon_id_expected,
+                "silicon_id_mask": catalog.silicon_id_mask,
+                "silicon_id_width_bits": catalog.silicon_id_width_bits,
+                "silicon_id_label": catalog.silicon_id_label,
             }
-        )
+            if catalog.silicon_id_address is not None
+            else {}
+        ),
+    }
+    coordinator = ProfileCommitCoordinator(
+        _profile_repository,
+        live_connect=connect,
+        before_commit=cancellation_checkpoint,
+    )
+    try:
+        if existing is None:
+            committed = coordinator.commit_core(
+                {
+                    "board_id": context.user_input.board_id,
+                    "display_name": context.user_input.display_name,
+                    "mcu_part_number": context.user_input.mcu_part_number,
+                    "mcu_family": _mcu_family(context.user_input.mcu_part_number, target),
+                    "probe_family": probe.probe_family,
+                    "pyocd_target": target,
+                    "serial_baudrate": (
+                        context.user_input.serial_baudrate or catalog.default_baudrate
+                    ),
+                }
+            )
+        else:
+            # A repair never trusts the old partial commit as current hardware proof.
+            # Re-run the same bounded live identity/read checks before enriching it.
+            connect(target, None)
+            if existing.read_only:
+                cancellation_checkpoint()
+                committed = _profile_repository.commit_legacy_migration(
+                    _profile_repository.stage_legacy_migration(
+                        context.user_input.board_id,
+                        context.user_input.mcu_part_number,
+                    )
+                )
+            else:
+                committed = existing
+        cancellation_checkpoint()
         committed = _profile_repository.commit_optional(
             _profile_repository.stage_optional(
                 context.user_input.board_id,
-                {
-                    "test_read_address": catalog.test_read_address,
-                    "datasheet_sha256": actual_datasheet_hash,
-                    **(
-                        {"debug_connect_mode": catalog.debug_connect_mode}
-                        if catalog.debug_connect_mode is not None
-                        else {}
-                    ),
-                    **(
-                        {"debug_clock_hz": catalog.debug_clock_hz}
-                        if catalog.debug_clock_hz is not None
-                        else {}
-                    ),
-                    **(
-                        {
-                            "silicon_id_address": catalog.silicon_id_address,
-                            "silicon_id_expected": catalog.silicon_id_expected,
-                            "silicon_id_mask": catalog.silicon_id_mask,
-                            "silicon_id_width_bits": catalog.silicon_id_width_bits,
-                            "silicon_id_label": catalog.silicon_id_label,
-                        }
-                        if catalog.silicon_id_address is not None
-                        else {}
-                    ),
-                },
+                optional_fields,
             )
         )
     except Exception as exc:  # noqa: BLE001 - workflow records the typed terminal result
@@ -2668,13 +2787,18 @@ def _setup_connection_phase(context: SetupPhaseContext) -> SetupPhaseOutcome:
         "setup/core-profile-committed-after-connect",
         profile=committed.source_path.name,
         live_connections=len(opened),
-        board_type=catalog.board_type,
         datasheet_sha256=actual_datasheet_hash,
     )
 
 
 def _setup_validation_phase(context: SetupPhaseContext) -> SetupPhaseOutcome:
-    result = _board_validator.validate(ValidationRequest(context.user_input.board_id))
+    selected_probe = context.preflight.selected_probe
+    result = _board_validator.validate(
+        ValidationRequest(
+            context.user_input.board_id,
+            selected_probe.probe_id if selected_probe is not None else None,
+        )
+    )
     if result.status == "validation_passed" or (
         result.status == "validation_incomplete"
         and result.code == "validation/safety-missing"
@@ -2696,17 +2820,28 @@ def _setup_validation_phase(context: SetupPhaseContext) -> SetupPhaseOutcome:
 def _build_automatic_catalog_safety(context: SetupPhaseContext):
     """Build the first v2 map only after pinned independent authorities agree."""
 
-    catalog = catalog_board(context.user_input.board_type)
     profile = _profile_repository.load(context.user_input.board_id, include_legacy=False)
-    datasheet = Path(context.user_input.datasheet_path).expanduser().resolve()
-    digest = sha256_file(datasheet)
+    profile_document = profile.to_document()
+    datasheet_digest = profile_document.get("datasheet_sha256")
+    if not isinstance(datasheet_digest, str) or not datasheet_digest.strip():
+        raise BoardCatalogError("profile has no server-computed datasheet digest")
+    catalog = resolve_reviewed_support(profile.mcu_part_number or "", datasheet_digest)
     if profile.mcu_part_number != catalog.package_part_number:
         raise BoardCatalogError(
             "profile MCU part number is not the exact reviewed package variant; repair the "
             "profile from the user's exact package marking before safety setup"
         )
-    load_reviewed_evidence(catalog, datasheet, digest)
+    _datasheet_path, current_digest = hash_local_datasheet(
+        Path(context.user_input.datasheet_path)
+    )
+    if current_digest != datasheet_digest:
+        raise BoardCatalogError(
+            "datasheet bytes changed after profile acceptance; restart setup with one stable "
+            "local PDF"
+        )
+    load_pinned_reviewed_evidence(catalog, datasheet_digest)
     candidate = _derive_reviewed_safety_map(context.user_input.board_id)
+    cancellation_checkpoint()
     _safety_repository.commit(context.user_input.board_id, candidate)
     return candidate
 
@@ -2783,6 +2918,7 @@ def _setup_commit_phase(context: SetupPhaseContext) -> SetupPhaseOutcome:
     try:
         profile = _profile_repository.load(board_id, include_legacy=False)
         if profile.safety_ref != expected_ref:
+            cancellation_checkpoint()
             profile = _profile_repository.commit_safety_ref(
                 _profile_repository.stage_safety_ref(board_id, expected_ref)
             )
@@ -2920,7 +3056,10 @@ def _get_setup_status(board_id: str) -> Mapping[str, object]:
         except Exception as exc:  # noqa: BLE001 - readiness is diagnostic, never authority
             uart_reason = f"UART attachment could not be resolved: {exc}"
     if not configuration_ready:
-        remedy = "Complete board_setup if no profile exists, then run board_safety_refresh."
+        remedy = (
+            "Complete board_setup if no profile exists. If the profile exists but stable safety "
+            "evidence is missing, invalid, old, or changed, run board_safety_refresh."
+        )
     elif connection is None:
         remedy = "Connect this board and run board_validate in the current Server Run."
     elif not live_session_ready:
@@ -2952,46 +3091,14 @@ def _get_setup_status(board_id: str) -> Mapping[str, object]:
                 ),
             },
             "safety_boundary": (
-                "Build guidance is not safety authority. Collect the selected output, submit "
-                "the matching flash plan, then rely on flash-time containment. Use "
+                "Build guidance is advisory and not safety authority. Optionally collect the "
+                "selected output, then submit the matching flash plan, which binds that artifact. "
+                "The flash action revalidates its bytes and complete containment before target "
+                "mutation. Use "
                 "board_safety_refresh only for a stable-map problem."
             ),
             "toolchain_fallback": None,
         }
-        catalog = catalog_board_for_mcu(profile.mcu_part_number)
-        if catalog is not None and catalog.zephyr_board_target:
-            target = catalog.zephyr_board_target
-            build_argv = [
-                sys.executable,
-                "-m",
-                "pyocd_debug_mcp.zephyr_build",
-                "--app-dir",
-                "<app-dir>",
-                "--build-dir",
-                "<build-dir>",
-                "--board",
-                target,
-            ]
-            powershell_command = "& " + " ".join(
-                "'" + item.replace("'", "''") + "'" for item in build_argv
-            )
-            build_guidance["toolchain_fallback"] = {
-                "provider": "zephyr_west",
-                "use_when": (
-                    "Use only when this project is a Zephyr application and no compatible "
-                    "local project build command is already available."
-                ),
-                "zephyr_board_target": target,
-                "recommended_argv": build_argv,
-                "recommended_command": (
-                    powershell_command if sys.platform == "win32" else shlex.join(build_argv)
-                ),
-                "recommended_powershell": powershell_command,
-                "reason": (
-                    "This optional parameterized fallback reuses or bootstraps a Zephyr workspace; "
-                    "it is not the generic build route and is not an MCP hardware action."
-                ),
-            }
     return {
         "status": "setup_ready" if live_session_ready else "setup_not_ready",
         "board_id": board_id,
@@ -3015,6 +3122,76 @@ def _profile_name_key(value: str) -> str:
     return unicodedata.normalize("NFKC", value).casefold().strip()
 
 
+def _profile_needs_repair(profile: BoardProfile) -> bool:
+    """Return whether setup must restore missing durable reviewed evidence."""
+
+    digest = profile.to_document().get("datasheet_sha256")
+    expected_ref = (
+        _firm_store.layout.safety_reference_prefix(profile.board_id) / "memory_map.yaml"
+    ).as_posix()
+    return (
+        profile.read_only
+        or profile.safety_ref != expected_ref
+        or not isinstance(digest, str)
+    )
+
+
+def _replace_setup_assignments(bindings: Mapping[str, str], reason: str) -> None:
+    """Replace provisional routing and revoke authority whose binding changed."""
+
+    previous = assignment_store.bindings()
+    replacement = dict(bindings)
+    if previous == replacement:
+        return
+    affected = set(previous.values()) | set(replacement.values())
+    workflow = globals().get("_setup_workflow")
+    if isinstance(workflow, SetupWorkflow):
+        for board_id in affected:
+            workflow.revoke(board_id)
+
+    def replacement_owner(connection_id: str) -> str | None:
+        for candidate, board_id in replacement.items():
+            if candidate.casefold() == connection_id.casefold():
+                return board_id
+            if candidate.casefold().startswith("probe:") and connection_id.casefold().startswith(
+                "probe:"
+            ):
+                if _stable_identity_equal(
+                    candidate.split(":", 1)[1],
+                    connection_id.split(":", 1)[1],
+                ):
+                    return board_id
+        return None
+
+    # A provisional reassignment must retire any conflicting physical session before
+    # publishing the new one-to-one mapping. Otherwise always-visible read/reset tools
+    # could still reach the probe through its former logical board.
+    for connected_board in connection_manager.assigned_board_ids():
+        connection = connection_manager.connection_for(connected_board)
+        if replacement_owner(connection.connection_id) == connected_board:
+            continue
+        affected.add(connected_board)
+        if isinstance(workflow, SetupWorkflow):
+            workflow.revoke(connected_board)
+        with connection_manager.lock_for(connected_board):
+            current = connection_manager.maybe_connection(connected_board)
+            if current is not connection:
+                continue
+            connection_manager.clear(connected_board)
+            gate_manager.clear(connected_board, reason)
+            try:
+                target_control.close_session(connection.handle)
+            finally:
+                _session_store.close_session(connection.runtime_session)
+    assignment_store.replace(replacement)
+    for board_id in affected:
+        plan_engine.invalidate_board(board_id, reason)
+        gate_manager.clear(board_id, reason)
+        loader = globals().get("setup_tool_loader")
+        if isinstance(loader, SetupToolLoadState):
+            loader.clear_allowance(board_id)
+
+
 def _proposed_board_id(display_name: str, existing: set[str]) -> str:
     ascii_name = unicodedata.normalize("NFKD", display_name).encode("ascii", "ignore").decode()
     stem = re.sub(r"[^a-z0-9]+", "_", ascii_name.casefold()).strip("_")[:48]
@@ -3029,7 +3206,10 @@ def _proposed_board_id(display_name: str, existing: set[str]) -> str:
     return candidate
 
 
-def _setup_overview(board_names: list[str] | None) -> Mapping[str, object]:
+def _setup_overview(
+    board_names: list[str] | None,
+    connection_assignments: Mapping[str, str] | None = None,
+) -> Mapping[str, object]:
     """Give an agent the complete startup route without asking the user for internals."""
 
     try:
@@ -3046,15 +3226,18 @@ def _setup_overview(board_names: list[str] | None) -> Mapping[str, object]:
             "routes": [],
         }
     profile_rows: list[dict[str, object]] = []
-    by_name: dict[str, tuple[BoardProfile, bool, str]] = {}
+    by_name: dict[str, tuple[BoardProfile, str, str]] = {}
     for profile in profiles:
         complete = False
         reason = "legacy or incomplete profile; repair is required"
-        if not profile.read_only and profile.safety_ref:
+        route_kind = "repair"
+        if not _profile_needs_repair(profile):
+            route_kind = "refresh"
             try:
                 artifacts = _safety_repository.load_current(profile.board_id)
                 require_reconciled_authority(artifacts)
                 complete = not region_conflicts(artifacts.regions)
+                route_kind = "validate" if complete else "refresh"
                 reason = (
                     "profile and safety map are present; validate this run"
                     if complete
@@ -3071,7 +3254,7 @@ def _setup_overview(board_names: list[str] | None) -> Mapping[str, object]:
                 "route_reason": reason,
             }
         )
-        by_name[_profile_name_key(profile.display_name)] = (profile, complete, reason)
+        by_name[_profile_name_key(profile.display_name)] = (profile, route_kind, reason)
 
     try:
         inventory = _validation_inventory()
@@ -3112,6 +3295,7 @@ def _setup_overview(board_names: list[str] | None) -> Mapping[str, object]:
         inventory_error = None
 
     routes: list[dict[str, object]] = []
+    provisional_bindings: dict[str, str] = {}
     validated_names: list[tuple[str, str]] = []
     no_board_sentinel = False
     if board_names is not None:
@@ -3133,6 +3317,51 @@ def _setup_overview(board_names: list[str] | None) -> Mapping[str, object]:
             validated_names.append((name, key))
 
     if board_names is not None and not no_board_sentinel:
+        available_connections = {
+            str(row["connection_id"]) for row in connection_rows
+        }
+        assignments = dict(connection_assignments or {})
+        expected_names = {name for name, _key in validated_names}
+        if assignments and set(assignments) != expected_names:
+            raise ValueError("connection_assignments must contain exactly every familiar name")
+        if assignments and (
+            len(set(assignments.values())) != len(assignments)
+            or not set(assignments.values()).issubset(available_connections)
+        ):
+            raise ValueError("connection assignments must be unique current server connection IDs")
+        if len(validated_names) != len(connection_rows):
+            _replace_setup_assignments({}, "setup overview requires assignment clarification")
+            return {
+                "status": "setup_assignment_clarification_required",
+                "agent_prompt": (
+                    "The number of familiar names does not match the number of visible debug "
+                    "connections. Clarify the connected boards in ordinary language before setup "
+                    "or validation; do not expose machine IDs."
+                ),
+                "profiles": profile_rows,
+                "connections": connection_rows,
+                "serial_choices": serial_rows,
+                "inventory_error": inventory_error,
+                "routes": [],
+            }
+        if len(connection_rows) > 1 and not assignments:
+            _replace_setup_assignments({}, "setup overview requires explicit assignments")
+            return {
+                "status": "setup_assignment_required",
+                "agent_prompt": (
+                    "Ask which friendly debug-probe description belongs to each familiar board "
+                    "name. Then retry setup_overview with the same board_names and copy only the "
+                    "server connection IDs into connection_assignments; never show those IDs."
+                ),
+                "profiles": profile_rows,
+                "connections": connection_rows,
+                "serial_choices": serial_rows,
+                "inventory_error": inventory_error,
+                "routes": [],
+                "assignment_template": {name: None for name, _key in validated_names},
+            }
+        if not assignments and len(connection_rows) == 1:
+            assignments = {validated_names[0][0]: str(connection_rows[0]["connection_id"])}
         existing_ids = {profile.board_id for profile in profiles}
         setup_definition = PLAN_DEFINITIONS["board_setup"]
         for name, key in validated_names:
@@ -3140,30 +3369,28 @@ def _setup_overview(board_names: list[str] | None) -> Mapping[str, object]:
             if match is None:
                 board_id = _proposed_board_id(name, existing_ids)
                 existing_ids.add(board_id)
-                single_connection = (
-                    connection_rows[0]["connection_id"] if len(connection_rows) == 1 else None
-                )
+                single_connection = assignments.get(name)
+                assert single_connection is not None
+                provisional_bindings[single_connection] = board_id
                 single_serial = serial_rows[0]["choice_id"] if len(serial_rows) == 1 else None
                 known_parameters: dict[str, object] = {
                     "mode": "setup",
                     "connection_id": single_connection,
                     "display_name": name,
-                    "board_type": None,
                     "mcu_part_number": None,
+                    "requires_uart": None,
                     "serial_baudrate": None,
                     "serial_id": single_serial,
                     "datasheet_path": None,
-                    "datasheet_sha256": None,
                 }
                 parameter_template = {
                     field.name: known_parameters.get(field.name)
                     for field in setup_definition.action_fields
                 }
                 required_user_facts = [
-                    "exact board type",
                     "exact package-level MCU part number (full package marking)",
                     "authoritative local datasheet PDF",
-                    "UART baud rate used by this firmware",
+                    "whether this firmware workflow uses UART; if yes, its baud rate",
                     "explicit ordinary-language authorization to run bounded, non-destructive setup",
                 ]
                 accepted_response: dict[str, object] = {
@@ -3179,9 +3406,13 @@ def _setup_overview(board_names: list[str] | None) -> Mapping[str, object]:
                         "<one connections[].connection_id selected from its friendly_name>"
                     )
                 if len(serial_rows) == 0:
-                    required_user_facts.append("attach and identify the board's UART connection")
+                    required_user_facts.append(
+                        "if UART is used, attach and identify the board's UART connection"
+                    )
                 elif len(serial_rows) > 1:
-                    required_user_facts.append("which friendly UART choice belongs to this board")
+                    required_user_facts.append(
+                        "if UART is used, which friendly UART choice belongs to this board"
+                    )
                     accepted_response["serial_id"] = (
                         "<one serial_choices[].choice_id selected from its friendly_name>"
                     )
@@ -3212,7 +3443,7 @@ def _setup_overview(board_names: list[str] | None) -> Mapping[str, object]:
                     }
                 )
                 continue
-            profile, _complete, reason = match
+            profile, route_kind, reason = match
             connection = connection_manager.maybe_connection(profile.board_id)
             mismatch = None
             if connection is not None:
@@ -3240,6 +3471,79 @@ def _setup_overview(board_names: list[str] | None) -> Mapping[str, object]:
                     }
                 )
                 continue
+            provisional_bindings[assignments[name]] = profile.board_id
+            if route_kind == "repair":
+                setup_definition = PLAN_DEFINITIONS["board_setup"]
+                single_serial = serial_rows[0]["choice_id"] if len(serial_rows) == 1 else None
+                known_parameters: dict[str, object] = {
+                    "mode": "repair",
+                    "connection_id": assignments[name],
+                    "display_name": profile.display_name,
+                    "mcu_part_number": profile.mcu_part_number,
+                    "requires_uart": None,
+                    "serial_baudrate": None,
+                    "serial_id": single_serial,
+                    "datasheet_path": None,
+                }
+                repair_user_facts = [
+                    "authoritative local datasheet PDF",
+                    "whether this firmware workflow uses UART; if yes, its baud rate",
+                    "explicit ordinary-language authorization to run bounded, non-destructive repair",
+                ]
+                if profile.mcu_part_number is None:
+                    repair_user_facts.insert(
+                        0, "exact package-level MCU part number (full package marking)"
+                    )
+                routes.append(
+                    {
+                        "display_name": name,
+                        "board_id": profile.board_id,
+                        "route": "repair",
+                        "next_tool": "board_setup-plan",
+                        "reason": reason,
+                        "load_call": {
+                            "tool": "load_setup_tool",
+                            "arguments": {
+                                "board_id": profile.board_id,
+                                "tool_name": "board_setup-plan",
+                            },
+                        },
+                        "plan_initialization_call": {
+                            "tool": "board_setup-plan",
+                            "arguments": {
+                                field: None for field in setup_definition.null_field_names
+                            },
+                        },
+                        "plan_action_parameters_template": {
+                            field.name: known_parameters.get(field.name)
+                            for field in setup_definition.action_fields
+                        },
+                        "required_user_facts": repair_user_facts,
+                    }
+                )
+                continue
+            if route_kind == "refresh":
+                routes.append(
+                    {
+                        "display_name": name,
+                        "board_id": profile.board_id,
+                        "route": "refresh",
+                        "next_tool": "board_safety_refresh",
+                        "reason": reason,
+                        "load_call": {
+                            "tool": "load_setup_tool",
+                            "arguments": {
+                                "board_id": profile.board_id,
+                                "tool_name": "board_safety_refresh",
+                            },
+                        },
+                        "next_call": {
+                            "tool": "board_safety_refresh",
+                            "arguments": {"board_id": profile.board_id},
+                        },
+                    }
+                )
+                continue
             routes.append(
                 {
                     "display_name": name,
@@ -3256,18 +3560,24 @@ def _setup_overview(board_names: list[str] | None) -> Mapping[str, object]:
                     },
                     "next_call": {
                         "tool": "board_validate",
-                        "arguments": {"board_id": profile.board_id},
+                        "arguments": {
+                            "board_id": profile.board_id,
+                            "probe_id": assignments[name].removeprefix("probe:"),
+                        },
                     },
                 }
             )
+        _replace_setup_assignments(provisional_bindings, "setup overview assignment replaced")
 
     if board_names == [] or (no_board_sentinel and len(validated_names) == 1):
+        _replace_setup_assignments({}, "setup overview reported no board")
         status = "setup_no_board"
         prompt = (
             "The user reported no connected boards using the literal 'no board' sentinel. "
             "Do not begin setup, validation, or hardware access."
         )
     elif no_board_sentinel:
+        _replace_setup_assignments({}, "setup overview names are ambiguous")
         status = "setup_names_clarification_required"
         prompt = (
             "The literal 'no board' sentinel was mixed with board names. Ask again in ordinary "
@@ -3286,8 +3596,8 @@ def _setup_overview(board_names: list[str] | None) -> Mapping[str, object]:
         status = "setup_routes_ready"
         prompt = (
             "Use each route's machine-readable calls without asking the user for their internal "
-            "values. For validate, copy load_call and next_call. For any matching profile, always "
-            "validate first and follow only its exact remedy. For unknown-name setup, copy "
+            "values. For validate or refresh, copy load_call and next_call. Follow a returned "
+            "repair route only for its incomplete same-identity profile. For unknown-name setup, copy "
             "load_call and plan_initialization_call, ask only for required_user_facts and friendly "
             "ambiguous choices, then copy them into plan_action_parameters_template. Present only "
             "friendly choices to the user; do not expose this JSON or internal IDs."
@@ -3299,8 +3609,6 @@ def _setup_overview(board_names: list[str] | None) -> Mapping[str, object]:
         "connections": connection_rows,
         "serial_choices": serial_rows,
         "inventory_error": inventory_error,
-        "known_board_types": list(catalog_board_types()),
-        "supported_reviewed_board_types": list(reviewed_setup_board_types()),
         "routes": routes,
     }
 
@@ -3393,25 +3701,46 @@ def _setup_continue(
         }:
             raise ValueError("choice_id must be one of the friendly choices in the last response")
         previous = _setup_selections_by_board.get(board_id, PreflightSelections())
-        if decision.code == "setup/ambiguous-probe":
+        decision_probe = (
+            decision.selected_probe.probe_id if decision.selected_probe is not None else None
+        )
+        decision_serial = (
+            decision.selected_serial.serial_id if decision.selected_serial is not None else None
+        )
+        if decision.code in {
+            "setup/probe-selection-required",
+            "setup/probe-selection-invalid",
+        }:
             selected = PreflightSelections(
                 choice_id,
                 previous.serial_id,
                 previous.build_configuration_id,
                 previous.external_adapter_confirmed,
             )
-        elif decision.code in {"setup/ambiguous-uart", "setup/external-uart-confirmation"}:
+        elif decision.code in {
+            "setup/serial-selection-required",
+            "setup/serial-selection-invalid",
+        }:
             selected = PreflightSelections(
-                previous.probe_id,
+                previous.probe_id or decision_probe,
                 choice_id,
                 previous.build_configuration_id,
-                decision.code == "setup/external-uart-confirmation"
-                or previous.external_adapter_confirmed,
+                previous.external_adapter_confirmed,
             )
-        elif decision.code == "setup/ambiguous-build":
+        elif decision.code == "setup/external-adapter-confirmation-required":
             selected = PreflightSelections(
-                previous.probe_id,
-                previous.serial_id,
+                previous.probe_id or decision_probe,
+                previous.serial_id or decision_serial,
+                previous.build_configuration_id,
+                True,
+            )
+        elif decision.code in {
+            "setup/build-selection-required",
+            "setup/build-selection-invalid",
+        }:
+            selected = PreflightSelections(
+                previous.probe_id or decision_probe,
+                previous.serial_id or decision_serial,
                 choice_id,
                 previous.external_adapter_confirmed,
             )
@@ -3448,11 +3777,11 @@ def _setup_continue(
         raise ResearchError("research/target-required", "pyocd_target must be non-empty text")
     target = target.strip().casefold()
     try:
-        reviewed_board = catalog_board(user_input.board_type)
+        reviewed_board = _resolve_setup_support(user_input).catalog
     except BoardCatalogError as exc:
         raise ResearchError(
             "target/reviewed-mapping-unavailable",
-            "Automatic setup has no reviewed part-to-target mapping for this board type.",
+            "Automatic setup has no unambiguous reviewed MCU/datasheet target mapping.",
         ) from exc
     if user_input.mcu_part_number != reviewed_board.package_part_number:
         raise ResearchError(
@@ -3469,7 +3798,7 @@ def _setup_continue(
             mcu_part_number=user_input.mcu_part_number,
             unresolved_fact="Resolve the exact pyOCD target for this MCU.",
             requested_fields=("pyocd_target", "evidence", "reasoning_summary"),
-            authoritative_facts={"board_type": user_input.board_type},
+            authoritative_facts={"exact_mcu_part_number": user_input.mcu_part_number},
             acceptable_sources=("official pyOCD documentation", "official vendor CMSIS-Pack"),
             validation_plan=(
                 "Check exact MCU consistency.",
@@ -3578,7 +3907,7 @@ def _setup_plan_eligibility(board_id: str) -> tuple[bool, str]:
     """Expose populated setup only for first setup or an exact live mismatch route."""
 
     try:
-        _profile_repository.load(board_id, include_legacy=False)
+        profile = _profile_repository.load(board_id, include_legacy=True)
     except ProfileError as exc:
         existing_profile_paths = tuple(
             _profile_repository.store.layout.board_profile(board_id, suffix=suffix)
@@ -3591,6 +3920,12 @@ def _setup_plan_eligibility(board_id: str) -> tuple[bool, str]:
                 "board_validate and its exact remedy; setup remains locked against rewrite.",
             )
         return True, "No established profile exists; first-time setup is eligible."
+    if _profile_needs_repair(profile):
+        return (
+            True,
+            "The existing same-identity profile is incomplete. A fresh authorized mode=repair "
+            "plan may rerun deterministic preflight and resume current setup phases.",
+        )
     connection = connection_manager.maybe_connection(board_id)
     if connection is not None:
         mismatch = gate_manager.current_mismatch(
@@ -3626,6 +3961,7 @@ _setup_workflow = SetupWorkflow(
         "board_setup", board_id, reason
     ),
     on_cache_confirmation=_confirm_setup_cache,
+    cancellation_checkpoint=cancellation_checkpoint,
 )
 setup_tool_loader = SetupToolLoadState(server_run)
 setup_tool_handlers = build_setup_handlers(
@@ -3644,6 +3980,9 @@ setup_tool_handlers = build_setup_handlers(
         ),
         clear_setup_continuation=_clear_setup_continuation,
         setup_plan_eligible=_setup_plan_eligibility,
+        require_assignment=lambda board_id, connection_id: assignment_store.require(
+            connection_id, board_id
+        ),
     )
 )
 
@@ -3657,6 +3996,7 @@ def _revoke_with_setup_closure(action_name: str, board_id: str, reason: str) -> 
 
 
 permission_store.set_revocation_handler(_revoke_with_setup_closure)
+M6_GUARDED_ACTIONS = ("board_setup", "board_fix_setup")
 for _setup_name, _setup_handler in setup_tool_handlers.items():
     mcp.add_tool(
         _setup_handler,
@@ -3667,7 +4007,6 @@ for _setup_name, _setup_handler in setup_tool_handlers.items():
     if _setup_name.endswith("-plan"):
         forbid_unknown_tool_arguments(mcp, _setup_name)
 
-M6_GUARDED_ACTIONS = ("board_setup", "board_fix_setup")
 for _setup_action in M6_GUARDED_ACTIONS:
     tool_registry.configure(
         _setup_action,
@@ -3680,6 +4019,7 @@ for _setup_action in M6_GUARDED_ACTIONS:
         guard=_enforce_guarded_invocation,
         lock_for_board=lambda board_id: connection_manager.lock_for(board_id),
     )
+    forbid_unknown_tool_arguments(mcp, _setup_action)
 
 
 def _mark_unlock_completed(board_id: str) -> None:

@@ -182,7 +182,7 @@ def load_pinned_reviewed_evidence(
             for source in official.sources
         ):
             raise BoardCatalogError(
-                "official evidence is not bound to the supplied datasheet SHA-256"
+                "official evidence is not bound to the server-computed datasheet SHA-256"
             )
         expected_runtime_revisions = {
             "target": f"sha256:{target_hash}",
@@ -248,11 +248,10 @@ def load_pinned_reviewed_evidence(
 def load_reviewed_evidence(
     catalog: CatalogBoard,
     datasheet_path: Path,
-    datasheet_sha256: str,
 ) -> ReviewedEvidenceBundle:
-    """Verify supplied datasheet bytes and current pinned independent authorities."""
+    """Verify server-read datasheet bytes and current pinned independent authorities."""
 
-    catalog.validate_datasheet(datasheet_path, datasheet_sha256)
+    datasheet_sha256 = catalog.validate_datasheet(datasheet_path)
     return load_pinned_reviewed_evidence(catalog, datasheet_sha256)
 
 

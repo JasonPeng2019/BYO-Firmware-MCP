@@ -5,10 +5,12 @@ from typing import Any, cast
 
 import pytest
 
+from pyocd_debug_mcp.safety import linker as linker_module
 from pyocd_debug_mcp.safety.linker import (
     BuildArtifactSelection,
     BuildRole,
     LinkerEvidenceError,
+    LoadableSegment,
     extract_build_evidence,
     select_build_configuration,
 )
@@ -156,6 +158,63 @@ def test_malformed_and_missing_elf_fail_closed(tmp_path: Path) -> None:
             BuildArtifactSelection("missing", BuildRole.APPLICATION, tmp_path / "missing.elf")
         )
     assert missing.value.code == "build/elf-missing"
+
+
+@pytest.mark.parametrize(
+    ("initial_sp", "reset_vector", "expected_code"),
+    [
+        (0x1001, 0x08000005, "build/vector-stack-invalid"),
+        (0x20001000, 0x08000004, "build/vector-reset-invalid"),
+    ],
+)
+def test_invalid_cortex_m_vector_words_fail_closed_before_flash_evidence(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    initial_sp: int,
+    reset_vector: int,
+    expected_code: str,
+) -> None:
+    elf = tmp_path / "vector.elf"
+    elf.write_bytes(b"placeholder")
+    image = {
+        address: value
+        for address, value in enumerate(
+            initial_sp.to_bytes(4, "little") + reset_vector.to_bytes(4, "little"),
+            start=0x08000000,
+        )
+    }
+    segments = (
+        LoadableSegment(
+            0,
+            AddressRange(0x08000000, 0x08000100),
+            AddressRange(0x08000000, 0x08000100),
+            0x100,
+            0x100,
+            True,
+            False,
+            True,
+        ),
+        LoadableSegment(
+            1,
+            None,
+            AddressRange(0x20000000, 0x20001000),
+            0,
+            0x1000,
+            True,
+            True,
+            False,
+        ),
+    )
+    monkeypatch.setattr(
+        linker_module,
+        "_read_elf",
+        lambda _path: ({}, segments, 0x08000005, image),
+    )
+
+    with pytest.raises(LinkerEvidenceError) as failure:
+        extract_build_evidence(BuildArtifactSelection("invalid_vector", BuildRole.APPLICATION, elf))
+
+    assert failure.value.code == expected_code
 
 
 def test_malformed_or_conflicting_linker_map_fails_closed(tmp_path: Path) -> None:

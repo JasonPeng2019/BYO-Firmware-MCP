@@ -377,6 +377,32 @@ class GateManager:
         with self._guard:
             self._clear_mismatches_locked(board_id=board)
 
+    def rollback_validation(self, board_id: str, validation_run: str) -> bool:
+        """Remove only authority created by one failed validation completion."""
+
+        board = self._required(board_id, "board_id")
+        validation = self._required(validation_run, "validation_run")
+        removed = False
+        with self._guard:
+            identity = self._state.get(self._identity_key(board))
+            if isinstance(identity, LiveIdentityStamp) and identity.validation_run == validation:
+                self._state.pop(self._identity_key(board), None)
+                self._state.pop(self._map_key(board), None)
+                removed = True
+            mismatch_keys = [
+                key
+                for key, value in self._state.items()
+                if isinstance(value, MismatchAllowance)
+                and value.board_id == board
+                and value.validation_run == validation
+            ]
+            for key in mismatch_keys:
+                self._state.pop(key, None)
+                removed = True
+            if removed:
+                self._closure_reasons[board] = "validation completion failed"
+        return removed
+
     def _clear_mismatches_locked(
         self,
         *,

@@ -31,9 +31,9 @@ perform a hardware write.
    reference artifacts.
 4. Replace target-table subprocess parsing with pyOCD's built-in target API plus
    pinned-manifest targets. Ensure owned subprocess text decoding is UTF-8.
-5. Extend setup inputs with `board_type`, `probe_uid`, stable UART USB identity,
-   current port, datasheet path/hash, and exact MCU evidence; preserve the user's
-   familiar logical name separately.
+5. Extend setup inputs with `probe_uid`, stable UART USB identity, current port, datasheet path,
+   and exact MCU evidence; preserve the user's familiar logical name separately. Resolve the
+   internal catalog record and datasheet digest entirely inside the server.
 6. Add strict packaged device-support evidence, official-document evidence, and
    deployment-policy resources. Validate them with `verify2`, document hashes,
    revisions, and sections. The nRF acceptance resource is
@@ -70,8 +70,8 @@ correct timeout/cancellation behavior.
 
 ## Phase 4 — Transactional profile and safety setup
 
-1. Change setup phase inputs so the plan binds logical ID, familiar name,
-   board type, exact MCU, probe UID/connection, UART, and mode.
+1. Change setup phase inputs so the plan binds logical ID, familiar name, exact MCU,
+   datasheet path, probe UID/connection, UART, and mode, but no catalog identifier or digest.
 2. During connection phase, compare supplied identity, catalog identity, and
    live identity; then stage and atomically commit the core plus optional profile
    facts through `ProfileRepository`.

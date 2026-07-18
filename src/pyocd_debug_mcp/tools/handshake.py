@@ -89,13 +89,13 @@ expose structured payloads, continuation tokens, or internal field names to the 
 
 After the user answers, call setup_overview with the familiar names. It lists known profiles,
 friendly current connections, server-generated board IDs, and exact per-board next-call templates.
-Copy those machine values into MCP calls; never ask the user to repeat or invent them. Route an
-existing profile name, including an incomplete profile, to validation with
-load_setup_tool(board_validate) and board_validate. Route an unknown name to setup through the
-all-NULL board_setup-plan first; ask for exact board type, exact MCU part number, and the
-authoritative local datasheet PDF, then load board_setup-plan and submit its populated plan before
-any other hardware plan. Use hidden setup, repair, or safety only when validation returns that exact
-remedy. If a physical match is
+Copy those machine values into MCP calls; never ask the user to repeat or invent them. Route a
+complete existing profile to validation with load_setup_tool(board_validate) and board_validate.
+Follow the server-returned repair route for an incomplete same-identity profile, and the returned
+safety-refresh route for a stable-map problem. Route an unknown name to setup through the all-NULL
+board_setup-plan first; ask for the exact package-level MCU part number and the authoritative local
+datasheet PDF, never a board type or digest, then load board_setup-plan and submit its populated plan
+before any other hardware plan. If a physical match is
 ambiguous, relay only server-provided friendly choices. Never silently choose, rename, reassign,
 or rewrite a profile.
 

@@ -215,11 +215,12 @@ class SetupToolServices:
     safety_setup: Callable[[str], Mapping[str, Any]]
     safety_refresh: Callable[..., Mapping[str, Any]]
     setup_status: Callable[[str], Mapping[str, Any]] | None = None
-    setup_overview: Callable[[list[str] | None], Mapping[str, Any]] | None = None
+    setup_overview: Callable[..., Mapping[str, Any]] | None = None
     setup_continue: Callable[[str, str, Mapping[str, object]], Mapping[str, Any]] | None = None
     setup_selections: Callable[[str], PreflightSelections] | None = None
     clear_setup_continuation: Callable[[str], None] | None = None
     setup_plan_eligible: Callable[[str], tuple[bool, str]] | None = None
+    require_assignment: Callable[[str, str], None] | None = None
 
 
 def build_setup_handlers(services: SetupToolServices) -> dict[str, Callable[..., str]]:
@@ -246,17 +247,20 @@ def build_setup_handlers(services: SetupToolServices) -> dict[str, Callable[...,
                 )
         return _json(services.loader.load(board_id, tool_name))
 
-    def setup_overview(board_names: list[str] | None = None) -> str:
+    def setup_overview(
+        board_names: list[str] | None = None,
+        connection_assignments: dict[str, str] | None = None,
+    ) -> str:
         """Inventory profiles/connections and route user-provided familiar board names.
 
         Call after initialization_handshake and after asking which boards are connected. Pass the
         ordinary familiar names here; pass NULL only to inspect inventory before the user answers.
         The normalized literal sentinel "no board" must be passed by itself and is never a board
         name candidate. If it is mixed with names, re-ask the user conversationally.
-        Every matching stored name, including an incomplete profile, routes to board_validate
-        first. Unknown names receive a server-generated board_id plus setup questions. Use setup,
-        repair, safety, attachment, or retry only when validation names that exact remedy. Relay
-        only agent_prompt and friendly choices, never raw identifiers or this JSON.
+        A complete matching profile routes to validation, an incomplete same-identity profile to
+        repair, and a stable-map problem to safety refresh. Unknown names receive a
+        server-generated board_id plus setup questions. Follow only the exact route returned here.
+        Relay only agent_prompt and friendly choices, never raw identifiers or this JSON.
         """
 
         if services.setup_overview is None:
@@ -266,7 +270,9 @@ def build_setup_handlers(services: SetupToolServices) -> dict[str, Callable[...,
                     "agent_prompt": "Setup inventory is unavailable; stop before hardware access.",
                 }
             )
-        return _json(services.setup_overview(board_names))
+        if connection_assignments is None:
+            return _json(services.setup_overview(board_names))
+        return _json(services.setup_overview(board_names, connection_assignments))
 
     def board_setup_plan(
         board_id: str | None = None,
@@ -309,30 +315,36 @@ def build_setup_handlers(services: SetupToolServices) -> dict[str, Callable[...,
             return services.plan_engine.submit("board_setup-plan", fields, session_id=None).message
         if board_id is not None and not services.loader.is_loaded(board_id, "board_setup-plan"):
             return services.loader.redirect(board_id, "board_setup-plan")
+        if (
+            services.require_assignment is not None
+            and board_id is not None
+            and isinstance(action_parameters, dict)
+            and isinstance(action_parameters.get("connection_id"), str)
+        ):
+            connection_id = action_parameters["connection_id"]
+            assert isinstance(connection_id, str)
+            services.require_assignment(board_id, connection_id)
         return services.plan_engine.submit("board_setup-plan", fields, session_id=None).message
 
     def _user_input(
         board_id: str,
         connection_id: str,
         display_name: str,
-        board_type: str,
         mcu_part_number: str,
-        serial_baudrate: int,
-        serial_id: str,
+        requires_uart: bool,
+        serial_baudrate: int | None,
+        serial_id: str | None,
         datasheet_path: str,
-        datasheet_sha256: str | None,
     ) -> SetupUserInput:
         return SetupUserInput(
-            board_id,
-            connection_id,
-            display_name,
-            mcu_part_number,
-            serial_baudrate,
-            True,
-            board_type,
-            datasheet_path,
-            datasheet_sha256 or "",
-            serial_id,
+            board_id=board_id,
+            connection_id=connection_id,
+            display_name=display_name,
+            mcu_part_number=mcu_part_number,
+            requires_uart=requires_uart,
+            serial_baudrate=serial_baudrate,
+            datasheet_path=datasheet_path,
+            serial_id=serial_id or "",
         )
 
     def board_setup(
@@ -340,12 +352,11 @@ def build_setup_handlers(services: SetupToolServices) -> dict[str, Callable[...,
         mode: str,
         connection_id: str,
         display_name: str,
-        board_type: str,
         mcu_part_number: str,
-        serial_baudrate: int,
-        serial_id: str,
+        requires_uart: bool,
+        serial_baudrate: int | None,
+        serial_id: str | None,
         datasheet_path: str,
-        datasheet_sha256: str | None,
     ) -> str:
         """Run the first setup attempt covered by the active setup plan."""
 
@@ -359,16 +370,17 @@ def build_setup_handlers(services: SetupToolServices) -> dict[str, Callable[...,
             )
         if mode not in {"setup", "repair"}:
             raise ValueError("mode must be setup or repair")
+        if services.require_assignment is not None:
+            services.require_assignment(board_id, connection_id)
         user_input = _user_input(
             board_id,
             connection_id,
             display_name,
-            board_type,
             mcu_part_number,
+            requires_uart,
             serial_baudrate,
             serial_id,
             datasheet_path,
-            datasheet_sha256,
         )
         services.loader.bind_allowance(board_id, active.plan_id)
         services.workflow.begin_plan(active.plan_id, user_input, mode=mode)  # type: ignore[arg-type]
@@ -385,12 +397,11 @@ def build_setup_handlers(services: SetupToolServices) -> dict[str, Callable[...,
         mode: str,
         connection_id: str,
         display_name: str,
-        board_type: str,
         mcu_part_number: str,
-        serial_baudrate: int,
-        serial_id: str,
+        requires_uart: bool,
+        serial_baudrate: int | None,
+        serial_id: str | None,
         datasheet_path: str,
-        datasheet_sha256: str | None,
     ) -> str:
         """Use the setup plan's single paired repair allowance."""
 
@@ -398,12 +409,11 @@ def build_setup_handlers(services: SetupToolServices) -> dict[str, Callable[...,
             mode,
             connection_id,
             display_name,
-            board_type,
             mcu_part_number,
+            requires_uart,
             serial_baudrate,
             serial_id,
             datasheet_path,
-            datasheet_sha256,
         )
         allowance_id = services.loader.allowance_for(board_id)
         if allowance_id is None:
@@ -464,6 +474,13 @@ def build_setup_handlers(services: SetupToolServices) -> dict[str, Callable[...,
 
         if not services.loader.is_loaded(board_id, "board_validate"):
             return services.loader.redirect(board_id, "board_validate")
+        if services.require_assignment is not None:
+            if probe_id is None:
+                raise ValueError(
+                    "board_validate requires the probe_id returned by setup_overview for this "
+                    "run-scoped board assignment"
+                )
+            services.require_assignment(board_id, f"probe:{probe_id}")
         result = services.validator.validate(ValidationRequest(board_id, probe_id))
         return _json(result.to_payload())
 

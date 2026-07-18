@@ -197,6 +197,34 @@ class SafetyPolicy:
             if role is BuildRole.APPLICATION
             else ActionCategory.FLASH_BOOTLOADER
         )
+        if evidence.initial_stack_pointer is None or evidence.initial_stack_pointer < 4:
+            raise SafetyPolicyError(
+                "safety/vector-stack-invalid",
+                "The ELF has no usable Cortex-M initial stack pointer.",
+                remedy=("select_valid_build_artifact",),
+            )
+        stack_word = AddressRange.from_start_size(evidence.initial_stack_pointer - 4, 4)
+        stack_result = loaded.safety_map.check(ActionCategory.MEMORY_WRITE, (stack_word,))
+        if isinstance(stack_result, Refusal):
+            raise SafetyPolicyError(
+                "safety/vector-stack-outside-ram",
+                "The vector-table initial stack pointer is outside reviewed writable RAM.",
+                remedy=("select_correct_build",),
+            )
+        if evidence.reset_handler is None:
+            raise SafetyPolicyError(
+                "safety/vector-reset-invalid",
+                "The ELF has no usable Cortex-M reset handler.",
+                remedy=("select_valid_build_artifact",),
+            )
+        reset_range = AddressRange.from_start_size(evidence.reset_handler, 2)
+        reset_result = loaded.safety_map.check(action, (reset_range,))
+        if isinstance(reset_result, Refusal):
+            raise SafetyPolicyError(
+                "safety/vector-reset-outside-partition",
+                "The vector-table reset handler is outside the reviewed deployment partition.",
+                remedy=("select_correct_build",),
+            )
         content_ranges = tuple(
             segment.load_range
             for segment in evidence.loadable_segments
@@ -214,7 +242,7 @@ class SafetyPolicy:
         if evidence.entry_point is not None:
             ranges.append(AddressRange.from_start_size(evidence.entry_point, 1))
         if evidence.vector_table is not None:
-            ranges.append(AddressRange.from_start_size(evidence.vector_table, 1))
+            ranges.append(AddressRange.from_start_size(evidence.vector_table, 8))
         for requested in ranges:
             result = loaded.safety_map.check(action, (requested,))
             if isinstance(result, Refusal):

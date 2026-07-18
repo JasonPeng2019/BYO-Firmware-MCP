@@ -5,11 +5,11 @@ Status: implementation target for the `Jason-MCP-v2` repair.
 ## 1. Outcome
 
 A user can start in a repository with no `boards/` directory and no `.firm/`
-state, name an attached board, supply its board/MCU identity when known, and
+state, name an attached board, supply its exact MCU identity and official datasheet, and
 have the MCP server complete setup before any coding agent is allowed to write
 application code. For the current acceptance bench the supplied identity is:
 
-- board type: `nrf52840dk`;
+- internal reviewed-support record: `nrf52840dk` (server-owned, never caller-selected);
 - live MCU family/product: `nRF52840` (proved by FICR);
 - populated package: `nRF52840-QIAA` (proved by reviewed board documentation, not FICR alone);
 - pyOCD target: `nrf52840`;
@@ -24,14 +24,16 @@ change security state, or write target memory.
 
 ## 2. User experience
 
-1. The server asks in ordinary language for the familiar name, board type, and
-   MCU only when they were not already supplied by the user.
+1. The server asks in ordinary language for the familiar name, exact package-level MCU part,
+   and local official datasheet only when they were not already supplied by the user. It never
+   asks for a board type or digest.
 2. The agent calls `load_setup_tool`, initializes `board_setup-plan` with the
    universal all-NULL request, and submits the exact plan JSON.
-3. For a fresh profile, setup explicitly requests the board/MCU identity and an
+3. For a fresh profile, setup explicitly requests the exact MCU identity and an
    authoritative datasheet before accepting a populated setup plan. The current
-   acceptance uses `nrf52840dk` and `Nano_BLE_MCU-nrf52840_PS_v1.1.pdf`. Skipping
-   either request is a test failure.
+   acceptance uses `nRF52840-QIAA` and `Nano_BLE_MCU-nrf52840_PS_v1.1.pdf`. The
+   server hashes the PDF and resolves the internal reviewed record; skipping either public input
+   is a test failure.
 4. `board_setup` performs the complete deterministic setup pipeline. It may
    return friendly choices only for real ambiguity. It never asks for an
    internal board ID, connection ID, target token, continuation token, or
@@ -47,12 +49,13 @@ change security state, or write target memory.
 
 ### F1. Explicit board identity input and verification
 
-- Setup accepts the user-supplied board type separately from the familiar
-  logical name.
+- Setup accepts the familiar logical name, exact package-level MCU part, and local official
+  datasheet. It accepts neither a caller-owned board type nor a caller-owned digest.
 - A server-owned board catalog supplies the exact target, exact MCU/package,
   probe family, silicon identity register, safe test-read address, UART default,
   reference build, and reviewed safety provenance for supported boards.
-- User-supplied identity and catalog identity must agree exactly.
+- The exact MCU and server-computed datasheet digest must resolve one unambiguous reviewed record.
+- A custom PCB name may reuse reviewed MCU/device support; the familiar name is not catalog input.
 - Live silicon must be read and matched before a profile is committed.
 - Family/product identity, package identity, board revision, and target support
   remain separate evidence anchors; setup must not claim FICR proves a package.
@@ -83,8 +86,8 @@ change security state, or write target memory.
 
 ### F4. Profile-free bootstrap connection
 
-- Setup can open a temporary, read-only connection from the planned probe,
-  catalog target, and supplied board identity without first resolving a profile.
+- Setup can open a temporary, read-only connection from the planned probe, internally resolved
+  catalog target, and exact MCU evidence without first resolving a profile.
 - `connect_override` also honors its documented run-scoped probe/target
   parameters when a profile is absent; it may construct an in-memory board
   definition but may not persist it.
@@ -147,7 +150,7 @@ change security state, or write target memory.
 - Provide a bounded runner for a fresh artifact root that drives real MCP stdio:
   handshake, setup-tool load, NULL plan, populated plan, setup, readiness check,
   and evidence capture.
-- The runner takes board identity, friendly name, probe UID, UART, and artifact
+- The runner takes exact MCU identity, local datasheet, friendly name, probe UID, UART, and artifact
   root as explicit command-line inputs. It never silently selects among multiple
   devices.
 - The trusted runner accepts no arbitrary command, callback, shell string, or
@@ -157,9 +160,10 @@ change security state, or write target memory.
 
 ### F9. Post-code continuation
 
-- After the agent builds code, safety refresh inspects the new ELF/HEX/map and
-  either proves the application partition unchanged or requires full safety
-  setup.
+- After the agent builds code, it may collect explicitly named outputs and proceeds to the
+  applicable flash plan. Ordinary artifact changes do not trigger safety refresh.
+- `board_safety_refresh` is reserved for missing, invalid, old, inconsistent, or otherwise changed
+  stable safety evidence and accepts no build artifact.
 - Flash remains guarded by the normal plan, validation, gate, freshness, segment,
   entry/vector, and erase-sector checks.
 - UART ON/OFF validation runs only after an application flash succeeds and must
@@ -179,10 +183,10 @@ change security state, or write target memory.
 
 ### F11. Datasheet request and trusted evidence ingestion
 
-- A fresh-profile setup NULL prompt and continuation explicitly ask the agent for
-  board type, MCU, and an authoritative datasheet path.
-- The plan binds the datasheet path and SHA-256. Setup accepts only a local PDF,
-  never a URL fetched during privileged execution.
+- A fresh-profile setup NULL prompt and continuation explicitly ask the agent for the exact
+  package-level MCU and an authoritative datasheet path, never a board type or digest.
+- The plan binds the datasheet path. The server hashes the actual bytes, and setup accepts only a
+  local PDF, never a URL fetched during privileged execution.
 - The current test must use `Nano_BLE_MCU-nrf52840_PS_v1.1.pdf`; absence, wrong
   type, hash change, or device mismatch fails before attach/commit.
 - Catalog packages include strict device-support evidence, official-document
@@ -191,9 +195,9 @@ change security state, or write target memory.
 
 ### F12. Permission and exact setup parameters
 
-- Setup parameters bind `board_type`, logical ID/display name, exact MCU evidence,
-  stable `probe_uid`, stable UART USB identity plus current port path, baud, mode,
-  datasheet path, and datasheet hash.
+- Setup parameters bind logical ID/display name, exact MCU evidence, stable `probe_uid`, stable
+  UART USB identity plus current port path, baud, mode, and datasheet path. The computed digest and
+  internal catalog identifier remain server-owned evidence.
 - A choice that changes any bound parameter requires a replacement plan. The
   paired repair retries only transient work with unchanged parameters.
 - Automation begins only after one explicit setup authorization. It never
@@ -210,7 +214,7 @@ change security state, or write target memory.
 - **FA-4** Locale/charmap settings cannot make the target inventory empty.
 - **FA-5** Profile-free temporary attach works; normal named `connect` still
   fails without a profile.
-- **FA-6** Wrong board type, wrong MCU, wrong probe, or silicon mismatch creates
+- **FA-6** Unaccepted MCU/datasheet evidence, wrong probe, or silicon mismatch creates
   no profile and calls no mutating backend method.
 - **FA-7** Safety baseline creation is automatic for each supported fixture and
   fails closed on geometry/evidence conflict.
@@ -225,7 +229,7 @@ change security state, or write target memory.
   records the readiness proof, and only then uses the separately authored app.
 - **FA-12** Full pytest, ruff, pyright, package/import, contract snapshots, and
   bounded stdio startup/shutdown are green.
-- **FA-13** Fresh setup explicitly requests board/MCU and datasheet; the supplied
+- **FA-13** Fresh setup explicitly requests exact MCU and datasheet, never board type or digest; the supplied
   nRF52840 PDF is hashed, validated, and recorded as evidence before setup runs.
 - **FA-14** Clean-root setup uses logical ID `nf_board`, ignores a poisoned legacy
   YAML, then normal profile-backed connect succeeds from `.firm` after restart.

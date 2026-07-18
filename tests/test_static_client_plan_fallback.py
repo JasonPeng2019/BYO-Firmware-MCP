@@ -43,6 +43,7 @@ def _read_parameters() -> dict[str, object]:
         "baudrate": 115200,
         "port": "COM11",
         "reset_on_open": False,
+        "on_exit": None,
     }
 
 
@@ -74,7 +75,9 @@ async def test_static_client_can_execute_exact_accepted_fallback_without_refresh
         baudrate: int,
         port: str | None,
         reset_on_open: bool,
+        on_exit: object | None = None,
     ) -> str:
+        del on_exit
         calls.append((board_id, expected_text))
         return "READY"
 
@@ -131,12 +134,11 @@ def test_setup_accepted_payload_has_separate_conditioned_paired_repair() -> None
         "mode": "setup",
         "connection_id": "probe:377322",
         "display_name": "NF Board",
-        "board_type": "nrf52840dk",
         "mcu_part_number": "nRF52840",
+        "requires_uart": True,
         "serial_baudrate": 115200,
         "serial_id": "683377322",
         "datasheet_path": "Nano_BLE_MCU-nRF52840_PS_v1.1.pdf",
-        "datasheet_sha256": "c619e336b9c0610663273041f057f2537a65fd408ce0c5b8214a26de2aa88422",
     }
     payload = json.loads(
         engine.submit(

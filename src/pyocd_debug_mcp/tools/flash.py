@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from pyocd_debug_mcp.kernel.operations import wrap_layer2_response
+from pyocd_debug_mcp.kernel.operations import current_operation, wrap_layer2_response
 from pyocd_debug_mcp.services.session_runtime import (
     ActionContext,
     PolicyRefusal,
@@ -76,6 +76,9 @@ def build_flash_handlers(
             if services.validate_flash is not None:
                 services.validate_flash(tool_name, board_id, request.artifact_path)
             handle = services.handle_for(board_id)
+            operation = current_operation()
+            if operation is not None:
+                operation.begin_non_interruptible()
             flashed = services.flash_target(handle, request.artifact_path)
         except PolicyRefusal as refusal:
             event = services.record_event(

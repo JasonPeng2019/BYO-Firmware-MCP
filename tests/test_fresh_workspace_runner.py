@@ -31,9 +31,7 @@ def _config(tmp_path: Path) -> RunnerConfig:
     datasheet.write_bytes(b"%PDF-1.7\nreviewed fixture\n")
     return RunnerConfig(
         artifact_root=tmp_path / "artifacts",
-        board_id="nf_board",
         display_name="Nordic Bench",
-        board_type="nrf52840dk",
         mcu_part_number="nRF52840-QIAA",
         probe_uid="683377322",
         uart_id="683377322",
@@ -60,10 +58,25 @@ class FakeClient:
         self.calls.append((name, arguments))
         if name == "initialization_handshake":
             return _result("run_id: run-test\nstarted_at: 2026-07-17T00:00:00+00:00")
+        if name == "setup_overview":
+            return _result(
+                {
+                    "status": "setup_routes_ready",
+                    "routes": [
+                        {
+                            "route": "setup",
+                            "board_id": "nf_board",
+                            "plan_action_parameters_template": {
+                                "connection_id": "probe:000683377322"
+                            },
+                        }
+                    ],
+                }
+            )
         if name == "load_setup_tool":
             return _result({"status": "setup_tool_loaded"})
         if name == "board_setup-plan":
-            if not arguments:
+            if arguments and all(value is None for value in arguments.values()):
                 return _result(
                     "Ask for the board, exact MCU, authoritative datasheet, then board_validate."
                 )
@@ -117,6 +130,7 @@ def test_setup_only_runner_reaches_exact_readiness_without_a_code_surface(
     names = [name for name, _arguments in client.calls]
     assert names == [
         "initialization_handshake",
+        "setup_overview",
         "load_setup_tool",
         "board_setup-plan",
         "board_setup-plan",
@@ -131,13 +145,20 @@ def test_setup_only_runner_reaches_exact_readiness_without_a_code_surface(
     populated_plan = next(
         arguments
         for name, arguments in client.calls
-        if name == "board_setup-plan" and arguments
+        if name == "board_setup-plan" and isinstance(arguments.get("action_parameters"), dict)
     )
     action_parameters = populated_plan["action_parameters"]
     assert isinstance(action_parameters, dict)
     assert action_parameters["serial_id"] == "683377322"
+    assert action_parameters["connection_id"] == "probe:000683377322"
+    assert action_parameters["requires_uart"] is True
     assert "serial_port" not in action_parameters
-    assert action_parameters["datasheet_sha256"] is None
+    assert "board_type" not in action_parameters
+    assert "datasheet_sha256" not in action_parameters
+    validation_arguments = next(
+        arguments for name, arguments in client.calls if name == "board_validate"
+    )
+    assert validation_arguments["probe_id"] == "000683377322"
 
 
 @pytest.mark.parametrize(
@@ -245,15 +266,14 @@ def test_runner_cli_has_explicit_identity_and_no_arbitrary_execution_option() ->
 
     assert {
         "artifact_root",
-        "board_id",
         "display_name",
-        "board_type",
         "mcu_part_number",
         "probe_uid",
         "uart_id",
         "datasheet_path",
         "authorize_setup",
     }.issubset(destinations)
+    assert "board_type" not in destinations
     assert "uart_port" not in destinations
     assert destinations.isdisjoint(
         {"command", "callback", "shell", "argv", "code", "build", "flash"}

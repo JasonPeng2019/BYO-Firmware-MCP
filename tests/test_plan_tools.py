@@ -41,6 +41,7 @@ def plan_fields(board_id: str = "board_a") -> dict[str, object]:
             "baudrate": 115200,
             "port": "COM7",
             "reset_on_open": False,
+            "on_exit": None,
         },
     }
 
@@ -90,8 +91,11 @@ def make_server() -> RegistryFastMCP:
         baudrate: int | None,
         port: str | None,
         reset_on_open: bool,
+        on_exit: object | None = None,
     ) -> str:
-        return f"{board_id}:{expected_text}:{read_seconds}:{baudrate}:{port}:{reset_on_open}"
+        return (
+            f"{board_id}:{expected_text}:{read_seconds}:{baudrate}:{port}:{reset_on_open}:{on_exit}"
+        )
 
     server.registry.configure(
         "read_serial",
@@ -161,6 +165,7 @@ async def test_ac_3_2_and_3_4_generated_plan_drives_mcp_visibility_transitions()
                 "baudrate": 115200,
                 "port": "COM7",
                 "reset_on_open": False,
+                "on_exit": None,
             },
         )
         assert wrong_board.isError is True
@@ -174,6 +179,7 @@ async def test_ac_3_2_and_3_4_generated_plan_drives_mcp_visibility_transitions()
                 "baudrate": 115200,
                 "port": "COM7",
                 "reset_on_open": False,
+                "on_exit": None,
             },
         )
         assert result.isError is not True
@@ -240,6 +246,7 @@ PILOT_PARAMETERS: dict[str, dict[str, object]] = {
         "baudrate": 115200,
         "port": "COM7",
         "reset_on_open": False,
+        "on_exit": None,
     },
     "write_serial": {
         "text": "ping",
@@ -247,6 +254,7 @@ PILOT_PARAMETERS: dict[str, dict[str, object]] = {
         "port": "COM7",
         "append_newline": True,
         "timeout_seconds": 1.0,
+        "on_exit": None,
     },
     "write_memory": {
         "symbol_or_address": "0x20000000",
@@ -302,6 +310,7 @@ def make_all_pilot_server() -> PilotHarness:
         baudrate: int | None,
         port: str | None,
         reset_on_open: bool,
+        on_exit: object | None = None,
     ) -> str:
         return record(
             "read_serial",
@@ -312,6 +321,7 @@ def make_all_pilot_server() -> PilotHarness:
                 "baudrate": baudrate,
                 "port": port,
                 "reset_on_open": reset_on_open,
+                "on_exit": on_exit,
             },
         )
 
@@ -323,6 +333,7 @@ def make_all_pilot_server() -> PilotHarness:
         port: str | None,
         append_newline: bool,
         timeout_seconds: float,
+        on_exit: object | None = None,
     ) -> str:
         return record(
             "write_serial",
@@ -333,6 +344,7 @@ def make_all_pilot_server() -> PilotHarness:
                 "port": port,
                 "append_newline": append_newline,
                 "timeout_seconds": timeout_seconds,
+                "on_exit": on_exit,
             },
         )
 

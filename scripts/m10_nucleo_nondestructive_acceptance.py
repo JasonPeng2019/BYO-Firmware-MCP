@@ -84,7 +84,6 @@ async def _run(args: argparse.Namespace) -> dict[str, object]:
 
     from pyocd_debug_mcp import server
     from pyocd_debug_mcp.guardrails.gate import ValidationStamp
-    from pyocd_debug_mcp.setup_flow.preflight import SetupUserInput
 
     if server._firm_store.layout.project_root != artifact_root:
         raise RuntimeError("Task 20 artifact-root isolation did not take effect")
@@ -104,14 +103,9 @@ async def _run(args: argparse.Namespace) -> dict[str, object]:
         )
         return result
 
-    user_input = SetupUserInput(
-        args.board_id,
-        args.probe_id,
-        "Nucleo-L476RG M7 Acceptance",
-        "STM32L476RGT6",
-        115200,
-    )
-    inventory = server._setup_inventory(user_input)
+    # This run validates an already-preserved profile/map. It must enumerate live
+    # connections without re-entering initial setup or requiring setup-only PDF evidence.
+    inventory = server._validation_inventory()
     matching_probe = [item for item in inventory.probes if item.probe_id == args.probe_id]
     matching_uart = [item for item in inventory.serial_ports if item.serial_id == args.serial_id]
     if len(matching_probe) != 1:
@@ -297,7 +291,10 @@ async def _run(args: argparse.Namespace) -> dict[str, object]:
             "uart_usb_serial": matching_uart[0].usb_serial,
             "target": args.target,
         },
-        "setup_routing": inventory.to_report(user_input),
+        "validation_inventory": {
+            "probes": [asdict(item) for item in inventory.probes],
+            "serial_ports": [asdict(item) for item in inventory.serial_ports],
+        },
         "preserved_fixture": {
             "root": str(preserved_root),
             "acceptance_sha256": accepted_m7_hash,

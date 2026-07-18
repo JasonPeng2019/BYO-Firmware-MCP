@@ -17,19 +17,18 @@ only the plan JSON object, binds the exact action parameters below, and rejects 
 - Safety mode: `session`
 - Timeout: `300` seconds
 - Populated plan fields, in order: `board_id`, `hypothesis`, `strategy`, `hypothesis_made`, `strategy_evaluated`, `expected_fail_return`, `expected_success_return`, `max_calls`, `max_calls_buffer`, `action_parameters`, `user_permission`
-- Exact action-parameter fields, in order: `mode`, `connection_id`, `display_name`, `board_type`, `mcu_part_number`, `serial_baudrate`, `serial_id`, `datasheet_path`, `datasheet_sha256`
+- Exact action-parameter fields, in order: `mode`, `connection_id`, `display_name`, `mcu_part_number`, `requires_uart`, `serial_baudrate`, `serial_id`, `datasheet_path`
 
 | Action field | Type | Constraints | Description |
 | --- | --- | --- | --- |
 | `mode` | `text` | required; choices='setup', 'repair' | Exactly setup or repair. |
 | `connection_id` | `text` | required | Intended enumerated physical connection. |
 | `display_name` | `text` | required | User-provided familiar board name. |
-| `board_type` | `text` | required | Exact reviewed board type, for example nrf52840dk. |
 | `mcu_part_number` | `text` | required | Exact user-provided MCU part number. |
-| `serial_baudrate` | `integer` | required; >= 1 | Positive UART baud rate. |
-| `serial_id` | `text` | required | Stable UART identity selected from current setup inventory; the server resolves its current port path at execution time. |
+| `requires_uart` | `boolean` | required | True only when this firmware workflow uses UART. |
+| `serial_baudrate` | `integer` | nullable; >= 1 | Positive UART baud rate when requires_uart is true; otherwise NULL. |
+| `serial_id` | `text` | nullable | Stable UART identity selected from current setup inventory; the server resolves its current port path at execution time; NULL when UART is unused. |
 | `datasheet_path` | `text` | required | Local authoritative PDF datasheet path supplied by the user. |
-| `datasheet_sha256` | `text` | nullable | Optional SHA-256 cross-check; use null to let the server compute it. |
 
 Extra instructions: Do not guess hardware choices or rewrite the user-supplied MCU part number. The server resolves the current UART port and computes the datasheet digest.
 
@@ -132,7 +131,7 @@ Extra instructions: Prefer read_memory_symbol when debug metadata identifies the
 - Safety mode: `validated-read`
 - Timeout: `30` seconds
 - Populated plan fields, in order: `board_id`, `hypothesis`, `strategy`, `hypothesis_made`, `strategy_evaluated`, `expected_fail_return`, `expected_success_return`, `max_calls`, `max_calls_buffer`, `action_parameters`
-- Exact action-parameter fields, in order: `expected_text`, `read_seconds`, `baudrate`, `port`, `reset_on_open`
+- Exact action-parameter fields, in order: `expected_text`, `read_seconds`, `baudrate`, `port`, `reset_on_open`, `on_exit`
 
 | Action field | Type | Constraints | Description |
 | --- | --- | --- | --- |
@@ -141,6 +140,7 @@ Extra instructions: Prefer read_memory_symbol when debug metadata identifies the
 | `baudrate` | `integer` | nullable; >= 1 | Positive baud rate. |
 | `port` | `text` | nullable | Current serial port path. |
 | `reset_on_open` | `boolean` | required | Reset after opening the port. |
+| `on_exit` | `object` | nullable | Optional exact structured uart_write or reset_and_run finalizer. |
 
 Extra instructions: A port path is runtime-only; it is never persisted as attachment identity.
 
@@ -307,7 +307,7 @@ Extra instructions: Prefer symbols; raw addresses require fallback=true and a co
 - Safety mode: `fresh-write`
 - Timeout: `30` seconds
 - Populated plan fields, in order: `board_id`, `hypothesis`, `strategy`, `hypothesis_made`, `strategy_evaluated`, `expected_fail_return`, `expected_success_return`, `max_calls`, `max_calls_buffer`, `action_parameters`
-- Exact action-parameter fields, in order: `text`, `baudrate`, `port`, `append_newline`, `timeout_seconds`
+- Exact action-parameter fields, in order: `text`, `baudrate`, `port`, `append_newline`, `timeout_seconds`, `on_exit`
 
 | Action field | Type | Constraints | Description |
 | --- | --- | --- | --- |
@@ -316,5 +316,6 @@ Extra instructions: Prefer symbols; raw addresses require fallback=true and a co
 | `port` | `text` | nullable | Current serial port path. |
 | `append_newline` | `boolean` | required | Append one newline when true. |
 | `timeout_seconds` | `number` | required; > 0 | Positive bounded write timeout. |
+| `on_exit` | `object` | nullable | Optional exact structured uart_write or reset_and_run finalizer. |
 
 Extra instructions: The text and all transport parameters are bound exactly by the plan.

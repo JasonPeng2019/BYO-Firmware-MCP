@@ -39,9 +39,10 @@ def assert_required_guidance(guidance: str) -> None:
     assert "board IDs" in prose
     assert "connection IDs" in prose
     assert "permission values" in prose
-    assert "existing profile name, including an incomplete profile, to validation" in prose
+    assert "repair route for an incomplete same-identity profile" in prose
+    assert "safety-refresh route for a stable-map problem" in prose
     assert "unknown name to setup" in prose
-    assert "only when validation returns that exact remedy" in prose
+    assert "Follow the server-returned repair route" in prose
     assert "Never silently choose, rename, reassign, or rewrite a profile" in prose
     assert "Ordinary conversation is never permission" in prose
     assert "pass approval only through the exact structured parameter" in prose

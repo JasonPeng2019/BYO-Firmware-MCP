@@ -131,6 +131,8 @@ class BuildEvidence:
     hex_ranges: tuple[AddressRange, ...]
     entry_point: int | None
     vector_table: int | None
+    initial_stack_pointer: int | None
+    reset_handler: int | None
     elf_path: Path | None
     linker_map_path: Path | None
     hex_path: Path | None
@@ -148,6 +150,8 @@ class BuildEvidence:
             (),
             (),
             (),
+            None,
+            None,
             None,
             None,
             None,
@@ -501,6 +505,11 @@ def extract_build_evidence(selection: BuildArtifactSelection | None) -> BuildEvi
     )
     hex_path = selection.hex_path.expanduser().resolve() if selection.hex_path is not None else None
     elf_symbols, segments, entry_point, elf_image = _read_elf(elf_path)
+    load_ranges = [segment.load_range for segment in segments if segment.load_range is not None]
+    if not load_ranges:
+        raise LinkerEvidenceError(
+            "build/flash-content-missing", "ELF contains no file-backed PT_LOAD content"
+        )
     map_symbols = _parse_map(map_path) if map_path is not None else {}
     symbols = _merge_symbols(elf_symbols, map_symbols)
     flash_partition = _symbol_range(symbols, _FLASH_SYMBOLS[selection.role.value])
@@ -516,38 +525,63 @@ def extract_build_evidence(selection: BuildArtifactSelection | None) -> BuildEvi
             raise LinkerEvidenceError(
                 "build/partition-range", f"Invalid ROM partition symbols: {exc}"
             ) from exc
-    if flash_partition is None:
-        raise LinkerEvidenceError(
-            "build/flash-partition-missing",
-            "Selected ELF/map does not define a complete build-owned flash partition",
-        )
-
     ram_partition = _symbol_range(symbols, _RAM_SYMBOLS)
-    if ram_partition is None:
-        raise LinkerEvidenceError(
-            "build/ram-partition-missing",
-            "Selected ELF/map does not define a complete build-owned RAM allocation",
-        )
+    ram_partitions = (
+        (ram_partition,)
+        if ram_partition is not None
+        else tuple(segment.runtime_range for segment in segments if segment.writable)
+    )
     vector_table = next((symbols[name] for name in _VECTOR_SYMBOLS if name in symbols), None)
     if vector_table is None:
+        # Cortex-M images place the vector table at the first file-backed load
+        # address. Linker symbols remain useful corroboration, not a toolchain gate.
+        vector_table = min(item.start for item in load_ranges)
+    if any(vector_table + offset not in elf_image for offset in range(8)):
         raise LinkerEvidenceError(
-            "build/vector-table-missing", "Selected ELF/map does not define a vector table"
+            "build/vector-table-missing",
+            "Selected ELF does not contain the first two vector-table words",
+        )
+    vector_bytes = bytes(elf_image[vector_table + offset] for offset in range(8))
+    initial_stack_pointer = int.from_bytes(vector_bytes[:4], "little")
+    reset_vector = int.from_bytes(vector_bytes[4:], "little")
+    if initial_stack_pointer == 0 or initial_stack_pointer % 4 != 0:
+        raise LinkerEvidenceError(
+            "build/vector-stack-invalid",
+            "Vector-table initial stack pointer is zero or misaligned",
+        )
+    reset_handler = reset_vector & ~1
+    executable_ranges = tuple(
+        segment.runtime_range for segment in segments if segment.executable
+    )
+    if (reset_vector & 1) == 0 or not any(
+        executable.contains_address(reset_handler) for executable in executable_ranges
+    ):
+        raise LinkerEvidenceError(
+            "build/vector-reset-invalid",
+            "Vector-table reset handler is not a Thumb address in executable ELF content",
+        )
+    entry_address = entry_point & ~1
+    if (entry_point & 1) == 0 or not any(
+        executable.contains_address(entry_address) for executable in executable_ranges
+    ):
+        raise LinkerEvidenceError(
+            "build/entry-invalid",
+            "ELF entry point is not a Thumb address in executable ELF content",
         )
 
-    load_ranges = [segment.load_range for segment in segments if segment.load_range is not None]
-    if not load_ranges or any(
+    if flash_partition is not None and any(
         not flash_partition.contains(load_range) for load_range in load_ranges
     ):
         raise LinkerEvidenceError(
             "build/segment-outside-partition",
             "A loadable ELF segment lies outside the build-owned flash partition",
         )
-    if not flash_partition.contains_address(entry_point):
+    if flash_partition is not None and not flash_partition.contains_address(entry_point):
         raise LinkerEvidenceError(
             "build/entry-outside-partition",
             "ELF entry point lies outside the build-owned flash partition",
         )
-    if not flash_partition.contains_address(vector_table):
+    if flash_partition is not None and not flash_partition.contains_address(vector_table):
         raise LinkerEvidenceError(
             "build/vector-outside-partition",
             "Vector table lies outside the build-owned flash partition",
@@ -580,7 +614,9 @@ def extract_build_evidence(selection: BuildArtifactSelection | None) -> BuildEvi
                 "build/hex-incomplete",
                 f"HEX omits meaningful ELF data at address 0x{missing_meaningful[0]:x}",
             )
-        if any(not flash_partition.contains(item) for item in hex_ranges):
+        if flash_partition is not None and any(
+            not flash_partition.contains(item) for item in hex_ranges
+        ):
             raise LinkerEvidenceError(
                 "build/hex-outside-partition",
                 "HEX data lies outside the build-owned flash partition",
@@ -599,11 +635,13 @@ def extract_build_evidence(selection: BuildArtifactSelection | None) -> BuildEvi
         artifact_present=True,
         flash_available=True,
         flash_partition=flash_partition,
-        ram_partitions=(ram_partition,),
+        ram_partitions=ram_partitions,
         loadable_segments=segments,
         hex_ranges=hex_ranges,
         entry_point=entry_point,
         vector_table=vector_table,
+        initial_stack_pointer=initial_stack_pointer,
+        reset_handler=reset_handler,
         elf_path=elf_path,
         linker_map_path=map_path,
         hex_path=hex_path,

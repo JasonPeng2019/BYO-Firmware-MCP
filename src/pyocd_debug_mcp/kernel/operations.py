@@ -173,6 +173,7 @@ class ManagedOperation:
     resources: OperationResources = field(default_factory=OperationResources)
     state: OperationState = OperationState.QUEUED
     cancellation_reason: str | None = None
+    completion_committed: bool = False
     started_at: float = field(default_factory=time.monotonic)
     execution_started_at: float | None = None
     handler_started_at: float | None = None
@@ -190,8 +191,28 @@ class ManagedOperation:
             self.cancellation_requested.set()
 
     def checkpoint(self) -> None:
-        if self.cancellation_requested.is_set() and not self.non_interruptible:
+        if (
+            self.cancellation_requested.is_set()
+            and not self.non_interruptible
+            and not self.completion_committed
+        ):
             raise OperationCancelledError(self.cancellation_reason or "operation cancelled")
+
+    def begin_non_interruptible(self) -> None:
+        """Enter a backend transaction only after honoring any pending cancellation."""
+
+        with self._guard:
+            self.checkpoint()
+            self.non_interruptible = True
+
+    def run_if_not_cancelled(self, action: Callable[[], T]) -> T:
+        """Linearize a short authority commit before any later cancellation request."""
+
+        with self._guard:
+            self.checkpoint()
+            result = action()
+            self.completion_committed = True
+            return result
 
     def mark_running(self) -> None:
         with self._guard:
@@ -242,6 +263,7 @@ class OperationManager:
         self._operations: dict[str, ManagedOperation] = {}
         self._operations_by_request: dict[str, set[str]] = {}
         self._board_workers: dict[str, threading.Lock] = {}
+        self._batch_reservations: dict[str, threading.Lock] = {}
 
     def create(
         self,
@@ -259,7 +281,10 @@ class OperationManager:
                 tool_name=tool_name,
                 board_id=board_id,
                 timeout_seconds=timeout_seconds,
-                non_interruptible=tool_name in _FLASH_TOOLS,
+                # Flash is interruptible while queued and while its artifact and
+                # containment are checked. The handler marks only backend mutation
+                # non-interruptible.
+                non_interruptible=False,
                 preserve_halt=tool_name in _INTENTIONAL_HALT_TOOLS,
             )
             self._operations[operation_id] = operation
@@ -271,6 +296,12 @@ class OperationManager:
             return nullcontext()
         with self._guard:
             return self._board_workers.setdefault(board_id, threading.Lock())
+
+    def batch_lock(self, board_id: str | None) -> threading.Lock | ContextManager[object]:
+        if board_id is None:
+            return nullcontext()
+        with self._guard:
+            return self._batch_reservations.setdefault(board_id, threading.Lock())
 
     def finish(self, operation: ManagedOperation) -> None:
         with self._guard:
@@ -320,6 +351,9 @@ operation_manager = OperationManager()
 _current_operation: ContextVar[ManagedOperation | None] = ContextVar(
     "managed_operation", default=None
 )
+_reserved_batch_boards: ContextVar[frozenset[str]] = ContextVar(
+    "reserved_batch_boards", default=frozenset()
+)
 
 
 def current_operation() -> ManagedOperation | None:
@@ -334,6 +368,15 @@ def cancellation_checkpoint() -> None:
     operation = current_operation()
     if operation is not None:
         operation.checkpoint()
+
+
+def run_if_not_cancelled(action: Callable[[], T]) -> T:
+    """Run one short commit only if the owning managed request is still live."""
+
+    operation = current_operation()
+    if operation is None:
+        return action()
+    return operation.run_if_not_cancelled(action)
 
 
 def operation_resources() -> OperationResources:
@@ -492,7 +535,21 @@ async def dispatch(
             raise
     token = _current_operation.set(managed)
     if inspect.iscoroutinefunction(operation):
+        reservation = manager.batch_lock(board_id)
+        owns_reservation = board_id is not None and board_id in _reserved_batch_boards.get()
+        acquired_reservation = False
+        reservation_token = None
         try:
+            if not owns_reservation and isinstance(reservation, type(threading.Lock())):
+                concrete_reservation = cast(Any, reservation)
+                while not concrete_reservation.acquire(blocking=False):
+                    managed.checkpoint()
+                    await anyio.sleep(BOARD_LOCK_POLL_SECONDS)
+                acquired_reservation = True
+            if tool_name == "action_batch" and board_id is not None:
+                reservation_token = _reserved_batch_boards.set(
+                    _reserved_batch_boards.get() | {board_id}
+                )
             managed.mark_running()
             if before_execution is not None:
                 before_execution()
@@ -520,15 +577,26 @@ async def dispatch(
             managed.cleanup()
             managed.done.set()
             manager.finish(managed)
+            if reservation_token is not None:
+                _reserved_batch_boards.reset(reservation_token)
+            if acquired_reservation:
+                cast(Any, reservation).release()
             _current_operation.reset(token)
 
     sync_operation = cast(Callable[[], T], operation)
     worker_lock = manager.worker_lock(board_id) if serialize_board else nullcontext()
+    reservation_lock = (
+        nullcontext()
+        if board_id is not None and board_id in _reserved_batch_boards.get()
+        else manager.batch_lock(board_id)
+    )
 
     def run_synchronous() -> None:
         worker_token = _current_operation.set(managed)
         try:
-            with _acquire_worker_lock(worker_lock, managed):
+            with _acquire_worker_lock(reservation_lock, managed), _acquire_worker_lock(
+                worker_lock, managed
+            ):
                 try:
                     with execution_lock or nullcontext():
                         managed.checkpoint()
@@ -578,7 +646,14 @@ async def dispatch(
     except TimeoutError as exc:
         was_queued = managed.execution_started_at is None
         managed.request_cancel("operation timeout")
-        await _wait_for_cleanup(managed, CANCELLATION_CLEANUP_GRACE_SECONDS)
+        cleanup_wait = (
+            timeout
+            if managed.non_interruptible or managed.completion_committed
+            else CANCELLATION_CLEANUP_GRACE_SECONDS
+        )
+        await _wait_for_cleanup(managed, cleanup_wait)
+        if managed.done.is_set() and managed.completion_committed and managed.error is None:
+            return cast(T, managed.result)
         if was_queued:
             if board_id is None:  # pragma: no cover - no board lock means it cannot be queued
                 raise OperationTimeoutError(tool_name, timeout) from exc
@@ -586,8 +661,14 @@ async def dispatch(
         raise OperationTimeoutError(tool_name, timeout, board_id=board_id) from exc
     except anyio.get_cancelled_exc_class():
         managed.request_cancel("MCP request cancelled or client disconnected")
-        cleanup_wait = timeout if managed.non_interruptible else CANCELLATION_CLEANUP_GRACE_SECONDS
+        cleanup_wait = (
+            timeout
+            if managed.non_interruptible or managed.completion_committed
+            else CANCELLATION_CLEANUP_GRACE_SECONDS
+        )
         await _wait_for_cleanup(managed, cleanup_wait)
+        if managed.done.is_set() and managed.completion_committed and managed.error is None:
+            return cast(T, managed.result)
         raise
     finally:
         _current_operation.reset(token)

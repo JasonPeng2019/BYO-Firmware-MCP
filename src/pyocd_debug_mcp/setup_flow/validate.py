@@ -12,6 +12,7 @@ from typing import Any, Literal
 from pyocd_debug_mcp.firmstore.cache import SerialEndpoint
 from pyocd_debug_mcp.firmstore.profiles import BoardProfile, ProfileError, ProfileRepository
 from pyocd_debug_mcp.firmstore.reports import ReportPaths, ReportWriter
+from pyocd_debug_mcp.kernel.operations import OperationCancelledError
 from pyocd_debug_mcp.setup_flow.preflight import FriendlyChoice, NO_INTERNALS_RELAY_INSTRUCTION
 from pyocd_debug_mcp.target_errors import LockedTargetError, TargetConnectionError
 
@@ -107,6 +108,7 @@ class ValidationHooks:
     load_safety_map: Callable[[BoardProfile], SafetyMapSnapshot]
     stamp_session: Callable[[str, str, str, str | None, str, str], bool]
     record_mismatch: Callable[[str, str, str, str | None, str, str], bool]
+    rollback_session: Callable[[str, str], None] = lambda _board, _validation: None
 
     @classmethod
     def closed_placeholders(cls) -> ValidationHooks:
@@ -192,6 +194,7 @@ class BoardValidator:
         *,
         hooks: ValidationHooks | None = None,
         step_timeout_seconds: float = DEFAULT_STEP_TIMEOUT_SECONDS,
+        cancellation_checkpoint: Callable[[], None] | None = None,
     ) -> None:
         if step_timeout_seconds <= 0:
             raise ValueError("step timeout must be positive")
@@ -200,6 +203,7 @@ class BoardValidator:
         self._backend = backend
         self._hooks = hooks or ValidationHooks.closed_placeholders()
         self._step_timeout_seconds = step_timeout_seconds
+        self._cancellation_checkpoint = cancellation_checkpoint or (lambda: None)
 
     def validate(self, request: ValidationRequest) -> ValidationResult:
         validation_id = f"validation-{secrets.token_hex(8)}"
@@ -215,6 +219,9 @@ class BoardValidator:
         code: str
         message: str
         safety_map = SafetyMapSnapshot(False, False, reason="not loaded")
+        stamped = False
+        mismatch_recorded = False
+        self._cancellation_checkpoint()
         try:
             try:
                 profile = self._profiles.load(request.board_id)
@@ -241,6 +248,7 @@ class BoardValidator:
             )
 
             inventory = self._backend.inventory()
+            self._cancellation_checkpoint()
             observed["inventory"] = {"probes": [asdict(item) for item in inventory.probes]}
             steps.append(ValidationStep(2, "Enumerate debug probes", "passed"))
 
@@ -270,6 +278,7 @@ class BoardValidator:
             )
 
             support = self._backend.target_supported(profile.board.pyocd_target)
+            self._cancellation_checkpoint()
             if support is None:
                 raise ValidationBackendError(
                     "validation_research_required",
@@ -299,6 +308,7 @@ class BoardValidator:
             connection = self._backend.connect(
                 profile, selected_probe, self._step_timeout_seconds
             )
+            self._cancellation_checkpoint()
             steps.append(ValidationStep(5, "Connect without target mutation", "passed"))
 
             actual = self._backend.read_memory(
@@ -307,6 +317,7 @@ class BoardValidator:
                 identity_width,
                 self._step_timeout_seconds,
             )
+            self._cancellation_checkpoint()
             digits = max(1, (identity_width + 3) // 4)
             identity_label = profile.board.silicon_id_label or "silicon identity"
             observed_identity = f"{identity_label} 0x{actual:0{digits}X}"
@@ -320,6 +331,7 @@ class BoardValidator:
                 }
             )
             if actual & identity_mask != identity_expected & identity_mask:
+                self._cancellation_checkpoint()
                 recorded = self._hooks.record_mismatch(
                     profile.board_id,
                     validation_id,
@@ -328,6 +340,7 @@ class BoardValidator:
                     profile.mcu_part_number,
                     observed_identity,
                 )
+                mismatch_recorded = recorded
                 observed["mismatch_allowance_recorded"] = recorded
                 raise ValidationBackendError(
                     "validation_failed",
@@ -375,6 +388,7 @@ class BoardValidator:
                     safety_map.reason
                     or "The safety map is inconsistent. Run board_safety_refresh.",
                 )
+            self._cancellation_checkpoint()
             stamped = self._hooks.stamp_session(
                 profile.board_id,
                 validation_id,
@@ -397,6 +411,8 @@ class BoardValidator:
                 "Live silicon identity and the current safety map were validated. "
                 "UART readiness is reported separately by get_setup_status."
             )
+        except OperationCancelledError:
+            raise
         except ValidationBackendError as exc:
             status = exc.status
             code = exc.code
@@ -426,17 +442,23 @@ class BoardValidator:
                 except Exception as exc:  # noqa: BLE001 - preserve primary result and report
                     observed["close_error"] = str(exc)
 
-        report_paths = self._write_report(
-            validation_id,
-            request,
-            status,
-            code,
-            message,
-            observed,
-            steps,
-            profile,
-            profile_before,
-        )
+        self._cancellation_checkpoint()
+        try:
+            report_paths = self._write_report(
+                validation_id,
+                request,
+                status,
+                code,
+                message,
+                observed,
+                steps,
+                profile,
+                profile_before,
+            )
+        except Exception:
+            if (stamped or mismatch_recorded) and profile is not None:
+                self._hooks.rollback_session(profile.board_id, validation_id)
+            raise
         return ValidationResult(
             status,
             code,

@@ -158,7 +158,35 @@ def build_memory_handlers(
         handle = services.handle_for(board_id)
         artifact = services.symbol_artifact_for(handle)
         resolved = services.resolve_symbol(artifact, symbol)
-        services.check_memory_read(board_id, resolved.address, width // 8)
+        requested_bytes = width // 8
+        if resolved.size <= 0:
+            return _record_refusal(
+                services,
+                "read_memory_symbol",
+                board_id,
+                args,
+                PolicyRefusal(
+                    "memory/symbol-size-unknown",
+                    "The ELF does not describe this symbol as a sized variable; use a real "
+                    "variable symbol or the planned raw-address path with an explicit width.",
+                ),
+                started,
+                runtime,
+            )
+        if requested_bytes > resolved.size:
+            return _record_refusal(
+                services,
+                "read_memory_symbol",
+                board_id,
+                args,
+                PolicyRefusal(
+                    "memory/symbol-width-exceeds-object",
+                    f"The {width}-bit read exceeds the {resolved.size}-byte symbol.",
+                ),
+                started,
+                runtime,
+            )
+        services.check_memory_read(board_id, resolved.address, requested_bytes)
         value = services.read_target_memory(handle, resolved.address, width)
         result = (
             f"Symbol {resolved.name} from {artifact} @0x{resolved.address:08X} "
@@ -275,6 +303,7 @@ def build_memory_handlers(
                 runtime,
             )
         handle = services.handle_for(board_id)
+        resolved = None
         try:
             address = _parse_integer(symbol_or_address)
             is_address = True
@@ -320,6 +349,35 @@ def build_memory_handlers(
                 started,
                 runtime,
             )
+        if resolved is not None:
+            requested_bytes = width // 8
+            if resolved.size <= 0:
+                return _record_refusal(
+                    services,
+                    "write_memory",
+                    board_id,
+                    args,
+                    PolicyRefusal(
+                        "memory/symbol-size-unknown",
+                        "The ELF does not describe this symbol as a sized variable; use a real "
+                        "variable symbol or the planned raw-address fallback with an explicit reason.",
+                    ),
+                    started,
+                    runtime,
+                )
+            if requested_bytes > resolved.size:
+                return _record_refusal(
+                    services,
+                    "write_memory",
+                    board_id,
+                    args,
+                    PolicyRefusal(
+                        "memory/symbol-width-exceeds-object",
+                        f"The {width}-bit write exceeds the {resolved.size}-byte symbol.",
+                    ),
+                    started,
+                    runtime,
+                )
         try:
             parsed_value = _parse_integer(value)
         except (TypeError, ValueError) as exc:

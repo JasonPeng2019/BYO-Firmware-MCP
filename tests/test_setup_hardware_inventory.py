@@ -9,9 +9,15 @@ from mcp.shared.memory import create_connected_server_and_client_session
 
 from pyocd_debug_mcp import probe_inventory, server
 from pyocd_debug_mcp.firmstore.cache import CacheResolution
+from pyocd_debug_mcp.setup_flow.board_catalog import (
+    ReviewedSupportNotFoundError,
+    catalog_board,
+)
 from pyocd_debug_mcp.setup_flow.preflight import (
     FriendlyChoice,
     PreflightDecision,
+    ProbeCandidate,
+    SerialCandidate,
     SetupUserInput,
 )
 from pyocd_debug_mcp.setup_flow.validate import (
@@ -19,6 +25,27 @@ from pyocd_debug_mcp.setup_flow.validate import (
     ValidationProbe,
     ValidationSerial,
 )
+
+
+@pytest.fixture(autouse=True)
+def _resolve_support_without_coupling_inventory_tests_to_pdf_bytes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Keep these tests focused on live hardware inventory and exact target routing."""
+
+    catalog_by_package = {
+        "nRF52833-QIAA": catalog_board("nrf52833dk"),
+        "nRF52840-QIAA": catalog_board("nrf52840dk"),
+        "STM32L476RGT6": catalog_board("nucleo_l476rg"),
+    }
+
+    def resolve(user_input: SetupUserInput) -> SimpleNamespace:
+        catalog = catalog_by_package.get(user_input.mcu_part_number)
+        if catalog is None:
+            raise ReviewedSupportNotFoundError("No exact reviewed MCU/datasheet support.")
+        return SimpleNamespace(catalog=catalog)
+
+    monkeypatch.setattr(server, "_resolve_setup_support", resolve)
 
 
 def _tool_json(result: types.CallToolResult) -> dict[str, object]:
@@ -128,7 +155,6 @@ def test_setup_inventory_scopes_probe_and_uart_by_stable_connection_identity(
             "nRF52833 DK",
                 "nRF52833-QIAA",
                 115200,
-                board_type="nrf52833dk",
             )
     )
 
@@ -160,7 +186,6 @@ def test_setup_inventory_rejects_a_different_sole_uart_from_explicit_binding(
             "NF Board",
             "nRF52840-QIAA",
             115200,
-            board_type="nrf52840dk",
             serial_id="683377322",
         )
     )
@@ -190,7 +215,6 @@ def test_setup_inventory_rejects_wrong_single_probe_and_port_path_as_uart_id(
             "NF Board",
             "nRF52840-QIAA",
             115200,
-            board_type="nrf52840dk",
             serial_id="COM11",
         )
     )
@@ -216,7 +240,6 @@ def test_reviewed_catalog_mapping_ignores_legacy_profile_target_authority(monkey
             "Nucleo-L476RG",
             "STM32L476RGT6",
             115200,
-            board_type="nucleo_l476rg",
         )
     )
     mismatched = server._setup_inventory(
@@ -226,7 +249,6 @@ def test_reviewed_catalog_mapping_ignores_legacy_profile_target_authority(monkey
             "Nucleo-L476RG",
             "STM32F401RE",
             115200,
-            board_type="nucleo_l476rg",
         )
     )
 
@@ -253,7 +275,6 @@ def test_fresh_reviewed_catalog_maps_exact_package_to_builtin_target_without_res
             "NF Board",
             "nRF52840-QIAA",
             115200,
-            board_type="nrf52840dk",
         )
     )
     family_only = server._setup_inventory(
@@ -263,7 +284,6 @@ def test_fresh_reviewed_catalog_maps_exact_package_to_builtin_target_without_res
             "NF Board",
             "nRF52840",
             115200,
-            board_type="nrf52840dk",
         )
     )
     wrong_suffix = server._setup_inventory(
@@ -273,7 +293,6 @@ def test_fresh_reviewed_catalog_maps_exact_package_to_builtin_target_without_res
             "NF Board",
             "nRF52840-EVIL",
             115200,
-            board_type="nrf52840dk",
         )
     )
 
@@ -294,7 +313,6 @@ def test_broad_supported_prefix_is_not_part_target_evidence(monkeypatch) -> None
             "NF Board",
             "nRF52840-QIAA",
             115200,
-            board_type="nrf52840dk",
         )
     )
 
@@ -326,7 +344,7 @@ def test_validation_inventory_includes_server_owned_active_probe(monkeypatch) ->
 
 def test_public_setup_continuation_validates_and_routes_target_research(monkeypatch) -> None:
     user_input = SetupUserInput(
-        "nf_board", "probe:683377322", "NF Board", "nRF52840-QIAA", 115200, board_type="nrf52840dk"
+        "nf_board", "probe:683377322", "NF Board", "nRF52840-QIAA", 115200
     )
     monkeypatch.setattr(
         server._setup_workflow,
@@ -366,7 +384,7 @@ def test_public_setup_continuation_accepts_only_a_returned_friendly_choice(monke
     user_input = SetupUserInput("nf_board", "probe:x", "NF Board", "nRF52840", 115200)
     decision = PreflightDecision(
         "setup_needs_user_input",
-        "setup/ambiguous-probe",
+        "setup/probe-selection-required",
         "Choose a probe.",
         choices=(FriendlyChoice("probe-a", "Probe A", "First probe"),),
     )
@@ -383,3 +401,37 @@ def test_public_setup_continuation_accepts_only_a_returned_friendly_choice(monke
     accepted = server._setup_continue("nf_board", "continue-1", {"choice_id": "probe-a"})
     assert accepted["status"] == "setup_continuation_accepted"
     assert server._setup_selections_by_board.pop("nf_board").probe_id == "probe-a"
+
+
+def test_public_setup_continuation_accepts_real_external_adapter_confirmation_code(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    user_input = SetupUserInput("nf_board", "probe:x", "NF Board", "nRF52840", 115200)
+    decision = PreflightDecision(
+        "setup_needs_user_input",
+        "setup/external-adapter-confirmation-required",
+        "Confirm the adapter.",
+        choices=(
+            FriendlyChoice(
+                "confirm_external_adapter", "Confirm adapter", "Selected adapter"
+            ),
+        ),
+        selected_probe=ProbeCandidate("probe-a", "Adapter probe", "cmsis-dap"),
+        selected_serial=SerialCandidate("uart-a", "COM9", "External adapter"),
+    )
+    monkeypatch.setattr(
+        server._setup_workflow,
+        "continuation_context",
+        lambda _token: (user_input, "setup_needs_user_input", decision),
+    )
+    server._setup_selections_by_board.pop("nf_board", None)
+
+    accepted = server._setup_continue(
+        "nf_board", "continue-1", {"choice_id": "confirm_external_adapter"}
+    )
+
+    selection = server._setup_selections_by_board.pop("nf_board")
+    assert accepted["status"] == "setup_continuation_accepted"
+    assert selection.probe_id == "probe-a"
+    assert selection.serial_id == "uart-a"
+    assert selection.external_adapter_confirmed is True

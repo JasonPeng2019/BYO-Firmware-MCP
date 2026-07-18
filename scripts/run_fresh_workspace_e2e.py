@@ -14,7 +14,6 @@ import importlib.metadata
 import json
 import os
 import platform
-import re
 import sys
 from collections.abc import Mapping
 from dataclasses import asdict, dataclass
@@ -25,13 +24,10 @@ from typing import Any, NoReturn, Protocol
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 
-from pyocd_debug_mcp.firmstore.store import FirmLayout
-
 _SUCCESS_VALIDATION = {
     "validation_passed",
     "validation_passed_uart_not_configured",
 }
-_BOARD_ID = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
 
 
 def _timestamp() -> str:
@@ -53,9 +49,7 @@ def _stable_identity_matches(expected: str, observed: object) -> bool:
 @dataclass(frozen=True, slots=True)
 class RunnerConfig:
     artifact_root: Path
-    board_id: str
     display_name: str
-    board_type: str
     mcu_part_number: str
     probe_uid: str
     uart_id: str
@@ -67,11 +61,8 @@ class RunnerConfig:
     def validated(self) -> RunnerConfig:
         artifact_root = self.artifact_root.expanduser().resolve()
         datasheet = self.datasheet_path.expanduser().resolve()
-        if not _BOARD_ID.fullmatch(self.board_id):
-            raise ValueError("board_id must be a lowercase A-6 identifier")
         for name, value in (
             ("display_name", self.display_name),
-            ("board_type", self.board_type),
             ("mcu_part_number", self.mcu_part_number),
             ("probe_uid", self.probe_uid),
             ("uart_id", self.uart_id),
@@ -88,9 +79,7 @@ class RunnerConfig:
             raise ValueError("datasheet_path must name an existing local PDF")
         return RunnerConfig(
             artifact_root,
-            self.board_id,
             self.display_name.strip(),
-            self.board_type.strip(),
             self.mcu_part_number.strip(),
             self.probe_uid.strip(),
             self.uart_id.strip(),
@@ -167,9 +156,7 @@ async def execute_setup_only(client: SetupClient, config: RunnerConfig) -> dict[
         "code_phase_started": False,
         "setup_authorization_present": True,
         "identity": {
-            "board_id": selected.board_id,
             "display_name": selected.display_name,
-            "board_type": selected.board_type,
             "mcu_part_number": selected.mcu_part_number,
             "probe_uid": selected.probe_uid,
             "uart_id": selected.uart_id,
@@ -215,28 +202,104 @@ async def execute_setup_only(client: SetupClient, config: RunnerConfig) -> dict[
         if "run_id:" not in handshake or "started_at:" not in handshake:
             stop("initialization handshake did not disclose the current Server Run")
 
+        overview = _json_result(
+            await call(
+                "setup_overview",
+                {"board_names": [selected.display_name]},
+            ),
+            "setup_overview",
+        )
+        if overview.get("status") == "setup_assignment_required":
+            connections = overview.get("connections")
+            if not isinstance(connections, list):
+                stop("setup_overview requested assignment without friendly connections")
+            matching_connections = [
+                item
+                for item in connections
+                if isinstance(item, Mapping)
+                and isinstance(item.get("connection_id"), str)
+                and _stable_identity_matches(
+                    selected.probe_uid,
+                    str(item["connection_id"]).removeprefix("probe:"),
+                )
+            ]
+            if len(matching_connections) != 1:
+                stop("selected probe did not match exactly one server connection")
+            connection_id = matching_connections[0]["connection_id"]
+            assert isinstance(connection_id, str)
+            overview = _json_result(
+                await call(
+                    "setup_overview",
+                    {
+                        "board_names": [selected.display_name],
+                        "connection_assignments": {
+                            selected.display_name: connection_id
+                        },
+                    },
+                ),
+                "setup_overview",
+            )
+        routes = overview.get("routes")
+        if not isinstance(routes, list) or len(routes) != 1 or not isinstance(routes[0], Mapping):
+            stop("setup_overview did not return one exact fresh-board route")
+        route = routes[0]
+        template = route.get("plan_action_parameters_template")
+        board_id = route.get("board_id")
+        if (
+            route.get("route") != "setup"
+            or not isinstance(board_id, str)
+            or not board_id
+            or not isinstance(template, Mapping)
+            or not isinstance(template.get("connection_id"), str)
+            or not _stable_identity_matches(
+                selected.probe_uid,
+                str(template["connection_id"]).removeprefix("probe:"),
+            )
+        ):
+            stop("setup_overview route does not match the selected fresh board and probe")
+        identity = evidence["identity"]
+        assert isinstance(identity, dict)
+        identity["board_id"] = board_id
+        server_probe_id = str(template["connection_id"]).removeprefix("probe:")
+
         await call(
             "load_setup_tool",
-            {"board_id": selected.board_id, "tool_name": "board_setup-plan"},
+            {"board_id": board_id, "tool_name": "board_setup-plan"},
         )
-        null_guidance = _result_text(await call("board_setup-plan", {}))
+        null_guidance = _result_text(
+            await call(
+                "board_setup-plan",
+                {
+                    "board_id": None,
+                    "hypothesis": None,
+                    "strategy": None,
+                    "hypothesis_made": None,
+                    "strategy_evaluated": None,
+                    "expected_fail_return": None,
+                    "expected_success_return": None,
+                    "max_calls": None,
+                    "max_calls_buffer": None,
+                    "action_parameters": None,
+                    "user_permission": None,
+                },
+            )
+        )
         required_guidance = ("board", "MCU", "datasheet", "board_validate")
         if any(token.casefold() not in null_guidance.casefold() for token in required_guidance):
             stop("board_setup-plan NULL guidance omitted required setup routing")
 
         action_parameters: dict[str, object] = {
             "mode": "setup",
-            "connection_id": selected.probe_uid,
+            "connection_id": template["connection_id"],
             "display_name": selected.display_name,
-            "board_type": selected.board_type,
             "mcu_part_number": selected.mcu_part_number,
+            "requires_uart": True,
             "serial_baudrate": selected.baudrate,
             "serial_id": selected.uart_id,
             "datasheet_path": str(selected.datasheet_path),
-            "datasheet_sha256": None,
         }
         plan = {
-            "board_id": selected.board_id,
+            "board_id": board_id,
             "hypothesis": (
                 "The explicitly identified board, probe, UART, and reviewed datasheet can "
                 "complete non-destructive first-time setup."
@@ -259,7 +322,7 @@ async def execute_setup_only(client: SetupClient, config: RunnerConfig) -> dict[
             stop("board_setup-plan was not accepted exactly")
 
         setup = _json_result(
-            await call("board_setup", {"board_id": selected.board_id, **action_parameters}, 305.0),
+            await call("board_setup", {"board_id": board_id, **action_parameters}, 305.0),
             "board_setup",
         )
         if setup.get("status") == "setup_needs_user_input":
@@ -286,7 +349,7 @@ async def execute_setup_only(client: SetupClient, config: RunnerConfig) -> dict[
                 await call(
                     "continue_setup",
                     {
-                        "board_id": selected.board_id,
+                        "board_id": board_id,
                         "continuation_id": continuation,
                         "response": {"choice_id": matches[0]["choice_id"]},
                     },
@@ -298,7 +361,7 @@ async def execute_setup_only(client: SetupClient, config: RunnerConfig) -> dict[
             setup = _json_result(
                 await call(
                     "board_fix_setup",
-                    {"board_id": selected.board_id, **action_parameters},
+                    {"board_id": board_id, **action_parameters},
                     305.0,
                 ),
                 "board_fix_setup",
@@ -308,22 +371,26 @@ async def execute_setup_only(client: SetupClient, config: RunnerConfig) -> dict[
 
         await call(
             "load_setup_tool",
-            {"board_id": selected.board_id, "tool_name": "board_validate"},
+            {"board_id": board_id, "tool_name": "board_validate"},
         )
         validation = _json_result(
-            await call("board_validate", {"board_id": selected.board_id}, 125.0),
+            await call(
+                "board_validate",
+                {"board_id": board_id, "probe_id": server_probe_id},
+                125.0,
+            ),
             "board_validate",
         )
         if validation.get("status") not in _SUCCESS_VALIDATION:
             stop(f"current-run validation did not pass: {validation.get('status')!r}")
 
         readiness = _json_result(
-            await call("get_setup_status", {"board_id": selected.board_id}),
+            await call("get_setup_status", {"board_id": board_id}),
             "get_setup_status",
         )
         if (
             readiness.get("status") != "setup_ready"
-            or readiness.get("board_id") != selected.board_id
+            or readiness.get("board_id") != board_id
             or readiness.get("configuration_ready") is not True
             or readiness.get("live_session_ready") is not True
             or readiness.get("ready_for_code") is not True
@@ -343,8 +410,6 @@ async def execute_setup_only(client: SetupClient, config: RunnerConfig) -> dict[
         ):
             stop("resolved probe identity does not match the explicit selection")
 
-        identity = evidence["identity"]
-        assert isinstance(identity, dict)
         identity["resolved_uart"] = dict(resolved_uart)
         evidence.update(
             status="pass",
@@ -375,9 +440,6 @@ def _atomic_write_evidence(config: RunnerConfig, evidence: Mapping[str, Any]) ->
 
 async def _run_stdio(config: RunnerConfig) -> dict[str, Any]:
     selected = config.validated()
-    layout = FirmLayout.for_project(selected.artifact_root)
-    if layout.board_profile(selected.board_id).exists():
-        raise ValueError("fresh-workspace runner requires the named schema-v2 profile to be absent")
     environment = dict(os.environ)
     environment["BYO_MCP_ARTIFACT_ROOT"] = str(selected.artifact_root)
     parameters = StdioServerParameters(
@@ -395,9 +457,7 @@ async def _run_stdio(config: RunnerConfig) -> dict[str, Any]:
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--artifact-root", type=Path, required=True)
-    parser.add_argument("--board-id", required=True)
     parser.add_argument("--display-name", required=True)
-    parser.add_argument("--board-type", required=True)
     parser.add_argument("--mcu-part-number", required=True)
     parser.add_argument("--probe-uid", required=True)
     parser.add_argument("--uart-id", required=True)
@@ -417,9 +477,7 @@ def main() -> None:
     args = _parser().parse_args()
     config = RunnerConfig(
         args.artifact_root,
-        args.board_id,
         args.display_name,
-        args.board_type,
         args.mcu_part_number,
         args.probe_uid,
         args.uart_id,

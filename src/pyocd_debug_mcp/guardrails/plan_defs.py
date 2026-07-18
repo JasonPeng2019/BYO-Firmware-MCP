@@ -170,6 +170,17 @@ def _field(
     )
 
 
+def _validate_setup_parameters(values: Mapping[str, object]) -> str | None:
+    requires_uart = values.get("requires_uart")
+    baudrate = values.get("serial_baudrate")
+    serial_id = values.get("serial_id")
+    if requires_uart is True and (baudrate is None or not serial_id):
+        return "serial_baudrate and serial_id are required when requires_uart is true"
+    if requires_uart is False and (baudrate is not None or serial_id is not None):
+        return "serial_baudrate and serial_id must be NULL when requires_uart is false"
+    return None
+
+
 _DEFINITIONS = (
     PlanDefinition(
         "board_setup",
@@ -179,29 +190,30 @@ _DEFINITIONS = (
             _field("mode", FieldType.TEXT, "Exactly setup or repair.", choices=("setup", "repair")),
             _field("connection_id", FieldType.TEXT, "Intended enumerated physical connection."),
             _field("display_name", FieldType.TEXT, "User-provided familiar board name."),
-            _field(
-                "board_type",
-                FieldType.TEXT,
-                "Exact reviewed board type, for example nrf52840dk.",
-            ),
             _field("mcu_part_number", FieldType.TEXT, "Exact user-provided MCU part number."),
-            _field("serial_baudrate", FieldType.INTEGER, "Positive UART baud rate.", minimum=1),
+            _field(
+                "requires_uart",
+                FieldType.BOOLEAN,
+                "True only when this firmware workflow uses UART.",
+            ),
+            _field(
+                "serial_baudrate",
+                FieldType.INTEGER,
+                "Positive UART baud rate when requires_uart is true; otherwise NULL.",
+                nullable=True,
+                minimum=1,
+            ),
             _field(
                 "serial_id",
                 FieldType.TEXT,
                 "Stable UART identity selected from current setup inventory; the server resolves "
-                "its current port path at execution time.",
+                "its current port path at execution time; NULL when UART is unused.",
+                nullable=True,
             ),
             _field(
                 "datasheet_path",
                 FieldType.TEXT,
                 "Local authoritative PDF datasheet path supplied by the user.",
-            ),
-            _field(
-                "datasheet_sha256",
-                FieldType.TEXT,
-                "Optional SHA-256 cross-check; use null to let the server compute it.",
-                nullable=True,
             ),
         ),
         BudgetMode.FIXED,
@@ -212,6 +224,7 @@ _DEFINITIONS = (
         "resolves the current UART port and computes the datasheet digest.",
         paired_actions=("board_fix_setup",),
         max_plan_cycles_per_board=3,
+        action_validator=_validate_setup_parameters,
     ),
     PlanDefinition(
         "connect_override",
@@ -445,6 +458,12 @@ _DEFINITIONS = (
             _field("baudrate", FieldType.INTEGER, "Positive baud rate.", nullable=True, minimum=1),
             _field("port", FieldType.TEXT, "Current serial port path.", nullable=True),
             _field("reset_on_open", FieldType.BOOLEAN, "Reset after opening the port."),
+            _field(
+                "on_exit",
+                FieldType.OBJECT,
+                "Optional exact structured uart_write or reset_and_run finalizer.",
+                nullable=True,
+            ),
         ),
         BudgetMode.FLEXIBLE,
         PermissionMode.NONE,
@@ -539,6 +558,12 @@ _DEFINITIONS = (
                 minimum=0,
                 exclusive_minimum=True,
             ),
+            _field(
+                "on_exit",
+                FieldType.OBJECT,
+                "Optional exact structured uart_write or reset_and_run finalizer.",
+                nullable=True,
+            ),
         ),
         BudgetMode.FLEXIBLE,
         PermissionMode.NONE,
@@ -617,8 +642,9 @@ _GUIDANCE: Final = MappingProxyType(
             "for one unique familiar board name, unless already supplied. Pass all familiar names "
             "to setup_overview so the server—not the model or user—matches profiles, proposes new "
             "board IDs, and enumerates friendly physical choices. For an unknown route, then ask for "
-            "the exact board type, exact package-level MCU part number (the full package marking, "
-            "not only the chip family), and authoritative local datasheet PDF. If "
+            "the exact package-level MCU part number (the full package marking, not only the chip "
+            "family) and authoritative local datasheet PDF. Never ask for a board type or digest; "
+            "the server resolves reviewed support and hashes the PDF bytes. If "
             "setup_overview finds a matching board-name YAML profile, do not populate this setup "
             "plan: load "
             "and call board_validate only. If validation passes, "
@@ -642,7 +668,7 @@ _GUIDANCE: Final = MappingProxyType(
                 "Treat this NULL response as the hardware-entry router before every other plan tool.",
                 "Call setup_overview with the user-provided familiar names; never invent board_id or connection_id.",
                 "Confirm the user explicitly named this board during this session.",
-                "Confirm the exact board and full package-level MCU marking; for a fresh profile obtain the authoritative datasheet.",
+                "Confirm the full package-level MCU marking; for a fresh profile obtain the authoritative datasheet.",
                 "Confirm no healthy profile has the same display name; validate it if one does.",
                 "Use the user's exact MCU part number—never guess, normalize, or correct it.",
                 "Be ready to relay probe, port, and build choices instead of selecting silently.",
@@ -654,12 +680,11 @@ _GUIDANCE: Final = MappingProxyType(
                 "mode": "setup",
                 "connection_id": "connection_1",
                 "display_name": "left controller",
-                "board_type": "nrf52840dk",
                 "mcu_part_number": "nRF52840-QIAA",
+                "requires_uart": True,
                 "serial_baudrate": 115200,
                 "serial_id": "683377322",
                 "datasheet_path": "C:/firmware/docs/nRF52840_PS_v1.1.pdf",
-                "datasheet_sha256": None,
             },
             "PAIRED ALLOWANCE: if the first setup call fails, its one paired board_fix_setup call "
             "is already authorized even under one-time permission. A further attempt requires a "
@@ -1093,15 +1118,17 @@ def _render_null_response(
     setup_first = (
         "This is the universal hardware-entry guide. Call it all-NULL before loading the setup "
         "tool. Ask the user for familiar connected-board names and call setup_overview. Every "
-        "matching YAML goes to board_validate first. For an unknown name, ask for exact board "
-        "type, exact MCU part number, and the authoritative local datasheet; only then load "
+        "matching YAML goes to board_validate first. For an unknown name, ask for the exact "
+        "package-level MCU part number and authoritative local datasheet, never a board type or "
+        "digest; only then load "
         "board_setup-plan and submit its populated plan. Hidden setup or repair is used only when "
         "there is no matching profile or validation names that remedy."
         if definition.action_name == "board_setup"
         else "Before populating this plan, call initialization_handshake, ask for familiar "
         "connected-board names, and call setup_overview. Every matching YAML must pass "
-        "board_validate first. An unknown name must complete setup using exact board type, MCU "
-        "part number, and authoritative local datasheet. Do not populate this hardware plan until "
+        "board_validate first. An unknown name must complete setup using the exact package-level "
+        "MCU part and authoritative local datasheet; reviewed support is resolved internally. Do "
+        "not populate this hardware plan until "
         "setup status reports ready_for_code=true."
     )
     return (

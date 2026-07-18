@@ -11,6 +11,7 @@ from enum import Enum
 from typing import Any, Literal
 
 from pyocd_debug_mcp.firmstore.reports import ReportPaths, ReportWriter
+from pyocd_debug_mcp.kernel.operations import OperationCancelledError
 from pyocd_debug_mcp.setup_flow.preflight import (
     NO_INTERNALS_RELAY_INSTRUCTION,
     FriendlyChoice,
@@ -125,9 +126,11 @@ class SetupPhaseContext:
 
 
 SetupPhaseHandler = Callable[[SetupPhaseContext], SetupPhaseOutcome]
+AssignmentAction = Callable[[], object]
 InventoryProvider = Callable[[SetupUserInput], PreflightInventory]
 AllowanceClosed = Callable[[str, str], None]
 CacheConfirmationHandler = Callable[[SetupUserInput, PreflightDecision], None]
+CancellationCheckpoint = Callable[[], None]
 
 
 def _relay_prompt(message: str) -> str:
@@ -282,6 +285,7 @@ class SetupWorkflow:
         phase_handlers: Mapping[SetupPhase, SetupPhaseHandler] | None = None,
         on_allowance_closed: AllowanceClosed | None = None,
         on_cache_confirmation: CacheConfirmationHandler | None = None,
+        cancellation_checkpoint: CancellationCheckpoint | None = None,
         max_plan_cycles_per_board: int = 3,
     ) -> None:
         if max_plan_cycles_per_board < 1:
@@ -303,6 +307,7 @@ class SetupWorkflow:
         }
         self.on_allowance_closed = on_allowance_closed or (lambda board_id, reason: None)
         self.on_cache_confirmation = on_cache_confirmation or (lambda user_input, decision: None)
+        self.cancellation_checkpoint = cancellation_checkpoint or (lambda: None)
         self.max_plan_cycles_per_board = max_plan_cycles_per_board
         self._allowances: dict[str, _SetupAllowance] = {}
         self._current_allowance_by_board: dict[str, str] = {}
@@ -427,9 +432,11 @@ class SetupWorkflow:
         prompt: str
         choices: tuple[FriendlyChoice, ...] = ()
         decision: PreflightDecision | None = None
+        self.cancellation_checkpoint()
         try:
             # AC-7.7: this provider is called on every setup and repair attempt.
             inventory = self.inventory_provider(state.user_input)
+            self.cancellation_checkpoint()
             decision = self.preflight.evaluate(state.user_input, inventory, selections)
             state.last_preflight = decision
             self._apply_preflight_records(state, decision)
@@ -440,13 +447,22 @@ class SetupWorkflow:
                 choices = decision.choices
             else:
                 if decision.cache_confirmation_required:
+                    self.cancellation_checkpoint()
                     self.on_cache_confirmation(state.user_input, decision)
                 terminal, prompt, choices = self._run_remaining_phases(
                     state,
+                    allowance,
                     attempt_id,
                     decision,
                     repair=repair,
                 )
+        except OperationCancelledError:
+            with self._guard:
+                self._close_allowance_locked(
+                    allowance.allowance_id,
+                    "managed setup operation cancelled",
+                )
+            raise
         except Exception as exc:  # noqa: BLE001 - every attempt must produce a report
             failed_phase = first_unverified_phase(state.phase_records) or SetupPhase.PREFLIGHT
             state.phase_records[failed_phase] = PhaseRecord(
@@ -461,6 +477,7 @@ class SetupWorkflow:
                 "workflow error. Report the plain-language failure and stop rather than loop."
             )
 
+        self.cancellation_checkpoint()
         state.last_status = terminal
         report_paths = self._write_report(
             state,
@@ -495,7 +512,7 @@ class SetupWorkflow:
         state: _SetupState,
         decision: PreflightDecision,
     ) -> None:
-        if decision.code in {"setup/no-probe", "setup/no-uart"}:
+        if decision.status == "setup_blocked":
             state.phase_records[SetupPhase.PREFLIGHT] = PhaseRecord(
                 SetupPhase.PREFLIGHT,
                 PhaseState.FAILED,
@@ -551,6 +568,7 @@ class SetupWorkflow:
     def _run_remaining_phases(
         self,
         state: _SetupState,
+        allowance: _SetupAllowance,
         attempt_id: str,
         decision: PreflightDecision,
         *,
@@ -569,55 +587,75 @@ class SetupWorkflow:
             if previous is not None and previous.state is PhaseState.VERIFIED:
                 continue
 
-            # Built-in or pinned support is a deterministic target-support success.
-            if phase is SetupPhase.TARGET_SUPPORT and decision.selected_target is not None:
-                target_sets = set(decision.observed.get("built_in_targets", [])) | set(
-                    decision.observed.get("manifest_targets", [])
+            # Serialize each phase with revocation. A replacement assignment may wait for
+            # an in-flight phase, but it closes the allowance before another phase or the
+            # commit phase can begin.
+            with self._guard:
+                self.cancellation_checkpoint()
+                if (
+                    allowance.closed
+                    or self._current_allowance_by_board.get(allowance.board_id)
+                    != allowance.allowance_id
+                ):
+                    return (
+                        "setup_blocked",
+                        _relay_prompt(
+                            "The setup assignment or authorization changed while setup was "
+                            "running. Stop and request a fresh setup overview and plan."
+                        ),
+                        (),
+                    )
+
+                # Built-in or pinned support is a deterministic target-support success.
+                if phase is SetupPhase.TARGET_SUPPORT and decision.selected_target is not None:
+                    target_sets = set(decision.observed.get("built_in_targets", [])) | set(
+                        decision.observed.get("manifest_targets", [])
+                    )
+                    if decision.selected_target in target_sets:
+                        state.phase_records[phase] = PhaseRecord(
+                            phase,
+                            PhaseState.VERIFIED,
+                            "setup/target-support-present",
+                            {"target": decision.selected_target},
+                        )
+                        continue
+
+                context = SetupPhaseContext(
+                    state.continuation_id,
+                    attempt_id,
+                    state.mode,
+                    state.user_input,
+                    decision,
+                    dict(state.phase_records),
                 )
-                if decision.selected_target in target_sets:
+                outcome = self.phase_handlers[phase](context)
+                self.cancellation_checkpoint()
+                if outcome.verified:
                     state.phase_records[phase] = PhaseRecord(
                         phase,
                         PhaseState.VERIFIED,
-                        "setup/target-support-present",
-                        {"target": decision.selected_target},
+                        outcome.code,
+                        dict(outcome.details),
                     )
                     continue
-
-            context = SetupPhaseContext(
-                state.continuation_id,
-                attempt_id,
-                state.mode,
-                state.user_input,
-                decision,
-                dict(state.phase_records),
-            )
-            outcome = self.phase_handlers[phase](context)
-            if outcome.verified:
+                terminal = outcome.terminal_status or "setup_unresolved"
+                record_state = (
+                    PhaseState.UNVERIFIED
+                    if terminal
+                    in {
+                        "setup_needs_user_input",
+                        "setup_research_required",
+                        "setup_safety_incomplete",
+                    }
+                    else PhaseState.FAILED
+                )
                 state.phase_records[phase] = PhaseRecord(
                     phase,
-                    PhaseState.VERIFIED,
+                    record_state,
                     outcome.code,
                     dict(outcome.details),
                 )
-                continue
-            terminal = outcome.terminal_status or "setup_unresolved"
-            record_state = (
-                PhaseState.UNVERIFIED
-                if terminal
-                in {
-                    "setup_needs_user_input",
-                    "setup_research_required",
-                    "setup_safety_incomplete",
-                }
-                else PhaseState.FAILED
-            )
-            state.phase_records[phase] = PhaseRecord(
-                phase,
-                record_state,
-                outcome.code,
-                dict(outcome.details),
-            )
-            return terminal, outcome.agent_prompt, outcome.choices
+                return terminal, outcome.agent_prompt, outcome.choices
 
         return (
             "setup_completed",
@@ -899,12 +937,81 @@ class RunAssignmentStore:
             self._assignments[("connection", connection)] = board
             self._assignments[("board", board)] = connection
 
+    def replace(self, bindings: Mapping[str, str]) -> None:
+        """Atomically replace the run's provisional one-to-one assignments."""
+
+        normalized = {
+            connection.strip(): board.strip() for connection, board in bindings.items()
+        }
+        if any(not connection or not board for connection, board in normalized.items()):
+            raise SetupWorkflowError("connection_id and board_id must be non-empty")
+        if len(set(normalized.values())) != len(normalized):
+            raise SetupWorkflowError("A board cannot be assigned to two connections")
+        with self._guard:
+            self._assignments.clear()
+            for connection, board in normalized.items():
+                self._assignments[("connection", connection)] = board
+                self._assignments[("board", board)] = connection
+
+    def require(self, connection_id: str, board_id: str) -> None:
+        """Require an exact assignment without creating or changing one."""
+
+        connection = connection_id.strip()
+        board = board_id.strip()
+        with self._guard:
+            if self._assignments.get(("connection", connection)) != board or self._assignments.get(
+                ("board", board)
+            ) != connection:
+                raise SetupWorkflowError(
+                    "The board and debug connection do not match the current setup_overview "
+                    "assignment. Call setup_overview again before hardware access."
+                )
+
+    def bindings(self) -> dict[str, str]:
+        """Return a detached connection-to-board snapshot."""
+
+        with self._guard:
+            return {
+                str(key[1]): str(value)
+                for key, value in self._assignments.items()
+                if isinstance(key, tuple)
+                and len(key) == 2
+                and key[0] == "connection"
+                and isinstance(value, str)
+            }
+
+    def run_if_current(
+        self,
+        connection_id: str,
+        board_id: str,
+        action: AssignmentAction,
+    ) -> None:
+        """Run one stamp action atomically with exact assignment verification."""
+
+        connection = connection_id.strip()
+        board = board_id.strip()
+        with self._guard:
+            if self._assignments.get(("connection", connection)) != board or self._assignments.get(
+                ("board", board)
+            ) != connection:
+                raise SetupWorkflowError(
+                    "The board assignment changed before live validation could stamp it."
+                )
+            action()
+
     def clear_connection(self, connection_id: str) -> None:
         connection = connection_id.strip()
         with self._guard:
             board = self._assignments.pop(("connection", connection), None)
             if isinstance(board, str):
                 self._assignments.pop(("board", board), None)
+
+    def clear_board(self, board_id: str) -> None:
+        board = board_id.strip()
+        with self._guard:
+            connection = self._assignments.pop(("board", board), None)
+            if isinstance(connection, str):
+                self._assignments.pop(("connection", connection), None)
 
     def mismatch(self, connection_id: str, board_id: str) -> AssignmentRoute:
         self.clear_connection(connection_id)

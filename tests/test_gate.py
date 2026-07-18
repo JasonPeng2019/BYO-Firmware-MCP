@@ -187,3 +187,28 @@ def test_mismatch_allowance_clears_on_disconnect_and_successful_validation() -> 
     manager.record_mismatch(**arguments, validation_run="validation-b")
     stamp(manager, "board_a", "connection-a", "map-a")
     assert manager.mismatch_allowance(**arguments) is None
+
+
+def test_validation_rollback_removes_only_matching_run_authority() -> None:
+    manager = GateManager()
+    stamp(manager, "board_a", "connection-a", "map-a")
+    stamp(manager, "board_b", "connection-b", "map-b")
+
+    assert manager.rollback_validation("board_a", "other-validation") is False
+    assert manager.snapshot("board_a") is not None
+    assert manager.rollback_validation("board_a", "validation-1") is True
+    assert manager.snapshot("board_a") is None
+    assert manager.snapshot("board_b") is not None
+
+    allowance = manager.record_mismatch(
+        board_id="board_a",
+        connection_id="connection-a",
+        probe_identity="probe-a",
+        expected_mcu="expected-mcu",
+        observed_mcu="observed-mcu",
+        validation_run="mismatch-run",
+    )
+    assert manager.rollback_validation("board_a", "other-validation") is False
+    assert manager.current_mismatch("board_a", "connection-a", "probe-a") == allowance
+    assert manager.rollback_validation("board_a", "mismatch-run") is True
+    assert manager.current_mismatch("board_a", "connection-a", "probe-a") is None

@@ -1684,6 +1684,7 @@ def _resolve_sdk_dir(
 
 
 def ensure_runtime(args: argparse.Namespace) -> ZephyrRuntime:
+    allow_provisioning = bool(getattr(args, "allow_provisioning", False))
     west_venv_dir = Path(args.west_venv_dir).expanduser().resolve()
     managed_workspace_dir = Path(args.managed_workspace_dir).expanduser().resolve()
     managed_sdk_dir = Path(args.managed_sdk_dir).expanduser().resolve()
@@ -1747,6 +1748,12 @@ def ensure_runtime(args: argparse.Namespace) -> ZephyrRuntime:
                 _print_step(f"using local build Python: {west_python}")
 
     if west_python is None:
+        if not allow_provisioning:
+            raise RuntimeError(
+                "No complete local Zephyr Python/toolchain runtime was found. Provisioning is "
+                "disabled by default; install one explicitly or rerun with --allow-provisioning "
+                "after user approval."
+            )
         west_python = _ensure_west_python(west_venv_dir)
     resolved_workspace_dir, workspace_source = _resolve_workspace_dir(
         west_python=west_python,
@@ -1755,7 +1762,7 @@ def ensure_runtime(args: argparse.Namespace) -> ZephyrRuntime:
         zephyr_repo=args.zephyr_repo,
         zephyr_ref=args.zephyr_ref,
         board=args.board,
-        skip_workspace_bootstrap=args.skip_workspace_bootstrap,
+        skip_workspace_bootstrap=args.skip_workspace_bootstrap or not allow_provisioning,
     )
     resolved_sdk_dir, sdk_source = _resolve_sdk_dir(
         west_python=west_python,
@@ -1763,7 +1770,7 @@ def ensure_runtime(args: argparse.Namespace) -> ZephyrRuntime:
         sdk_dir=sdk_dir,
         managed_sdk_dir=managed_sdk_dir,
         toolchain=args.toolchain,
-        skip_sdk_install=args.skip_sdk_install,
+        skip_sdk_install=args.skip_sdk_install or not allow_provisioning,
     )
     candidate_python = _resolve_toolchain_python(resolved_sdk_dir, west_python)
     try:
@@ -1777,6 +1784,12 @@ def ensure_runtime(args: argparse.Namespace) -> ZephyrRuntime:
     ):
         west_python = candidate_python
     else:
+        if not allow_provisioning:
+            raise RuntimeError(
+                "The local Zephyr runtime lacks required Python packages. Provisioning is "
+                "disabled by default; repair the local environment or rerun with "
+                "--allow-provisioning after user approval."
+            )
         requirements_venv_dir = _workspace_requirements_venv_dir(
             west_venv_dir, resolved_workspace_dir
         )
@@ -2052,6 +2065,14 @@ def build_parser() -> argparse.ArgumentParser:
         "--ensure-only",
         action="store_true",
         help="Provision or resolve west/workspace/SDK, then exit without building.",
+    )
+    parser.add_argument(
+        "--allow-provisioning",
+        action="store_true",
+        help=(
+            "Explicitly allow managed Python, workspace, and SDK installation. Omit this flag "
+            "for the default local-only behavior."
+        ),
     )
     parser.add_argument(
         "--skip-workspace-bootstrap",

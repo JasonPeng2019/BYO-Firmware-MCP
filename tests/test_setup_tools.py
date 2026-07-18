@@ -14,7 +14,7 @@ from pyocd_debug_mcp.firmstore.reports import ReportWriter
 from pyocd_debug_mcp.firmstore.store import FirmStore
 from pyocd_debug_mcp.guardrails.permissions import PermissionStore
 from pyocd_debug_mcp.guardrails.gate import GateManager
-from pyocd_debug_mcp.guardrails.plan_engine import PlanEngine
+from pyocd_debug_mcp.guardrails.plan_engine import PlanEngine, PlanRefusal
 from pyocd_debug_mcp.kernel.registry import ToolRegistry
 from pyocd_debug_mcp.kernel.run_state import ServerRun
 from pyocd_debug_mcp.setup_flow.preflight import (
@@ -24,6 +24,7 @@ from pyocd_debug_mcp.setup_flow.preflight import (
 )
 from pyocd_debug_mcp.setup_flow.setup import (
     PHASE_ORDER,
+    RunAssignmentStore,
     SetupPhase,
     SetupPhaseOutcome,
     SetupWorkflow,
@@ -42,12 +43,11 @@ PARAMETERS = {
     "mode": "setup",
     "connection_id": "probe:001",
     "display_name": "Bench Board",
-    "board_type": "nucleo_l476rg",
     "mcu_part_number": "STM32L476RGT6-Exact",
+    "requires_uart": True,
     "serial_baudrate": 115200,
     "serial_id": "UART-001",
     "datasheet_path": "board-datasheet.pdf",
-    "datasheet_sha256": "0" * 64,
 }
 
 
@@ -352,18 +352,20 @@ def test_real_unknown_setup_route_supplies_exact_machine_call_composition(
     assert template == {
         "mode": "setup",
         "connection_id": "probe:PROBE-001",
-        "display_name": "Brand New Board",
-        "board_type": None,
-        "mcu_part_number": None,
-        "serial_baudrate": None,
+            "display_name": "Brand New Board",
+            "mcu_part_number": None,
+            "requires_uart": None,
+            "serial_baudrate": None,
         "serial_id": "UART-001",
         "datasheet_path": None,
-        "datasheet_sha256": None,
     }
     facts = " ".join(route["required_user_facts"]).lower()
     assert "baud" in facts
     assert "authorization" in facts
+    assert "board type" not in facts
     assert "digest" not in facts and "sha" not in facts
+    assert "known_board_types" not in payload
+    assert "supported_reviewed_board_types" not in payload
     assert "serial_port" not in json.dumps(route)
     assert route["accepted_response"] is None
     assert payload["serial_choices"] == [
@@ -379,6 +381,9 @@ def test_real_unknown_setup_route_supplies_exact_machine_call_composition(
 def test_real_unknown_setup_route_maps_ambiguous_friendly_hardware_choices(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    assignments = RunAssignmentStore({})
+    assignments.assign("probe:STALE", "stale_board")
+    monkeypatch.setattr(server, "assignment_store", assignments)
     monkeypatch.setattr(server._profile_repository, "load_all", lambda **_kwargs: ())
     monkeypatch.setattr(
         server,
@@ -396,15 +401,9 @@ def test_real_unknown_setup_route_maps_ambiguous_friendly_hardware_choices(
     )
 
     payload = cast(dict[str, Any], server._setup_overview(["Brand New Board"]))
-    route = payload["routes"][0]
-
-    assert route["plan_action_parameters_template"]["connection_id"] is None
-    assert route["plan_action_parameters_template"]["serial_id"] is None
-    assert route["accepted_response"] == {
-        "copy_into": "plan_action_parameters_template",
-        "connection_id": "<one connections[].connection_id selected from its friendly_name>",
-        "serial_id": "<one serial_choices[].choice_id selected from its friendly_name>",
-    }
+    assert payload["status"] == "setup_assignment_clarification_required"
+    assert payload["routes"] == []
+    assert assignments.bindings() == {}
 
 
 def test_setup_continuation_accepts_one_exact_response_object(tmp_path: Path) -> None:
@@ -444,6 +443,23 @@ def test_setup_action_returns_complete_structured_continuation_payload(tmp_path:
         "validation_plan",
     }.issubset(payload)
     assert registry.is_unlocked("board_setup", "bench_board") is False
+
+
+@pytest.mark.parametrize("obsolete", ["board_type", "datasheet_sha256"])
+def test_setup_plan_rejects_obsolete_public_evidence_fields(
+    tmp_path: Path,
+    obsolete: str,
+) -> None:
+    _, _, _, _, handlers = services(tmp_path)
+    handlers["load_setup_tool"]("bench_board", "board_setup-plan")
+    handlers["board_setup-plan"]()
+    plan = populated_plan()
+    action_parameters = dict(PARAMETERS)
+    action_parameters[obsolete] = "obsolete-caller-value"
+    plan["action_parameters"] = action_parameters
+
+    with pytest.raises(PlanRefusal, match=rf"unknown=\['{obsolete}'\]"):
+        handlers["board_setup-plan"](**plan)
 
 
 def test_board_validate_redirect_then_structured_incomplete_report(tmp_path: Path) -> None:
@@ -509,7 +525,13 @@ def test_real_setup_overview_routes_recorded_mismatch_neutrally_to_new_logical_b
     monkeypatch.setattr(server, "_profile_repository", profiles)
     monkeypatch.setattr(server.connection_manager, "maybe_connection", lambda _board: connection)
     monkeypatch.setattr(server, "gate_manager", gates)
-    monkeypatch.setattr(server, "_validation_inventory", lambda: ValidationInventory())
+    monkeypatch.setattr(
+        server,
+        "_validation_inventory",
+        lambda: ValidationInventory(
+            probes=(ValidationProbe("probe-a", "ST-Link", "stlink", "probe-a"),)
+        ),
+    )
 
     assert server._setup_plan_eligibility("bench_board")[0] is True
     mismatch = cast(dict[str, Any], server._setup_overview(["Bench Board"]))["routes"][0]
@@ -529,8 +551,8 @@ def test_real_setup_overview_routes_recorded_mismatch_neutrally_to_new_logical_b
 
     gates.clear_mismatch("bench_board")
     eligible, reason = server._setup_plan_eligibility("bench_board")
-    assert eligible is False
-    assert "setup remains locked" in reason
+    assert eligible is True
+    assert "mode=repair" in reason
 
     malformed = profiles.store.layout.board_profile("malformed_board")
     malformed.parent.mkdir(parents=True, exist_ok=True)
@@ -538,3 +560,86 @@ def test_real_setup_overview_routes_recorded_mismatch_neutrally_to_new_logical_b
     eligible, reason = server._setup_plan_eligibility("malformed_board")
     assert eligible is False
     assert "malformed or incomplete" in reason
+
+
+def test_real_setup_overview_routes_parseable_incomplete_profile_to_repair(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    assignment_store = RunAssignmentStore({})
+    monkeypatch.setattr(server, "assignment_store", assignment_store)
+    profiles = ProfileRepository(FirmStore(tmp_path), legacy_board_dir=tmp_path / "legacy")
+    profiles.commit_core(
+        profiles.stage_core(
+            {
+                "board_id": "repair_board",
+                "display_name": "Repair Board",
+                "mcu_part_number": "nRF52840-QIAA",
+                "mcu_family": "nrf52840",
+                "probe_family": "jlink",
+                "pyocd_target": "nrf52840",
+            }
+        )
+    )
+    monkeypatch.setattr(server, "_profile_repository", profiles)
+    monkeypatch.setattr(
+        server,
+        "_validation_inventory",
+        lambda: ValidationInventory(
+            probes=(ValidationProbe("probe-a", "CMSIS-DAP Probe", "cmsisdap", "probe-a"),)
+        ),
+    )
+    monkeypatch.setattr(server.connection_manager, "maybe_connection", lambda _board: None)
+
+    route = cast(dict[str, Any], server._setup_overview(["Repair Board"]))["routes"][0]
+
+    assert route["route"] == "repair"
+    assert route["next_tool"] == "board_setup-plan"
+    template = cast(dict[str, object], route["plan_action_parameters_template"])
+    assert template["mode"] == "repair"
+    assert template["mcu_part_number"] == "nRF52840-QIAA"
+    assert template["connection_id"] == "probe:probe-a"
+    assert template["datasheet_path"] is None
+    assignment_store.require("probe:probe-a", "repair_board")
+
+
+def test_noncanonical_safety_reference_routes_to_repair_not_refresh(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    assignments = RunAssignmentStore({})
+    profiles = ProfileRepository(FirmStore(tmp_path), legacy_board_dir=tmp_path / "legacy")
+    profiles.commit_core(
+        profiles.stage_core(
+            {
+                "board_id": "wrong_ref_board",
+                "display_name": "Wrong Ref Board",
+                "mcu_part_number": "nRF52840-QIAA",
+                "mcu_family": "nrf52840",
+                "probe_family": "jlink",
+                "pyocd_target": "nrf52840",
+            }
+        )
+    )
+    profiles.commit_optional(
+        profiles.stage_optional("wrong_ref_board", {"datasheet_sha256": "a" * 64})
+    )
+    wrong_ref = (
+        profiles.store.layout.safety_reference_prefix("wrong_ref_board") / "other.yaml"
+    ).as_posix()
+    profiles.commit_safety_ref(profiles.stage_safety_ref("wrong_ref_board", wrong_ref))
+    monkeypatch.setattr(server, "assignment_store", assignments)
+    monkeypatch.setattr(server, "_profile_repository", profiles)
+    monkeypatch.setattr(
+        server,
+        "_validation_inventory",
+        lambda: ValidationInventory(
+            probes=(ValidationProbe("probe-a", "J-Link Probe", "jlink", "probe-a"),)
+        ),
+    )
+    monkeypatch.setattr(server.connection_manager, "maybe_connection", lambda _board: None)
+
+    overview = cast(dict[str, Any], server._setup_overview(["Wrong Ref Board"]))
+
+    assert overview["routes"][0]["route"] == "repair"
+    assert overview["routes"][0]["next_tool"] == "board_setup-plan"
+    assert server._setup_plan_eligibility("wrong_ref_board")[0] is True
