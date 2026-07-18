@@ -41,9 +41,7 @@ REFERENCE_BUILDS = {
 
 
 def ihex_record(address: int, record_type: int, data: bytes = b"") -> str:
-    payload = bytes(
-        [len(data), (address >> 8) & 0xFF, address & 0xFF, record_type, *data]
-    )
+    payload = bytes([len(data), (address >> 8) & 0xFF, address & 0xFF, record_type, *data])
     checksum = (-sum(payload)) & 0xFF
     return f":{payload.hex().upper()}{checksum:02X}"
 
@@ -178,6 +176,43 @@ def test_malformed_or_conflicting_linker_map_fails_closed(tmp_path: Path) -> Non
     assert disagreement.value.code == "build/artifact-conflict"
 
 
+def test_zephyr_gnu_map_evaluated_expressions_are_accepted(tmp_path: Path) -> None:
+    """Zephyr's GNU ld map dialect prints an evaluated value before expressions."""
+
+    zephyr_map = tmp_path / "zephyr.map"
+    zephyr_map.write_text(
+        "\n".join(
+            [
+                "                0x0000000000000000                __rom_region_start = 0x0",
+                "                0x0000000000000000                _vector_start = .",
+                "                0x0000000000008000                __rom_region_end = ((__rom_region_start + .) - ADDR (rom_start))",
+                "                0x0000000000008000                __rom_region_size = (__rom_region_end - __rom_region_start)",
+                "                0x0000000020000000                _image_ram_start = .",
+                "                0x0000000020001980                _image_ram_end = .",
+                # Section and wildcard references containing an interesting symbol
+                # are not malformed symbol definitions.
+                " .exc_vector_table._vector_table_section",
+                " *(SORT_BY_ALIGNMENT(.gnu.linkonce.irq_vector_table*))",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    evidence = extract_build_evidence(
+        BuildArtifactSelection(
+            "zephyr_nrf",
+            BuildRole.APPLICATION,
+            ROOT / "firmware/nrf52840dk/reference/build/firmware.elf",
+            zephyr_map,
+        )
+    )
+
+    assert evidence.flash_partition == AddressRange(0, 0x8000)
+    assert evidence.ram_partitions == (AddressRange(0x20000000, 0x20001980),)
+    assert evidence.vector_table == 0
+
+
 @pytest.mark.parametrize(
     ("first_byte", "expected_code"),
     [(b"\x80", "build/hex-incomplete"), (b"\x81", "build/hex-content-conflict")],
@@ -218,7 +253,7 @@ def test_hex_checksum_overflow_and_data_outside_elf_fail_closed(tmp_path: Path) 
         "\n".join(
             [
                 ihex_record(0, 4, b"\x00\x01"),
-                ihex_record(0, 0, b"\xAA"),
+                ihex_record(0, 0, b"\xaa"),
                 ihex_record(0, 1),
             ]
         )

@@ -48,12 +48,13 @@ def document(
 ) -> dict[str, object]:
     support = role == "device_support"
     return {
-        "schema_version": 1,
+        "schema_version": 2,
         "role": role,
         "device": {
             "mcu_part_number": part,
             "target": "nrf52833" if support and target is None else target,
         },
+        "erase_geometry": {"erase_origin": 0, "erase_size": 4096},
         "sources": [
             {
                 "kind": "svd" if support else "reference_manual",
@@ -85,6 +86,19 @@ def test_exact_agreement_produces_only_reconciled_regions() -> None:
     safety_region = result.regions[0].to_safety_region()
     assert safety_region.kind is RegionKind.PROHIBITED
     assert safety_region.provenance[0].source_id.startswith("svd:")
+    assert result.erase_geometry is not None
+    assert result.erase_geometry.erase_size == 4096
+
+
+def test_erase_geometry_conflict_fails_closed() -> None:
+    official = document("official_document")
+    official["erase_geometry"] = {"erase_origin": 0, "erase_size": 2048}
+
+    result = reconcile(document("device_support"), official)
+
+    assert not result.accepted
+    assert {conflict.code for conflict in result.conflicts} == {"verify/erase-geometry"}
+    assert result.erase_geometry is None
 
 
 def test_inclusive_end_and_hex_decimal_are_deterministically_reconciled() -> None:

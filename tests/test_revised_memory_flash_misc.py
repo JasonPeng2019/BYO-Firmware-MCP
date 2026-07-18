@@ -327,6 +327,7 @@ def test_final_serial_handlers_preserve_bounds_and_wrap_failures(
         resolve_port=lambda *args, **kwargs: None,
         capture_uart=lambda *args, **kwargs: None,
         write_uart=lambda *args, **kwargs: None,
+        exchange_uart=lambda *args, **kwargs: None,
         reset_target=lambda handle: None,
         handle_mutation_event=lambda board, event: None,
         no_board_config_message="no board",

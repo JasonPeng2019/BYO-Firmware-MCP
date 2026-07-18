@@ -22,6 +22,17 @@ correct plan call from a single tool's NULL response alone.
 
 ---
 
+## Local-first dependency rule
+
+Every NULL plan guide must state that before downloading a large SDK, RTOS,
+toolchain, device pack, or library, the agent checks bounded
+explicit/environment, project-parent, home, and normal vendor install
+locations. Compatible NCS/Zephyr, STM32CubeIDE/STM32Cube/ThreadX, and equivalent
+installations are reused only after version, target, and executable validation.
+Folder names alone are not evidence, whole-disk recursive scans are not
+allowed, and a large network fetch is a disclosed fallback only after no
+compatible local component is found.
+
 ## 1. The Plan Call Contract (reference schema)
 
 ### 1.1 Initial all-`NULL` call
@@ -101,7 +112,7 @@ permission where the tool is permission-locked with `one-time`).
 ### 1.4 Multi-call budget class
 
 Tools: `connect_override`, `read_memory_address`, `reset_and_halt`, `connect_under_reset`,
-`read_serial`, `write_serial`.
+`read_serial`, `serial_exchange`, `write_serial`.
 
 `max_calls` = calls you *expect* to need for the stated strategy. `max_calls_buffer` = leeway
 for calls that execute but return empty, mistimed, inconclusive, or timed-out results — these
@@ -126,16 +137,37 @@ the rest of the Server Run; later NULL responses must state the grant is active 
 
 ```json
 {
+  "status": "plan_accepted",
+  "message": "Accepted plan plan_... for <real tool> on <board>. Prefer the direct call when exposed; otherwise submit only the returned single-child fallback unchanged.",
   "plan_id": "plan_...",
-  "underlying_tool": "<real tool name>",
+  "underlying_action": "<real tool name>",
   "total_calls": 1,
-  "instructions": "Call <real tool> now with exactly the planned parameters. It is unlocked for board <board_id> only."
+  "preferred_call": {
+    "tool_name": "<real tool name>",
+    "arguments": {"board_id": "<board id>", "...exact action parameters...": "..."}
+  },
+  "stable_client_fallback": {
+    "tool_name": "action_batch",
+    "arguments": {
+      "board_id": "<board id>",
+      "actions": [{
+        "tool_name": "<real tool name>",
+        "arguments": {"board_id": "<board id>", "...exact action parameters...": "..."}
+      }]
+    }
+  },
+  "paired_action_fallbacks": []
 }
 ```
 
-The underlying tool simultaneously appears in the advertised tool list, unlocked for that
-board only, until the budget is exhausted, the plan is replaced/invalidated, or the Server Run
-ends.
+The server generates both calls from the immutable accepted snapshot. Prefer
+`preferred_call` when the client dynamically exposes the underlying tool. When a client's
+callable bindings remain static, submit only `stable_client_fallback` unchanged; it runs the
+same standard dispatch and does not bypass authorization. `paired_action_fallbacks` is empty
+except for the setup plan, where it contains the independently generated `board_fix_setup`
+fallback and an instruction to use it only after an eligible primary-action redirect. The
+underlying tool simultaneously appears in the advertised tool list, unlocked for that board
+only, until the budget is exhausted, the plan is replaced/invalidated, or the Server Run ends.
 
 ---
 
@@ -213,17 +245,24 @@ substitutes its own reasoning and parameters.
 | Field | Meaning |
 | :--- | :--- |
 | `mode` | `"setup"` (new profile) or `"repair"` (existing incomplete profile) |
-| `connection_choice` | the server-provided choice id for the physical connection, from enumeration |
+| `connection_id` | the server-provided choice id from `setup_overview`; never ask the user for it |
 | `display_name` | the user's unique familiar name for the board |
-| `proposed_board_id` | slug for the new profile (setup) or the existing id (repair) |
+| `board_type` | exact reviewed public board type selected after asking the user |
+| `mcu_part_number` | exact package-level part number supplied by the user; never inferred or rewritten |
+| `serial_baudrate` | positive UART baud rate for the profile |
+| `serial_id` | exact stable UART identity selected from current inventory |
+| `serial_port` | exact current UART port paired with `serial_id` |
+| `datasheet_path` | local path to the authoritative PDF supplied by the user |
+| `datasheet_sha256` | exact 64-hex SHA-256 of that PDF; the server recomputes and verifies it |
 
 - **VALIDATION**: `hypothesis_made` and `strategy_evaluated` must be `true`, and
   `hypothesis`/`strategy` must contain real reasoning about this board and this setup/repair —
   empty or boilerplate text is rejected. `user_permission` is **required** on this tool (see
   PERMISSION). A plan JSON that does not match this tool's required format — missing envelope
   fields, wrong types, unknown or extra fields, a budget other than `1,0`,
-  `action_parameters` not matching exactly {`mode`, `connection_choice`, `display_name`,
-  `proposed_board_id`}, or missing/invalid `user_permission` without an active full-session
+  `action_parameters` not matching exactly {`mode`, `connection_id`, `display_name`,
+  `board_type`, `mcu_part_number`, `serial_baudrate`, `serial_id`, `serial_port`, `datasheet_path`,
+  `datasheet_sha256`}, or missing/invalid `user_permission` without an active full-session
   grant — is rejected **without creating or replacing any plan**; the rejection lists the
   invalid fields and asks for a complete new corrected plan call. Rejected submissions consume
   no budget, do not count as the all-`NULL` call, and leave any active plan untouched. Plans
@@ -250,7 +289,9 @@ substitutes its own reasoning and parameters.
   1. Confirm the user explicitly named this board this session.
   2. Confirm no existing profile's `display_name` matches (else validate instead).
   3. Confirm you have the user's **exact** MCU part number — never guess or "correct" it.
-  4. Be ready to resolve probe/port/build ambiguity by relaying the server's friendly
+  4. Ask the user for the authoritative datasheet PDF and verify its SHA-256; never substitute
+     a web result or a merely similar device document.
+  5. Be ready to resolve probe/port/build ambiguity by relaying the server's friendly
      choices, not by choosing silently.
 - **EXIT**: on completion both setup actions relock; proceed to `board_validate`.
 - **EXAMPLE-PLAN**:
@@ -258,7 +299,7 @@ substitutes its own reasoning and parameters.
 ```json
 {
   "board_id": "left_controller",
-  "hypothesis": "The board the user calls 'left controller' is a new STM32L476RGT6 build with no existing profile; setup should resolve target and safety map from the attached ST-Link and this workspace's linker artifacts.",
+  "hypothesis": "The board the user calls 'left controller' is a new nRF52840-QIAA build with no existing profile; setup should resolve target and safety map from the attached J-Link and this workspace's linker artifacts.",
   "strategy": "Run board_setup once; if it reports a failed phase, use the paired board_fix_setup once with whatever fact the status requests; then run board_validate.",
   "hypothesis_made": true,
   "strategy_evaluated": true,
@@ -268,9 +309,15 @@ substitutes its own reasoning and parameters.
   "max_calls_buffer": 0,
   "action_parameters": {
     "mode": "setup",
-    "connection_choice": "probe_1",
+    "connection_id": "connection_1",
     "display_name": "left controller",
-    "proposed_board_id": "left_controller"
+    "board_type": "nrf52840dk",
+    "mcu_part_number": "nRF52840-QIAA",
+    "serial_baudrate": 115200,
+    "serial_id": "683377322",
+    "serial_port": "COM11",
+    "datasheet_path": "C:/firmware/docs/nRF52840_PS_v1.1.pdf",
+    "datasheet_sha256": "c619e336b9c0610663273041f057f2537a65fd408ce0c5b8214a26de2aa88422"
   },
   "user_permission": "one-time"
 }
@@ -473,7 +520,7 @@ substitutes its own reasoning and parameters.
 - **PURPOSE**: set one hardware/software breakpoint at a symbol-resolved or explicit address.
 - **USE-WHEN / NOT-WHEN — prints first, step-through second (must be stated verbatim-ish)**:
   breakpoint-and-step-through debugging is the **escalation path, not the first move**.
-  Debug first with print-statement logging via the §8.3 instrumentation protocol: inject
+  Debug first with print-statement logging via the §8.4 instrumentation protocol: inject
   tagged prints, capture them with `read_serial`, and reconstruct the execution flow from the
   log. Reach for `set_breakpoint` (and the always-available `step`) only when print-based
   diagnosis has **failed or cannot work** — e.g., the fault fires before UART is initialized,
@@ -501,7 +548,7 @@ substitutes its own reasoning and parameters.
 - **WARNINGS**: hardware breakpoints are finite; a breakpoint left behind halts the board
   unexpectedly later.
 - **SOFT-GUARDRAILS**:
-  1. State what print-statement diagnosis (§8.3) you already ran and why it failed or is
+  1. State what print-statement diagnosis (§8.4) you already ran and why it failed or is
      unsuitable here — a plan whose `hypothesis`/`strategy` shows no prior or considered
      print-based attempt should be reconsidered before submission.
   2. Address is symbol-derived (state the symbol) or justified.
@@ -517,7 +564,7 @@ substitutes its own reasoning and parameters.
 
 **`remove_breakpoint` (always available — no plan tool).** Its tool description must carry
 the matching doctrine in short form: breakpoints are the escalation path after print-statement
-logging (§8.3); every `set_breakpoint` should be paired with a `remove_breakpoint` once the
+logging (§8.4); every `set_breakpoint` should be paired with a `remove_breakpoint` once the
 inspection is done, and no breakpoint may be left behind at task completion.
 
 ---
@@ -761,14 +808,14 @@ The longest response; must additionally cover the two-phase approval flow.
 
 ## 8. UART
 
-Both UART plan tools share the instrumentation protocol in §8.3 — it must be rendered in
+All UART plan tools share the instrumentation protocol in §8.4 — it must be rendered in
 **both** NULL responses.
 
 ### 8.1 `read_serial-plan` (guards `read_serial`)
 
 - **PURPOSE**: capture bounded UART output from the board.
 - **USE-WHEN / NOT-WHEN**: observing boot text, log output, or injected diagnostic prints
-  (§8.3). Not a continuous monitor — every capture is bounded by `read_seconds`.
+  (§8.4). Not a continuous monitor — every capture is bounded by `read_seconds`.
 - **ACTION-PARAMETERS**: `expected_text` (string|null — null means any output matches; for
   exploratory/diagnostic capture **use null** so one plan covers many differently-worded
   reads), `read_seconds` (> 0, default 3.0), `baudrate` (null → profile default; must be
@@ -789,7 +836,7 @@ Both UART plan tools share the instrumentation protocol in §8.3 — it must be 
   windows your strategy needs and `max_calls_buffer` for retries — captures that start late,
   catch nothing, or miss the window **still consume a call**. Total =
   `max_calls + max_calls_buffer`; ceilings `max_calls ≤ 20`, `max_calls_buffer ≤ 10`. Every
-  capture uses the exact frozen parameters. Recommended for a §8.3 debugging session:
+  capture uses the exact frozen parameters. Recommended for a §8.4 debugging session:
   `"max_calls": 6, "max_calls_buffer": 4`.
 - **PERMISSION — none**: omit `user_permission` from the plan JSON.
 - **PRECONDITIONS**: validated session; plan + board match; exact frozen parameters.
@@ -798,9 +845,9 @@ Both UART plan tools share the instrumentation protocol in §8.3 — it must be 
 - **SOFT-GUARDRAILS**:
   1. Core running (not halted) if you expect output.
   2. Capture window long enough for the event you await.
-  3. If diagnosing via prints, the §8.3 protocol is in place **before** planning reads.
+  3. If diagnosing via prints, the §8.4 protocol is in place **before** planning reads.
   4. Budget honestly — count the observations your strategy needs.
-- **EXIT**: no cleanup for the port (server-owned); §8.3 cleanup applies when
+- **EXIT**: no cleanup for the port (server-owned); §8.4 cleanup applies when
   instrumentation was used.
 - **EXAMPLE-PLAN**:
 
@@ -857,13 +904,78 @@ Both UART plan tools share the instrumentation protocol in §8.3 — it must be 
   1. Confirm the firmware is in the state that accepts this input.
   2. Check whether a newline is required (`append_newline`).
   3. Pair with a planned `read_serial` to observe the response.
-  4. If driving a diagnostic flow, the §8.3 protocol applies.
-- **EXIT**: server-owned port cleanup; §8.3 cleanup applies when instrumentation was used.
+  4. If driving a diagnostic flow, the §8.4 protocol applies.
+- **EXIT**: server-owned port cleanup; §8.4 cleanup applies when instrumentation was used.
 - **EXAMPLE-PLAN**: budget `3,1`;
   `action_parameters: {"text": "test motor", "baudrate": null, "port": null, "append_newline": true, "timeout_seconds": 1.0}`;
   no `user_permission` field.
 
-### 8.3 UART Diagnostic Instrumentation Protocol (required block, both UART responses)
+### 8.3 `serial_exchange-plan` (guards `serial_exchange`)
+
+- **PURPOSE**: run one bounded, ordered UART command/expected-response conversation through
+  one open handle, preserving volatile firmware state across steps and avoiding accidental
+  board reset caused by closing and reopening a USB-UART port.
+- **USE-WHEN / NOT-WHEN**: use for a firmware console workflow with 1â€“8 known steps whose
+  replies must be checked in order. Prefer it over separate `write_serial`/`read_serial`
+  calls when port reopen could reset the board. Do not use it for arbitrary interactive input,
+  unbounded monitoring, or commands whose safety has not been reviewed.
+- **ACTION-PARAMETERS**: exactly `steps` (array of 1â€“8 objects, each containing only non-empty
+  `text`, non-empty `expected_text`, and `line_ending` from `none|lf|cr|crlf`; text is at most
+  4096 UTF-8 bytes), `read_seconds` (per-step, `(0,30]`), `baudrate` (positive integer or
+  `null`), `port` (runtime port or `null`), `ready_text` (non-empty text or `null`),
+  `ready_seconds` (`(0,30]` when readiness text is set, otherwise `0`),
+  `ready_probe_text` (optional exact text, at most 256 UTF-8 bytes, only with readiness text),
+  `ready_probe_line_ending` (`none|lf|cr|crlf`), `ready_probe_delay_seconds` (bounded
+  observation time before the optional probe is sent), and `clear_input` (normally `false`; `true`
+  deliberately discards already-buffered boot/prompt bytes). Every value and ordered step is
+  frozen exactly.
+- **VALIDATION**: real hypothesis/strategy reasoning and both flags `true` are required. Omit
+  `user_permission`. Unknown, missing, extra, malformed, overlong, unbounded, or internally
+  inconsistent values are rejected before the UART is opened and without replacing the active
+  plan or consuming budget. Plans are immutable; any changed command, expected response,
+  readiness rule, or transport value requires a complete replacement plan.
+- **BUDGET â€” multi-call**: choose expected calls and buffer under the `20,10` ceilings. One
+  call normally contains the complete conversation. A started conversation consumes once even
+  if readiness or a later response is absent. Validation refusal before start consumes nothing.
+- **PERMISSION â€” none**: omit `user_permission` from the plan JSON.
+- **PRECONDITIONS**: matching board and exact plan, connected validated session, open/fresh gate,
+  stable UART attachment, and remaining budget.
+- **WARNINGS**: UART input changes live firmware state; opening some bridges resets the board.
+  A missing response is failure, never proof of success. The server stops before every later
+  command after readiness or step failure, closes the handle exactly once, and reports completed
+  steps in order.
+- **SOFT-GUARDRAILS**:
+  1. Review every command for firmware-defined destructive behavior.
+  2. Use a unique response printed only after each command is actually handled.
+  3. Set exact line endings and keep `clear_input=false` unless discarding buffered text is intended.
+  4. Use readiness only when necessary; after flash/reset, give an optional same-open readiness
+     probe a short `ready_probe_delay_seconds` observation window so boot output can satisfy
+     readiness before input is sent.
+  5. Apply the §8.4 diagnostic instrumentation protocol when testing internal behavior.
+- **EXIT**: stop at the first mismatch, close the server-owned port, preserve application state,
+  and diagnose before sending further input.
+- **EXAMPLE-PLAN**: multi-call budget `1,0`; action parameters:
+
+```json
+{
+  "steps": [
+    {"text": "blink on", "expected_text": "BLINK ON", "line_ending": "lf"},
+    {"text": "blink status", "expected_text": "BLINK STATUS: ON", "line_ending": "lf"},
+    {"text": "blink off", "expected_text": "BLINK OFF", "line_ending": "lf"}
+  ],
+  "read_seconds": 3.0,
+  "baudrate": 115200,
+  "port": null,
+  "ready_text": "nf-board>",
+  "ready_seconds": 5.0,
+  "ready_probe_text": "",
+  "ready_probe_line_ending": "lf",
+  "ready_probe_delay_seconds": 1.0,
+  "clear_input": false
+}
+```
+
+### 8.4 UART Diagnostic Instrumentation Protocol (required block, all UART responses)
 
 Rendered under **SOFT-GUARDRAILS** in both `read_serial-plan` and `write_serial-plan` NULL
 responses, in substantially this form:
@@ -907,15 +1019,16 @@ responses, in substantially this form:
 | `set_execution_state-plan` | fixed `1,0` | required | execution-register class; disruption warning |
 | `read_memory_address-plan` | multi | omit | symbol-first doctrine |
 | `write_memory-plan` | fixed `1,0` | omit | symbol-first + fallback flag/reason; RAM-only fallback |
-| `set_breakpoint-plan` | fixed `1,0` | omit | prints-first / step-through-second doctrine (§5.3, §8.3); executable region; remove_breakpoint free |
+| `set_breakpoint-plan` | fixed `1,0` | omit | prints-first / step-through-second doctrine (§5.3, §8.4); executable region; remove_breakpoint free |
 | `flash_application-plan` | fixed `1,0` | omit | partition containment; rebuild → refresh |
 | `flash_bootloader-plan` | fixed `1,0` | required | bootloader risk disclosure |
 | `register_write-plan` | fixed `1,0` | omit | doc-verification steps; prohibited registers |
 | `reset_and_halt-plan` | multi | omit | reset_and_run-is-free notice; not-an-unlock |
 | `connect_under_reset-plan` | multi | omit | reset-line requirement; not-an-unlock |
 | `target_unlock-plan` | fixed `1,0` | required (fresh per mass erase) | two-phase disclosure/approval flow |
-| `read_serial-plan` | multi | omit | buffer semantics; §8.3 instrumentation protocol |
-| `write_serial-plan` | multi | omit | frozen-text note; §8.3 instrumentation protocol |
+| `read_serial-plan` | multi | omit | buffer semantics; §8.4 instrumentation protocol |
+| `serial_exchange-plan` | multi | omit | one-open ordered conversation; stop-on-first-mismatch; §8.4 instrumentation protocol |
+| `write_serial-plan` | multi | omit | frozen-text note; §8.4 instrumentation protocol |
 
 Notes:
 
@@ -932,6 +1045,6 @@ Notes:
 - Per Design_Proto_Spec AC-5.4, every permission-locked response's **[PERMISSION]** section is
   stateful: when full-session is already active for that tool + board it must say so and state
   that `user_permission` may be `null`.
-- The §8.3 instrumentation protocol is a product-requirement addition on top of
+- The §8.4 instrumentation protocol is a product-requirement addition on top of
   Design_Proto_Spec (extends the tool-description guidance of §3.14.8); fold it into that
   spec's next revision.

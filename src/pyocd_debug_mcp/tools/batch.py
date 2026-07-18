@@ -97,7 +97,13 @@ def build_batch_handlers(
     """Build the batch tool without introducing a second authorization path."""
 
     async def action_batch(board_id: str, actions: list[BatchChild]) -> str:
-        """Execute a bounded ordered list through each child's normal MCP dispatch path."""
+        """Execute bounded same-board child calls through their normal dispatch path.
+
+        Use an accepted *-plan's server-generated one-child fallback unchanged when a client's
+        callable bindings remain static. Never invent hidden children or use a batch to bypass
+        plans, permission, validation, gates, freshness, timeouts, budgets, locks, or cleanup;
+        every child independently traverses those normal checks.
+        """
 
         validated = _validate_children(board_id, actions, tool_exists=tool_exists)
         completed: list[dict[str, JsonValue]] = []

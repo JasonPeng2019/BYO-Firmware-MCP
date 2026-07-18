@@ -439,10 +439,16 @@ class BoardValidator:
             steps.append(ValidationStep(9, "Stamp validated session", "passed"))
             if hardware_result == "validation_passed":
                 status = "validation_passed"
+                message = "All configured validation checks, including UART content, passed."
             else:
                 status = "validation_passed_uart_not_configured"
+                message = (
+                    "Hardware and safety validation passed. The profile has no expected UART "
+                    "content assertion, so validation did not test console text; this status does "
+                    "not mean that UART is unavailable. Call get_setup_status for the current "
+                    "UART attachment readiness before console work."
+                )
             code = "validation/passed"
-            message = "All configured validation checks passed for this board."
         except ValidationBackendError as exc:
             status = exc.status
             code = exc.code

@@ -21,7 +21,9 @@ _TARGET_PATTERN = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,127}")
 class TargetResolutionError(RuntimeError):
     """A target or enrichment candidate failed deterministic validation."""
 
-    def __init__(self, code: str, message: str, *, observed: Mapping[str, Any] | None = None) -> None:
+    def __init__(
+        self, code: str, message: str, *, observed: Mapping[str, Any] | None = None
+    ) -> None:
         super().__init__(message)
         self.code = code
         self.observed = dict(observed or {})
@@ -50,7 +52,9 @@ class TargetResolver:
         continuation_token: str,
         observed_output: Sequence[Mapping[str, Any]] = (),
     ) -> TargetResolution:
-        exact = tuple(dict.fromkeys(target.strip() for target in detected_targets if target.strip()))
+        exact = tuple(
+            dict.fromkeys(target.strip() for target in detected_targets if target.strip())
+        )
         if len(exact) == 1:
             return TargetResolution(status="exact", target=exact[0])
         unresolved = (
@@ -64,7 +68,7 @@ class TargetResolver:
             board_id=board_id,
             mcu_part_number=mcu_part_number,
             unresolved_fact=unresolved,
-            requested_fields=("pyocd_target",),
+            requested_fields=("pyocd_target", "evidence", "reasoning_summary"),
             authoritative_facts={"detected_targets": list(exact)},
             observed_output=observed_output,
             acceptable_sources=("pyOCD built-in target list", "official vendor CMSIS-Pack"),
@@ -142,9 +146,7 @@ class EnrichmentValidator:
             observations={"address": address, "width_bits": width_bits, "actual": actual},
         )
 
-    def silicon_identity(
-        self, candidate: SiliconIdentityCandidate | None
-    ) -> EnrichmentResult:
+    def silicon_identity(self, candidate: SiliconIdentityCandidate | None) -> EnrichmentResult:
         if candidate is None:
             return EnrichmentResult(observations={"silicon_identity": "not supplied; optional"})
         self._validate_location(candidate.address, candidate.width_bits)

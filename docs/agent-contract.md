@@ -8,12 +8,21 @@ tool schema and server enforcement remain authoritative.
 Call `initialization_handshake` after every new server connection. Use the
 returned `tools/list` as the current advertised surface and respond to
 `notifications/tools/list_changed`. Never guess or directly call an unlisted
-action. Visibility is advisory; every action still has a physical handler lock.
+action. A client whose callable bindings remain static may use only the exact
+single-child `action_batch` fallback returned by an accepted plan, unchanged.
+That fallback is transport compatibility, not authority. Visibility is
+advisory; every action still has a physical handler lock.
 
 Ask the user in ordinary language for one familiar name per connected board,
 or “no board.” Do not ask for board IDs, connection IDs, continuation tokens,
 permission enum values, or structured payloads. Never silently select, rename,
 reassign, or rewrite a profile.
+
+Pass those familiar names to `setup_overview`. Use its per-name route and
+server-generated board ID. Every matching profile, including an incomplete or
+previously failed profile, goes to `board_validate` first. Follow its exact
+attachment, retry, safety, or repair remedy. Unknown names go to setup. Do not
+make the user perform that profile or hardware-inventory matching.
 
 ## Plans
 
@@ -24,6 +33,14 @@ not flatten them and do not add prose, Markdown, a wrapper key, or extra
 fields. Omit `user_permission` from populated non-permission plans. Do not use
 placeholders or partial NULL requests. An accepted plan is bound to one run,
 board, session, tool, and canonical parameter set.
+
+An accepted plan returns machine-readable `preferred_call` and
+`stable_client_fallback` objects. Prefer the direct action when the client
+exposes it. If it does not, submit the fallback's exact `action_batch`
+arguments. Never edit its board, child name, or arguments, and never combine a
+primary setup call with its separately conditioned paired-repair fallback.
+The child traverses the identical plan, permission, validation, gate,
+freshness, lock, timeout, budget, event, and cleanup path as a direct call.
 
 Plan replacement is atomic. A pre-execution refusal does not spend a call.
 Once execution starts, success, backend failure, timeout, and cancellation all
@@ -49,7 +66,12 @@ plan. A successful recovery does not open the gate.
 
 ## Setup, research, and validation
 
-Use `load_setup_tool` and `board_setup-plan` for setup or repair. The server
+Call the all-NULL `board_setup-plan` first whenever hardware access is desired,
+before loading it and before any other `*-plan` tool. Ask for the familiar
+board name and exact board/MCU identity. Every matching YAML routes first to
+`board_validate`; an absent profile or a specific validation remedy routes
+through `load_setup_tool` and setup/repair. Fresh setup also requires a local
+authoritative PDF datasheet and its SHA-256. The server
 inventories probes, serial ports, cache matches, targets, and builds before it
 requests research. Relay only the supplied `agent_prompt` and friendly
 `choices`; never expose the rest of the control payload.
@@ -58,6 +80,14 @@ Research responses must include exactly `exact_response_fields`. Do not add
 sources, explanations, authority, or profile changes unless requested. Never
 change `fields_that_must_not_change`, especially `mcu_part_number`. Research
 does not grant permission, open a gate, or persist a candidate.
+
+When setup returns `setup_needs_user_input` or `setup_research_required`, call
+`continue_setup` with the same board and continuation plus exactly the returned
+response object. For a friendly choice this is only one returned `choice_id`.
+For target/pack research it is the exact official-source schema. After an
+accepted continuation, call `board_fix_setup` under the still-active paired
+allowance. Never retry `board_setup` or bypass the continuation by editing
+`.firm`.
 
 Setup and validation payloads use these common fields:
 
@@ -74,7 +104,9 @@ Setup and validation payloads use these common fields:
 Validation has exactly seven results:
 
 - `validation_passed`
-- `validation_passed_uart_not_configured`
+- `validation_passed_uart_not_configured` means the profile has no expected UART
+  content assertion, not that the UART hardware is unavailable. Use
+  `get_setup_status.ready_for_uart_work` for current attachment readiness.
 - `validation_needs_user_input`
 - `validation_research_required`
 - `validation_blocked`
@@ -100,6 +132,50 @@ Follow the exact remedy named in a refusal:
 - `board_safety_setup` rebuilds structural safety evidence; and
 - full setup plus validation is required for board/target anchor changes.
 
+Before a coding workflow begins, require `get_setup_status` to report both
+`configuration_ready` and `live_session_ready`. After relinking, pass the
+selected application ELF to `board_safety_refresh`; the build may narrow but
+cannot widen the catalog deployment envelope. Use `serial_exchange` when a
+console command's immediate acknowledgement or later command depends on
+volatile application state. It validates the complete bounded step list before
+opening one UART handle. Separate serial calls may reopen a board UART and some
+adapters reset on open; `clear_input` and capture reopen are explicit opt-ins.
+After flash/reset, `ready_probe_delay_seconds` provides a bounded same-open
+observation window in which an unsolicited boot/prompt marker can satisfy
+readiness before the one planned readiness probe is sent.
+
+For a checkout-local clean-root acceptance, prefer the bounded
+`scripts/run_fresh_workspace_e2e.py` setup-only runner. Supply every required
+identity explicitly and pass `--authorize-setup` only after the user has
+approved that non-destructive attempt. The runner cannot launch code, a build,
+flash, UART writes, or arbitrary commands. Treat a nonzero exit or any evidence
+status other than `pass` as a hard stop; only a separate orchestrator may begin
+coding after verifying the exact readiness payload.
+
+When `get_setup_status` includes `build_guidance`, use its exact returned
+Python-module command and Zephyr board target. The command runs in the server's
+known Python environment instead of relying on a console script on `PATH`; it
+prefers compatible local workspaces and toolchains, bootstraps only as a
+fallback, and handles Windows long-path
+build failures via a short scratch path. Treat this as advisory convenience
+only: do not infer memory permission from it, and always refresh safety from
+the final ELF/map.
+
+Apply the same local-first rule to all heavy dependencies. Before downloading
+an SDK, RTOS, toolchain, device pack, or large library, inspect only bounded
+standard locations: explicit/environment paths, the project and its parents,
+and normal vendor directories under the user's home/application data. Reuse a
+compatible installed NCS/Zephyr tree, STM32CubeIDE-provided STM32Cube/ThreadX
+tree, or equivalent vendor package after validating its version, target
+support, and executable tools. Do not trust names alone or recursively scan an
+entire drive. Explain what compatible component is absent before a large
+network fallback, and never copy unrelated discovered files into the project.
+
+For a console-dependent workflow, additionally require
+`uart_attachment_ready` and `ready_for_uart_work`. A missing console does not
+block a project that does not use UART, but it is an explicit readiness failure
+for tests whose acceptance evidence depends on terminal output.
+
 Refresh cannot reopen a gate after disconnect or restart. Never interpret a
 disk artifact, plan, permission, or successful refresh as an open gate.
 
@@ -107,7 +183,8 @@ disk artifact, plan, permission, or successful refresh as an open gate.
 
 `action_batch` contains one board and a bounded list of ordinary child calls.
 Do not nest it. Each child is authorized only when it reaches normal dispatch;
-the batch stops after the first failure.
+the batch stops after the first failure. A server-generated static-client plan
+fallback always contains exactly one child and must be submitted unchanged.
 
 Cancellation is best-effort for interruptible work. A flash transaction that
 has started completes within its finite backend bound before resources are

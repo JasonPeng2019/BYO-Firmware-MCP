@@ -180,6 +180,61 @@ class PlanResult:
     plan: ActivePlan | None = None
 
 
+def accepted_plan_payload(plan: ActivePlan) -> dict[str, object]:
+    """Return exact direct and static-client calls derived from an accepted snapshot."""
+
+    parameters = plan.action_parameters
+    if "board_id" in parameters:
+        raise RuntimeError("plan action_parameters must not contain board_id")
+
+    def execution_call(action_name: str) -> dict[str, object]:
+        return {
+            "tool_name": action_name,
+            "arguments": {"board_id": plan.board_id, **parameters},
+        }
+
+    def batch_call(action_name: str) -> dict[str, object]:
+        fallback: dict[str, object] = {
+            "tool_name": "action_batch",
+            "arguments": {
+                "board_id": plan.board_id,
+                "actions": [execution_call(action_name)],
+            },
+        }
+        arguments = fallback["arguments"]
+        actions = arguments.get("actions") if isinstance(arguments, dict) else None
+        if not isinstance(actions, list) or len(actions) != 1:
+            raise RuntimeError("generated plan fallback must contain exactly one child")
+        return fallback
+
+    definition = definition_for_action(plan.action_name)
+    return {
+        "status": "plan_accepted",
+        "message": (
+            f"Accepted plan {plan.plan_id} for {plan.action_name} on {plan.board_id}. "
+            f"Total permitted calls: {plan.total_calls}. Prefer the direct call when the client "
+            "exposes it. If callable bindings remain static, submit only the exact returned "
+            "single-child action_batch fallback unchanged; never invent a hidden tool call."
+        ),
+        "plan_id": plan.plan_id,
+        "underlying_action": plan.action_name,
+        "total_calls": plan.total_calls,
+        "preferred_call": execution_call(plan.action_name),
+        "stable_client_fallback": batch_call(plan.action_name),
+        "paired_action_fallbacks": [
+            {
+                "action": action_name,
+                "use_only_when": (
+                    "Use only after the primary action returns an eligible paired-action redirect; "
+                    "never execute it optimistically with the primary action."
+                ),
+                "call": batch_call(action_name),
+            }
+            for action_name in definition.paired_actions
+        ],
+    }
+
+
 @dataclass(frozen=True, slots=True)
 class ValidatedPlanSubmission:
     """A complete schema-checked submission that grants no execution authority."""
@@ -283,7 +338,11 @@ def _field_error(field: FieldDefinition, value: object) -> str | None:
     field_type = field.field_type
     type_error: str | None = None
     if field_type is FieldType.TEXT:
-        type_error = None if isinstance(value, str) and value.strip() else "must be non-empty text"
+        type_error = (
+            None
+            if isinstance(value, str) and (field.allow_empty or value.strip())
+            else "must be non-empty text"
+        )
     elif field_type is FieldType.INTEGER:
         type_error = (
             None if isinstance(value, int) and not isinstance(value, bool) else "must be an integer"
@@ -327,6 +386,8 @@ def _field_error(field: FieldDefinition, value: object) -> str | None:
         return f"must be at most {field.maximum:g}"
     if field.min_items is not None and isinstance(value, list) and len(value) < field.min_items:
         return f"must contain at least {field.min_items} item(s)"
+    if field.max_items is not None and isinstance(value, list) and len(value) > field.max_items:
+        return f"must contain at most {field.max_items} item(s)"
     return None
 
 
@@ -484,13 +545,10 @@ class PlanEngine:
             self._accepted_cycles[key] = cycles + 1
             snapshot = state.snapshot()
 
+        payload = accepted_plan_payload(snapshot)
         return PlanResult(
             status="accepted",
-            message=(
-                f"Accepted plan {snapshot.plan_id} for {snapshot.action_name} on "
-                f"{snapshot.board_id}. Total permitted calls: {snapshot.total_calls}. "
-                f"Call {snapshot.action_name} now with the exact planned parameters."
-            ),
+            message=json.dumps(payload, ensure_ascii=False, sort_keys=True),
             plan=snapshot,
         )
 
@@ -602,6 +660,14 @@ class PlanEngine:
                 f"Invalid action_parameters fields: {errors}",
                 session_id=session_id,
             )
+        if definition.action_validator is not None:
+            semantic_error = definition.action_validator(value)
+            if semantic_error is not None:
+                raise _refuse(
+                    "plan/invalid-action-parameters",
+                    f"Invalid action_parameters: {semantic_error}.",
+                    session_id=session_id,
+                )
         _validate_json(value, "action_parameters")
         return dict(value)
 

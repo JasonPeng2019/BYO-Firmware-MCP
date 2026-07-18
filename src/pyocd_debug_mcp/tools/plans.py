@@ -14,6 +14,7 @@ from pyocd_debug_mcp.guardrails.plan_defs import (
     FieldType,
     PermissionMode,
     PlanDefinition,
+    render_plan_tool_description,
 )
 from pyocd_debug_mcp.guardrails.plan_engine import PlanEngine
 
@@ -37,17 +38,13 @@ def forbid_unknown_tool_arguments(
 
         @model_validator(mode="before")
         @classmethod
-        def reject_permission_on_populated_plan(
-            cls: type[object], value: object
-        ) -> object:
+        def reject_permission_on_populated_plan(cls: type[object], value: object) -> object:
             del cls
             if (
                 isinstance(value, Mapping)
                 and "user_permission" in value
                 and any(
-                    item is not None
-                    for name, item in value.items()
-                    if name != "user_permission"
+                    item is not None for name, item in value.items() if name != "user_permission"
                 )
             ):
                 raise ValueError(
@@ -108,9 +105,7 @@ def build_plan_handler(
         ):
             fields.pop("user_permission", None)
         board_value = fields.get("board_id")
-        session_id = (
-            session_id_for_board(board_value) if isinstance(board_value, str) else None
-        )
+        session_id = session_id_for_board(board_value) if isinstance(board_value, str) else None
         return engine.submit(
             definition.plan_tool_name,
             fields,
@@ -118,10 +113,7 @@ def build_plan_handler(
         ).message
 
     plan_handler.__name__ = definition.plan_tool_name.replace("-", "_")
-    plan_handler.__doc__ = (
-        f"Initialize or submit the immutable plan for {definition.action_name}. "
-        "Call first with every parameter NULL."
-    )
+    plan_handler.__doc__ = render_plan_tool_description(definition)
     plan_handler.__signature__ = inspect.Signature(  # type: ignore[attr-defined]
         parameters=[
             inspect.Parameter(

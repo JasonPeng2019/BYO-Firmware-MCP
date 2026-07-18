@@ -1,0 +1,32 @@
+board_id: nf_board
+display_name: NF Board
+mcu_part_number: nRF52840
+mcu_family: nrf52840
+probe_family: jlink
+pyocd_target: nrf52840
+serial_baudrate: 115200
+schema_version: 2
+created_at: '2026-07-17T20:40:52.050141Z'
+updated_at: '2026-07-17T20:40:53.645806Z'
+probe_type: SEGGER J-Link
+probe_hint_terms:
+- board
+- j-link
+- jlink
+- nrf52840
+- segger
+serial_hint_terms:
+- board
+- j-link
+- jlink
+- nrf52840
+- segger
+- virtual com
+requires_recover_validation: true
+recover_mode: nrf_pyocd_unlock
+test_read_address: 268435456
+silicon_id_address: 268435712
+silicon_id_expected: 337984
+silicon_id_mask: 4294967295
+silicon_id_label: FICR.INFO.PART
+safety_ref: .firm/safety/nf_board/memory_map.yaml

@@ -30,6 +30,7 @@ def test_plan_definitions_cover_the_complete_guarded_surface() -> None:
         "target_unlock",
         "read_serial",
         "write_serial",
+        "serial_exchange",
     }
 
     assert set(PLAN_DEFINITIONS) | {"board_fix_setup"} == expected

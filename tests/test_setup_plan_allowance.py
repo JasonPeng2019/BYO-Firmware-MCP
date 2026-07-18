@@ -12,8 +12,13 @@ PARAMETERS = {
     "mode": "setup",
     "connection_id": "probe:001",
     "display_name": "Bench Board",
+    "board_type": "nucleo_l476rg",
     "mcu_part_number": "STM32L476RGT6",
     "serial_baudrate": 115200,
+    "serial_id": "UART-001",
+    "serial_port": "COM1",
+    "datasheet_path": "board-datasheet.pdf",
+    "datasheet_sha256": "0" * 64,
 }
 
 

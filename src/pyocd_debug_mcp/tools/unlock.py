@@ -21,6 +21,7 @@ from pyocd_debug_mcp.guardrails.plan_defs import PLAN_DEFINITIONS
 from pyocd_debug_mcp.guardrails.plan_engine import (
     PlanEngine,
     PlanRefusal,
+    accepted_plan_payload,
     canonical_json,
 )
 from pyocd_debug_mcp.kernel.operations import wrap_layer2_response
@@ -149,8 +150,7 @@ class UnlockCoordinator:
                 "The active target exposes no exact live part identity; recovery stays unavailable.",
             )
         pyocd_target = (
-            str(handle.target_override or "").strip()
-            or profile.board.pyocd_target.strip()
+            str(handle.target_override or "").strip() or profile.board.pyocd_target.strip()
         )
         fingerprint = self.services.current_fingerprint(board_id)
         artifacts = self.services.safety_repository.load_current(board_id)
@@ -209,9 +209,10 @@ class UnlockCoordinator:
                 f"The reviewed mechanism '{candidate}' does not match configured mechanism "
                 f"'{configured}'.",
             )
-        if candidate == RECOVER_MODE_NRF_PYOCD_UNLOCK and "nrf" not in (
-            identity.pyocd_target + identity.live_target_part
-        ).casefold():
+        if (
+            candidate == RECOVER_MODE_NRF_PYOCD_UNLOCK
+            and "nrf" not in (identity.pyocd_target + identity.live_target_part).casefold()
+        ):
             raise PlanRefusal(
                 "unlock/mechanism-target-mismatch",
                 "The Nordic recovery primitive is unavailable for the exact connected target.",
@@ -396,8 +397,7 @@ class UnlockCoordinator:
                 pending = self._pending.get(board)
             if (
                 pending is not None
-                and self._without_permission(fields)
-                != pending.binding.plan_without_permission_json
+                and self._without_permission(fields) != pending.binding.plan_without_permission_json
             ):
                 with self._guard:
                     self._pending.pop(board, None)
@@ -483,17 +483,18 @@ class UnlockCoordinator:
         with self._guard:
             self._pending.pop(preview.board_id, None)
             self._approved[preview.board_id] = pending.binding
-        return _json(
+        payload = accepted_plan_payload(result.plan)
+        payload.update(
             {
                 "status": "unlock_plan_approved",
-                "plan_id": result.plan.plan_id,
                 "underlying_tool": "target_unlock",
-                "total_calls": result.plan.total_calls,
                 "redirect": (
-                    "Call target_unlock now with the exact recovery_mechanism bound by this plan."
+                    "Prefer target_unlock directly. If it is absent from static client bindings, "
+                    "submit only stable_client_fallback unchanged."
                 ),
             }
         )
+        return _json(payload)
 
     def validate_execution(self, board_id: str, parameters: Mapping[str, object]) -> None:
         active = self.services.plan_engine.active_plan("target_unlock", board_id)
@@ -613,7 +614,14 @@ def build_unlock_handlers(
         action_parameters: dict[str, object] | None = None,
         user_permission: str | None = None,
     ) -> str:
-        """Initialize, disclose, or approve one exact JSON destructive recovery plan."""
+        """Prepare destructive recovery only after setup/validation reports a locked target.
+
+        First call every parameter NULL for the full mechanism and research guidance. Then submit
+        one exact JSON plan with user_permission NULL to receive the live identity, complete erase
+        ranges/losses, and plan_id disclosure. Relay it plainly, obtain fresh one-time approval,
+        and resubmit the otherwise unchanged JSON with user_permission='one-time'. Full-session or
+        prior permission never applies; any target, probe, map, range, or plan change invalidates it.
+        """
 
         return coordinator.plan(
             {

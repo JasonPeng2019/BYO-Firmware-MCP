@@ -54,16 +54,24 @@ def test_exact_auto_detection_skips_research_and_unknown_requests_it() -> None:
     assert exact.research_request is None
     assert unknown.status == "research"
     assert unknown.research_request is not None
+    assert unknown.research_request.requested_fields == (
+        "pyocd_target",
+        "evidence",
+        "reasoning_summary",
+    )
     assert unknown.agent_prompt is not None
 
 
 def test_target_candidate_checks_syntax_part_and_support() -> None:
-    assert TargetResolver.validate_candidate(
-        "stm32l476rgtx",
-        mcu_part_number="STM32L476RGT6-Exact",
-        part_consistent=lambda part, target: part.startswith("STM32L476") and "l476" in target,
-        built_in_targets=("stm32l476rgtx",),
-    ) == "built_in"
+    assert (
+        TargetResolver.validate_candidate(
+            "stm32l476rgtx",
+            mcu_part_number="STM32L476RGT6-Exact",
+            part_consistent=lambda part, target: part.startswith("STM32L476") and "l476" in target,
+            built_in_targets=("stm32l476rgtx",),
+        )
+        == "built_in"
+    )
     with pytest.raises(TargetResolutionError) as mismatch:
         TargetResolver.validate_candidate(
             "nrf52840",

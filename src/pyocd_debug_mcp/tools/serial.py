@@ -15,6 +15,24 @@ from pyocd_debug_mcp.services.session_runtime import (
     ToolOutcome,
     WatcherBlocked,
 )
+from pyocd_debug_mcp.services.uart_exchange_schema import (
+    validate_serial_exchange_parameters,
+)
+
+_LINE_ENDINGS = {
+    "none": "",
+    "lf": "\n",
+    "cr": "\r",
+    "crlf": "\r\n",
+}
+
+
+def _encode_uart_text(text: str, line_ending: str) -> bytes:
+    try:
+        suffix = _LINE_ENDINGS[line_ending]
+    except KeyError as exc:
+        raise ValueError("line_ending must be one of: none, lf, cr, crlf") from exc
+    return f"{text}{suffix}".encode("utf-8")
 
 
 @dataclass(frozen=True, slots=True)
@@ -31,6 +49,7 @@ class SerialToolServices:
     resolve_port: Callable[..., Any]
     capture_uart: Callable[..., Any]
     write_uart: Callable[..., Any]
+    exchange_uart: Callable[..., Any]
     reset_target: Callable[[Any], None]
     handle_mutation_event: Callable[[str, object], None]
     no_board_config_message: str
@@ -278,6 +297,140 @@ def write_serial(
     return result
 
 
+def serial_exchange(
+    services: SerialToolServices,
+    board_id: str,
+    steps: list[dict[str, object]],
+    read_seconds: float,
+    baudrate: int | None = None,
+    port: str | None = None,
+    ready_text: str | None = None,
+    ready_seconds: float = 0.0,
+    ready_probe_text: str | None = None,
+    ready_probe_line_ending: str = "none",
+    ready_probe_delay_seconds: float = 0.0,
+    clear_input: bool = False,
+) -> str:
+    """Run a bounded, prevalidated UART conversation through one port open."""
+
+    started = time.monotonic()
+    runtime = services.runtime_for(board_id)
+    normalized_args: dict[str, object] = {
+        "board_id": board_id,
+        "steps": steps,
+        "read_seconds": read_seconds,
+        "baudrate": baudrate,
+        "port": port,
+        "ready_text": ready_text,
+        "ready_seconds": ready_seconds,
+        "ready_probe_text": ready_probe_text,
+        "ready_probe_line_ending": ready_probe_line_ending,
+        "ready_probe_delay_seconds": ready_probe_delay_seconds,
+        "clear_input": clear_input,
+    }
+    schema_error = validate_serial_exchange_parameters(
+        {key: value for key, value in normalized_args.items() if key != "board_id"}
+    )
+    if schema_error is not None:
+        return _record_refusal(
+            services,
+            "serial_exchange",
+            board_id,
+            normalized_args,
+            PolicyRefusal(
+                "uart/invalid-exchange",
+                schema_error,
+            ),
+            started,
+            runtime,
+        )
+    validated_steps: list[tuple[bytes, str]] = []
+    for row in steps:
+        assert isinstance(row, dict)
+        text = row["text"]
+        expected = row["expected_text"]
+        ending = row["line_ending"]
+        assert isinstance(text, str) and isinstance(expected, str) and isinstance(ending, str)
+        validated_steps.append((_encode_uart_text(text, ending), expected))
+    if runtime is not None:
+        try:
+            services.ensure_uart_allowed(runtime)
+        except WatcherBlocked as blocked:
+            services.record_blocked_event(
+                "serial_exchange",
+                normalized_args,
+                blocked,
+                started=started,
+                board_id=board_id,
+                session=runtime,
+            )
+            return services.format_block(blocked, session_id=runtime.session_id)
+    handle = services.handle_for(board_id)
+    if handle.board is None:
+        return services.no_board_config_message
+    resolved_port = services.resolve_port(handle, override=port)
+    resolved_baudrate = baudrate or handle.board.default_baudrate
+    first_payload, first_expected = validated_steps[0]
+    exchange = services.exchange_uart(
+        resolved_port.device,
+        resolved_baudrate,
+        first_payload,
+        first_expected,
+        read_seconds,
+        ready_text=ready_text,
+        ready_seconds=ready_seconds,
+        ready_probe=(
+            _encode_uart_text(ready_probe_text, ready_probe_line_ending)
+            if ready_probe_text is not None
+            else None
+        ),
+        ready_probe_delay_seconds=ready_probe_delay_seconds,
+        followup_steps=tuple(validated_steps[1:]),
+        clear_input=clear_input,
+        max_bytes=65536,
+    )
+    step_summary = "; ".join(
+        f"{index}:{step.expected_text}={'matched' if step.matched else 'did not match'}"
+        for index, step in enumerate(exchange.steps, start=1)
+    )
+    result = (
+        f"UART exchange {'matched' if exchange.matched else 'did not match'} on "
+        f"{resolved_port.device} at {resolved_baudrate} baud; wrote "
+        f"{exchange.bytes_written} byte(s); duration={exchange.duration_seconds:.2f}s; "
+        f"ready={'matched' if exchange.ready_matched else 'did not match'}; "
+        f"ready_probe_bytes={exchange.ready_probe_bytes_written}; "
+        f"steps={len(exchange.steps)} [{step_summary or 'none'}]; "
+        f"excerpt={exchange.excerpt or '(none)'}"
+    )
+    event = services.record_event(
+        "serial_exchange",
+        normalized_args,
+        outcome_kind=ToolOutcome.SUCCESS if exchange.matched else ToolOutcome.FAILED,
+        error_code=None if exchange.matched else "uart/no-match",
+        duration_ms=services.duration_ms(started),
+        details={
+            "matched": exchange.matched,
+            "bytes_written": exchange.bytes_written,
+            "excerpt": exchange.excerpt,
+            "ready_matched": exchange.ready_matched,
+            "ready_probe_bytes_written": exchange.ready_probe_bytes_written,
+            "steps": [
+                {
+                    "expected_text": step.expected_text,
+                    "matched": step.matched,
+                    "bytes_written": step.bytes_written,
+                }
+                for step in exchange.steps
+            ],
+        },
+        board_id=board_id,
+        session=runtime,
+    )
+    if runtime is not None:
+        services.handle_mutation_event(board_id, event)
+    return result
+
+
 def build_serial_handlers(
     services: SerialToolServices,
 ) -> dict[str, Callable[..., str]]:
@@ -331,7 +484,40 @@ def build_serial_handlers(
             )
         )
 
+    def serial_exchange_handler(
+        board_id: str,
+        steps: list[dict[str, object]],
+        read_seconds: float = 3.0,
+        baudrate: int | None = None,
+        port: str | None = None,
+        ready_text: str | None = None,
+        ready_seconds: float = 0.0,
+        ready_probe_text: str | None = None,
+        ready_probe_line_ending: str = "none",
+        ready_probe_delay_seconds: float = 0.0,
+        clear_input: bool = False,
+    ) -> str:
+        """Run 1-8 planned command/response steps through one state-preserving UART open."""
+
+        return wrap_layer2_response(
+            serial_exchange(
+                services,
+                board_id,
+                steps,
+                read_seconds,
+                baudrate,
+                port,
+                ready_text,
+                ready_seconds,
+                ready_probe_text,
+                ready_probe_line_ending,
+                ready_probe_delay_seconds,
+                clear_input,
+            )
+        )
+
     return {
         "read_serial": read_serial_handler,
         "write_serial": write_serial_handler,
+        "serial_exchange": serial_exchange_handler,
     }

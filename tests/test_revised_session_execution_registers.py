@@ -392,6 +392,7 @@ def register_handlers() -> tuple[dict[str, Callable[..., str]], list[tuple[str, 
         "r12",
         "s0",
         "d3",
+        "q1",
         "pc",
         "msp",
         "control",
@@ -486,6 +487,45 @@ def test_cpu_register_values_accept_decimal_and_hexadecimal(
 
     assert "Refused" not in result
     assert calls == [("write", ("board_b", "r0", expected))]
+
+
+@pytest.mark.parametrize(
+    ("tool_name", "register_name", "value"),
+    [
+        ("write_cpu_register", "r0", "0x100000000"),
+        ("write_cpu_register", "s0", str(1 << 32)),
+        ("write_cpu_register", "d3", hex(1 << 64)),
+        ("write_cpu_register", "q1", str(1 << 128)),
+        ("set_execution_state", "pc", "0x100000000"),
+    ],
+)
+def test_register_width_overflow_is_refused_before_backend(
+    tool_name: str, register_name: str, value: str
+) -> None:
+    handlers, calls = register_handlers()
+
+    result = handlers[tool_name]("board_a", register_name, value)  # type: ignore[operator]
+
+    assert "Refused [register/invalid-value]" in result
+    assert calls == []
+
+
+@pytest.mark.parametrize(
+    ("register_name", "value"),
+    [
+        ("r0", (1 << 32) - 1),
+        ("s0", (1 << 32) - 1),
+        ("d3", (1 << 64) - 1),
+        ("q1", (1 << 128) - 1),
+    ],
+)
+def test_register_width_maximum_is_accepted(register_name: str, value: int) -> None:
+    handlers, calls = register_handlers()
+
+    result = handlers["write_cpu_register"]("board_a", register_name, value)  # type: ignore[operator]
+
+    assert "Refused" not in result
+    assert calls == [("write", ("board_a", register_name, value))]
 
 
 @pytest.mark.parametrize(

@@ -19,6 +19,7 @@ from pyocd_debug_mcp.safety.map_build import (
     SafetyArtifactError,
     SafetyArtifactRepository,
     SafetyArtifacts,
+    require_reconciled_authority,
 )
 from pyocd_debug_mcp.safety.regions import (
     ActionCategory,
@@ -45,6 +46,7 @@ class LoadedSafetyMap:
 
 
 LiveInputsProvider = Callable[[str, SafetyArtifacts], FingerprintInputs]
+AuthorityVerifier = Callable[[SafetyArtifacts], None]
 
 
 class SafetyPolicy:
@@ -53,9 +55,11 @@ class SafetyPolicy:
         repository: SafetyArtifactRepository,
         *,
         live_inputs: LiveInputsProvider | None = None,
+        authority_verifier: AuthorityVerifier = require_reconciled_authority,
     ) -> None:
         self.repository = repository
         self.live_inputs = live_inputs
+        self.authority_verifier = authority_verifier
 
     def load(self, board_id: str) -> LoadedSafetyMap:
         try:
@@ -65,6 +69,14 @@ class SafetyPolicy:
                 "safety/setup-required",
                 f"Board '{board_id}' has no complete consistent safety map: {exc}",
                 remedy=("board_safety_setup", "board_validate"),
+            ) from exc
+        try:
+            self.authority_verifier(artifacts)
+        except SafetyArtifactError as exc:
+            raise SafetyPolicyError(
+                "safety/authority-migration-required",
+                f"Board '{board_id}' safety authority is obsolete or incomplete: {exc}",
+                remedy=("board_setup", "board_safety_setup", "board_validate"),
             ) from exc
         return LoadedSafetyMap(
             artifacts,
@@ -165,9 +177,12 @@ class SafetyPolicy:
                 "Safety extraction requires an ELF or HEX artifact.",
                 remedy=("select_valid_build_artifact",),
             )
-        map_path = artifact.with_suffix(".map")
-        if not map_path.is_file():
-            map_path = None
+        # Do not silently add an adjacent linker map that was not selected and
+        # fingerprinted during safety refresh.  The ELF is authoritative for
+        # this call's partitions, segments, entry point, and vector table; an
+        # unrelated or dialect-incompatible sibling map must not alter the
+        # meaning of an already reviewed artifact.
+        map_path = None
         try:
             evidence = extract_build_evidence(
                 BuildArtifactSelection(

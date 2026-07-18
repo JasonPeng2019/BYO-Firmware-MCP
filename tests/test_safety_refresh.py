@@ -23,18 +23,38 @@ from pyocd_debug_mcp.safety.regions import (
 )
 
 
+def refresher(store: FirmStore) -> SafetyRefresher:
+    return SafetyRefresher(store, authority_verifier=lambda _artifacts: None)
+
+
 def inputs(**overrides: object) -> FingerprintInputs:
+    geometry = {"erase_origin": 0, "erase_size": 4096}
     values: dict[str, object] = {
         "profile": {"board_id": "board", "display_name": "Board"},
         "part_target": {"mcu_part_number": "MCU-1", "target": "target_1"},
-        "pack": {"id": "Vendor.Pack", "version": "1.0"},
-        "evidence": {"manual": "R2", "svd": "1.0"},
+        "pack": {
+            "id": "Vendor.Pack",
+            "version": "1.0",
+            "document": {"schema_version": 2},
+        },
+        "evidence": {
+            "manual": "R2",
+            "svd": "1.0",
+            "official_document": {"document": {"schema_version": 2}},
+            "reconciliation": {"status": "agreement", "erase_geometry": dict(geometry)},
+        },
         "application_artifacts": {"elf": "app-v1"},
         "bootloader_artifacts": {"elf": "boot-v1"},
-        "geometry": {"erase_size": 4096},
-        "schema": {"memory_map": 1},
+        "geometry": geometry,
+        "schema": {"memory_map": 1, "evidence": 2, "catalog": 2},
     }
-    values.update(overrides)
+    for key, value in overrides.items():
+        if key in {"pack", "evidence", "geometry", "schema"} and isinstance(value, dict):
+            current = values[key]
+            assert isinstance(current, dict)
+            values[key] = {**current, **value}
+        else:
+            values[key] = value
     return FingerprintInputs(
         values["profile"],
         values["part_target"],
@@ -173,7 +193,7 @@ def test_drift_routing_matrix_never_uses_refresh_for_anchor_or_structural_change
     remedy: tuple[str, ...],
 ) -> None:
     store, baseline = initialized(tmp_path)
-    result = SafetyRefresher(store).refresh(
+    result = refresher(store).refresh(
         SafetyRefreshRequest("board", "refresh-1", inputs(**override))
     )
 
@@ -201,7 +221,7 @@ def test_application_only_refresh_replaces_only_build_owned_regions(tmp_path: Pa
             FingerprintSource.APPLICATION_ARTIFACTS,
         ),
     )
-    result = SafetyRefresher(store).refresh(
+    result = refresher(store).refresh(
         SafetyRefreshRequest(
             "board",
             "refresh-app",
@@ -219,6 +239,35 @@ def test_application_only_refresh_replaces_only_build_owned_regions(tmp_path: Pa
     assert "application" not in names and "RAM" not in names
 
 
+def test_legacy_authority_map_cannot_be_promoted_by_refresh(tmp_path: Path) -> None:
+    store = FirmStore(tmp_path)
+    current = inputs()
+    legacy = FingerprintInputs(
+        current.profile,
+        current.part_target,
+        current.pack,
+        current.evidence,
+        current.application_artifacts,
+        current.bootloader_artifacts,
+        current.geometry,
+        {"memory_map": 1, "evidence": 1, "catalog": 1},
+    )
+    setup = SafetyMapBuilder(store).build(
+        SafetySetupRequest("board", "legacy-setup", legacy, regions())
+    )
+    assert setup.aggregate_fingerprint is not None
+    repository = SafetyArtifactRepository(store)
+    before = repository.paths("board")["memory_map"].read_bytes()
+
+    result = SafetyRefresher(store).refresh(
+        SafetyRefreshRequest("board", "legacy-refresh", legacy)
+    )
+
+    assert result.status == "refresh_scope_unclear"
+    assert result.remedy == ("board_safety_setup",)
+    assert repository.paths("board")["memory_map"].read_bytes() == before
+
+
 def test_bootloader_only_refresh_preserves_application_and_hardware_regions(tmp_path: Path) -> None:
     store, _ = initialized(tmp_path)
     replacement = (
@@ -230,7 +279,7 @@ def test_bootloader_only_refresh_preserves_application_and_hardware_regions(tmp_
             FingerprintSource.BOOTLOADER_ARTIFACTS,
         ),
     )
-    result = SafetyRefresher(store).refresh(
+    result = refresher(store).refresh(
         SafetyRefreshRequest(
             "board",
             "refresh-boot",
@@ -274,7 +323,7 @@ def test_pack_or_evidence_drift_rebuilds_both_verification_sources(
     changed_sources: tuple[FingerprintSource, ...],
 ) -> None:
     store, _ = initialized(tmp_path)
-    result = SafetyRefresher(store).refresh(
+    result = refresher(store).refresh(
         SafetyRefreshRequest(
             "board",
             "refresh-hardware",
@@ -319,7 +368,7 @@ def test_combined_application_and_bootloader_drift_uses_one_exact_scoped_rebuild
             FingerprintSource.BOOTLOADER_ARTIFACTS,
         ),
     )
-    result = SafetyRefresher(store).refresh(
+    result = refresher(store).refresh(
         SafetyRefreshRequest(
             "board",
             "refresh-both-builds",
@@ -376,7 +425,7 @@ def test_anchor_or_unclear_drift_dominates_other_refreshable_changes(
     expected_remedy: tuple[str, ...],
 ) -> None:
     store, baseline = initialized(tmp_path)
-    result = SafetyRefresher(store).refresh(
+    result = refresher(store).refresh(
         SafetyRefreshRequest("board", "refresh-dominance", inputs(**overrides))
     )
 
@@ -387,7 +436,7 @@ def test_anchor_or_unclear_drift_dominates_other_refreshable_changes(
 
 def test_missing_or_overbroad_rebuild_scope_is_unclear(tmp_path: Path) -> None:
     store, _ = initialized(tmp_path)
-    missing = SafetyRefresher(store).refresh(
+    missing = refresher(store).refresh(
         SafetyRefreshRequest(
             "board",
             "refresh-missing",
@@ -416,7 +465,7 @@ def test_refresh_conflict_preserves_prior_aggregate(tmp_path: Path) -> None:
             FingerprintSource.APPLICATION_ARTIFACTS,
         ),
     )
-    result = SafetyRefresher(store).refresh(
+    result = refresher(store).refresh(
         SafetyRefreshRequest(
             "board",
             "refresh-conflict",
@@ -464,7 +513,7 @@ def test_successful_refresh_rechecks_adjacent_prohibited_boundary_before_promoti
             FingerprintSource.EVIDENCE,
         ),
     )
-    result = SafetyRefresher(store).refresh(
+    result = refresher(store).refresh(
         SafetyRefreshRequest(
             "board",
             "refresh-boundary",
@@ -487,7 +536,7 @@ def test_stale_source_manifest_routes_to_full_setup_without_committing(tmp_path:
     manifest["sources"]["evidence"]["evidence"] = {"manual": "silently changed"}
     manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
 
-    result = SafetyRefresher(store).refresh(
+    result = refresher(store).refresh(
         SafetyRefreshRequest("board", "refresh-stale", inputs())
     )
 
@@ -499,7 +548,7 @@ def test_stale_source_manifest_routes_to_full_setup_without_committing(tmp_path:
 
 def test_fresh_inputs_are_idempotent_and_do_not_claim_gate_opening(tmp_path: Path) -> None:
     store, baseline = initialized(tmp_path)
-    result = SafetyRefresher(store).refresh(
+    result = refresher(store).refresh(
         SafetyRefreshRequest("board", "refresh-fresh", inputs())
     )
 
@@ -509,3 +558,4 @@ def test_fresh_inputs_are_idempotent_and_do_not_claim_gate_opening(tmp_path: Pat
     constraints = " ".join(result.to_payload()["constraints"])  # type: ignore[arg-type]
     assert "already hardware-validated active connection" in constraints
     assert "cannot restore validation after disconnect or restart" in constraints
+

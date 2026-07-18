@@ -399,20 +399,37 @@ def operation_timeout_seconds(
                     DEFAULT_OPERATION_TIMEOUT_SECONDS,
                     sum(child_timeouts) + BATCH_TIMEOUT_GRACE_SECONDS,
                 )
+    # Planned actions publish their timeout as part of the immutable plan
+    # definition.  Runtime dispatch must use that same value so the guidance
+    # shown to an agent cannot drift from the actual operation deadline.
+    try:
+        from pyocd_debug_mcp.guardrails.plan_defs import definition_for_action
+
+        planned_timeout = definition_for_action(tool_name).timeout_seconds
+    except KeyError:
+        planned_timeout = None
     if tool_name in _FLASH_TOOLS:
         return FLASH_OPERATION_TIMEOUT_SECONDS
     if tool_name in _VALIDATION_TOOLS:
         return VALIDATION_OPERATION_TIMEOUT_SECONDS
     if tool_name in _RECOVERY_TOOLS:
         return RECOVERY_OPERATION_TIMEOUT_SECONDS
-    if tool_name == "read_serial":
+    if tool_name in {"read_serial", "serial_exchange"}:
         requested = _positive_finite_number(values.get("read_seconds"))
         if requested is not None:
-            return max(DEFAULT_OPERATION_TIMEOUT_SECONDS, requested + SERIAL_TIMEOUT_GRACE_SECONDS)
+            return max(
+                float(planned_timeout or DEFAULT_OPERATION_TIMEOUT_SECONDS),
+                requested + SERIAL_TIMEOUT_GRACE_SECONDS,
+            )
     if tool_name == "write_serial":
         requested = _positive_finite_number(values.get("timeout_seconds"))
         if requested is not None:
-            return max(DEFAULT_OPERATION_TIMEOUT_SECONDS, requested + SERIAL_TIMEOUT_GRACE_SECONDS)
+            return max(
+                float(planned_timeout or DEFAULT_OPERATION_TIMEOUT_SECONDS),
+                requested + SERIAL_TIMEOUT_GRACE_SECONDS,
+            )
+    if planned_timeout is not None:
+        return float(planned_timeout)
     return DEFAULT_OPERATION_TIMEOUT_SECONDS
 
 

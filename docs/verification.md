@@ -124,6 +124,13 @@ Official `nucleo_l476rg`:
 
 Alternate `nrf52840dk` (not official Nordic proof):
 
+The failure record below is historical. It is superseded for alternate-board
+coverage by the current-tree autonomous acceptance in
+`docs/evidence/autonomous-current-tree-acceptance-2026-07-17.md`: setup-first
+readiness, local NCS build, safety refresh, validation, guarded application
+flash, one-handle UART worker ON/OFF/status/quiet proof, disconnect, and the
+strict evidence validator all passed on J-Link UID `683377322` / `COM11`.
+
 - exact J-Link UID `683377322` is visible, but no J-Link VCP is exposed;
 - live bootstrap originally misassigned the STM32 VCP. The H1 fix now refuses
   that cross-family match and retains correct STM32 selection; its scoped
@@ -175,7 +182,6 @@ as described above.
 ## Pending verification
 
 The open R1 findings and R3 review, fresh macOS bootstrap, exact
-`nrf52833dk`, a working nrf52840 J-Link attach/VCP, authorized reference flash
-and Stage 1, green UART/symbol baseline, live Codex/R11, installed-wheel
+`nrf52833dk`, official-board reference flash and Stage 1, live Codex/R11, installed-wheel
 operational support (not claimed), and licensing/layout/drift decisions remain
 pending.

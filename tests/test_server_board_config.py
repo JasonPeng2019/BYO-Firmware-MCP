@@ -7,6 +7,8 @@ import pytest
 
 from pyocd_debug_mcp import server
 from pyocd_debug_mcp.board_config import ConfigError, make_board_config
+from pyocd_debug_mcp.firmstore.profiles import ProfileRepository
+from pyocd_debug_mcp.firmstore.store import FirmStore
 
 
 def test_resolve_board_config_returns_none_without_selection(monkeypatch) -> None:
@@ -57,6 +59,44 @@ def test_resolve_board_config_unknown_id_raises(monkeypatch) -> None:
     monkeypatch.delenv("PYOCD_BOARD_ID", raising=False)
     with pytest.raises(ConfigError, match="not found"):
         server.resolve_board_config("no_such_board", None)
+
+
+def test_resolve_board_config_prefers_project_schema_v2_profile(
+    monkeypatch, tmp_path: Path
+) -> None:
+    repository = ProfileRepository(FirmStore(tmp_path), legacy_board_dir=tmp_path / "missing")
+    repository.commit_core(
+        repository.stage_core(
+            {
+                "board_id": "nf_board",
+                "display_name": "NF Board",
+                "mcu_part_number": "nRF52840",
+                "mcu_family": "nrf52840",
+                "probe_family": "jlink",
+                "pyocd_target": "nrf52840",
+                "serial_baudrate": 115200,
+            }
+        )
+    )
+    monkeypatch.setattr(server, "_profile_repository", repository)
+
+    board = server.resolve_board_config("nf_board", None)
+
+    assert board is not None
+    assert board.board_id == "nf_board"
+    assert board.pyocd_target == "nrf52840"
+
+
+def test_target_inventory_uses_pinned_python_registry_not_cli(monkeypatch) -> None:
+    monkeypatch.setattr(
+        server,
+        "_run_cmd",
+        lambda _command: (_ for _ in ()).throw(AssertionError("CLI must not run")),
+    )
+
+    targets = server._target_names()
+
+    assert "nrf52840" in targets
 
 
 def test_resolve_probe_uid_resolves_jlink_uid_on_non_windows(monkeypatch) -> None:

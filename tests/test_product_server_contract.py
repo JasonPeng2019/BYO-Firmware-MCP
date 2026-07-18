@@ -26,22 +26,33 @@ def _active_contract() -> dict[str, Any]:
     return json.loads(CONTRACT_PATH.read_text(encoding="utf-8"))
 
 
-def _imported_baseline(contract: dict[str, Any]) -> tuple[Path, dict[str, Any]]:
-    imported = contract["imported_baseline"]
-    path = CONTRACT_PATH.parent / imported["path"]
+def _resolve_delta(path: Path) -> dict[str, Any]:
     payload = path.read_bytes()
-    assert _sha256_bytes(payload) == imported["sha256"]
     delta = json.loads(payload)
     base_ref = delta["base_contract"]
     base_path = path.parent / base_ref["path"]
     base_payload = base_path.read_bytes()
     assert _sha256_bytes(base_payload) == base_ref["sha256"]
-    baseline = json.loads(base_payload)
-    baseline["tool_contract_sha256"].update(
-        delta["tool_contract_sha256_overrides"]
-    )
+    base = json.loads(base_payload)
+    baseline = _resolve_delta(base_path) if "base_contract" in base else base
+    baseline["tool_contract_sha256"].update(delta["tool_contract_sha256_overrides"])
     baseline["implementation_module_sha256"].update(
         delta["implementation_module_sha256_overrides"]
+    )
+    return baseline
+
+
+def _imported_baseline(contract: dict[str, Any]) -> tuple[Path, dict[str, Any]]:
+    imported = contract["imported_baseline"]
+    path = CONTRACT_PATH.parent / imported["path"]
+    payload = path.read_bytes()
+    assert _sha256_bytes(payload) == imported["sha256"]
+    baseline = _resolve_delta(path)
+    baseline["tool_contract_sha256"].update(
+        contract.get("tool_contract_sha256_overrides", {})
+    )
+    baseline["implementation_module_sha256"].update(
+        contract.get("implementation_module_sha256_overrides", {})
     )
     return path, baseline
 
@@ -50,11 +61,14 @@ def test_m10_active_contract_formally_supersedes_the_extraction_named_baseline()
     contract = _active_contract()
 
     assert contract["status"] == "active"
-    assert contract["milestone"] == "post-M10-plan-prompt-contract"
+    assert contract["milestone"] == "post-M10-adversarial-usability-contract"
     assert contract["supersedes"] == contract["imported_baseline"]["path"]
     assert (CONTRACT_PATH.parent / contract["supersedes"]).is_file()
     for relative_path in contract["hardening_evidence"].values():
         assert (CONTRACT_PATH.parents[2] / relative_path).is_file(), relative_path
+    assert _sha256_bytes(
+        (CONTRACT_PATH.parents[2] / "Plan_Prompt_Contents_Spec.md").read_bytes()
+    ) == contract["plan_prompt_contents_spec_sha256"]
 
 
 def test_m10_live_tools_and_implementation_owners_match_the_imported_baseline() -> None:

@@ -16,8 +16,10 @@ from pyocd_debug_mcp.safety.regions import (
     SourceAuthority,
 )
 
-EVIDENCE_SCHEMA_VERSION: Final = 1
-_TOP_FIELDS: Final = frozenset({"schema_version", "role", "device", "sources", "regions"})
+EVIDENCE_SCHEMA_VERSION: Final = 2
+_TOP_FIELDS: Final = frozenset(
+    {"schema_version", "role", "device", "sources", "regions", "erase_geometry"}
+)
 _DEVICE_FIELDS: Final = frozenset({"mcu_part_number", "target"})
 _SOURCE_FIELDS: Final = frozenset({"kind", "identifier", "version", "revision"})
 _REGION_FIELDS: Final = frozenset(
@@ -35,6 +37,7 @@ _REGION_FIELDS: Final = frozenset(
     }
 )
 _ALIAS_FIELDS: Final = frozenset({"start", "end", "range_convention"})
+_ERASE_GEOMETRY_FIELDS: Final = frozenset({"erase_origin", "erase_size"})
 _TOKEN = re.compile(r"[^a-z0-9]+")
 
 
@@ -160,12 +163,19 @@ class EvidenceRegion:
 
 
 @dataclass(frozen=True, slots=True)
+class EvidenceEraseGeometry:
+    erase_origin: int
+    erase_size: int
+
+
+@dataclass(frozen=True, slots=True)
 class HardwareEvidence:
     role: EvidenceRole
     mcu_part_number: str
     target: str | None
     sources: tuple[EvidenceSource, ...]
     regions: tuple[EvidenceRegion, ...]
+    erase_geometry: EvidenceEraseGeometry
 
     @classmethod
     def from_document(cls, document: object) -> HardwareEvidence:
@@ -185,6 +195,18 @@ class HardwareEvidence:
         part = _text(device["mcu_part_number"], "evidence.device.mcu_part_number")
         target = _text(device["target"], "evidence.device.target", nullable=True)
         assert part is not None
+        geometry = _exact_fields(
+            raw["erase_geometry"], _ERASE_GEOMETRY_FIELDS, "evidence.erase_geometry"
+        )
+        erase_origin = _integer(
+            geometry["erase_origin"], "evidence.erase_geometry.erase_origin"
+        )
+        erase_size = _integer(geometry["erase_size"], "evidence.erase_geometry.erase_size")
+        if erase_size <= 0:
+            raise EvidenceError(
+                "evidence/erase-geometry",
+                "evidence.erase_geometry.erase_size must be positive",
+            )
 
         source_rows = raw["sources"]
         if not isinstance(source_rows, list) or not source_rows:
@@ -304,7 +326,14 @@ class HardwareEvidence:
                 _normalized(item.block),
             )
         )
-        return cls(role, part, target, tuple(sources), tuple(regions))
+        return cls(
+            role,
+            part,
+            target,
+            tuple(sources),
+            tuple(regions),
+            EvidenceEraseGeometry(erase_origin, erase_size),
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -350,6 +379,7 @@ class ReconciliationResult:
     conflicts: tuple[VerificationConflict, ...]
     device_support_sources: tuple[EvidenceSource, ...]
     official_document_sources: tuple[EvidenceSource, ...]
+    erase_geometry: EvidenceEraseGeometry | None
 
     @property
     def accepted(self) -> bool:
@@ -418,6 +448,23 @@ def reconcile_hardware_evidence(
                 "Target identity does not agree with the expected profile target",
                 device_support.target,
                 official_document.target,
+            )
+        )
+
+    if device_support.erase_geometry != official_document.erase_geometry:
+        conflicts.append(
+            VerificationConflict(
+                "verify/erase-geometry",
+                None,
+                "Erase origin and size disagree between device support and official evidence",
+                {
+                    "erase_origin": device_support.erase_geometry.erase_origin,
+                    "erase_size": device_support.erase_geometry.erase_size,
+                },
+                {
+                    "erase_origin": official_document.erase_geometry.erase_origin,
+                    "erase_size": official_document.erase_geometry.erase_size,
+                },
             )
         )
 
@@ -563,4 +610,5 @@ def reconcile_hardware_evidence(
         tuple(conflicts),
         device_support.sources,
         official_document.sources,
+        None if conflicts else device_support.erase_geometry,
     )

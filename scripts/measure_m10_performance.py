@@ -71,12 +71,26 @@ def _fingerprint_inputs() -> FingerprintInputs:
     return FingerprintInputs(
         profile={"board_id": "performance_board"},
         part_target={"mcu_part_number": "PERFORMANCE-PART", "target": "performance"},
-        pack={"id": "Performance.Pack", "version": "1"},
-        evidence={"source": "M10 deterministic fixture"},
+        pack={
+            "id": "Performance.Pack",
+            "version": "1",
+            "document": {"schema_version": 2},
+        },
+        evidence={
+            "source": "M10 deterministic fixture",
+            "official_document": {"document": {"schema_version": 2}},
+            "reconciliation": {
+                "status": "agreement",
+                "erase_geometry": {
+                    "erase_origin": 0x08000000,
+                    "erase_size": 0x800,
+                },
+            },
+        },
         application_artifacts={"configuration": "none"},
         bootloader_artifacts={"configuration": "none"},
         geometry={"erase_origin": 0x08000000, "erase_size": 0x800},
-        schema={"memory_map": 1},
+        schema={"memory_map": 1, "evidence": 2, "catalog": 2},
     )
 
 
@@ -111,6 +125,10 @@ def _gate_operation(project_root: Path) -> Callable[[], None]:
     policy = SafetyPolicy(
         SafetyArtifactRepository(store),
         live_inputs=lambda _board_id, _artifacts: inputs,
+        # This benchmark measures the local gate/fingerprint hot path with a
+        # synthetic fixture. Reviewed-evidence replay is independently tested
+        # and would turn this host-speed measurement into an environment probe.
+        authority_verifier=lambda _artifacts: None,
     )
     gate = GateManager()
     gate.stamp_validation(

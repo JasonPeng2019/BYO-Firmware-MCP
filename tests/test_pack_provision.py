@@ -8,6 +8,7 @@ from pathlib import Path
 import pytest
 
 from pyocd_debug_mcp import pack_provision
+from pyocd_debug_mcp.firmstore.store import FirmStore
 from pyocd_debug_mcp.pack_provision import (
     PackProvisionError,
     PackSpec,
@@ -39,6 +40,20 @@ def test_discover_local_packs_finds_only_pack_files(tmp_path: Path) -> None:
 
 def test_discover_local_packs_missing_dir(tmp_path: Path) -> None:
     assert discover_local_packs(tmp_path / "nope") == []
+
+
+def test_discover_local_packs_includes_selected_project_firmstore(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    project = tmp_path / "application"
+    store = FirmStore(project)
+    pack = store.layout.pack_files / "custom.pack"
+    store.atomic_write_bytes(pack, b"pack")
+    monkeypatch.setenv("BYO_MCP_ARTIFACT_ROOT", str(project))
+
+    found = discover_local_packs(tmp_path / "no-shipped-packs")
+
+    assert pack.resolve() in found
 
 
 def test_ensure_pack_returns_existing_when_checksum_matches(

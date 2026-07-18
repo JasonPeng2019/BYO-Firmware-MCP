@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 
 from mcp.server.fastmcp import FastMCP
 
 from pyocd_debug_mcp.kernel.registry import ToolRegistry
+from pyocd_debug_mcp.kernel.run_state import ServerRun
 
 HANDSHAKE_TOOL_NAME = "initialization_handshake"
 HANDSHAKE_DESCRIPTION = (
@@ -14,12 +15,29 @@ HANDSHAKE_DESCRIPTION = (
 )
 
 
-def build_initialization_guidance(registry: ToolRegistry) -> str:
+def build_initialization_guidance(
+    registry: ToolRegistry,
+    tool_descriptions: Mapping[str, str] | None = None,
+    server_run: ServerRun | None = None,
+) -> str:
     """Build side-effect-free guidance from the current advertised tool list."""
 
     visible_tools = registry.advertised()
-    tool_index = "\n".join(f"- {name}" for name in visible_tools)
+    descriptions = tool_descriptions or {}
+    tool_index = "\n".join(
+        f"- {name}: {' '.join(descriptions.get(name, 'Visible MCP tool.').split())[:320]}"
+        for name in visible_tools
+    )
+    run_evidence = ""
+    if server_run is not None:
+        run_evidence = f"""
+Server Run evidence (record these values in acceptance artifacts):
+- run_id: {server_run.run_id}
+- started_at: {server_run.started_at_text}
+These values identify this in-memory server process; they grant no authority and change after restart.
+"""
     return f"""Guarded Hardware Server operating guidance
+{run_evidence}
 
 The server intentionally hides some hardware-control tools at startup. The currently visible
 tool list is authoritative: never guess, request, or call an unlisted tool.
@@ -27,20 +45,45 @@ tool list is authoritative: never guess, request, or call an unlisted tool.
 Currently visible tools:
 {tool_index}
 
-Guarded actions are exposed through a corresponding *-plan tool. For each plan tool, first call
-it with every parameter set to NULL. Read that response, then submit the complete plan fields and
-the exact underlying action parameters. A visible tool is not proof of authorization; the server
-also enforces physical handler locks and all board-specific safety checks.
+Guarded actions are exposed through a corresponding *-plan tool. A *-plan is an interactive
+two-step preparation gate, not the hardware action: first call with every parameter set to NULL, read the
+complete returned guide, then call the same *-plan with only its exact JSON plan object. If
+accepted, the response names and exposes the real action. Never put prose, Markdown, flattened
+action fields, or extra keys in a plan call. A visible tool is not proof of authorization; the
+server also enforces physical handler locks and all board-specific safety checks.
+
+Before downloading any large SDK, RTOS, toolchain, device pack, or library, perform a bounded
+local-first discovery. Check explicit paths and environment variables, the current project and
+its parents, and normal vendor install locations in the user's home and application directories.
+This includes existing NCS/Zephyr installs and STM32CubeIDE-provided STM32Cube, ThreadX, and
+toolchain trees. Validate the discovered product, version, target support, and executable tools
+before reuse; never trust a folder name alone and never recursively crawl the whole disk. Use a
+network download only when no compatible local copy exists, and tell the user what was missing
+before fetching a large dependency. Do not copy or persist unrelated files found during discovery.
+
+Dynamic clients should call the newly exposed action directly. Some MCP clients keep static callable
+bindings even after notifications/tools/list_changed. If the accepted plan's action is absent
+from those bindings, submit only the exact server-returned single-child action_batch fallback
+unchanged. This is the sole narrow exception to the no-unlisted-call rule: never invent a hidden
+child name, edit fallback arguments, or combine a primary action with a paired repair. The child
+still passes through identical plan, permission, validation, gate, freshness, lock, timeout, budget,
+event, and cleanup checks.
 
 At startup, ask the user in ordinary conversation for one unique, familiar name for each
 connected board, or "no board". Never ask the user for structured data, board IDs, connection
 IDs, or permission values. Never expose structured payloads, continuation tokens, or internal
 field names to the user.
 
-Route an existing profile name to validation, an unknown name to setup, and an incomplete or
-failed profile to repair. If a physical match is ambiguous, relay only the server-provided
-friendly choices and let the user choose. Never silently choose, rename, reassign, or rewrite a
-profile.
+After the user answers, call setup_overview with the familiar names. It lists known profiles,
+friendly current connections, server-generated board IDs, and the exact per-board route. Route an
+existing profile name, including an incomplete profile, to validation with
+load_setup_tool(board_validate) and board_validate. Route an unknown name to setup through the
+all-NULL board_setup-plan first; ask for exact board type, exact MCU part number, and the
+authoritative local datasheet PDF, then load board_setup-plan and submit its populated plan before
+any other hardware plan. Use hidden setup, repair, or safety only when validation returns that exact
+remedy. If a physical match is
+ambiguous, relay only server-provided friendly choices. Never silently choose, rename, reassign,
+or rewrite a profile.
 
 Ordinary conversation is never permission. When a tool requests approval, ask clearly in plain
 language and pass approval only through the exact structured parameter named by that tool.
@@ -55,13 +98,18 @@ If no board is connected, do not begin setup, validation, or hardware actions.""
 def register_initialization_handshake(
     mcp: FastMCP,
     registry: ToolRegistry,
+    server_run: ServerRun | None = None,
 ) -> Callable[[], str]:
     """Register and return the no-argument handshake handler."""
 
     def initialization_handshake() -> str:
         """Return current operating guidance; call this first in each Server Run."""
 
-        return build_initialization_guidance(registry)
+        descriptions = {
+            tool.name: tool.description or "Visible MCP tool."
+            for tool in mcp._tool_manager.list_tools()  # type: ignore[reportPrivateUsage]
+        }
+        return build_initialization_guidance(registry, descriptions, server_run)
 
     mcp.add_tool(
         initialization_handshake,

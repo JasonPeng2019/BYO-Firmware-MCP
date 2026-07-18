@@ -34,9 +34,9 @@ def assert_required_guidance(guidance: str) -> None:
     assert "board IDs" in prose
     assert "connection IDs" in prose
     assert "permission values" in prose
-    assert "existing profile name to validation" in prose
+    assert "existing profile name, including an incomplete profile, to validation" in prose
     assert "unknown name to setup" in prose
-    assert "incomplete or failed profile to repair" in prose
+    assert "only when validation returns that exact remedy" in prose
     assert "Never silently choose, rename, reassign, or rewrite a profile" in prose
     assert "Ordinary conversation is never permission" in prose
     assert "pass approval only through the exact structured parameter" in prose
@@ -44,6 +44,10 @@ def assert_required_guidance(guidance: str) -> None:
     assert "After a disconnect or the end of this Server Run, repeat validation" in prose
     assert "If no board is connected, do not begin setup, validation, or hardware actions" in prose
     assert "Never expose structured payloads, continuation tokens, or internal field names" in prose
+    assert "bounded local-first discovery" in prose
+    assert "STM32CubeIDE-provided STM32Cube, ThreadX" in prose
+    assert "never recursively crawl the whole disk" in prose
+    assert "network download only when no compatible local copy exists" in prose
 
 
 def test_handshake_is_visible_at_server_run_start() -> None:
@@ -96,6 +100,14 @@ async def test_in_process_client_lists_and_calls_handshake_before_hardware() -> 
 def test_handshake_guidance_contains_every_required_operating_rule() -> None:
     guidance = build_initialization_guidance(server.tool_registry)
     assert_required_guidance(guidance)
+
+
+def test_server_handshake_exposes_non_authorizing_run_evidence() -> None:
+    guidance = server.initialization_handshake()
+
+    assert f"run_id: {server.server_run.run_id}" in guidance
+    assert f"started_at: {server.server_run.started_at_text}" in guidance
+    assert "grant no authority" in guidance
 
 
 def test_repeated_handshake_is_side_effect_free() -> None:
@@ -199,3 +211,11 @@ async def test_handshake_does_not_change_hidden_handler_authorization() -> None:
     assert mcp.registry.advertised() == advertised_before
     with pytest.raises(ToolError, match="guarded_action-plan"):
         await mcp.call_tool("guarded_action", {"board_id": "board_a"})
+
+
+def test_static_binding_fallback_is_narrowly_documented() -> None:
+    prose = " ".join(build_initialization_guidance(server.tool_registry).split())
+    assert "static callable bindings" in prose
+    assert "exact server-returned single-child action_batch fallback" in prose
+    assert "never invent a hidden child name" in prose
+    assert "identical plan, permission, validation, gate, freshness" in prose

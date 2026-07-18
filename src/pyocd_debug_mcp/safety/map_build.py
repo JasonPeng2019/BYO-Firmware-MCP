@@ -300,6 +300,126 @@ class SafetyArtifactRepository:
         return SafetyArtifacts(board_id, fingerprints, regions, memory, manifest)
 
 
+def require_reconciled_authority(artifacts: SafetyArtifacts) -> None:
+    """Reject legacy/synthetic maps before they can validate, refresh, or authorize I/O."""
+
+    sources = artifacts.source_manifest.get("sources")
+    if not isinstance(sources, Mapping):
+        raise SafetyArtifactError("source manifest has no authoritative source records")
+
+    def source_evidence(source: FingerprintSource) -> Mapping[str, object]:
+        row = sources.get(source.value)
+        evidence = row.get("evidence") if isinstance(row, Mapping) else None
+        if not isinstance(evidence, Mapping):
+            raise SafetyArtifactError(f"{source.value} authority evidence is missing")
+        return evidence
+
+    schema = source_evidence(FingerprintSource.SCHEMA)
+    if schema.get("evidence") != 2 or schema.get("catalog") != 2:
+        raise SafetyArtifactError(
+            "legacy safety authority schema; rerun full board setup and safety setup"
+        )
+    evidence = source_evidence(FingerprintSource.EVIDENCE)
+    pack = source_evidence(FingerprintSource.PACK)
+    reconciliation = evidence.get("reconciliation")
+    official = evidence.get("official_document")
+    support = pack.get("document")
+    if (
+        not isinstance(reconciliation, Mapping)
+        or reconciliation.get("status") != "agreement"
+        or not isinstance(reconciliation.get("erase_geometry"), Mapping)
+        or not isinstance(official, Mapping)
+        or not isinstance(official.get("document"), Mapping)
+        or official["document"].get("schema_version") != 2  # type: ignore[union-attr]
+        or not isinstance(support, Mapping)
+        or support.get("schema_version") != 2
+    ):
+        raise SafetyArtifactError(
+            "safety sources lack strict two-source region and erase-geometry reconciliation"
+        )
+    part_target = source_evidence(FingerprintSource.PART_TARGET)
+    board_type = part_target.get("board_type")
+    part_number = part_target.get("mcu_part_number")
+    target = part_target.get("target")
+    if not all(isinstance(value, str) and value for value in (board_type, part_number, target)):
+        raise SafetyArtifactError("safety authority has no exact board, part, and target anchors")
+    try:
+        from pyocd_debug_mcp.setup_flow.board_catalog import (
+            BoardCatalogError,
+            catalog_board,
+        )
+        from pyocd_debug_mcp.setup_flow.reviewed_evidence import (
+            verify_persisted_reviewed_evidence,
+        )
+
+        catalog = catalog_board(str(board_type))
+        if part_number != catalog.package_part_number or target != catalog.pyocd_target:
+            raise BoardCatalogError("persisted part/target anchors do not match the catalog")
+        bundle = verify_persisted_reviewed_evidence(catalog, pack, evidence)
+    except Exception as exc:  # noqa: BLE001 - every authority-resolution failure closes the gate
+        raise SafetyArtifactError(
+            f"safety authority cannot be reverified from server-owned sources: {exc}"
+        ) from exc
+    expected_record = bundle.source_record()
+    if pack != expected_record["device_support"]:
+        raise SafetyArtifactError("persisted device-support authority record is not exact")
+    if official != expected_record["official_document"]:
+        raise SafetyArtifactError("persisted official authority record is not exact")
+    if reconciliation != expected_record["reconciliation"]:
+        raise SafetyArtifactError("persisted reconciliation record cannot be reproduced")
+    geometry = source_evidence(FingerprintSource.GEOMETRY)
+    reconciled_geometry = reconciliation["erase_geometry"]
+    assert isinstance(reconciled_geometry, Mapping)
+    if (
+        geometry.get("erase_origin") != reconciled_geometry.get("erase_origin")
+        or geometry.get("erase_size") != reconciled_geometry.get("erase_size")
+    ):
+        raise SafetyArtifactError("persisted erase geometry is not the reconciled geometry")
+
+    authority_groups = {
+        FingerprintSource.PACK,
+        FingerprintSource.EVIDENCE,
+        FingerprintSource.GEOMETRY,
+    }
+    hardware_regions = [
+        contribution
+        for contribution in artifacts.regions
+        if authority_groups.intersection(contribution.source_groups)
+    ]
+    if not hardware_regions:
+        raise SafetyArtifactError("safety map has no reconciled hardware regions")
+    for contribution in hardware_regions:
+        provenance = contribution.region.provenance
+        if not provenance or any(
+            item.authority is not SourceAuthority.RECONCILED for item in provenance
+        ):
+            raise SafetyArtifactError(
+                f"hardware region '{contribution.region.name}' is not reconciled"
+            )
+
+    def region_signature(region: SafetyRegion) -> tuple[object, ...]:
+        return (
+            region.name,
+            region.kind.value,
+            region.address_range.start,
+            region.address_range.end,
+            region.executable,
+            tuple(
+                (item.authority.value, item.source_id, item.detail)
+                for item in region.provenance
+            ),
+        )
+
+    observed_regions = sorted(region_signature(item.region) for item in hardware_regions)
+    expected_regions = sorted(
+        region_signature(item.to_safety_region()) for item in bundle.reconciliation.regions
+    )
+    if observed_regions != expected_regions:
+        raise SafetyArtifactError(
+            "persisted hardware regions do not exactly match recomputed reconciliation"
+        )
+
+
 def _ambiguous_overlap(
     first: RegionContribution, second: RegionContribution
 ) -> bool:

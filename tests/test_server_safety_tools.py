@@ -50,8 +50,13 @@ def test_public_refresh_rebuilds_regions_from_tracked_build_artifacts() -> None:
         BuildRole.APPLICATION,
     )
 
-    assert any(item.region.kind is RegionKind.APPLICATION_FLASH for item in replacements)
-    assert any(item.region.kind is RegionKind.RAM for item in replacements)
+    application = [
+        item for item in replacements if item.region.kind is RegionKind.APPLICATION_FLASH
+    ]
+    assert application
+    assert any(not item.region.executable for item in application)
+    assert any(item.region.executable for item in application)
+    assert not any(item.region.kind is RegionKind.RAM for item in replacements)
     assert all(
         provenance.authority is SourceAuthority.BUILD
         for item in replacements

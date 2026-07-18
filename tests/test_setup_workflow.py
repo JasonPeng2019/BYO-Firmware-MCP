@@ -43,9 +43,7 @@ def inventory() -> PreflightInventory:
     return PreflightInventory(
         probes=(ProbeCandidate("probe-a", "ST-Link board", "stlink", "PROBE-001"),),
         serial_ports=(
-            SerialCandidate(
-                "uart-a", "COM3", "ST-Link virtual serial", "UART-001", 0x0483, 0x5740
-            ),
+            SerialCandidate("uart-a", "COM3", "ST-Link virtual serial", "UART-001", 0x0483, 0x5740),
         ),
         built_in_targets=("stm32l476rgtx",),
         exact_detected_targets=("stm32l476rgtx",),
@@ -54,9 +52,11 @@ def inventory() -> PreflightInventory:
 
 def success_handlers() -> dict[SetupPhase, object]:
     return {
-        phase: (lambda context, selected=phase: SetupPhaseOutcome.success(
-            f"test/{selected.value}-verified"
-        ))
+        phase: (
+            lambda context, selected=phase: SetupPhaseOutcome.success(
+                f"test/{selected.value}-verified"
+            )
+        )
         for phase in PHASE_ORDER
         if phase
         not in {
@@ -77,9 +77,7 @@ def workflow(
     closed=None,
 ) -> SetupWorkflow:
     close_callback = (
-        (lambda board_id, reason: closed.append((board_id, reason)))
-        if closed is not None
-        else None
+        (lambda board_id, reason: closed.append((board_id, reason))) if closed is not None else None
     )
     return SetupWorkflow(
         ReportWriter(FirmStore(tmp_path)),
@@ -186,9 +184,7 @@ def test_later_phase_terminal_statuses_record_the_first_unverified_transition(
                     ProbeCandidate("probe-a", "Left probe", "stlink", "PROBE-A"),
                     ProbeCandidate("probe-b", "Right probe", "jlink", "PROBE-B"),
                 ),
-                serial_ports=(
-                    SerialCandidate("uart-a", "COM3", "Board UART", "UART-A", 1, 2),
-                ),
+                serial_ports=(SerialCandidate("uart-a", "COM3", "Board UART", "UART-A", 1, 2),),
                 built_in_targets=("stm32l476rgtx",),
                 exact_detected_targets=("stm32l476rgtx",),
             ),
@@ -198,9 +194,7 @@ def test_later_phase_terminal_statuses_record_the_first_unverified_transition(
         (
             PreflightInventory(
                 probes=(ProbeCandidate("probe-a", "Left probe", "stlink", "PROBE-A"),),
-                serial_ports=(
-                    SerialCandidate("uart-a", "COM3", "Board UART", "UART-A", 1, 2),
-                ),
+                serial_ports=(SerialCandidate("uart-a", "COM3", "Board UART", "UART-A", 1, 2),),
             ),
             "setup_research_required",
             SetupPhase.TARGET_RESOLUTION,
@@ -220,6 +214,19 @@ def test_preflight_terminal_transitions_also_produce_immutable_attempt_reports(
 
     assert result.status == status
     assert result.first_unverified_phase is phase
+    payload = result.to_payload()
+    if status == "setup_needs_user_input":
+        assert payload["accepted_response"] == {
+            "tool": "continue_setup",
+            "response": {"choice_id": "one exact choice_id returned above"},
+        }
+    elif status == "setup_research_required":
+        assert payload["accepted_response"]["tool"] == "continue_setup"
+        assert set(payload["accepted_response"]["response"]) == {
+            "pyocd_target",
+            "evidence",
+            "reasoning_summary",
+        }
     report = json.loads(result.report_paths.report.read_text(encoding="utf-8"))
     assert report["terminal_status"] == status
     assert NO_INTERNALS_RELAY_INSTRUCTION in result.agent_prompt
@@ -312,7 +319,8 @@ def test_known_unknown_incomplete_and_mismatch_name_routes_do_not_mutate_profile
 
     assert (known.kind, known.board_id) == ("validate", "bench_board")
     assert unknown.kind == "setup"
-    assert (repair.kind, repair.board_id) == ("repair", "repair_board")
+    assert (repair.kind, repair.board_id) == ("validate", "repair_board")
+    assert "Validate" in repair.agent_prompt
     assert mismatch.kind == "correct_assignment"
     assert "do not rewrite" in mismatch.agent_prompt.casefold()
     assert no_board.kind == "no_board"

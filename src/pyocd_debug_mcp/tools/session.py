@@ -14,6 +14,7 @@ class SessionToolServices:
     disconnect: Callable[[str], str]
     get_board_info: Callable[[str], str]
     get_state: Callable[[str], str]
+    connect_override: Callable[..., str] | None = None
 
 
 def build_session_handlers(services: SessionToolServices) -> dict[str, Callable[..., str]]:
@@ -59,7 +60,8 @@ def build_session_handlers(services: SessionToolServices) -> dict[str, Callable[
     ) -> str:
         """Connect with run-scoped manual identifiers without rewriting any profile."""
 
-        result = services.connect(
+        connector = services.connect_override or services.connect
+        result = connector(
             board_id,
             unique_id=probe_uid,
             target=target_override,

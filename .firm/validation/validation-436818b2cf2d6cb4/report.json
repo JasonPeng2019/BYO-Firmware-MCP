@@ -1,0 +1,36 @@
+{
+  "attempt_id": "validation-436818b2cf2d6cb4",
+  "board_id": "my_custom_board",
+  "code": "validation/no-probe",
+  "created_at": "2026-07-17T11:51:05.999942Z",
+  "message": "No compatible debug probe is currently visible.",
+  "observed": {
+    "board_id": "my_custom_board",
+    "hardware_result": "not_started",
+    "inventory": {
+      "probes": [],
+      "serial_ports": []
+    }
+  },
+  "profile_unchanged": true,
+  "report_type": "validation",
+  "schema_version": 1,
+  "steps": [
+    {
+      "details": {
+        "layer0_reason": "Safety-map consistency is intentionally unavailable until Task 14; write-capable actions remain closed.",
+        "profile": "example_custom_board.yaml"
+      },
+      "name": "Load profile and safety evidence",
+      "number": 1,
+      "outcome": "placeholder_closed"
+    },
+    {
+      "details": {},
+      "name": "Re-enumerate probes and serial ports",
+      "number": 2,
+      "outcome": "passed"
+    }
+  ],
+  "terminal_status": "validation_blocked"
+}

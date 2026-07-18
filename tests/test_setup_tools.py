@@ -15,8 +15,17 @@ from pyocd_debug_mcp.setup_flow.preflight import (
     ProbeCandidate,
     SerialCandidate,
 )
-from pyocd_debug_mcp.setup_flow.setup import PHASE_ORDER, SetupPhase, SetupPhaseOutcome, SetupWorkflow
-from pyocd_debug_mcp.setup_flow.validate import BoardValidator, ValidationBackend, ValidationInventory
+from pyocd_debug_mcp.setup_flow.setup import (
+    PHASE_ORDER,
+    SetupPhase,
+    SetupPhaseOutcome,
+    SetupWorkflow,
+)
+from pyocd_debug_mcp.setup_flow.validate import (
+    BoardValidator,
+    ValidationBackend,
+    ValidationInventory,
+)
 from pyocd_debug_mcp.tools.setup import SetupToolLoadState, SetupToolServices, build_setup_handlers
 
 
@@ -24,8 +33,13 @@ PARAMETERS = {
     "mode": "setup",
     "connection_id": "probe:001",
     "display_name": "Bench Board",
+    "board_type": "nucleo_l476rg",
     "mcu_part_number": "STM32L476RGT6-Exact",
     "serial_baudrate": 115200,
+    "serial_id": "UART-001",
+    "serial_port": "COM1",
+    "datasheet_path": "board-datasheet.pdf",
+    "datasheet_sha256": "0" * 64,
 }
 
 
@@ -61,7 +75,9 @@ def services(tmp_path: Path):
         exact_detected_targets=("stm32l476rgtx",),
     )
     handlers = {
-        phase: (lambda _context, selected=phase: SetupPhaseOutcome.success(f"test/{selected.value}"))
+        phase: (
+            lambda _context, selected=phase: SetupPhaseOutcome.success(f"test/{selected.value}")
+        )
         for phase in PHASE_ORDER
         if phase
         not in {
@@ -98,9 +114,23 @@ def services(tmp_path: Path):
                 "status": "safety_setup_completed",
                 "board_id": board_id,
             },
-            lambda board_id: {
+            lambda board_id, **_artifacts: {
                 "status": "safety_refresh_completed",
                 "board_id": board_id,
+            },
+            setup_overview=lambda names: {
+                "status": "setup_routes_ready" if names else "setup_names_required",
+                "agent_prompt": "Ask conversationally and do not expose JSON.",
+                "routes": [
+                    {"display_name": name, "board_id": "bench_board", "route": "validate"}
+                    for name in (names or [])
+                ],
+            },
+            setup_continue=lambda board_id, continuation_id, response: {
+                "status": "setup_continuation_accepted",
+                "board_id": board_id,
+                "continuation_id": continuation_id,
+                "response": dict(response),
             },
         )
     )
@@ -110,8 +140,9 @@ def services(tmp_path: Path):
 def test_a20_redirects_are_per_board_tool_and_server_run(tmp_path: Path) -> None:
     run, _, _, loader, handlers = services(tmp_path)
 
-    initial = json.loads(handlers["board_setup-plan"]())
-    assert initial["status"] == "setup_tool_not_loaded"
+    initial = handlers["board_setup-plan"]()
+    assert "first routing plan" in initial.lower()
+    assert "board_validate" in initial
 
     loaded = json.loads(handlers["load_setup_tool"]("bench_board", "board_setup-plan"))
     assert loaded["status"] == "setup_tool_loaded"
@@ -125,6 +156,63 @@ def test_a20_redirects_are_per_board_tool_and_server_run(tmp_path: Path) -> None
 
     fresh = SetupToolLoadState(ServerRun(run_id=run.run_id + "-restart"))
     assert not fresh.is_loaded("bench_board", "board_setup-plan")
+
+
+def test_setup_tool_index_descriptions_explain_trigger_and_routing(tmp_path: Path) -> None:
+    _, _, _, _, handlers = services(tmp_path)
+
+    setup_description = handlers["board_setup-plan"].__doc__ or ""
+    assert "first before any other *-plan" in setup_description
+    assert "matching YAML profile" in setup_description
+    assert "board_validate" in setup_description
+
+    safety_setup_description = handlers["board_safety_setup"].__doc__ or ""
+    assert "first authoritative safety map" in safety_setup_description
+    assert "never opens the hardware gate" in safety_setup_description
+
+    refresh_description = handlers["board_safety_refresh"].__doc__ or ""
+    assert "existing valid safety map" in refresh_description
+    assert "fingerprint drift" in refresh_description
+    assert "never reopens a disconnected gate" in refresh_description
+
+    validate_description = handlers["board_validate"].__doc__ or ""
+    assert "matching board YAML first" in validate_description
+    assert "passing validation stamps" in validate_description
+
+    overview_description = handlers["setup_overview"].__doc__ or ""
+    assert "familiar board names" in overview_description
+    assert "server-generated board_id" in overview_description
+
+    continue_description = handlers["continue_setup"].__doc__ or ""
+    assert "setup_research_required" in continue_description
+    assert "grants no permission" in continue_description
+
+
+def test_setup_overview_routes_names_without_user_facing_internal_fields(tmp_path: Path) -> None:
+    _, _, _, _, handlers = services(tmp_path)
+
+    payload = json.loads(handlers["setup_overview"](["Bench Board"]))
+
+    assert payload["status"] == "setup_routes_ready"
+    assert payload["routes"] == [
+        {"display_name": "Bench Board", "board_id": "bench_board", "route": "validate"}
+    ]
+    assert "do not expose JSON" in payload["agent_prompt"]
+
+
+def test_setup_continuation_accepts_one_exact_response_object(tmp_path: Path) -> None:
+    _, _, _, _, handlers = services(tmp_path)
+
+    payload = json.loads(
+        handlers["continue_setup"]("bench_board", "continue-1", {"choice_id": "probe-a"})
+    )
+
+    assert payload == {
+        "board_id": "bench_board",
+        "continuation_id": "continue-1",
+        "response": {"choice_id": "probe-a"},
+        "status": "setup_continuation_accepted",
+    }
 
 
 def test_setup_action_returns_complete_structured_continuation_payload(tmp_path: Path) -> None:

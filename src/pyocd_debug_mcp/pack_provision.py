@@ -15,9 +15,12 @@ both the Python-API path and the Stage 0 subprocess path.
 from __future__ import annotations
 
 import hashlib
+import os
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+
+from pyocd_debug_mcp.firmstore.store import FirmStore
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 PACKS_DIR = REPO_ROOT / "packs"
@@ -75,9 +78,7 @@ def load_manifest_document(manifest_path: Path = MANIFEST_PATH) -> dict[str, Any
         raise PackProvisionError(f"Pack manifest root must be a mapping in {manifest_path}")
     entries = data.get("packs", [])
     if not isinstance(entries, list):
-        raise PackProvisionError(
-            f"Pack manifest field 'packs' must be a list in {manifest_path}"
-        )
+        raise PackProvisionError(f"Pack manifest field 'packs' must be a list in {manifest_path}")
     return dict(data)
 
 
@@ -192,6 +193,15 @@ def discover_local_packs(packs_dir: Path = PACKS_DIR) -> list[Path]:
     fetches them; runtime just loads whatever is present so a connect never
     depends on the live pack index.
     """
-    if not packs_dir.is_dir():
-        return []
-    return sorted(p.resolve() for p in packs_dir.glob("*.pack") if p.is_file())
+    roots = [packs_dir, FirmStore(REPO_ROOT).layout.pack_files]
+    artifact_root = os.environ.get("BYO_MCP_ARTIFACT_ROOT", "").strip()
+    if artifact_root:
+        roots.append(FirmStore(Path(artifact_root).expanduser().resolve()).layout.pack_files)
+    discovered = {
+        pack.resolve()
+        for root in roots
+        if root.is_dir()
+        for pack in root.glob("*.pack")
+        if pack.is_file()
+    }
+    return sorted(discovered)

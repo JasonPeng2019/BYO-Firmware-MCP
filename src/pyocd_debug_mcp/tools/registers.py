@@ -125,12 +125,24 @@ def _parse_value(
             f"{field_name} must be hexadecimal or decimal.",
         )
     if parsed < 0 or (maximum is not None and parsed > maximum):
-        limit = "a non-negative integer" if maximum is None else "an unsigned 32-bit value"
+        limit = (
+            "a non-negative integer"
+            if maximum is None
+            else f"an unsigned {maximum.bit_length()}-bit value"
+        )
         return None, _refusal(
             "register/invalid-value",
             f"{field_name} must fit in {limit}.",
         )
     return parsed, None
+
+
+def _register_maximum(normalized_name: str) -> int:
+    if normalized_name.startswith("q"):
+        return (1 << 128) - 1
+    if normalized_name.startswith("d"):
+        return (1 << 64) - 1
+    return 0xFFFFFFFF
 
 
 def _raise_precondition(refusal: str | None) -> None:
@@ -155,14 +167,17 @@ def validate_guarded_register_call(
             raise RegisterPreconditionError(
                 "Refused [register/invalid-value]: name and value have invalid types."
             )
-        _, refusal = _validate_supported(
+        normalized, refusal = _validate_supported(
             services,
             board_id,
             name,
             execution_state=action_name == "set_execution_state",
         )
         _raise_precondition(refusal)
-        _, refusal = _parse_value(value, "value", maximum=None)
+        assert normalized is not None
+        _, refusal = _parse_value(
+            value, "value", maximum=_register_maximum(normalized)
+        )
         _raise_precondition(refusal)
         return
 
@@ -224,10 +239,13 @@ def build_register_handlers(
         )
         if refusal is not None:
             return refusal
-        parsed, refusal = _parse_value(value, "value", maximum=None)
+        assert normalized is not None
+        parsed, refusal = _parse_value(
+            value, "value", maximum=_register_maximum(normalized)
+        )
         if refusal is not None:
             return refusal
-        assert normalized is not None and parsed is not None
+        assert parsed is not None
         return wrap_layer2_response(services.write_register(board_id, normalized, parsed))
 
     def set_execution_state(board_id: str, name: str, value: str | int) -> str:
@@ -238,10 +256,13 @@ def build_register_handlers(
         )
         if refusal is not None:
             return refusal
-        parsed, refusal = _parse_value(value, "value", maximum=None)
+        assert normalized is not None
+        parsed, refusal = _parse_value(
+            value, "value", maximum=_register_maximum(normalized)
+        )
         if refusal is not None:
             return refusal
-        assert normalized is not None and parsed is not None
+        assert parsed is not None
         return wrap_layer2_response(services.write_register(board_id, normalized, parsed))
 
     def register_write(

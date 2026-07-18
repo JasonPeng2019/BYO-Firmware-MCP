@@ -16,10 +16,13 @@ from pyocd_debug_mcp.kernel.operations import SAFE_EXIT_REMINDER
 ALWAYS_VISIBLE = {
     "action_batch",
     "connect",
+    "continue_setup",
     "disconnect",
     "find_symbol",
     "get_board_info",
     "get_state",
+    "get_setup_status",
+    "setup_overview",
     "halt",
     "initialization_handshake",
     "load_setup_tool",
@@ -126,6 +129,10 @@ def _locked_arguments(name: str) -> dict[str, object]:
         },
         "read_serial": {"board_id": "m5-lock-board"},
         "write_serial": {"board_id": "m5-lock-board", "text": "status"},
+        "serial_exchange": {
+            "board_id": "m5-lock-board",
+            "steps": [{"text": "blink on", "expected_text": "BLINK ON", "line_ending": "lf"}],
+        },
         "target_unlock": {
             "board_id": "m5-lock-board",
             "recovery_mechanism": "nrf_pyocd_unlock",
@@ -139,9 +146,7 @@ async def test_m5_in_process_surface_is_exact_and_every_hidden_handler_is_locked
     try:
         async with _connected_session() as session:
             advertised = {tool.name for tool in (await session.list_tools()).tools}
-            registered = {
-                tool.name for tool in server.mcp._tool_manager.list_tools()
-            }
+            registered = {tool.name for tool in server.mcp._tool_manager.list_tools()}
 
             assert advertised == ALWAYS_VISIBLE | PLAN_VISIBLE
             assert registered == advertised | GUARDED | M6_GUARDED | M8_GUARDED
@@ -162,8 +167,13 @@ async def test_m5_in_process_surface_is_exact_and_every_hidden_handler_is_locked
                 "mode": "setup",
                 "connection_id": "probe:001",
                 "display_name": "Bench Board",
+                "board_type": "nucleo_l476rg",
                 "mcu_part_number": "Part-Exact",
                 "serial_baudrate": 115200,
+                "serial_id": "UART-001",
+                "serial_port": "COM1",
+                "datasheet_path": "board-datasheet.pdf",
+                "datasheet_sha256": "0" * 64,
             }
             for name in sorted(M6_GUARDED):
                 result = await session.call_tool(name, setup_arguments)
@@ -179,6 +189,7 @@ def test_m5_every_revised_runtime_and_plan_schema_is_exact() -> None:
         "disconnect": {"board_id"},
         "get_board_info": {"board_id"},
         "get_state": {"board_id"},
+        "get_setup_status": {"board_id"},
         "connect_override": {
             "board_id",
             "probe_uid",
@@ -227,37 +238,68 @@ def test_m5_every_revised_runtime_and_plan_schema_is_exact() -> None:
             "timeout_seconds",
             "on_exit",
         },
+        "serial_exchange": {
+            "board_id",
+            "steps",
+            "read_seconds",
+            "baudrate",
+            "port",
+            "ready_text",
+            "ready_seconds",
+            "ready_probe_text",
+            "ready_probe_line_ending",
+            "ready_probe_delay_seconds",
+            "clear_input",
+        },
         "set_breakpoint": {"board_id", "symbol_or_address"},
         "remove_breakpoint": {"board_id", "address"},
         "wait": {"board_id", "ms"},
         "target_unlock": {"board_id", "recovery_mechanism"},
         "load_setup_tool": {"board_id", "tool_name"},
+        "setup_overview": {"board_names"},
+        "continue_setup": {"board_id", "continuation_id", "response"},
         "board_setup": {
             "board_id",
             "mode",
             "connection_id",
             "display_name",
+            "board_type",
             "mcu_part_number",
             "serial_baudrate",
+            "serial_id",
+            "serial_port",
+            "datasheet_path",
+            "datasheet_sha256",
         },
         "board_fix_setup": {
             "board_id",
             "mode",
             "connection_id",
             "display_name",
+            "board_type",
             "mcu_part_number",
             "serial_baudrate",
+            "serial_id",
+            "serial_port",
+            "datasheet_path",
+            "datasheet_sha256",
         },
         "board_validate": {"board_id", "probe_id", "serial_id"},
         "board_safety_setup": {"board_id"},
-        "board_safety_refresh": {"board_id"},
+        "board_safety_refresh": {
+            "board_id",
+            "application_elf",
+            "application_hex",
+            "application_map",
+        },
         "action_batch": {"board_id", "actions"},
     }
     tools = {tool.name: tool for tool in server.mcp._tool_manager.list_tools()}
 
     for name, expected in expected_action_fields.items():
         assert set(tools[name].parameters["properties"]) == expected, name
-        assert "board_id" in tools[name].parameters["required"], name
+        if name != "setup_overview":
+            assert "board_id" in tools[name].parameters["required"], name
 
     common_plan_fields = {
         "board_id",

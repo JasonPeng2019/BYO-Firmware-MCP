@@ -24,6 +24,17 @@ _MAP_ADDRESS_NAME: Final = re.compile(
     r"^\s*(?P<value>0[xX][0-9A-Fa-f]+)\s+"
     r"(?P<name>[A-Za-z_.$][A-Za-z0-9_.$]*)\s*$"
 )
+_GNU_MAP_EVALUATED_SYMBOL: Final = re.compile(
+    r"^\s*(?P<value>0[xX][0-9A-Fa-f]+)\s+"
+    r"(?:(?:PROVIDE|PROVIDE_HIDDEN)\s*\(\s*)?"
+    r"(?P<name>[A-Za-z_.$][A-Za-z0-9_.$]*)"
+    r"(?:\s*=\s*.+?)?\s*\)?\s*$"
+)
+_GNU_MAP_LITERAL_PROVIDE: Final = re.compile(
+    r"^\s*(?:PROVIDE|PROVIDE_HIDDEN)\s*\(\s*"
+    r"(?P<name>[A-Za-z_.$][A-Za-z0-9_.$]*)\s*=\s*"
+    r"(?P<value>0[xX][0-9A-Fa-f]+|[0-9]+)\s*\)\s*;?\s*$"
+)
 
 _FLASH_SYMBOLS: Final = {
     "application": (
@@ -191,9 +202,19 @@ def _parse_map(path: Path) -> dict[str, int]:
         raise LinkerEvidenceError("build/map-unreadable", f"Cannot read linker map: {exc}") from exc
     values: dict[str, int] = {}
     for line_number, line in enumerate(text.splitlines(), 1):
-        match = _MAP_ASSIGNMENT.fullmatch(line) or _MAP_ADDRESS_NAME.fullmatch(line)
+        # GNU ld map files (including Zephyr's) print the evaluated value first,
+        # followed by the symbol and often a non-literal linker expression.  The
+        # leading value is the linker's resolved result and is the value we need;
+        # requiring the expression itself to be a numeric literal rejected normal
+        # Zephyr rows such as ``0x10000 __rom_region_end = (...)``.
+        match = (
+            _MAP_ASSIGNMENT.fullmatch(line)
+            or _MAP_ADDRESS_NAME.fullmatch(line)
+            or _GNU_MAP_EVALUATED_SYMBOL.fullmatch(line)
+            or _GNU_MAP_LITERAL_PROVIDE.fullmatch(line)
+        )
         if match is None:
-            if any(name in line for name in _INTERESTING_SYMBOLS):
+            if _looks_like_malformed_safety_symbol(line):
                 raise LinkerEvidenceError(
                     "build/map-malformed",
                     f"Malformed safety symbol at {path.name}:{line_number}",
@@ -210,6 +231,22 @@ def _parse_map(path: Path) -> dict[str, int]:
             )
         values[name] = value
     return values
+
+
+def _looks_like_malformed_safety_symbol(line: str) -> bool:
+    """Distinguish a broken definition from harmless section-name references."""
+
+    for name in _INTERESTING_SYMBOLS:
+        escaped = re.escape(name)
+        if re.match(rf"^\s*{escaped}(?:\s|=|\?\?\?|$)", line):
+            return True
+        if re.match(
+            rf"^\s*0[xX][0-9A-Fa-f]+\s+"
+            rf"(?:(?:PROVIDE|PROVIDE_HIDDEN)\s*\(\s*)?{escaped}(?:\s|=|\)|$)",
+            line,
+        ):
+            return True
+    return False
 
 
 def _read_elf(
@@ -342,7 +379,9 @@ def _read_hex(path: Path) -> tuple[dict[int, int], tuple[AddressRange, ...]]:
     try:
         lines = path.read_text(encoding="ascii").splitlines()
     except (OSError, UnicodeError) as exc:
-        raise LinkerEvidenceError("build/hex-unreadable", f"Cannot read HEX artifact: {exc}") from exc
+        raise LinkerEvidenceError(
+            "build/hex-unreadable", f"Cannot read HEX artifact: {exc}"
+        ) from exc
     image: dict[int, int] = {}
     base = 0
     eof_seen = False
@@ -362,7 +401,9 @@ def _read_hex(path: Path) -> tuple[dict[int, int], tuple[AddressRange, ...]]:
             try:
                 AddressRange.from_start_size(start, length)
             except RegionError as exc:
-                raise LinkerEvidenceError("build/hex-range", f"Invalid HEX data range: {exc}") from exc
+                raise LinkerEvidenceError(
+                    "build/hex-range", f"Invalid HEX data range: {exc}"
+                ) from exc
             for index, value in enumerate(data):
                 address = start + index
                 if address in image:
@@ -458,9 +499,7 @@ def extract_build_evidence(selection: BuildArtifactSelection | None) -> BuildEvi
         if selection.linker_map_path is not None
         else None
     )
-    hex_path = (
-        selection.hex_path.expanduser().resolve() if selection.hex_path is not None else None
-    )
+    hex_path = selection.hex_path.expanduser().resolve() if selection.hex_path is not None else None
     elf_symbols, segments, entry_point, elf_image = _read_elf(elf_path)
     map_symbols = _parse_map(map_path) if map_path is not None else {}
     symbols = _merge_symbols(elf_symbols, map_symbols)
@@ -552,9 +591,7 @@ def extract_build_evidence(selection: BuildArtifactSelection | None) -> BuildEvi
         artifact_paths.append(("linker_map", map_path))
     if hex_path is not None:
         artifact_paths.append(("hex", hex_path))
-    provenance = tuple(
-        _artifact_provenance(kind, path) for kind, path in sorted(artifact_paths)
-    )
+    provenance = tuple(_artifact_provenance(kind, path) for kind, path in sorted(artifact_paths))
 
     return BuildEvidence(
         configuration_id=selection.configuration_id,

@@ -37,6 +37,18 @@ physical handler lock and receives the same prerequisite refusal.
 adapters. Business rules live in their owning modules rather than in the
 composition root.
 
+Schema-v2 profiles in the selected project `.firm/boards/` root are the primary
+normal-connection source. The checkout `boards/` directory is a read-only
+compatibility fallback. Fresh automatic setup is advertised only for catalog
+entries with a pinned official datasheet, a distinct pinned device-support
+document, and exact installed pyOCD target/SVD identities. It recomputes every
+hash, parses both authorities through the strict evidence schema, and persists
+only regions accepted by deterministic two-source reconciliation. An empty or
+drifted pin fails closed. Live silicon reads and the user-supplied
+content-addressed datasheet are required before committing a profile or safety
+baseline. Validation promotes the exact live connection; no pseudo-connection
+stamp can satisfy the readiness barrier.
+
 The kernel provides the protocol and lifecycle boundary:
 
 - `kernel/registry.py` filters dynamic tool discovery, sends
@@ -149,6 +161,31 @@ strict research requests; blocked physical conditions are not mislabeled as
 research. Candidate replies must contain exactly the requested fields and
 cannot alter the exact user-supplied MCU part number.
 
+`setup_overview` is the entry adapter between ordinary familiar board names and
+internal profile/connection routing. `continue_setup` is the reverse adapter
+for one friendly choice or strict research response. It is scoped to the live
+board continuation, grants no authority, and feeds the accepted selection or
+target into the paired repair attempt. Pack candidates are staged under the
+project `.firm` root, checked, enumerated, live-connected, and only then added
+to the authoritative project manifest.
+
+`get_setup_status` is the explicit pre-code barrier. For a known catalog MCU it
+also returns advisory Zephyr board-target guidance and the
+exact running-Python module command for `pyocd-zephyr-build`, avoiding any
+dependency on ambient `PATH`. The helper can move generated build work to a
+short scratch path on Windows. This guidance is never safety authority; the
+resulting ELF/map must still pass `board_safety_refresh` before application
+flash.
+
+`scripts/run_fresh_workspace_e2e.py` is a narrow real-stdio adapter for a clean
+artifact root. Its input surface is fixed to board/probe/UART/datasheet
+identity plus a one-attempt setup authorization. It emits an immutable-style
+acceptance transcript at a fixed path and contains no downstream execution
+hook. Therefore a setup refusal, timeout, incomplete continuation, failed
+validation, or false readiness result is terminal; a separate orchestrator may
+start a coding agent only after reading a `pass` record whose
+`ready_for_code` value is true.
+
 Setup and validation return structured control payloads for the agent plus an
 `agent_prompt` written as ordinary prose. The agent must relay only that prose
 and friendly choices, never structured payloads, continuation tokens, internal
@@ -191,12 +228,23 @@ children. Each child traverses the identical direct-call dispatch path and
 observes any plan, permission, gate, or freshness change caused by earlier
 children. Execution stops at the first failure.
 
+Accepted plans also render an exact one-child batch as a compatibility route
+for MCP clients that do not refresh callable bindings after
+`notifications/tools/list_changed`. The server builds it from the immutable
+accepted snapshot (`board_id` plus canonical action parameters), never from
+model prose. Direct execution remains preferred. The compatibility child does
+not carry permission state and does not bypass hidden-handler locks or any
+dispatch check. Paired setup repair is returned separately and is valid only
+after the primary setup response establishes that route.
+
 Managed cleanup owns stop-I/O, UART close, debug/session close when required,
 owned process-group termination, reset release, lock release, and the final
 board state. Flash becomes non-interruptible after its transaction starts, so
 cancellation waits for bounded safe completion before resources are released.
-Ordinary stateful work is cooperatively interruptible. Stdio EOF and normal
-shutdown use the same cleanup ownership.
+Ordinary successful work preserves the action's documented MCU state; cleanup
+does not silently reset it. Reset-and-run is explicit through a reset tool or
+eligible structured finalizer. Ordinary stateful work is cooperatively
+interruptible. Stdio EOF and normal shutdown use the same cleanup ownership.
 
 ## Contracts, performance, and historical evidence
 

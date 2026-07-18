@@ -24,6 +24,7 @@ from pyocd_debug_mcp.safety.map_build import (
     _timestamp,
     build_documents,
     region_conflicts,
+    require_reconciled_authority,
 )
 
 SafetyRefreshStatus = Literal[
@@ -88,9 +89,11 @@ class SafetyRefresher:
         store: FirmStore,
         *,
         on_commit: Callable[[str, str], None] | None = None,
+        authority_verifier: Callable[[object], None] | None = None,
     ) -> None:
         self.repository = SafetyArtifactRepository(store)
         self.on_commit = on_commit or (lambda _board_id, _aggregate: None)
+        self.authority_verifier = authority_verifier or require_reconciled_authority
 
     def _result(
         self,
@@ -138,6 +141,7 @@ class SafetyRefresher:
             raise SafetyArtifactError("continuation_id must be non-empty")
         try:
             current = self.repository.load_current(request.board_id)
+            self.authority_verifier(current)
         except (SafetyArtifactError, ValueError) as exc:
             return self._result(
                 request,

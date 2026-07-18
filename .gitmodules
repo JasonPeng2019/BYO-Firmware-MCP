@@ -1,0 +1,6 @@
+[submodule "ClaudeCodexWorkflow/CodexClaudeWorkflow"]
+	path = ClaudeCodexWorkflow/CodexClaudeWorkflow
+	url = https://github.com/JasonPeng2019/CodexClaudeWorkflow.git
+[submodule ".agent-workspace"]
+	path = .agent-workspace
+	url = https://github.com/JasonPeng2019/CodexClaudeWorkflow.git

@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import json
+from pathlib import Path
+
 import pytest
 
 from pyocd_debug_mcp.guardrails.plan_defs import PLAN_DEFINITIONS, PermissionMode
@@ -11,6 +14,8 @@ from pyocd_debug_mcp.kernel.run_state import ServerRun
 SECTIONS = (
     "[MECHANISM]",
     "[PURPOSE]",
+    "[SETUP-FIRST ROUTING]",
+    "[LOCAL-FIRST DEPENDENCIES]",
     "[USE-WHEN / NOT-WHEN]",
     "[PLAN-FIELDS]",
     "[ACTION-PARAMETERS]",
@@ -22,6 +27,7 @@ SECTIONS = (
     "[SOFT-GUARDRAILS",
     "[EXIT]",
     "[EXAMPLE-PLAN]",
+    "[AFTER-ACCEPTANCE]",
 )
 
 
@@ -46,10 +52,21 @@ def test_every_null_prompt_is_self_contained_and_ordered(action_name: str) -> No
         "no prose, Markdown, wrapper key, flattened action fields, or extra fields",
         "Pre-execution refusal consumes nothing",
         "complete replacement plan",
+        "exact server-returned single-child action_batch fallback unchanged",
+        "STM32CubeIDE/STM32Cube/ThreadX",
+        "Download only as a fallback",
+        "recursively scan the whole disk",
     ):
         assert required.casefold() in response.casefold()
     for field in definition.action_fields:
         assert field.name in response
+
+    if action_name == "board_setup":
+        assert "Every matching YAML goes to board_validate first" in response
+        assert "before loading the setup tool" in response
+    else:
+        assert "Every matching YAML must pass board_validate first" in response
+        assert "ready_for_code=true" in response
 
     if definition.permission_mode is PermissionMode.NONE:
         assert "Omit user_permission entirely from a populated plan" in response
@@ -64,7 +81,20 @@ def test_every_null_prompt_is_self_contained_and_ordered(action_name: str) -> No
 @pytest.mark.parametrize(
     ("action_name", "required_phrases"),
     [
-        ("board_setup", ("paired board_fix_setup", "load_setup_tool", "board_validate", "exact MCU part number")),
+        (
+            "board_setup",
+            (
+                "paired board_fix_setup",
+                "first routing plan",
+                "before any hardware attempt",
+                "matching board-name YAML",
+                "board_validate only",
+                "hardware gate is stamped",
+                "hidden setup tools",
+                "authoritative datasheet",
+                "exact MCU part number",
+            ),
+        ),
         ("connect_override", ("normal connect", "never rewrite a profile", "probe unique ID")),
         ("write_cpu_register", ("R0-R12", "read_cpu_register", "ordinary-register class")),
         ("set_execution_state", ("PRIMASK", "reset_and_run", "Ask the user plainly")),
@@ -78,6 +108,14 @@ def test_every_null_prompt_is_self_contained_and_ordered(action_name: str) -> No
         ("connect_under_reset", ("wired, supported reset line", "not an unlock", "normal-attach failure")),
         ("target_unlock", ("server-confirmed locked target", "all ranges/banks/sectors", "gate stays closed")),
         ("read_serial", ("You cannot see the board. Prints are your eyes.", "uart_debug_prints", "zero hits")),
+        (
+            "serial_exchange",
+            (
+                "one or more ordered console commands",
+                "one handle",
+                "Stop on the first missing or mismatched response",
+            ),
+        ),
         ("write_serial", ("You cannot see the board. Prints are your eyes.", "different command requires", "zero hits")),
     ],
 )
@@ -164,3 +202,134 @@ def test_universal_null_envelope_and_populated_permission_shape_are_distinct() -
         assert ("user_permission" in definition.plan_field_names) is (
             definition.permission_mode is not PermissionMode.NONE
         )
+
+
+def test_human_plan_spec_matches_setup_and_serial_exchange_live_schemas() -> None:
+    spec = Path("Plan_Prompt_Contents_Spec.md").read_text(encoding="utf-8")
+    setup_fields = {field.name for field in PLAN_DEFINITIONS["board_setup"].action_fields}
+    exchange_fields = {
+        field.name for field in PLAN_DEFINITIONS["serial_exchange"].action_fields
+    }
+
+    assert setup_fields == {
+        "mode",
+        "connection_id",
+        "display_name",
+        "board_type",
+        "mcu_part_number",
+        "serial_baudrate",
+        "serial_id",
+        "serial_port",
+        "datasheet_path",
+        "datasheet_sha256",
+    }
+    assert exchange_fields == {
+        "steps",
+        "read_seconds",
+        "baudrate",
+        "port",
+        "ready_text",
+        "ready_seconds",
+        "ready_probe_text",
+        "ready_probe_line_ending",
+        "ready_probe_delay_seconds",
+        "clear_input",
+    }
+    setup_section = spec[spec.index("### 3.1"):spec.index("### 3.2")]
+    for field in setup_fields:
+        assert f"`{field}`" in setup_section
+    exchange_section = spec[spec.index("### 8.3"):spec.index("### 8.4")]
+    for field in exchange_fields:
+        assert f"`{field}`" in exchange_section
+    accepted_section = spec[spec.index("### 1.6"):spec.index("## 2.")]
+    for response_field in (
+        "status",
+        "message",
+        "plan_id",
+        "underlying_action",
+        "total_calls",
+        "preferred_call",
+        "stable_client_fallback",
+        "paired_action_fallbacks",
+    ):
+        assert f'"{response_field}"' in accepted_section
+
+
+def test_rendered_serial_exchange_example_round_trips_and_invalid_replacements_are_atomic() -> None:
+    definition = PLAN_DEFINITIONS["serial_exchange"]
+    rendered = definition.render_null_response()
+    example_start = rendered.index("{", rendered.index("[EXAMPLE-PLAN]"))
+    example, _ = json.JSONDecoder().raw_decode(rendered[example_start:])
+    assert example["max_calls"] == 1
+    assert example["max_calls_buffer"] == 0
+    assert [step["text"] for step in example["action_parameters"]["steps"]] == [
+        "blink on",
+        "blink status",
+        "blink off",
+    ]
+    registry = ToolRegistry()
+    registry.register(
+        "serial_exchange",
+        hidden=True,
+        locked=True,
+        prerequisite="serial_exchange-plan",
+    )
+    engine = PlanEngine(ServerRun(run_id="serial-schema-run"), registry)
+    engine.submit(
+        definition.plan_tool_name,
+        {name: None for name in definition.null_field_names},
+    )
+
+    accepted = engine.submit(definition.plan_tool_name, example)
+    assert accepted.plan is not None
+    accepted_id = accepted.plan.plan_id
+    action = example["action_parameters"]
+    assert isinstance(action, dict)
+    steps = action["steps"]
+    assert isinstance(steps, list)
+
+    invalid_actions = (
+        {**action, "steps": [*steps, *([steps[0]] * 7)]},
+        {**action, "steps": [{"text": "on", "invented": True}]},
+        {
+            **action,
+            "ready_probe_text": None,
+            "ready_probe_line_ending": "none",
+            "ready_probe_delay_seconds": 1.0,
+        },
+        {**action, "ready_text": None, "ready_seconds": 5.0},
+    )
+    for invalid_action in invalid_actions:
+        with pytest.raises(PlanRefusal, match="Invalid action_parameters"):
+            engine.submit(
+                definition.plan_tool_name,
+                {**example, "action_parameters": invalid_action},
+            )
+        active = engine.active_plan("serial_exchange", "left_controller")
+        assert active is not None and active.plan_id == accepted_id
+
+
+def test_rendered_setup_example_uses_current_reviewed_automatic_board() -> None:
+    from pyocd_debug_mcp.setup_flow.board_catalog import reviewed_setup_board_types
+
+    definition = PLAN_DEFINITIONS["board_setup"]
+    rendered = definition.render_null_response()
+    example_start = rendered.index("{", rendered.index("[EXAMPLE-PLAN]"))
+    example, _ = json.JSONDecoder().raw_decode(rendered[example_start:])
+    action = example["action_parameters"]
+
+    assert action == {
+        "mode": "setup",
+        "connection_id": "connection_1",
+        "display_name": "left controller",
+        "board_type": "nrf52840dk",
+        "mcu_part_number": "nRF52840-QIAA",
+        "serial_baudrate": 115200,
+        "serial_id": "683377322",
+        "serial_port": "COM11",
+        "datasheet_path": "C:/firmware/docs/nRF52840_PS_v1.1.pdf",
+        "datasheet_sha256": "c619e336b9c0610663273041f057f2537a65fd408ce0c5b8214a26de2aa88422",
+    }
+    assert action["board_type"] in reviewed_setup_board_types()
+    assert example["max_calls"] == 1
+    assert example["max_calls_buffer"] == 0

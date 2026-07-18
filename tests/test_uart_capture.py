@@ -17,6 +17,10 @@ class FakeUARTAdapter(UARTInterface):
     ) -> None:
         self._sessions = [list(session) for session in sessions]
         self._open_error = open_error
+        self.open_count = 0
+        self.reset_count = 0
+        self.close_count = 0
+        self.writes: list[bytes] = []
 
     def open(self, device: str, *, baudrate: int, timeout_seconds: float) -> UARTPortHandle:
         assert device
@@ -24,6 +28,7 @@ class FakeUARTAdapter(UARTInterface):
         assert timeout_seconds > 0
         if self._open_error is not None:
             raise self._open_error
+        self.open_count += 1
         return UARTPortHandle(
             handle=self._sessions.pop(0),
             device=device,
@@ -32,10 +37,10 @@ class FakeUARTAdapter(UARTInterface):
         )
 
     def close(self, handle: UARTPortHandle) -> None:
-        return None
+        self.close_count += 1
 
     def reset_input_buffer(self, handle: UARTPortHandle) -> None:
-        return None
+        self.reset_count += 1
 
     def read(self, handle: UARTPortHandle, size: int) -> bytes:
         session = handle.handle
@@ -47,7 +52,7 @@ class FakeUARTAdapter(UARTInterface):
         return b""
 
     def write(self, handle: UARTPortHandle, data: bytes) -> int:
-        handle.handle.append(data)
+        self.writes.append(data)
         return len(data)
 
 
@@ -101,6 +106,23 @@ def test_capture_uart_output_reopens_once_when_first_open_is_quiet() -> None:
 
     assert result.matched is True
     assert result.reopen_count == 1
+
+
+def test_capture_default_preserves_state_with_exactly_one_open() -> None:
+    adapter = FakeUARTAdapter([[b"quiet"], [b"unexpected second open"]])
+
+    result = uart_capture.capture_uart_output(
+        "COM1",
+        115200,
+        0.02,
+        "not present",
+        per_open_window_seconds=0.02,
+        adapter=adapter,
+    )
+
+    assert result.matched is False
+    assert result.reopen_count == 0
+    assert adapter.open_count == 1
 
 
 def test_capture_uart_output_without_expected_text_reports_any_output() -> None:
@@ -240,6 +262,201 @@ def test_write_uart_output_rejects_nonpositive_timeout() -> None:
         assert "timeout_seconds must be > 0" in str(exc)
     else:
         raise AssertionError("expected ValueError")
+
+
+def test_exchange_uart_output_writes_and_matches_split_response_in_one_open() -> None:
+    adapter = FakeUARTAdapter([[b"BLINK ", b"ON\r\n"]])
+
+    result = uart_capture.exchange_uart_output(
+        "COM1",
+        115200,
+        b"blink on\n",
+        "BLINK ON",
+        0.1,
+        adapter=adapter,
+    )
+
+    assert result.bytes_written == len(b"blink on\n")
+    assert result.matched is True
+    assert "BLINK ON" in result.text
+
+
+def test_exchange_waits_for_same_open_readiness_before_writing() -> None:
+    adapter = FakeUARTAdapter([[b"booting\r\n", b"nf-board> ", b"BLINK ON\r\n"]])
+
+    result = uart_capture.exchange_uart_output(
+        "COM1",
+        115200,
+        b"blink on\n",
+        "BLINK ON",
+        0.1,
+        ready_text="nf-board>",
+        ready_seconds=0.1,
+        ready_probe=b"\n",
+        adapter=adapter,
+    )
+
+    assert result.ready_matched is True
+    assert result.ready_probe_bytes_written == 1
+    assert result.bytes_written == len(b"blink on\n")
+    assert result.matched is True
+
+
+def test_exchange_observes_boot_marker_before_delayed_probe_without_sending_probe() -> None:
+    adapter = FakeUARTAdapter([[b"booting\r\n", b"READY\r\n", b"COMMAND OK\r\n"]])
+
+    result = uart_capture.exchange_uart_output(
+        "COM1",
+        115200,
+        b"command\n",
+        "COMMAND OK",
+        0.1,
+        ready_text="READY",
+        ready_seconds=0.1,
+        ready_probe=b"status\n",
+        ready_probe_delay_seconds=0.05,
+        adapter=adapter,
+    )
+
+    assert result.ready_matched is True
+    assert result.ready_probe_bytes_written == 0
+    assert adapter.writes == [b"command\n"]
+    assert result.matched is True
+
+
+def test_exchange_rejects_delay_without_probe() -> None:
+    adapter = FakeUARTAdapter([[]])
+
+    try:
+        uart_capture.exchange_uart_output(
+            "COM1",
+            115200,
+            b"command\n",
+            "COMMAND OK",
+            0.1,
+            ready_text="READY",
+            ready_seconds=0.1,
+            ready_probe_delay_seconds=0.05,
+            adapter=adapter,
+        )
+    except ValueError as exc:
+        assert "requires a ready_probe" in str(exc)
+    else:
+        raise AssertionError("expected ValueError")
+
+
+def test_exchange_runs_ordered_followups_without_reopening() -> None:
+    adapter = FakeUARTAdapter(
+        [
+            [
+                b"nf-board> ",
+                b"BLINK ON\r\n",
+                b"BLINK STATUS: ON\r\n",
+                b"BLINK OFF\r\n",
+                b"BLINK STATUS: OFF\r\n",
+            ]
+        ]
+    )
+
+    result = uart_capture.exchange_uart_output(
+        "COM1",
+        115200,
+        b"blink on\n",
+        "BLINK ON",
+        0.1,
+        ready_text="nf-board>",
+        ready_seconds=0.1,
+        ready_probe=b"\n",
+        followup_steps=(
+            (b"blink status\n", "BLINK STATUS: ON"),
+            (b"blink off\n", "BLINK OFF"),
+            (b"blink status\n", "BLINK STATUS: OFF"),
+        ),
+        adapter=adapter,
+    )
+
+    assert result.matched is True
+    assert [step.matched for step in result.steps] == [True, True, True, True]
+    assert adapter.open_count == 1
+    assert adapter.reset_count == 0
+
+
+def test_exchange_discards_buffer_only_when_explicitly_requested() -> None:
+    adapter = FakeUARTAdapter([[b"READY", b"OK"]])
+
+    result = uart_capture.exchange_uart_output(
+        "COM1",
+        115200,
+        b"go\r\n",
+        "OK",
+        0.1,
+        ready_text="READY",
+        ready_seconds=0.1,
+        clear_input=True,
+        adapter=adapter,
+    )
+
+    assert result.matched
+    assert adapter.reset_count == 1
+
+
+def test_exchange_readiness_failure_sends_no_commands_and_closes() -> None:
+    adapter = FakeUARTAdapter([[b"FIRST OK but never ready"]])
+
+    result = uart_capture.exchange_uart_output(
+        "COM1",
+        115200,
+        b"first\n",
+        "FIRST OK",
+        0.01,
+        ready_text="READY",
+        ready_seconds=0.01,
+        ready_probe=b"\n",
+        followup_steps=((b"second\n", "SECOND OK"),),
+        adapter=adapter,
+    )
+
+    assert result.ready_matched is False
+    assert result.matched is False
+    assert result.steps == ()
+    assert adapter.writes == [b"\n"]
+    assert adapter.close_count == 1
+
+
+def test_exchange_first_step_mismatch_sends_no_followups_and_closes() -> None:
+    adapter = FakeUARTAdapter([[b"WRONG"]])
+
+    result = uart_capture.exchange_uart_output(
+        "COM1",
+        115200,
+        b"first\n",
+        "FIRST OK",
+        0.01,
+        followup_steps=((b"second\n", "SECOND OK"), (b"third\n", "THIRD OK")),
+        adapter=adapter,
+    )
+
+    assert [step.matched for step in result.steps] == [False]
+    assert adapter.writes == [b"first\n"]
+    assert adapter.close_count == 1
+
+
+def test_exchange_middle_step_mismatch_sends_no_later_steps_and_closes() -> None:
+    adapter = FakeUARTAdapter([[b"FIRST OK", b"WRONG SECOND"]])
+
+    result = uart_capture.exchange_uart_output(
+        "COM1",
+        115200,
+        b"first\n",
+        "FIRST OK",
+        0.01,
+        followup_steps=((b"second\n", "SECOND OK"), (b"third\n", "THIRD OK")),
+        adapter=adapter,
+    )
+
+    assert [step.matched for step in result.steps] == [True, False]
+    assert adapter.writes == [b"first\n", b"second\n"]
+    assert adapter.close_count == 1
 
 
 def test_pyserial_open_sets_read_and_write_timeouts(monkeypatch) -> None:

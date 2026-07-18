@@ -1,0 +1,118 @@
+{
+  "schema_version": 2,
+  "role": "official_document",
+  "device": {
+    "mcu_part_number": "nRF52840-QIAA",
+    "target": null
+  },
+  "erase_geometry": {
+    "erase_origin": 0,
+    "erase_size": 4096
+  },
+  "sources": [
+    {
+      "kind": "datasheet",
+      "identifier": "Nordic nRF52840 Product Specification",
+      "version": "1.1",
+      "revision": "sha256:c619e336b9c0610663273041f057f2537a65fd408ce0c5b8214a26de2aa88422"
+    }
+  ],
+  "regions": [
+    {
+      "fact_id": "physical_flash",
+      "name": "physical flash",
+      "name_aliases": ["code flash"],
+      "kind": "physical_flash",
+      "start": 0,
+      "end": 1048576,
+      "range_convention": "half_open",
+      "address_aliases": [],
+      "bank": "flash0",
+      "block": "FLASH"
+    },
+    {
+      "fact_id": "physical_ram",
+      "name": "physical RAM",
+      "name_aliases": ["SRAM address space"],
+      "kind": "physical_ram",
+      "start": 536870912,
+      "end": 537133056,
+      "range_convention": "half_open",
+      "address_aliases": [],
+      "bank": "sram0",
+      "block": "RAM"
+    },
+    {
+      "fact_id": "writable_ram",
+      "name": "writable RAM",
+      "name_aliases": ["SRAM writable region"],
+      "kind": "ram",
+      "start": 536870912,
+      "end": 537133056,
+      "range_convention": "half_open",
+      "address_aliases": [],
+      "bank": "sram0",
+      "block": "RAM"
+    },
+    {
+      "fact_id": "uicr",
+      "name": "UICR and persistent configuration",
+      "name_aliases": ["User Information Configuration Registers"],
+      "kind": "prohibited",
+      "start": 268439552,
+      "end": 268443648,
+      "range_convention": "half_open",
+      "address_aliases": [],
+      "bank": "uicr",
+      "block": "UICR"
+    },
+    {
+      "fact_id": "ficr",
+      "name": "factory information",
+      "name_aliases": ["Factory Information Configuration Registers"],
+      "kind": "rom",
+      "start": 268435456,
+      "end": 268439552,
+      "range_convention": "half_open",
+      "address_aliases": [],
+      "bank": "ficr",
+      "block": "FICR"
+    },
+    {
+      "fact_id": "safe_gpio",
+      "name": "volatile GPIO registers",
+      "name_aliases": ["GPIO port 0 and port 1 volatile register window"],
+      "kind": "peripheral",
+      "start": 1342178560,
+      "end": 1342179584,
+      "range_convention": "half_open",
+      "address_aliases": [],
+      "bank": "gpio",
+      "block": "GPIO"
+    },
+    {
+      "fact_id": "nvmc_acl",
+      "name": "nonvolatile memory and access control registers",
+      "name_aliases": ["NVMC and ACL control block"],
+      "kind": "prohibited",
+      "start": 1073864704,
+      "end": 1073868800,
+      "range_convention": "half_open",
+      "address_aliases": [],
+      "bank": "nvmc_acl",
+      "block": "NVMC_ACL"
+    },
+    {
+      "fact_id": "cpu_system",
+      "name": "Cortex-M system control",
+      "name_aliases": ["System Control Space"],
+      "kind": "cpu_system",
+      "start": 3758096384,
+      "end": 3759144960,
+      "range_convention": "half_open",
+      "address_aliases": [],
+      "bank": "system",
+      "block": "SCS"
+    }
+  ]
+}

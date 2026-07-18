@@ -718,3 +718,34 @@ def test_unlock_reports_preserve_exact_disclosure_without_persisted_authority(
     for path in event_paths:
         for line in path.read_text(encoding="utf-8").splitlines():
             assert PERSISTED_AUTHORITY_KEYS.isdisjoint(_artifact_keys(json.loads(line))), path
+
+
+def test_approved_unlock_returns_exact_non_authority_static_client_fallback(
+    tmp_path: Path,
+) -> None:
+    fixture = _fixture(tmp_path)
+    _initialize(fixture)
+    fields = _complete_fields()
+    requested = json.loads(fixture.coordinator.plan(fields))
+    approved = json.loads(
+        fixture.coordinator.plan(fields | {"user_permission": "one-time"})
+    )
+
+    assert approved["plan_id"] == requested["plan_id"]
+    assert approved["status"] == "unlock_plan_approved"
+    assert approved["stable_client_fallback"] == {
+        "tool_name": "action_batch",
+        "arguments": {
+            "board_id": BOARD_ID,
+            "actions": [
+                {
+                    "tool_name": "target_unlock",
+                    "arguments": {
+                        "board_id": BOARD_ID,
+                        "recovery_mechanism": RECOVER_MODE_NRF_PYOCD_UNLOCK,
+                    },
+                }
+            ],
+        },
+    }
+    assert "user_permission" not in json.dumps(approved["stable_client_fallback"])

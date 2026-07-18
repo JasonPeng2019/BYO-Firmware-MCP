@@ -49,6 +49,7 @@ def _inputs(
     geometry: object | None = None,
     artifact: Path = NUCLEO_ELF,
 ) -> FingerprintInputs:
+    selected_geometry = geometry or {"erase_origin": 0x08000000, "erase_size": 0x800}
     artifact_records: dict[str, object] = {
         artifact.suffix.removeprefix("."): {
             "path": str(artifact),
@@ -64,12 +65,23 @@ def _inputs(
     return FingerprintInputs(
         profile={"board_id": "board_a"},
         part_target={"mcu_part_number": "STM32L476RGT6", "target": "stm32l476rgtx"},
-        pack={"id": "Keil.STM32L4xx_DFP", "version": "2.7.0"},
-        evidence={"datasheet": "RM0351"},
+        pack={
+            "id": "Keil.STM32L4xx_DFP",
+            "version": "2.7.0",
+            "document": {"schema_version": 2},
+        },
+        evidence={
+            "datasheet": "RM0351",
+            "official_document": {"document": {"schema_version": 2}},
+            "reconciliation": {
+                "status": "agreement",
+                "erase_geometry": selected_geometry,
+            },
+        },
         application_artifacts={"configuration": "reference", **artifact_records},
         bootloader_artifacts={"configuration": "reference", **artifact_records},
-        geometry=geometry or {"erase_origin": 0x08000000, "erase_size": 0x800},
-        schema={"memory_map": 1},
+        geometry=selected_geometry,
+        schema={"memory_map": 1, "evidence": 2, "catalog": 2},
     )
 
 
@@ -145,7 +157,10 @@ def _policy(
     )
     result = SafetyMapBuilder(FirmStore(tmp_path)).build(request)
     assert result.status == "safety_setup_completed"
-    return SafetyPolicy(SafetyArtifactRepository(FirmStore(tmp_path)))
+    return SafetyPolicy(
+        SafetyArtifactRepository(FirmStore(tmp_path)),
+        authority_verifier=lambda _artifacts: None,
+    )
 
 
 def _ihex_record(address: int, record_type: int, data: bytes = b"") -> str:
@@ -165,6 +180,47 @@ def test_ac_14_3_memory_writes_are_fully_contained_in_ram(tmp_path: Path) -> Non
     with pytest.raises(SafetyPolicyError) as boundary:
         policy.check_memory_write("board_a", 0x2000FFFF, 32)
     assert boundary.value.code == "safety/unknown"
+
+
+def test_persisted_legacy_authority_map_cannot_be_restored_after_restart(
+    tmp_path: Path,
+) -> None:
+    store = FirmStore(tmp_path)
+    current = _inputs()
+    legacy = FingerprintInputs(
+        current.profile,
+        current.part_target,
+        current.pack,
+        current.evidence,
+        current.application_artifacts,
+        current.bootloader_artifacts,
+        current.geometry,
+        {"memory_map": 1, "evidence": 1, "catalog": 1},
+    )
+    result = SafetyMapBuilder(store).build(
+        SafetySetupRequest(
+            "board_a",
+            "legacy-map",
+            legacy,
+            (
+                _region(
+                    "legacy RAM",
+                    RegionKind.RAM,
+                    0x20000000,
+                    0x20001000,
+                    FingerprintSource.EVIDENCE,
+                ),
+            ),
+        )
+    )
+    assert result.status == "safety_setup_completed"
+
+    restarted_policy = SafetyPolicy(SafetyArtifactRepository(FirmStore(tmp_path)))
+    with pytest.raises(SafetyPolicyError) as caught:
+        restarted_policy.current_aggregate("board_a")
+
+    assert caught.value.code == "safety/authority-migration-required"
+    assert caught.value.remedy == ("board_setup", "board_safety_setup", "board_validate")
 
 
 def test_ac_14_6_register_write_rejects_prohibited_overlap(tmp_path: Path) -> None:
@@ -219,6 +275,22 @@ def test_ac_14_4_and_14_10_flash_checks_target_segments_entry_vector_and_sectors
             current_target="stm32l476rgtx",
         )
     assert erase.value.code == "safety/erase-sector-outside-partition"
+
+
+def test_flash_ignores_unselected_adjacent_linker_map(tmp_path: Path) -> None:
+    artifact = tmp_path / "firmware.elf"
+    artifact.write_bytes(NUCLEO_ELF.read_bytes())
+    artifact.with_suffix(".map").write_text("malformed map dialect", encoding="utf-8")
+    policy = _policy(tmp_path / "store", artifact=artifact)
+
+    evidence = policy.check_flash(
+        "board_a",
+        BuildRole.APPLICATION,
+        artifact,
+        current_target="stm32l476rgtx",
+    )
+
+    assert evidence.entry_point == 0x08000B29
 
 
 @pytest.mark.parametrize("case", ["partition-crossing", "erase-crossing"])
@@ -310,11 +382,16 @@ def test_declared_source_artifact_drift_is_detected_per_call(tmp_path: Path) -> 
     artifact = tmp_path / "evidence.json"
     artifact.write_text("v1", encoding="utf-8")
     inputs = _inputs()
+    assert isinstance(inputs.evidence, dict)
     inputs = FingerprintInputs(
         inputs.profile,
         inputs.part_target,
         inputs.pack,
-        {"path": str(artifact), "sha256": sha256(b"v1").hexdigest()},
+        {
+            **inputs.evidence,
+            "path": str(artifact),
+            "sha256": sha256(b"v1").hexdigest(),
+        },
         inputs.application_artifacts,
         inputs.bootloader_artifacts,
         inputs.geometry,
@@ -335,7 +412,9 @@ def test_declared_source_artifact_drift_is_detected_per_call(tmp_path: Path) -> 
         ),
     )
     assert SafetyMapBuilder(store).build(request).status == "safety_setup_completed"
-    policy = SafetyPolicy(SafetyArtifactRepository(store))
+    policy = SafetyPolicy(
+        SafetyArtifactRepository(store), authority_verifier=lambda _artifacts: None
+    )
     assert policy.current_aggregate("board_a")
 
     artifact.write_text("v2", encoding="utf-8")
@@ -355,7 +434,11 @@ def test_live_fingerprint_inputs_are_recomputed_on_every_write_check(tmp_path: P
         calls.append(board_id)
         return current["value"]
 
-    policy = SafetyPolicy(persisted.repository, live_inputs=live)
+    policy = SafetyPolicy(
+        persisted.repository,
+        live_inputs=live,
+        authority_verifier=persisted.authority_verifier,
+    )
     policy.current_aggregate("board_a")
     policy.current_aggregate("board_a")
     assert calls == ["board_a", "board_a"]

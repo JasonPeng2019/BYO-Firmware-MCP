@@ -424,6 +424,10 @@ def test_modular_backend_surface_has_no_global_session_escape_path() -> None:
         "write_memory",
     }
     assert set(server.flash_tool_handlers) == {"flash_application", "flash_bootloader"}
-    assert set(server.serial_tool_handlers) == {"read_serial", "write_serial"}
+    assert set(server.serial_tool_handlers) == {
+        "read_serial",
+        "write_serial",
+        "serial_exchange",
+    }
     assert set(server.breakpoint_tool_handlers) == {"set_breakpoint", "remove_breakpoint"}
     assert set(server.misc_tool_handlers) == {"wait"}

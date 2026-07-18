@@ -1,0 +1,9 @@
+{"name":"Load profile and safety evidence","outcome":"passed","recorded_at":"2026-07-17T20:40:54.612291Z","step":1}
+{"name":"Re-enumerate probes and serial ports","outcome":"passed","recorded_at":"2026-07-17T20:40:54.616290Z","step":2}
+{"name":"Resolve current hardware and attachment cache","outcome":"passed","recorded_at":"2026-07-17T20:40:54.618832Z","step":3}
+{"name":"Confirm built-in or pinned target support","outcome":"passed","recorded_at":"2026-07-17T20:40:54.622860Z","step":4}
+{"name":"Connect and verify target compatibility","outcome":"passed","recorded_at":"2026-07-17T20:40:54.625207Z","step":5}
+{"name":"Run configured safe memory and identity checks","outcome":"passed","recorded_at":"2026-07-17T20:40:54.627236Z","step":6}
+{"name":"Run bounded configured serial check","outcome":"not_configured","recorded_at":"2026-07-17T20:40:54.630244Z","step":7}
+{"name":"Confirm safety-map consistency","outcome":"passed","recorded_at":"2026-07-17T20:40:54.632243Z","step":8}
+{"name":"Stamp validated session","outcome":"passed","recorded_at":"2026-07-17T20:40:54.634244Z","step":9}

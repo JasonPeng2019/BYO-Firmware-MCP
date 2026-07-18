@@ -701,7 +701,7 @@
                 "line": 50
               }
             ],
-            "line": 49,
+            "line": 53,
             "node_id": "tests/test_initialization_handshake.py::test_handshake_is_visible_at_server_run_start",
             "raises_contexts": 0
           },
@@ -734,7 +734,7 @@
                 "line": 92
               }
             ],
-            "line": 80,
+            "line": 84,
             "node_id": "tests/test_initialization_handshake.py::test_in_process_client_lists_and_calls_handshake_before_hardware",
             "raises_contexts": 0
           },
@@ -757,7 +757,7 @@
                 "line": 115
               }
             ],
-            "line": 101,
+            "line": 113,
             "node_id": "tests/test_initialization_handshake.py::test_repeated_handshake_is_side_effect_free",
             "raises_contexts": 0
           },
@@ -800,7 +800,7 @@
                 "line": 176
               }
             ],
-            "line": 141,
+            "line": 153,
             "node_id": "tests/test_initialization_handshake.py::test_fresh_interpreter_restart_has_new_empty_server_run",
             "raises_contexts": 0
           },
@@ -911,7 +911,7 @@
                 "line": 50
               }
             ],
-            "line": 49,
+            "line": 53,
             "node_id": "tests/test_initialization_handshake.py::test_handshake_is_visible_at_server_run_start",
             "raises_contexts": 0
           },
@@ -944,7 +944,7 @@
                 "line": 92
               }
             ],
-            "line": 80,
+            "line": 84,
             "node_id": "tests/test_initialization_handshake.py::test_in_process_client_lists_and_calls_handshake_before_hardware",
             "raises_contexts": 0
           },
@@ -967,7 +967,7 @@
                 "line": 115
               }
             ],
-            "line": 101,
+            "line": 113,
             "node_id": "tests/test_initialization_handshake.py::test_repeated_handshake_is_side_effect_free",
             "raises_contexts": 0
           },
@@ -1010,7 +1010,7 @@
                 "line": 176
               }
             ],
-            "line": 141,
+            "line": 153,
             "node_id": "tests/test_initialization_handshake.py::test_fresh_interpreter_restart_has_new_empty_server_run",
             "raises_contexts": 0
           },
@@ -1121,7 +1121,7 @@
                 "line": 50
               }
             ],
-            "line": 49,
+            "line": 53,
             "node_id": "tests/test_initialization_handshake.py::test_handshake_is_visible_at_server_run_start",
             "raises_contexts": 0
           },
@@ -1154,7 +1154,7 @@
                 "line": 92
               }
             ],
-            "line": 80,
+            "line": 84,
             "node_id": "tests/test_initialization_handshake.py::test_in_process_client_lists_and_calls_handshake_before_hardware",
             "raises_contexts": 0
           },
@@ -1177,7 +1177,7 @@
                 "line": 115
               }
             ],
-            "line": 101,
+            "line": 113,
             "node_id": "tests/test_initialization_handshake.py::test_repeated_handshake_is_side_effect_free",
             "raises_contexts": 0
           },
@@ -1220,7 +1220,7 @@
                 "line": 176
               }
             ],
-            "line": 141,
+            "line": 153,
             "node_id": "tests/test_initialization_handshake.py::test_fresh_interpreter_restart_has_new_empty_server_run",
             "raises_contexts": 0
           },
@@ -1331,7 +1331,7 @@
                 "line": 50
               }
             ],
-            "line": 49,
+            "line": 53,
             "node_id": "tests/test_initialization_handshake.py::test_handshake_is_visible_at_server_run_start",
             "raises_contexts": 0
           },
@@ -1364,7 +1364,7 @@
                 "line": 92
               }
             ],
-            "line": 80,
+            "line": 84,
             "node_id": "tests/test_initialization_handshake.py::test_in_process_client_lists_and_calls_handshake_before_hardware",
             "raises_contexts": 0
           },
@@ -1387,7 +1387,7 @@
                 "line": 115
               }
             ],
-            "line": 101,
+            "line": 113,
             "node_id": "tests/test_initialization_handshake.py::test_repeated_handshake_is_side_effect_free",
             "raises_contexts": 0
           },
@@ -1430,7 +1430,7 @@
                 "line": 176
               }
             ],
-            "line": 141,
+            "line": 153,
             "node_id": "tests/test_initialization_handshake.py::test_fresh_interpreter_restart_has_new_empty_server_run",
             "raises_contexts": 0
           },
@@ -2992,7 +2992,7 @@
                 "line": 172
               }
             ],
-            "line": 137,
+            "line": 144,
             "node_id": "tests/test_m5_surface_contract.py::test_m5_in_process_surface_is_exact_and_every_hidden_handler_is_locked",
             "raises_contexts": 0
           }
@@ -3103,7 +3103,7 @@
                 "line": 172
               }
             ],
-            "line": 137,
+            "line": 144,
             "node_id": "tests/test_m5_surface_contract.py::test_m5_in_process_surface_is_exact_and_every_hidden_handler_is_locked",
             "raises_contexts": 0
           }
@@ -3214,7 +3214,7 @@
                 "line": 172
               }
             ],
-            "line": 137,
+            "line": 144,
             "node_id": "tests/test_m5_surface_contract.py::test_m5_in_process_surface_is_exact_and_every_hidden_handler_is_locked",
             "raises_contexts": 0
           }
@@ -3325,7 +3325,7 @@
                 "line": 172
               }
             ],
-            "line": 137,
+            "line": 144,
             "node_id": "tests/test_m5_surface_contract.py::test_m5_in_process_surface_is_exact_and_every_hidden_handler_is_locked",
             "raises_contexts": 0
           }
@@ -3436,7 +3436,7 @@
                 "line": 172
               }
             ],
-            "line": 137,
+            "line": 144,
             "node_id": "tests/test_m5_surface_contract.py::test_m5_in_process_surface_is_exact_and_every_hidden_handler_is_locked",
             "raises_contexts": 0
           }
@@ -3547,7 +3547,7 @@
                 "line": 172
               }
             ],
-            "line": 137,
+            "line": 144,
             "node_id": "tests/test_m5_surface_contract.py::test_m5_in_process_surface_is_exact_and_every_hidden_handler_is_locked",
             "raises_contexts": 0
           }
@@ -6200,7 +6200,7 @@
                 "line": 139
               }
             ],
-            "line": 92,
+            "line": 90,
             "node_id": "tests/test_setup_workflow.py::test_failed_setup_gets_one_fix_with_fresh_preflight_and_first_unverified_resume",
             "raises_contexts": 2
           },
@@ -6263,7 +6263,7 @@
                 "line": 324
               }
             ],
-            "line": 300,
+            "line": 307,
             "node_id": "tests/test_setup_workflow.py::test_known_unknown_incomplete_and_mismatch_name_routes_do_not_mutate_profiles",
             "raises_contexts": 0
           }
@@ -6379,7 +6379,7 @@
                 "line": 139
               }
             ],
-            "line": 92,
+            "line": 90,
             "node_id": "tests/test_setup_workflow.py::test_failed_setup_gets_one_fix_with_fresh_preflight_and_first_unverified_resume",
             "raises_contexts": 2
           },
@@ -6442,7 +6442,7 @@
                 "line": 324
               }
             ],
-            "line": 300,
+            "line": 307,
             "node_id": "tests/test_setup_workflow.py::test_known_unknown_incomplete_and_mismatch_name_routes_do_not_mutate_profiles",
             "raises_contexts": 0
           }
@@ -6560,7 +6560,7 @@
                 "line": 139
               }
             ],
-            "line": 92,
+            "line": 90,
             "node_id": "tests/test_setup_workflow.py::test_failed_setup_gets_one_fix_with_fresh_preflight_and_first_unverified_resume",
             "raises_contexts": 2
           },
@@ -6623,7 +6623,7 @@
                 "line": 324
               }
             ],
-            "line": 300,
+            "line": 307,
             "node_id": "tests/test_setup_workflow.py::test_known_unknown_incomplete_and_mismatch_name_routes_do_not_mutate_profiles",
             "raises_contexts": 0
           }
@@ -6741,7 +6741,7 @@
                 "line": 139
               }
             ],
-            "line": 92,
+            "line": 90,
             "node_id": "tests/test_setup_workflow.py::test_failed_setup_gets_one_fix_with_fresh_preflight_and_first_unverified_resume",
             "raises_contexts": 2
           },
@@ -6804,7 +6804,7 @@
                 "line": 324
               }
             ],
-            "line": 300,
+            "line": 307,
             "node_id": "tests/test_setup_workflow.py::test_known_unknown_incomplete_and_mismatch_name_routes_do_not_mutate_profiles",
             "raises_contexts": 0
           }
@@ -6920,7 +6920,7 @@
                 "line": 139
               }
             ],
-            "line": 92,
+            "line": 90,
             "node_id": "tests/test_setup_workflow.py::test_failed_setup_gets_one_fix_with_fresh_preflight_and_first_unverified_resume",
             "raises_contexts": 2
           },
@@ -6983,7 +6983,7 @@
                 "line": 324
               }
             ],
-            "line": 300,
+            "line": 307,
             "node_id": "tests/test_setup_workflow.py::test_known_unknown_incomplete_and_mismatch_name_routes_do_not_mutate_profiles",
             "raises_contexts": 0
           }
@@ -7101,7 +7101,7 @@
                 "line": 139
               }
             ],
-            "line": 92,
+            "line": 90,
             "node_id": "tests/test_setup_workflow.py::test_failed_setup_gets_one_fix_with_fresh_preflight_and_first_unverified_resume",
             "raises_contexts": 2
           },
@@ -7164,7 +7164,7 @@
                 "line": 324
               }
             ],
-            "line": 300,
+            "line": 307,
             "node_id": "tests/test_setup_workflow.py::test_known_unknown_incomplete_and_mismatch_name_routes_do_not_mutate_profiles",
             "raises_contexts": 0
           }
@@ -7280,7 +7280,7 @@
                 "line": 139
               }
             ],
-            "line": 92,
+            "line": 90,
             "node_id": "tests/test_setup_workflow.py::test_failed_setup_gets_one_fix_with_fresh_preflight_and_first_unverified_resume",
             "raises_contexts": 2
           },
@@ -7343,7 +7343,7 @@
                 "line": 324
               }
             ],
-            "line": 300,
+            "line": 307,
             "node_id": "tests/test_setup_workflow.py::test_known_unknown_incomplete_and_mismatch_name_routes_do_not_mutate_profiles",
             "raises_contexts": 0
           }
@@ -8062,7 +8062,7 @@
                 "line": 87
               }
             ],
-            "line": 77,
+            "line": 85,
             "node_id": "tests/test_setup_targets.py::test_live_connect_failure_occurs_before_core_profile_commit",
             "raises_contexts": 1
           },
@@ -8146,7 +8146,7 @@
                 "line": 87
               }
             ],
-            "line": 77,
+            "line": 85,
             "node_id": "tests/test_setup_targets.py::test_live_connect_failure_occurs_before_core_profile_commit",
             "raises_contexts": 1
           },
@@ -8232,7 +8232,7 @@
                 "line": 87
               }
             ],
-            "line": 77,
+            "line": 85,
             "node_id": "tests/test_setup_targets.py::test_live_connect_failure_occurs_before_core_profile_commit",
             "raises_contexts": 1
           },
@@ -8316,7 +8316,7 @@
                 "line": 87
               }
             ],
-            "line": 77,
+            "line": 85,
             "node_id": "tests/test_setup_targets.py::test_live_connect_failure_occurs_before_core_profile_commit",
             "raises_contexts": 1
           },
@@ -8400,7 +8400,7 @@
                 "line": 87
               }
             ],
-            "line": 77,
+            "line": 85,
             "node_id": "tests/test_setup_targets.py::test_live_connect_failure_occurs_before_core_profile_commit",
             "raises_contexts": 1
           },
@@ -8484,7 +8484,7 @@
                 "line": 87
               }
             ],
-            "line": 77,
+            "line": 85,
             "node_id": "tests/test_setup_targets.py::test_live_connect_failure_occurs_before_core_profile_commit",
             "raises_contexts": 1
           },
@@ -8583,7 +8583,7 @@
                 "line": 87
               }
             ],
-            "line": 78,
+            "line": 79,
             "node_id": "tests/test_safety_verify2.py::test_exact_agreement_produces_only_reconciled_regions",
             "raises_contexts": 0
           },
@@ -8611,7 +8611,7 @@
                 "line": 173
               }
             ],
-            "line": 159,
+            "line": 173,
             "node_id": "tests/test_safety_verify2.py::test_region_disagreement_matrix_fails_closed",
             "raises_contexts": 0
           },
@@ -8649,7 +8649,7 @@
                 "line": 240
               }
             ],
-            "line": 223,
+            "line": 237,
             "node_id": "tests/test_safety_verify2.py::test_strict_schema_rejects_allowed_ranges_unknown_fields_and_wrong_authority",
             "raises_contexts": 3
           }
@@ -8699,7 +8699,7 @@
                 "line": 87
               }
             ],
-            "line": 78,
+            "line": 79,
             "node_id": "tests/test_safety_verify2.py::test_exact_agreement_produces_only_reconciled_regions",
             "raises_contexts": 0
           },
@@ -8727,7 +8727,7 @@
                 "line": 173
               }
             ],
-            "line": 159,
+            "line": 173,
             "node_id": "tests/test_safety_verify2.py::test_region_disagreement_matrix_fails_closed",
             "raises_contexts": 0
           },
@@ -8765,7 +8765,7 @@
                 "line": 240
               }
             ],
-            "line": 223,
+            "line": 237,
             "node_id": "tests/test_safety_verify2.py::test_strict_schema_rejects_allowed_ranges_unknown_fields_and_wrong_authority",
             "raises_contexts": 3
           }
@@ -8815,7 +8815,7 @@
                 "line": 87
               }
             ],
-            "line": 78,
+            "line": 79,
             "node_id": "tests/test_safety_verify2.py::test_exact_agreement_produces_only_reconciled_regions",
             "raises_contexts": 0
           },
@@ -8843,7 +8843,7 @@
                 "line": 173
               }
             ],
-            "line": 159,
+            "line": 173,
             "node_id": "tests/test_safety_verify2.py::test_region_disagreement_matrix_fails_closed",
             "raises_contexts": 0
           },
@@ -8881,7 +8881,7 @@
                 "line": 240
               }
             ],
-            "line": 223,
+            "line": 237,
             "node_id": "tests/test_safety_verify2.py::test_strict_schema_rejects_allowed_ranges_unknown_fields_and_wrong_authority",
             "raises_contexts": 3
           }
@@ -8931,7 +8931,7 @@
                 "line": 87
               }
             ],
-            "line": 78,
+            "line": 79,
             "node_id": "tests/test_safety_verify2.py::test_exact_agreement_produces_only_reconciled_regions",
             "raises_contexts": 0
           },
@@ -8959,7 +8959,7 @@
                 "line": 173
               }
             ],
-            "line": 159,
+            "line": 173,
             "node_id": "tests/test_safety_verify2.py::test_region_disagreement_matrix_fails_closed",
             "raises_contexts": 0
           },
@@ -8997,7 +8997,7 @@
                 "line": 240
               }
             ],
-            "line": 223,
+            "line": 237,
             "node_id": "tests/test_safety_verify2.py::test_strict_schema_rejects_allowed_ranges_unknown_fields_and_wrong_authority",
             "raises_contexts": 3
           }
@@ -9047,7 +9047,7 @@
                 "line": 87
               }
             ],
-            "line": 78,
+            "line": 79,
             "node_id": "tests/test_safety_verify2.py::test_exact_agreement_produces_only_reconciled_regions",
             "raises_contexts": 0
           },
@@ -9075,7 +9075,7 @@
                 "line": 173
               }
             ],
-            "line": 159,
+            "line": 173,
             "node_id": "tests/test_safety_verify2.py::test_region_disagreement_matrix_fails_closed",
             "raises_contexts": 0
           },
@@ -9113,7 +9113,7 @@
                 "line": 240
               }
             ],
-            "line": 223,
+            "line": 237,
             "node_id": "tests/test_safety_verify2.py::test_strict_schema_rejects_allowed_ranges_unknown_fields_and_wrong_authority",
             "raises_contexts": 3
           }
@@ -9163,7 +9163,7 @@
                 "line": 87
               }
             ],
-            "line": 78,
+            "line": 79,
             "node_id": "tests/test_safety_verify2.py::test_exact_agreement_produces_only_reconciled_regions",
             "raises_contexts": 0
           },
@@ -9191,7 +9191,7 @@
                 "line": 173
               }
             ],
-            "line": 159,
+            "line": 173,
             "node_id": "tests/test_safety_verify2.py::test_region_disagreement_matrix_fails_closed",
             "raises_contexts": 0
           },
@@ -9229,7 +9229,7 @@
                 "line": 240
               }
             ],
-            "line": 223,
+            "line": 237,
             "node_id": "tests/test_safety_verify2.py::test_strict_schema_rejects_allowed_ranges_unknown_fields_and_wrong_authority",
             "raises_contexts": 3
           }
@@ -9315,7 +9315,7 @@
                 "line": 183
               }
             ],
-            "line": 169,
+            "line": 189,
             "node_id": "tests/test_safety_refresh.py::test_drift_routing_matrix_never_uses_refresh_for_anchor_or_structural_changes",
             "raises_contexts": 0
           }
@@ -9401,7 +9401,7 @@
                 "line": 183
               }
             ],
-            "line": 169,
+            "line": 189,
             "node_id": "tests/test_safety_refresh.py::test_drift_routing_matrix_never_uses_refresh_for_anchor_or_structural_changes",
             "raises_contexts": 0
           }
@@ -9487,7 +9487,7 @@
                 "line": 183
               }
             ],
-            "line": 169,
+            "line": 189,
             "node_id": "tests/test_safety_refresh.py::test_drift_routing_matrix_never_uses_refresh_for_anchor_or_structural_changes",
             "raises_contexts": 0
           }
@@ -9573,7 +9573,7 @@
                 "line": 183
               }
             ],
-            "line": 169,
+            "line": 189,
             "node_id": "tests/test_safety_refresh.py::test_drift_routing_matrix_never_uses_refresh_for_anchor_or_structural_changes",
             "raises_contexts": 0
           }
@@ -9659,7 +9659,7 @@
                 "line": 183
               }
             ],
-            "line": 169,
+            "line": 189,
             "node_id": "tests/test_safety_refresh.py::test_drift_routing_matrix_never_uses_refresh_for_anchor_or_structural_changes",
             "raises_contexts": 0
           }
@@ -9745,7 +9745,7 @@
                 "line": 183
               }
             ],
-            "line": 169,
+            "line": 189,
             "node_id": "tests/test_safety_refresh.py::test_drift_routing_matrix_never_uses_refresh_for_anchor_or_structural_changes",
             "raises_contexts": 0
           }
@@ -11020,7 +11020,7 @@
                 "line": 305
               }
             ],
-            "line": 225,
+            "line": 297,
             "node_id": "tests/test_safety_enforcement.py::test_ac_14_4_and_14_10_crafted_flash_rejection_has_zero_backend_calls",
             "raises_contexts": 1
           },
@@ -11053,7 +11053,7 @@
                 "line": 488
               }
             ],
-            "line": 380,
+            "line": 463,
             "node_id": "tests/test_safety_enforcement.py::test_backend_mutations_are_never_called_after_containment_refusal",
             "raises_contexts": 4
           },
@@ -11141,7 +11141,7 @@
                 "line": 305
               }
             ],
-            "line": 225,
+            "line": 297,
             "node_id": "tests/test_safety_enforcement.py::test_ac_14_4_and_14_10_crafted_flash_rejection_has_zero_backend_calls",
             "raises_contexts": 1
           },
@@ -11174,7 +11174,7 @@
                 "line": 488
               }
             ],
-            "line": 380,
+            "line": 463,
             "node_id": "tests/test_safety_enforcement.py::test_backend_mutations_are_never_called_after_containment_refusal",
             "raises_contexts": 4
           },
@@ -11260,7 +11260,7 @@
                 "line": 305
               }
             ],
-            "line": 225,
+            "line": 297,
             "node_id": "tests/test_safety_enforcement.py::test_ac_14_4_and_14_10_crafted_flash_rejection_has_zero_backend_calls",
             "raises_contexts": 1
           },
@@ -11293,7 +11293,7 @@
                 "line": 488
               }
             ],
-            "line": 380,
+            "line": 463,
             "node_id": "tests/test_safety_enforcement.py::test_backend_mutations_are_never_called_after_containment_refusal",
             "raises_contexts": 4
           },
@@ -11381,7 +11381,7 @@
                 "line": 305
               }
             ],
-            "line": 225,
+            "line": 297,
             "node_id": "tests/test_safety_enforcement.py::test_ac_14_4_and_14_10_crafted_flash_rejection_has_zero_backend_calls",
             "raises_contexts": 1
           },
@@ -11414,7 +11414,7 @@
                 "line": 488
               }
             ],
-            "line": 380,
+            "line": 463,
             "node_id": "tests/test_safety_enforcement.py::test_backend_mutations_are_never_called_after_containment_refusal",
             "raises_contexts": 4
           },
@@ -11502,7 +11502,7 @@
                 "line": 305
               }
             ],
-            "line": 225,
+            "line": 297,
             "node_id": "tests/test_safety_enforcement.py::test_ac_14_4_and_14_10_crafted_flash_rejection_has_zero_backend_calls",
             "raises_contexts": 1
           },
@@ -11535,7 +11535,7 @@
                 "line": 488
               }
             ],
-            "line": 380,
+            "line": 463,
             "node_id": "tests/test_safety_enforcement.py::test_backend_mutations_are_never_called_after_containment_refusal",
             "raises_contexts": 4
           },
@@ -11621,7 +11621,7 @@
                 "line": 305
               }
             ],
-            "line": 225,
+            "line": 297,
             "node_id": "tests/test_safety_enforcement.py::test_ac_14_4_and_14_10_crafted_flash_rejection_has_zero_backend_calls",
             "raises_contexts": 1
           },
@@ -11654,7 +11654,7 @@
                 "line": 488
               }
             ],
-            "line": 380,
+            "line": 463,
             "node_id": "tests/test_safety_enforcement.py::test_backend_mutations_are_never_called_after_containment_refusal",
             "raises_contexts": 4
           },
@@ -11742,7 +11742,7 @@
                 "line": 305
               }
             ],
-            "line": 225,
+            "line": 297,
             "node_id": "tests/test_safety_enforcement.py::test_ac_14_4_and_14_10_crafted_flash_rejection_has_zero_backend_calls",
             "raises_contexts": 1
           },
@@ -11775,7 +11775,7 @@
                 "line": 488
               }
             ],
-            "line": 380,
+            "line": 463,
             "node_id": "tests/test_safety_enforcement.py::test_backend_mutations_are_never_called_after_containment_refusal",
             "raises_contexts": 4
           },
@@ -11861,7 +11861,7 @@
                 "line": 305
               }
             ],
-            "line": 225,
+            "line": 297,
             "node_id": "tests/test_safety_enforcement.py::test_ac_14_4_and_14_10_crafted_flash_rejection_has_zero_backend_calls",
             "raises_contexts": 1
           },
@@ -11894,7 +11894,7 @@
                 "line": 488
               }
             ],
-            "line": 380,
+            "line": 463,
             "node_id": "tests/test_safety_enforcement.py::test_backend_mutations_are_never_called_after_containment_refusal",
             "raises_contexts": 4
           },
@@ -11982,7 +11982,7 @@
                 "line": 305
               }
             ],
-            "line": 225,
+            "line": 297,
             "node_id": "tests/test_safety_enforcement.py::test_ac_14_4_and_14_10_crafted_flash_rejection_has_zero_backend_calls",
             "raises_contexts": 1
           },
@@ -12015,7 +12015,7 @@
                 "line": 488
               }
             ],
-            "line": 380,
+            "line": 463,
             "node_id": "tests/test_safety_enforcement.py::test_backend_mutations_are_never_called_after_containment_refusal",
             "raises_contexts": 4
           },
@@ -12101,7 +12101,7 @@
                 "line": 305
               }
             ],
-            "line": 225,
+            "line": 297,
             "node_id": "tests/test_safety_enforcement.py::test_ac_14_4_and_14_10_crafted_flash_rejection_has_zero_backend_calls",
             "raises_contexts": 1
           },
@@ -12134,7 +12134,7 @@
                 "line": 488
               }
             ],
-            "line": 380,
+            "line": 463,
             "node_id": "tests/test_safety_enforcement.py::test_backend_mutations_are_never_called_after_containment_refusal",
             "raises_contexts": 4
           },
@@ -12222,7 +12222,7 @@
                 "line": 305
               }
             ],
-            "line": 225,
+            "line": 297,
             "node_id": "tests/test_safety_enforcement.py::test_ac_14_4_and_14_10_crafted_flash_rejection_has_zero_backend_calls",
             "raises_contexts": 1
           },
@@ -12255,7 +12255,7 @@
                 "line": 488
               }
             ],
-            "line": 380,
+            "line": 463,
             "node_id": "tests/test_safety_enforcement.py::test_backend_mutations_are_never_called_after_containment_refusal",
             "raises_contexts": 4
           },
@@ -16762,7 +16762,7 @@
                 "line": 488
               }
             ],
-            "line": 380,
+            "line": 463,
             "node_id": "tests/test_safety_enforcement.py::test_backend_mutations_are_never_called_after_containment_refusal",
             "raises_contexts": 4
           }

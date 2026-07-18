@@ -177,6 +177,21 @@ class SetupResponse:
     report_paths: ReportPaths
 
     def to_payload(self) -> dict[str, Any]:
+        accepted_response: dict[str, Any] | None = None
+        if self.status == "setup_needs_user_input" and self.choices:
+            accepted_response = {
+                "tool": "continue_setup",
+                "response": {"choice_id": "one exact choice_id returned above"},
+            }
+        elif self.status == "setup_research_required":
+            accepted_response = {
+                "tool": "continue_setup",
+                "response": {
+                    "pyocd_target": "one exact official target identifier",
+                    "evidence": [{"source": "official source", "claim": "target-to-part claim"}],
+                    "reasoning_summary": "why the target exactly matches the immutable MCU",
+                },
+            }
         return {
             "status": self.status,
             "continuation_id": self.continuation_id,
@@ -185,9 +200,7 @@ class SetupResponse:
             "observed": {
                 "attempt_id": self.attempt_id,
                 "first_unverified_phase": (
-                    self.first_unverified_phase.value
-                    if self.first_unverified_phase
-                    else None
+                    self.first_unverified_phase.value if self.first_unverified_phase else None
                 ),
                 "phase_records": [
                     {
@@ -206,7 +219,7 @@ class SetupResponse:
                 "Do not guess target, package, hardware, or safety facts.",
             ],
             "rejected_candidates": [],
-            "accepted_response": None,
+            "accepted_response": accepted_response,
             "validation_plan": [record.phase.value for record in self.phase_records],
             "first_unverified_phase": (
                 self.first_unverified_phase.value if self.first_unverified_phase else None
@@ -240,8 +253,8 @@ def _default_phase_handler(phase: SetupPhase) -> SetupPhaseHandler:
             return SetupPhaseOutcome.stop(
                 "setup_research_required",
                 f"setup/{phase.value}-interface-pending",
-                "Continue with the dedicated target and package research interface; do not "
-                "invent or ask the user for a debug-target identifier.",
+                "Use continue_setup with exactly the official-source target or package response "
+                "schema returned here; do not invent or ask the user for a debug-target identifier.",
             )
         return SetupPhaseOutcome.stop(
             "setup_unresolved",
@@ -289,9 +302,7 @@ class SetupWorkflow:
             }
         }
         self.on_allowance_closed = on_allowance_closed or (lambda board_id, reason: None)
-        self.on_cache_confirmation = on_cache_confirmation or (
-            lambda user_input, decision: None
-        )
+        self.on_cache_confirmation = on_cache_confirmation or (lambda user_input, decision: None)
         self.max_plan_cycles_per_board = max_plan_cycles_per_board
         self._allowances: dict[str, _SetupAllowance] = {}
         self._current_allowance_by_board: dict[str, str] = {}
@@ -466,7 +477,9 @@ class SetupWorkflow:
             _relay_prompt(prompt),
             choices,
             resume_phase,
-            tuple(state.phase_records[phase] for phase in PHASE_ORDER if phase in state.phase_records),
+            tuple(
+                state.phase_records[phase] for phase in PHASE_ORDER if phase in state.phase_records
+            ),
             report_paths,
         )
         with self._guard:
@@ -625,7 +638,9 @@ class SetupWorkflow:
         repair: bool,
     ) -> ReportPaths:
         selected_hardware = {
-            "probe": asdict(decision.selected_probe) if decision and decision.selected_probe else None,
+            "probe": asdict(decision.selected_probe)
+            if decision and decision.selected_probe
+            else None,
             "serial": (
                 asdict(decision.selected_serial) if decision and decision.selected_serial else None
             ),
@@ -641,9 +656,7 @@ class SetupWorkflow:
             "terminal_status": status,
             "inventories": decision.observed if decision else {},
             "selected_hardware": selected_hardware,
-            "cache_outcome": (
-                decision.observed.get("cache", {}) if decision is not None else {}
-            ),
+            "cache_outcome": (decision.observed.get("cache", {}) if decision is not None else {}),
             "target_resolution": {
                 "selected_target": decision.selected_target if decision else None,
                 "research_required": decision.research_required if decision else False,
@@ -689,6 +702,25 @@ class SetupWorkflow:
             if state is None:
                 raise SetupWorkflowError(f"Unknown continuation '{continuation_id}'")
             self._close_allowance_locked(state.allowance_id, "setup workflow cancelled")
+
+    def continuation_context(
+        self, continuation_id: str
+    ) -> tuple[SetupUserInput, SetupTerminalStatus | None, PreflightDecision | None]:
+        """Return the immutable input and last routing result for one live continuation.
+
+        The public setup continuation tool uses this read-only view to validate a friendly
+        selection or research reply.  It deliberately does not expose the allowance, mutate
+        phase records, or turn a continuation token into authorization.
+        """
+
+        with self._guard:
+            state = self._states.get(continuation_id)
+            if state is None:
+                raise SetupWorkflowError(f"Unknown continuation '{continuation_id}'")
+            allowance = self._require_open_allowance_locked(state.allowance_id)
+            if allowance.board_id != state.user_input.board_id:
+                raise SetupWorkflowError("Setup continuation board scope is inconsistent")
+            return state.user_input, state.last_status, state.last_preflight
 
     def disconnect(self, connection_id: str) -> None:
         with self._guard:
@@ -823,21 +855,14 @@ def route_board_name(
                 "the physical assignment; do not rewrite, rename, or silently reassign the profile."
             ),
         )
-    if profile.setup_status in set(TERMINAL_SETUP_STATUSES) - {"setup_completed"}:
-        return AssignmentRoute(
-            "repair",
-            profile.board_id,
-            _relay_prompt(
-                "The stored profile has an incomplete or failed setup. Continue through the "
-                "repair plan at its first unverified phase."
-            ),
-        )
     return AssignmentRoute(
         "validate",
         profile.board_id,
         _relay_prompt(
-            "The familiar name matches one stored profile. Validate the attached hardware "
-            "against it; never route it through first-time setup."
+            "The familiar name matches one stored profile. Validate the attached hardware first, "
+            "even when stored setup evidence is incomplete or previously failed. Follow only the "
+            "specific repair, safety, attachment, or retry remedy returned by validation; never "
+            "route it directly through first-time setup."
         ),
     )
 

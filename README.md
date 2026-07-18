@@ -42,15 +42,37 @@ Checkout utilities include:
 uv run --locked python host_bootstrap.py --help
 uv run --locked python stage0_check.py --help
 uv run --locked python scripts/migrate_boards_to_firm.py --help
+uv run --locked python scripts/run_fresh_workspace_e2e.py --help
 uv run --locked pyocd-pack-repair --help
 uv run --locked pyocd-zephyr-build --help
 ```
+
+After setup validation, `get_setup_status` returns advisory build guidance for
+a known MCU, including the exact Zephyr board target and a directly executable
+`<server-python> -m pyocd_debug_mcp.zephyr_build ...` command that does not
+depend on ambient `PATH`. The helper automatically uses a short scratch path
+for generated files when a Windows checkout path would exceed west/CMake
+limits. Final ELF/map artifacts still require `board_safety_refresh`; build
+guidance never grants memory authority.
+
+For a brand-new artifact root, `scripts/run_fresh_workspace_e2e.py` is the
+checkout-local setup-only orchestrator. It takes the exact board, MCU, probe,
+UART, datasheet, and artifact-root identities, requires the explicit
+`--authorize-setup` flag, drives the real MCP stdio handshake/plan/setup/
+validation sequence, and writes fixed-path machine-readable evidence. It has
+no callback, shell command, code-generation, build, flash, or UART-write
+option. Any terminal status other than completed setup plus current-run
+readiness stops the process before a coding workflow can begin.
 
 ## Tool surface
 
 Call `initialization_handshake` first. The live `tools/list` response is the
 authoritative advertised surface; visibility can change after plan/setup calls.
 A visible tool is never proof of authorization.
+After a plan is accepted, dynamic clients should use its newly exposed direct
+action. Clients with a static function binding can use the exact returned
+single-child `action_batch` fallback; it follows the identical guarded dispatch
+path and is never permission to invent hidden calls.
 
 Always-advertised operational tools cover:
 
@@ -59,8 +81,10 @@ Always-advertised operational tools cover:
   `read_memory_symbol`;
 - ordinary execution: `halt`, `resume`, `step`, `reset_and_run`,
   `remove_breakpoint`, and bounded `wait`;
-- setup and safety: `load_setup_tool`, `board_setup-plan`,
-  `board_safety_setup`, `board_safety_refresh`, and `board_validate`;
+- setup and safety: familiar-name `setup_overview`, `load_setup_tool`,
+  setup-first `board_setup-plan`, strict `continue_setup`,
+  `board_safety_setup`, build-aware `board_safety_refresh`, `board_validate`,
+  and the non-authoritative `get_setup_status` readiness barrier;
 - orchestration: `action_batch`; and
 - the `*-plan` tools for guarded actions.
 
@@ -70,12 +94,21 @@ Guarded actions are registered but hidden until their exact plan unlocks them:
   `reset_and_halt`, `write_cpu_register`, and `set_execution_state`;
 - memory/register/debug: `read_memory_address`, `write_memory`,
   `register_write`, and `set_breakpoint`;
-- serial and flash: `read_serial`, `write_serial`, `flash_application`, and
+- serial and flash: `read_serial`, `write_serial`, single-open
+  `serial_exchange`, `flash_application`, and
   permission-locked `flash_bootloader`;
 - destructive recovery: `target_unlock`, which requires fresh one-time
   approval and leaves the validation gate closed; and
 - setup mutation: `board_setup` and `board_fix_setup`, exposed only through
   the setup loader and plan workflow.
+
+After the handshake, ask the user only for familiar board names and pass them
+to `setup_overview`. Every matching YAML routes to validation first; unknown
+names route to setup, and validation may return a specific repair. The response includes any
+server-generated identifiers for agent use. If setup returns a friendly choice
+or research request, relay its prose and submit exactly its `accepted_response`
+through `continue_setup`; do not invent a target or ask the user for internal
+IDs.
 
 Superseded unified reset/core-register/memory/flash tools and
 `unlock_recover` are absent. Exact schemas and status payload behavior are in
@@ -145,10 +178,15 @@ process-local session implementation; durable reports are evidence only. The
 optional R11 path is a Codex-specific benchmark and does not define ordinary
 server behavior.
 
+Build/setup guidance is local-first for heavy dependencies. Agents are told to
+reuse validated SDKs, RTOS trees, toolchains, packs, and large libraries from
+bounded standard locationsâ€”including NCS/Zephyr and STM32CubeIDE-provided
+STM32Cube/ThreadXâ€”before using a managed network fallback. Discovery validates
+versions and executable tools and never recursively scans a whole disk.
+
 ## Pending verification
 
 Fresh hardware/client acceptance remains separately scoped in
 [docs/verification.md](docs/verification.md), including the exact
-`nrf52833dk` and `nucleo_l476rg` pair, alternate `nrf52840dk` evidence,
-cross-host proof, and any authorized destructive work. Publication licensing
+`nrf52833dk` and `nucleo_l476rg` pair, cross-host proof, and any authorized destructive work. Publication licensing
 and independent process-tree cleanup evidence also remain human/bench gates.

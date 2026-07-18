@@ -45,6 +45,11 @@ class SetupUserInput:
     mcu_part_number: str
     serial_baudrate: int
     requires_uart: bool = True
+    board_type: str = ""
+    datasheet_path: str = ""
+    datasheet_sha256: str = ""
+    serial_id: str = ""
+    serial_port: str = ""
 
     def __post_init__(self) -> None:
         if not _BOARD_ID.fullmatch(self.board_id):
@@ -63,6 +68,8 @@ class SetupUserInput:
             or self.serial_baudrate < 1
         ):
             raise PreflightError("serial_baudrate must be a positive integer")
+        if bool(self.serial_id.strip()) != bool(self.serial_port.strip()):
+            raise PreflightError("serial_id and serial_port must be supplied together")
 
 
 @dataclass(frozen=True, slots=True)
@@ -163,6 +170,8 @@ class PreflightInventory:
                 # Exact preservation is intentional and testable.
                 "mcu_part_number": user_input.mcu_part_number,
                 "serial_baudrate": user_input.serial_baudrate,
+                "serial_id": user_input.serial_id,
+                "serial_port": user_input.serial_port,
                 "requires_uart": user_input.requires_uart,
             },
             "probes": [asdict(item) for item in normalized.probes],
