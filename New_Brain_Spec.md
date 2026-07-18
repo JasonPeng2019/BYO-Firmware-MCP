@@ -12,7 +12,8 @@
 
 #### Server B Layer 2
 
-* Responsible for safeguards around hardware tools (safeguarded design, such as not letting agents write security bytes, and requiring user permission
+* Hardware actions that affect the board directly (flash, register/memory writes, resets, etc.)
+* Every Layer 2 action is guarded by a Layer 1 action, and enforces its own L2 hardware-safety checks (immutable/locked bytes, prohibited regions, user permission for high-risk operations)
 
 ### Structure
 
@@ -114,11 +115,11 @@ Final bootloader ELF ranges ⊆ bootloader linker FLASH region ⊆ target-report
 
 The pack confirms that the address is real programmable flash. The linker defines where your bootloader belongs.
 
-Do not let the agent provide arbitrary allowed ranges per request. The board definition should supply the ranges, while the agent selects a named operation such as `flash_application`.
+Do not let the agent provide arbitrary allowed ranges per request. The board definition should supply the ranges, while the agent selects a named operation such as `flash_bootloader`.
 
 For custom layouts, generate the policy from the project’s authoritative linker configuration during the build, then compare it with a checked-in board layout. For example:
 
-* linker-defined application range must equal board-policy application range
+* linker-defined bootloader range must equal board-policy bootloader range
 
 Then inspect the resulting ELF to ensure the linker actually produced segments inside that range.
 
@@ -137,31 +138,21 @@ For a compliant agent, this is a reasonable practical approach. Register writes 
 
 ##### Memory (RAM) Access
 
-Keep **one memory tool**, but make symbol use the default path.
-
-```text
-memory_access(
-  action: "read" | "write" | “find_symbols”,
-  symbol?: string,
-  address?: integer,
-  value?: ...,
-  allow_address_fallback?: boolean
-)
-```
+Memory access is split into distinct tools rather than one dispatcher: `find_symbol`, `read_memory_symbol`, `read_memory_address`, and `write_memory`. Symbol access is the default path; raw-address access requires an explicit override parameter and is limited to RAM.
 
 Behavior:
 
-1. When given a symbol, resolve it from the ELF/DWARF and access that variable.
-2. When given an address without `allow_address_fallback`, reject it with:
+1. Symbol tools (`find_symbol`, `read_memory_symbol`, and symbol-mode `write_memory`) resolve the symbol from the ELF/DWARF and access that variable.
+2. `read_memory_address` / `write_memory` reject a raw address supplied without `allow_address_fallback` with:
 
    > “Try a symbol first. Provide a symbol name or explicitly request address fallback.”
 
 3. Raw-address access requires:
    * `allow_address_fallback: true`
    * a brief reason symbols are unsuitable
-   * normal target-reported RAM bounds checking
+   * normal target-reported RAM bounds checking (address writes are RAM-only)
 
-The tool description should tell the model:
+The tool descriptions should tell the model:
 
 ```text
 Prefer symbol access whenever source code or debug symbols identify the
@@ -169,16 +160,9 @@ intended variable. Use raw addresses only for dynamically allocated,
 pointer-derived, stack, optimized-out, or otherwise unsymbolized memory.
 ```
 
-You can also let the same tool search:
+Symbol search uses `find_symbol`, for example a query such as "motor speed".
 
-```text
-memory_access(
-  action: "find_symbols",
-  query: "motor speed"
-)
-```
-
-So it supports:
+So the surface supports:
 
 ```text
 find_symbol
@@ -1330,7 +1314,7 @@ Parameters without defaults are required. Every tool returns a string.
 
 3. `get_board_info()`
 
-   Returns the active board’s target, MCU/probe family, recovery policy, silicon ID expectation, UART baud rate, and smoke-test address.
+   Returns the active board’s target, MCU/probe family, recovery policy, silicon ID expectation, UART baud rate, and test-read address (`test_read_address`).
 
 #### Core execution
 
@@ -1741,6 +1725,8 @@ max_calls_buffer = 0
 
 The permission is consumed by the one accepted underlying call.
 
+Exception — paired setup actions: a `Board_setup-plan` authorizes two paired fixed-`1,0` actions (one `Board_setup` and one `Board_fix_setup`) under a single grant, because they are two phases of one setup workflow. Under one-time permission this means one-time for *each* of the two paired actions; each is still consumed exactly once, and the `Board_fix_setup` call stays available for the first repair attempt without re-prompting the user. Any further setup or repair attempt requires a replacement plan, and under one-time permission that replacement requires a fresh user prompt.
+
 ##### Full-Session Permission
 
 After full-session permission is granted for a tool and `board_id`, later all-`NULL` responses must state that permission is already active and that `user_permission` may be left `NULL`.
@@ -1885,11 +1871,11 @@ Initialization Handshake - description that says to call it when the agent first
 1. Setup
    1. Ask the user for the board_names of the connected boards, or say “no board” if no board is connected
    2. If setup was completed in a prior session for that board_name, use board_validate to unlock the write gate.
-   3. Load the appropriate setup tool (Board_setup-process (user_permission=) [loaded details should detail both setup and fix setup, as well as explicit \*-process call for user permission], Board_safety_setup, Board_safety_refresh, Board_validate) before calling it.
+   3. Load the appropriate setup tool (Board_setup-plan (user_permission=) [loaded details should detail both setup and fix setup, as well as explicit \*-plan call for user permission], Board_safety_setup, Board_safety_refresh, Board_validate) before calling it.
 2. Prompt injection to tell agent what the context and instructions to operate the server are.
    1. Prompt Injection:
-      1. Index of the tools available (tools/list) that excludes the hidden ones, as well as what \*-process means
-      2. Instruction to use \*-process for tools that are hidden - process will provide the instructions
+      1. Index of the tools available (tools/list) that excludes the hidden ones, as well as what \*-plan means
+      2. Instruction to use \*-plan for tools that are hidden - the plan will provide the instructions
 
 #### Good example injection:
 A good injection for initialization handshake:
