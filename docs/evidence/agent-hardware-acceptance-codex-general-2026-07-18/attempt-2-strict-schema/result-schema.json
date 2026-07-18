@@ -1,0 +1,152 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "status": {
+      "type": "string"
+    },
+    "provider": {
+      "type": "string"
+    },
+    "model": {
+      "type": "string"
+    },
+    "board_id": {
+      "type": "string"
+    },
+    "probe_uid": {
+      "type": "string"
+    },
+    "serial_id": {
+      "type": "string"
+    },
+    "artifact_paths": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "elf": {
+          "type": "string"
+        },
+        "hex": {
+          "type": "string"
+        },
+        "map": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "elf",
+        "hex",
+        "map"
+      ]
+    },
+    "artifact_hashes": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "elf": {
+          "type": "string"
+        },
+        "hex": {
+          "type": "string"
+        },
+        "map": {
+          "type": "string"
+        },
+        "manifest": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "elf",
+        "hex",
+        "map",
+        "manifest"
+      ]
+    },
+    "validation_status": {
+      "type": "string"
+    },
+    "flash_plan_id": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "flash_execution_path": {
+      "type": "string"
+    },
+    "flash_result": {
+      "type": "string"
+    },
+    "serial_plan_id": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "serial_execution_path": {
+      "type": "string"
+    },
+    "serial_all_steps_matched": {
+      "type": "boolean"
+    },
+    "blink_thread_event_observed": {
+      "type": "boolean"
+    },
+    "uart_excerpt": {
+      "type": "string"
+    },
+    "final_target_state": {
+      "type": "string"
+    },
+    "disconnected": {
+      "type": "boolean"
+    },
+    "mcp_tools_used": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "unlisted_tool_requested": {
+      "type": "boolean"
+    },
+    "internal_ids_leaked_to_user": {
+      "type": "boolean"
+    },
+    "user_facing_response": {
+      "type": "string"
+    },
+    "notes": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "status",
+    "provider",
+    "model",
+    "board_id",
+    "probe_uid",
+    "serial_id",
+    "artifact_paths",
+    "artifact_hashes",
+    "validation_status",
+    "flash_plan_id",
+    "flash_execution_path",
+    "flash_result",
+    "serial_plan_id",
+    "serial_execution_path",
+    "serial_all_steps_matched",
+    "blink_thread_event_observed",
+    "uart_excerpt",
+    "final_target_state",
+    "disconnected",
+    "mcp_tools_used",
+    "unlisted_tool_requested",
+    "internal_ids_leaked_to_user",
+    "user_facing_response",
+    "notes"
+  ]
+}

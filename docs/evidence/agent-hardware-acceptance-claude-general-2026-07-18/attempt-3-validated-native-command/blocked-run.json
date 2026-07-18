@@ -1,0 +1,24 @@
+﻿{
+  "status": "blocked",
+  "phase": "after_safety_refresh_before_flash_plan",
+  "last_completed_phase": "Phase 5 completed: native local NCS build succeeded, explicit artifacts were collected through live collect_build_artifacts, and board_safety_refresh returned safety_refresh_completed",
+  "reason": "Claude Sonnet hit the provider five-hour usage limit immediately after safety refresh. The provider reported that usage resets at 04:40 America/Los_Angeles.",
+  "model_execution_began": true,
+  "build_succeeded": true,
+  "collector_succeeded": true,
+  "safety_refresh_succeeded": true,
+  "flash_plan_attempted": false,
+  "flash_attempted": false,
+  "serial_test_attempted": false,
+  "target_unlock_attempted": false,
+  "retry_performed": false,
+  "result_file_generated": false,
+  "evidence": {
+    "raw_stream": "raw-stream.jsonl",
+    "stderr": "stderr.txt",
+    "provider_metadata": "provider-run-metadata.json",
+    "generated_prompt": "generated-prompt.txt",
+    "mcp_manifest": "mcp-launch-manifest.json",
+    "claude_debug": "claude-debug.log"
+  }
+}

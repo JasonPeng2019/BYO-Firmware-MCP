@@ -82,7 +82,10 @@ def test_typed_backend_error_explains_missing_ap_keyerror() -> None:
 
     assert isinstance(error, TargetConnectionError)
     assert "AP#1" in str(error)
-    assert "nRF52" in str(error)
+    assert "setup or validation remedy" in str(error)
+    assert "typed target recovery" in str(error)
+    assert "nrf" not in str(error).casefold()
+    assert "j-link" not in str(error).casefold()
 
 
 def test_build_session_options_adds_nucleo_under_reset_workaround() -> None:
@@ -374,6 +377,7 @@ def test_adapter_open_retries_jlink_uidless_after_known_serial_open_failure(monk
                     "description": "SEGGER J-Link",
                     "raw": "0  SEGGER J-Link  1050263657  ok",
                     "searchable_text": "1050263657 segger j-link",
+                    "family": "jlink",
                 },
             )(),
             type(
@@ -384,6 +388,7 @@ def test_adapter_open_retries_jlink_uidless_after_known_serial_open_failure(monk
                     "description": "ST-Link",
                     "raw": "1  ST-Link  0668FF514988525067213913  ok",
                     "searchable_text": "0668ff514988525067213913 st-link stm32",
+                    "family": "stlink",
                 },
             )(),
         ],

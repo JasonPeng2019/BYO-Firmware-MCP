@@ -1,7 +1,7 @@
 {
-  "contract_version": 32,
+  "contract_version": 33,
   "status": "active",
-  "milestone": "post-M10-debiased-runtime-round-2",
+  "milestone": "post-M10-debiased-runtime-round-6",
   "supersedes": "adversarial-usability-server-tools.json",
   "imported_baseline": {
     "path": "adversarial-usability-server-tools.json",
@@ -15,7 +15,7 @@
     "src/pyocd_debug_mcp/safety/enforce.py": "af63f3e96518339b82dc67811acde833b53078e27cd4a24af9d0404a42d70f38",
     "src/pyocd_debug_mcp/safety/map_build.py": "79f8d4401ef53d9037d2d376ba69dcdcd5023eafc90667b497c17ebba5a08e4d",
     "src/pyocd_debug_mcp/safety/refresh.py": "2e60ccb3fa069b24e789d9cc5f1a2c621ae5641866bee0d134c2707f713fdb07",
-    "src/pyocd_debug_mcp/server.py": "eb27bf9497479b11515a4eb27cd46af9a619925d44db41d47bfb5dcfceafecd1",
+    "src/pyocd_debug_mcp/server.py": "ff80871cab30d8bfef08a7ed73b46790457e1a0c4fa046e0dfa7f0c54ce0bee7",
     "src/pyocd_debug_mcp/services/uart_capture.py": "270a66d831212faec875080c2fb721eb5d2a04b73275ecfa39eea1fef8155f1f",
     "src/pyocd_debug_mcp/services/uart_exchange_schema.py": "99cc6b54313b5667f5ab3a59910dfdd586472719d23c33d735311c837f959770",
     "src/pyocd_debug_mcp/setup_flow/board_catalog.py": "5de0db6703613e01a0300467092956ce5348f6a9934f3f5336ffb5b485bda28a",
@@ -33,7 +33,7 @@
     "src/pyocd_debug_mcp/artifact_collector.py": "a881c3a2a58b62244e51f9434d1f667031481ada8bd56735ca1b5f8d0f98942b",
     "src/pyocd_debug_mcp/guardrails/plan_engine.py": "be58bf6d021cfa5aa6c73ce6a2ec23906532528f702d19c8b908851c929d2ed8",
     "src/pyocd_debug_mcp/adapters/swd_interface.py": "91a876a0177cf93fbe1e213f48b8888e34c2ba030347144a9793229a14d95bc8",
-    "src/pyocd_debug_mcp/adapters/swd_pyocd.py": "8f787547452220c386088094e388813d5a15b15abef4b5400ef4176b186c7447",
+    "src/pyocd_debug_mcp/adapters/swd_pyocd.py": "831d187a29701305d7841ca36d6d870bfb21853ccc0108d0f36a2ff8fee2c736",
     "src/pyocd_debug_mcp/services/target_control.py": "d18b0dd02d0eb94b1c1bbf19d48653e4f95bbdecf89b834b837c5d36ceab8392",
     "src/pyocd_debug_mcp/tools/unlock.py": "47ebe3486dc1eb1c3562ecf584a9edf9fb5cc5656a5d1c7b6a839f34c69c7bc6",
     "stage0_check.py": "70a5d38c39a8493353f6508d8e0c1a66519bd03eaace7ae48d0655d7f63b14c2",

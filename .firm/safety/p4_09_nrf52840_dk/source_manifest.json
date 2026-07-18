@@ -1,0 +1,505 @@
+{
+  "board_id": "p4_09_nrf52840_dk",
+  "created_at": "2026-07-18T08:50:39.398802Z",
+  "fingerprints": {
+    "aggregate": "60a267fe2104a8b616ea525ba460dce0510453fe0e8b7982b9361dcade73f986",
+    "algorithm": "sha256",
+    "schema_version": 1,
+    "sub_fingerprints": {
+      "application_artifacts": "561269cbb6bd36f8c116e206f5ce356dbb6b0ce9826ff2f46fe543d2a35fbe0d",
+      "bootloader_artifacts": "02367467120a5a41fb91cbd206146616479b5f9336a6b1c84831c73ff346292c",
+      "evidence": "786b5627dc6d559a91391c6c1dcf1ad540f9f336521cb882343439719c69ae1c",
+      "geometry": "c7212228bb4e0050cc99604947391ab00c2b086c6059fc17be57070bfef4f52f",
+      "pack": "9b551be221f2b20f60b8699d548d936955f3944d37c0a08570b92e17ed41cbb2",
+      "part_target": "759b6d4972730fa57be67095be934dd09b092cec5e078159844fd8536e09a443",
+      "profile": "746975a4a2aedec2188f7182b9c71d4118ec308d66edd25d06213d5cc5b039e4",
+      "schema": "4635c940ef3bfe09e51222e64ec879ac018fca032d24c1502a789475bfbb6a05"
+    }
+  },
+  "schema_version": 1,
+  "sources": {
+    "application_artifacts": {
+      "evidence": {
+        "artifacts": [],
+        "configuration": null
+      },
+      "fingerprint": "561269cbb6bd36f8c116e206f5ce356dbb6b0ce9826ff2f46fe543d2a35fbe0d"
+    },
+    "bootloader_artifacts": {
+      "evidence": {
+        "artifacts": [],
+        "configuration": null
+      },
+      "fingerprint": "02367467120a5a41fb91cbd206146616479b5f9336a6b1c84831c73ff346292c"
+    },
+    "evidence": {
+      "evidence": {
+        "deployment_policy": {
+          "application_end": 1048576,
+          "application_start": 0
+        },
+        "official_document": {
+          "asset_sha256": "c159d4eec5af036fcca72c06ea620db370750b88a086de965040235317f74daa",
+          "datasheet_sha256": "c619e336b9c0610663273041f057f2537a65fd408ce0c5b8214a26de2aa88422",
+          "document": {
+            "device": {
+              "mcu_part_number": "nRF52840-QIAA",
+              "target": null
+            },
+            "erase_geometry": {
+              "erase_origin": 0,
+              "erase_size": 4096
+            },
+            "regions": [
+              {
+                "address_aliases": [],
+                "bank": "flash0",
+                "block": "FLASH",
+                "end": 1048576,
+                "fact_id": "physical_flash",
+                "kind": "physical_flash",
+                "name": "physical flash",
+                "name_aliases": [
+                  "code flash"
+                ],
+                "range_convention": "half_open",
+                "start": 0
+              },
+              {
+                "address_aliases": [],
+                "bank": "sram0",
+                "block": "RAM",
+                "end": 537133056,
+                "fact_id": "physical_ram",
+                "kind": "physical_ram",
+                "name": "physical RAM",
+                "name_aliases": [
+                  "SRAM address space"
+                ],
+                "range_convention": "half_open",
+                "start": 536870912
+              },
+              {
+                "address_aliases": [],
+                "bank": "sram0",
+                "block": "RAM",
+                "end": 537133056,
+                "fact_id": "writable_ram",
+                "kind": "ram",
+                "name": "writable RAM",
+                "name_aliases": [
+                  "SRAM writable region"
+                ],
+                "range_convention": "half_open",
+                "start": 536870912
+              },
+              {
+                "address_aliases": [],
+                "bank": "uicr",
+                "block": "UICR",
+                "end": 268443648,
+                "fact_id": "uicr",
+                "kind": "prohibited",
+                "name": "UICR and persistent configuration",
+                "name_aliases": [
+                  "User Information Configuration Registers"
+                ],
+                "range_convention": "half_open",
+                "start": 268439552
+              },
+              {
+                "address_aliases": [],
+                "bank": "ficr",
+                "block": "FICR",
+                "end": 268439552,
+                "fact_id": "ficr",
+                "kind": "rom",
+                "name": "factory information",
+                "name_aliases": [
+                  "Factory Information Configuration Registers"
+                ],
+                "range_convention": "half_open",
+                "start": 268435456
+              },
+              {
+                "address_aliases": [],
+                "bank": "gpio",
+                "block": "GPIO",
+                "end": 1342179584,
+                "fact_id": "safe_gpio",
+                "kind": "peripheral",
+                "name": "volatile GPIO registers",
+                "name_aliases": [
+                  "GPIO port 0 and port 1 volatile register window"
+                ],
+                "range_convention": "half_open",
+                "start": 1342178560
+              },
+              {
+                "address_aliases": [],
+                "bank": "nvmc_acl",
+                "block": "NVMC_ACL",
+                "end": 1073868800,
+                "fact_id": "nvmc_acl",
+                "kind": "prohibited",
+                "name": "nonvolatile memory and access control registers",
+                "name_aliases": [
+                  "NVMC and ACL control block"
+                ],
+                "range_convention": "half_open",
+                "start": 1073864704
+              },
+              {
+                "address_aliases": [],
+                "bank": "system",
+                "block": "SCS",
+                "end": 3759144960,
+                "fact_id": "cpu_system",
+                "kind": "cpu_system",
+                "name": "Cortex-M system control",
+                "name_aliases": [
+                  "System Control Space"
+                ],
+                "range_convention": "half_open",
+                "start": 3758096384
+              }
+            ],
+            "role": "official_document",
+            "schema_version": 2,
+            "sources": [
+              {
+                "identifier": "Nordic nRF52840 Product Specification",
+                "kind": "datasheet",
+                "revision": "sha256:c619e336b9c0610663273041f057f2537a65fd408ce0c5b8214a26de2aa88422",
+                "version": "1.1"
+              }
+            ]
+          }
+        },
+        "reconciliation": {
+          "erase_geometry": {
+            "erase_origin": 0,
+            "erase_size": 4096
+          },
+          "facts": [
+            {
+              "end": 3759144960,
+              "fact_id": "cpu_system",
+              "kind": "cpu_system",
+              "reconciliations": [],
+              "source_ids": [
+                "svd:pyocd.debug.svd.svd_data.zip:nrf52840.svd@0.45.0/bundle-sha256:e452ca593edadbb0d6f960c19f761977e35e2a33e027d7b84fbd4e82b2608d8c",
+                "target:pyocd.target.builtin.target_nRF52840_xxAA.NRF52840@0.45.0/sha256:c4713dea41facd880a92eb3b4a12924305290b36753e1fe592a463b856b9b29f",
+                "datasheet:Nordic nRF52840 Product Specification@1.1/sha256:c619e336b9c0610663273041f057f2537a65fd408ce0c5b8214a26de2aa88422"
+              ],
+              "start": 3758096384
+            },
+            {
+              "end": 268439552,
+              "fact_id": "ficr",
+              "kind": "rom",
+              "reconciliations": [],
+              "source_ids": [
+                "svd:pyocd.debug.svd.svd_data.zip:nrf52840.svd@0.45.0/bundle-sha256:e452ca593edadbb0d6f960c19f761977e35e2a33e027d7b84fbd4e82b2608d8c",
+                "target:pyocd.target.builtin.target_nRF52840_xxAA.NRF52840@0.45.0/sha256:c4713dea41facd880a92eb3b4a12924305290b36753e1fe592a463b856b9b29f",
+                "datasheet:Nordic nRF52840 Product Specification@1.1/sha256:c619e336b9c0610663273041f057f2537a65fd408ce0c5b8214a26de2aa88422"
+              ],
+              "start": 268435456
+            },
+            {
+              "end": 1073868800,
+              "fact_id": "nvmc_acl",
+              "kind": "prohibited",
+              "reconciliations": [],
+              "source_ids": [
+                "svd:pyocd.debug.svd.svd_data.zip:nrf52840.svd@0.45.0/bundle-sha256:e452ca593edadbb0d6f960c19f761977e35e2a33e027d7b84fbd4e82b2608d8c",
+                "target:pyocd.target.builtin.target_nRF52840_xxAA.NRF52840@0.45.0/sha256:c4713dea41facd880a92eb3b4a12924305290b36753e1fe592a463b856b9b29f",
+                "datasheet:Nordic nRF52840 Product Specification@1.1/sha256:c619e336b9c0610663273041f057f2537a65fd408ce0c5b8214a26de2aa88422"
+              ],
+              "start": 1073864704
+            },
+            {
+              "end": 1048576,
+              "fact_id": "physical_flash",
+              "kind": "physical_flash",
+              "reconciliations": [],
+              "source_ids": [
+                "svd:pyocd.debug.svd.svd_data.zip:nrf52840.svd@0.45.0/bundle-sha256:e452ca593edadbb0d6f960c19f761977e35e2a33e027d7b84fbd4e82b2608d8c",
+                "target:pyocd.target.builtin.target_nRF52840_xxAA.NRF52840@0.45.0/sha256:c4713dea41facd880a92eb3b4a12924305290b36753e1fe592a463b856b9b29f",
+                "datasheet:Nordic nRF52840 Product Specification@1.1/sha256:c619e336b9c0610663273041f057f2537a65fd408ce0c5b8214a26de2aa88422"
+              ],
+              "start": 0
+            },
+            {
+              "end": 537133056,
+              "fact_id": "physical_ram",
+              "kind": "physical_ram",
+              "reconciliations": [],
+              "source_ids": [
+                "svd:pyocd.debug.svd.svd_data.zip:nrf52840.svd@0.45.0/bundle-sha256:e452ca593edadbb0d6f960c19f761977e35e2a33e027d7b84fbd4e82b2608d8c",
+                "target:pyocd.target.builtin.target_nRF52840_xxAA.NRF52840@0.45.0/sha256:c4713dea41facd880a92eb3b4a12924305290b36753e1fe592a463b856b9b29f",
+                "datasheet:Nordic nRF52840 Product Specification@1.1/sha256:c619e336b9c0610663273041f057f2537a65fd408ce0c5b8214a26de2aa88422"
+              ],
+              "start": 536870912
+            },
+            {
+              "end": 1342179584,
+              "fact_id": "safe_gpio",
+              "kind": "peripheral",
+              "reconciliations": [],
+              "source_ids": [
+                "svd:pyocd.debug.svd.svd_data.zip:nrf52840.svd@0.45.0/bundle-sha256:e452ca593edadbb0d6f960c19f761977e35e2a33e027d7b84fbd4e82b2608d8c",
+                "target:pyocd.target.builtin.target_nRF52840_xxAA.NRF52840@0.45.0/sha256:c4713dea41facd880a92eb3b4a12924305290b36753e1fe592a463b856b9b29f",
+                "datasheet:Nordic nRF52840 Product Specification@1.1/sha256:c619e336b9c0610663273041f057f2537a65fd408ce0c5b8214a26de2aa88422"
+              ],
+              "start": 1342178560
+            },
+            {
+              "end": 268443648,
+              "fact_id": "uicr",
+              "kind": "prohibited",
+              "reconciliations": [],
+              "source_ids": [
+                "svd:pyocd.debug.svd.svd_data.zip:nrf52840.svd@0.45.0/bundle-sha256:e452ca593edadbb0d6f960c19f761977e35e2a33e027d7b84fbd4e82b2608d8c",
+                "target:pyocd.target.builtin.target_nRF52840_xxAA.NRF52840@0.45.0/sha256:c4713dea41facd880a92eb3b4a12924305290b36753e1fe592a463b856b9b29f",
+                "datasheet:Nordic nRF52840 Product Specification@1.1/sha256:c619e336b9c0610663273041f057f2537a65fd408ce0c5b8214a26de2aa88422"
+              ],
+              "start": 268439552
+            },
+            {
+              "end": 537133056,
+              "fact_id": "writable_ram",
+              "kind": "ram",
+              "reconciliations": [],
+              "source_ids": [
+                "svd:pyocd.debug.svd.svd_data.zip:nrf52840.svd@0.45.0/bundle-sha256:e452ca593edadbb0d6f960c19f761977e35e2a33e027d7b84fbd4e82b2608d8c",
+                "target:pyocd.target.builtin.target_nRF52840_xxAA.NRF52840@0.45.0/sha256:c4713dea41facd880a92eb3b4a12924305290b36753e1fe592a463b856b9b29f",
+                "datasheet:Nordic nRF52840 Product Specification@1.1/sha256:c619e336b9c0610663273041f057f2537a65fd408ce0c5b8214a26de2aa88422"
+              ],
+              "start": 536870912
+            }
+          ],
+          "status": "agreement"
+        }
+      },
+      "fingerprint": "786b5627dc6d559a91391c6c1dcf1ad540f9f336521cb882343439719c69ae1c"
+    },
+    "geometry": {
+      "evidence": {
+        "erase_origin": 0,
+        "erase_size": 4096,
+        "flash_end": 1048576,
+        "flash_start": 0,
+        "ram_end": 537133056,
+        "ram_start": 536870912
+      },
+      "fingerprint": "c7212228bb4e0050cc99604947391ab00c2b086c6059fc17be57070bfef4f52f"
+    },
+    "pack": {
+      "evidence": {
+        "asset_sha256": "8ffa48e16fb03d491660c93faaa1a34f9654873e7c27b7113cc23216fe47a8e7",
+        "document": {
+          "device": {
+            "mcu_part_number": "nRF52840-QIAA",
+            "target": "nrf52840"
+          },
+          "erase_geometry": {
+            "erase_origin": 0,
+            "erase_size": 4096
+          },
+          "regions": [
+            {
+              "address_aliases": [],
+              "bank": "flash0",
+              "block": "FLASH",
+              "end": 1048576,
+              "fact_id": "physical_flash",
+              "kind": "physical_flash",
+              "name": "physical flash",
+              "name_aliases": [
+                "code flash"
+              ],
+              "range_convention": "half_open",
+              "start": 0
+            },
+            {
+              "address_aliases": [],
+              "bank": "sram0",
+              "block": "RAM",
+              "end": 537133056,
+              "fact_id": "physical_ram",
+              "kind": "physical_ram",
+              "name": "physical RAM",
+              "name_aliases": [
+                "SRAM address space"
+              ],
+              "range_convention": "half_open",
+              "start": 536870912
+            },
+            {
+              "address_aliases": [],
+              "bank": "sram0",
+              "block": "RAM",
+              "end": 537133056,
+              "fact_id": "writable_ram",
+              "kind": "ram",
+              "name": "writable RAM",
+              "name_aliases": [
+                "SRAM writable region"
+              ],
+              "range_convention": "half_open",
+              "start": 536870912
+            },
+            {
+              "address_aliases": [],
+              "bank": "uicr",
+              "block": "UICR",
+              "end": 268443648,
+              "fact_id": "uicr",
+              "kind": "prohibited",
+              "name": "UICR and persistent configuration",
+              "name_aliases": [
+                "User Information Configuration Registers"
+              ],
+              "range_convention": "half_open",
+              "start": 268439552
+            },
+            {
+              "address_aliases": [],
+              "bank": "ficr",
+              "block": "FICR",
+              "end": 268439552,
+              "fact_id": "ficr",
+              "kind": "rom",
+              "name": "factory information",
+              "name_aliases": [
+                "Factory Information Configuration Registers"
+              ],
+              "range_convention": "half_open",
+              "start": 268435456
+            },
+            {
+              "address_aliases": [],
+              "bank": "gpio",
+              "block": "GPIO",
+              "end": 1342179584,
+              "fact_id": "safe_gpio",
+              "kind": "peripheral",
+              "name": "volatile GPIO registers",
+              "name_aliases": [
+                "GPIO port 0 and port 1 volatile register window"
+              ],
+              "range_convention": "half_open",
+              "start": 1342178560
+            },
+            {
+              "address_aliases": [],
+              "bank": "nvmc_acl",
+              "block": "NVMC_ACL",
+              "end": 1073868800,
+              "fact_id": "nvmc_acl",
+              "kind": "prohibited",
+              "name": "nonvolatile memory and access control registers",
+              "name_aliases": [
+                "NVMC and ACL control block"
+              ],
+              "range_convention": "half_open",
+              "start": 1073864704
+            },
+            {
+              "address_aliases": [],
+              "bank": "system",
+              "block": "SCS",
+              "end": 3759144960,
+              "fact_id": "cpu_system",
+              "kind": "cpu_system",
+              "name": "Cortex-M system control",
+              "name_aliases": [
+                "System Control Space"
+              ],
+              "range_convention": "half_open",
+              "start": 3758096384
+            }
+          ],
+          "role": "device_support",
+          "schema_version": 2,
+          "sources": [
+            {
+              "identifier": "pyocd.target.builtin.target_nRF52840_xxAA.NRF52840",
+              "kind": "target",
+              "revision": "sha256:c4713dea41facd880a92eb3b4a12924305290b36753e1fe592a463b856b9b29f",
+              "version": "0.45.0"
+            },
+            {
+              "identifier": "pyocd.debug.svd.svd_data.zip:nrf52840.svd",
+              "kind": "svd",
+              "revision": "bundle-sha256:e452ca593edadbb0d6f960c19f761977e35e2a33e027d7b84fbd4e82b2608d8c",
+              "version": "0.45.0"
+            }
+          ]
+        },
+        "runtime": {
+          "pyocd_version": "0.45.0",
+          "svd_bundle_sha256": "e452ca593edadbb0d6f960c19f761977e35e2a33e027d7b84fbd4e82b2608d8c",
+          "target_module_sha256": "c4713dea41facd880a92eb3b4a12924305290b36753e1fe592a463b856b9b29f"
+        }
+      },
+      "fingerprint": "9b551be221f2b20f60b8699d548d936955f3944d37c0a08570b92e17ed41cbb2"
+    },
+    "part_target": {
+      "evidence": {
+        "board_type": "nrf52840dk",
+        "mcu_part_number": "nRF52840-QIAA",
+        "package_part_number": "nRF52840-QIAA",
+        "target": "nrf52840"
+      },
+      "fingerprint": "759b6d4972730fa57be67095be934dd09b092cec5e078159844fd8536e09a443"
+    },
+    "profile": {
+      "evidence": {
+        "board_id": "p4_09_nrf52840_dk",
+        "created_at": "2026-07-18T08:50:37.755026Z",
+        "display_name": "P4-09 nRF52840 DK",
+        "mcu_family": "nrf52840qiaa",
+        "mcu_part_number": "nRF52840-QIAA",
+        "probe_family": "jlink",
+        "probe_hint_terms": [
+          "j-link",
+          "jlink",
+          "nrf52840",
+          "nrf52840qiaa",
+          "segger"
+        ],
+        "probe_type": "SEGGER J-Link",
+        "pyocd_target": "nrf52840",
+        "requires_recover_validation": false,
+        "schema_version": 2,
+        "serial_baudrate": 115200,
+        "serial_hint_terms": [
+          "j-link",
+          "jlink",
+          "nrf52840",
+          "nrf52840qiaa",
+          "segger",
+          "virtual com"
+        ],
+        "silicon_id_address": 268435712,
+        "silicon_id_expected": 337984,
+        "silicon_id_label": "silicon_id",
+        "silicon_id_mask": 4294967295,
+        "test_read_address": 268435456,
+        "updated_at": "2026-07-18T08:50:38.324178Z"
+      },
+      "fingerprint": "746975a4a2aedec2188f7182b9c71d4118ec308d66edd25d06213d5cc5b039e4"
+    },
+    "schema": {
+      "evidence": {
+        "catalog": 2,
+        "evidence": 2,
+        "fingerprints": 1,
+        "memory_map": 1
+      },
+      "fingerprint": "4635c940ef3bfe09e51222e64ec879ac018fca032d24c1502a789475bfbb6a05"
+    }
+  }
+}

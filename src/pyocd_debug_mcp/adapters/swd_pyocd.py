@@ -109,10 +109,10 @@ def _quiet_backend_streams() -> Iterator[None]:
 def _typed_backend_error(exc: Exception) -> TargetConnectionError:
     if isinstance(exc, KeyError) and exc.args == (1,):
         return TargetConnectionError(
-            "pyOCD target init failed while probing AP#1. "
-            "On nRF52 targets this usually means the debug path is not fully reachable "
-            "(for example: stale probe state, target lock/recover needed, or a transient "
-            "J-Link attach failure)."
+            "pyOCD target initialization could not reach expected access port AP#1. "
+            "Possible causes include target lock, reset or attach state, probe connectivity, "
+            "or an incompatible target selection. Follow the exact setup or validation remedy; "
+            "use typed target recovery only when the server identifies it."
         )
     message = f"{type(exc).__name__}: {exc}"
     lowered = message.lower()

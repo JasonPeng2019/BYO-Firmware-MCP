@@ -1,0 +1,28 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "additionalProperties": true,
+  "required": [
+    "status",
+    "provider",
+    "model",
+    "board_id",
+    "build_workflow",
+    "forbidden_helper_used",
+    "build_count",
+    "build_exit_code",
+    "collector_call",
+    "collected_artifacts",
+    "safety_refresh_status",
+    "safety_containment_proven",
+    "flash_direct_action",
+    "serial_direct_action",
+    "serial_all_steps_matched",
+    "blink_thread_event_observed",
+    "uart_excerpt",
+    "final_target_state",
+    "disconnected",
+    "mcp_tools_used",
+    "notes"
+  ]
+}

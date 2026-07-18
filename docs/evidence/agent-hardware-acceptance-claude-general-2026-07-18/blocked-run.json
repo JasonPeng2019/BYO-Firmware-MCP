@@ -1,0 +1,19 @@
+﻿{
+  "status": "blocked",
+  "phase": "provider_authentication_preflight",
+  "last_completed_phase": "Claude CLI launched and connected to the BYO MCP stdio server; no acceptance-scenario MCP tool call or firmware operation began",
+  "reason": "The isolated Claude configuration had no API key or OAuth auth token. Claude returned 'Not logged in - Please run /login' and exited before model execution.",
+  "hardware_touched": false,
+  "firmware_authored": false,
+  "build_attempted": false,
+  "flash_attempted": false,
+  "retry_performed": false,
+  "evidence": {
+    "raw_stream": "raw-stream.jsonl",
+    "stderr": "stderr.txt",
+    "provider_metadata": "provider-run-metadata.json",
+    "generated_prompt": "generated-prompt.txt",
+    "mcp_manifest": "mcp-launch-manifest.json",
+    "claude_debug": "claude-debug.log"
+  }
+}

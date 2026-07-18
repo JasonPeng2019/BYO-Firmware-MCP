@@ -8,12 +8,17 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+from mcp import types
 from mcp.server.fastmcp.exceptions import ToolError
+from mcp.shared.memory import create_connected_server_and_client_session
 
 from pyocd_debug_mcp import server
-from pyocd_debug_mcp.kernel import registry as registry_module
+from pyocd_debug_mcp.adapters import swd_pyocd
 from pyocd_debug_mcp.adapters.swd_interface import TargetSessionHandle
+from pyocd_debug_mcp.board_config import make_board_config
 from pyocd_debug_mcp.guardrails.gate import GateManager
+from pyocd_debug_mcp.kernel import registry as registry_module
+from pyocd_debug_mcp.probe_inventory import ProbeInfo, ProbeResolution
 from pyocd_debug_mcp.services.connections import (
     BoardNotConnectedError,
     ConnectionAssignmentError,
@@ -437,6 +442,126 @@ async def test_public_connect_rejects_manual_override_fields_before_backend_disp
         )
 
     assert calls == []
+
+
+@pytest.mark.asyncio
+async def test_live_connect_ap_failure_is_neutral_for_generic_and_jlink_retry_paths(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    generic_board = make_board_config(
+        {
+            "board_id": "neutral_generic_board",
+            "display_name": "Neutral Generic Board",
+            "mcu_family": "generic_mcu",
+            "probe_family": "cmsisdap",
+            "pyocd_target": "generic_target",
+        },
+        None,
+    )
+    jlink_board = make_board_config(
+        {
+            "board_id": "neutral_fallback_board",
+            "display_name": "Neutral Fallback Board",
+            "mcu_family": "generic_mcu",
+            "probe_family": "jlink",
+            "pyocd_target": "generic_target",
+        },
+        None,
+    )
+    boards = {
+        generic_board.board_id: generic_board,
+        jlink_board.board_id: jlink_board,
+    }
+    probes = {
+        generic_board.board_id: ProbeInfo(
+            uid="generic-probe-uid",
+            description="Generic API probe",
+            raw="generic api probe",
+            family="cmsisdap",
+            family_source="pyocd_api",
+        ),
+        jlink_board.board_id: ProbeInfo(
+            uid="fallback-probe-uid",
+            description="Configured fallback probe",
+            raw="configured fallback probe",
+            family="jlink",
+            family_source="configured_cli",
+        ),
+    }
+
+    monkeypatch.setattr(
+        server,
+        "resolve_board_config",
+        lambda board_id, *_args, **_kwargs: boards[board_id],
+    )
+    monkeypatch.setattr(
+        server,
+        "resolve_probe_for_board",
+        lambda board, **_kwargs: ProbeResolution(
+            probe=probes[board.board_id],
+            note="exact test identity",
+            probes=(probes[board.board_id],),
+        ),
+    )
+    monkeypatch.setattr(
+        swd_pyocd,
+        "list_connected_probes",
+        lambda _run_cmd: [probes[jlink_board.board_id]],
+    )
+
+    selected_uids: list[str | None] = []
+
+    class FailingSession:
+        def __init__(self, failure: Exception) -> None:
+            self.failure = failure
+
+        def open(self) -> None:
+            raise self.failure
+
+        def close(self) -> None:
+            return None
+
+    def choose_session(
+        *, probe_uid: str | None, options: dict[str, object] | None
+    ) -> FailingSession:
+        del options
+        selected_uids.append(probe_uid)
+        if probe_uid == "fallback-probe-uid":
+            return FailingSession(RuntimeError("No emulator with serial number was found"))
+        return FailingSession(KeyError(1))
+
+    monkeypatch.setattr(
+        swd_pyocd.PyOCDSWDInterface,
+        "_choose_session",
+        staticmethod(choose_session),
+    )
+
+    async with create_connected_server_and_client_session(server.mcp) as session:
+        generic_result = await session.call_tool("connect", {"board_id": generic_board.board_id})
+        fallback_result = await session.call_tool("connect", {"board_id": jlink_board.board_id})
+
+    def error_text(result: types.CallToolResult) -> str:
+        assert result.isError is True
+        assert len(result.content) == 1
+        assert isinstance(result.content[0], types.TextContent)
+        return result.content[0].text
+
+    generic_error = error_text(generic_result)
+    fallback_error = error_text(fallback_result)
+    expected = (
+        "pyOCD target initialization could not reach expected access port AP#1. "
+        "Possible causes include target lock, reset or attach state, probe connectivity, "
+        "or an incompatible target selection. Follow the exact setup or validation remedy; "
+        "use typed target recovery only when the server identifies it."
+    )
+    assert expected in generic_error
+    assert expected in fallback_error
+    assert generic_error == fallback_error
+    assert all(
+        forbidden not in generic_error.casefold()
+        for forbidden in ("nrf", "nordic", "j-link", "jlink")
+    )
+    assert selected_uids == ["generic-probe-uid", "fallback-probe-uid", None]
 
 
 def test_profile_only_resolution_ignores_launch_environment_overrides(

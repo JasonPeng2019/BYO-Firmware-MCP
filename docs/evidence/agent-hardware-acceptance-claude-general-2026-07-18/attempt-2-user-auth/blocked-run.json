@@ -1,0 +1,10 @@
+{
+  "status": "blocked",
+  "phase": "native_build_preparation",
+  "reason": "Claude repeatedly attempted to discover a local NCS environment instead of executing one bounded native build; the operator interrupted before a successful build or any collector, refresh, flash, or UART action. Root diagnosis established the exact environment.json-derived native west command separately.",
+  "model": "claude-sonnet-4-5-20250929",
+  "effort": "medium",
+  "hardware_mutation": false,
+  "application_flash_count": 0,
+  "collector_call_count": 0
+}

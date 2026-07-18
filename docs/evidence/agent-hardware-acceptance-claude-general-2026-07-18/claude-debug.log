@@ -1,0 +1,170 @@
+2026-07-18T08:23:36.370Z [DEBUG] MDM settings load completed in 30ms
+2026-07-18T08:23:36.390Z [DEBUG] Broken symlink or missing file encountered for settings.json at path: C:\Users\Jason\Documents\Jason\FirmCLI\BYO-Server\.agent-workspace\p4-09-fresh-nrf52840dk-20260717\.claude-p4-10-general\settings.json
+2026-07-18T08:23:36.392Z [DEBUG] Broken symlink or missing file encountered for settings.json at path: C:\Users\Jason\Documents\Jason\FirmCLI\BYO-Server\.agent-workspace\p4-09-fresh-nrf52840dk-20260717\.claude-p4-10-general\settings.json
+2026-07-18T08:23:36.394Z [DEBUG] Broken symlink or missing file encountered for settings.json at path: C:\Users\Jason\Documents\Jason\FirmCLI\BYO-Server\.agent-workspace\p4-09-fresh-nrf52840dk-20260717\.claude\settings.json
+2026-07-18T08:23:36.395Z [DEBUG] Broken symlink or missing file encountered for settings.json at path: C:\Users\Jason\Documents\Jason\FirmCLI\BYO-Server\.agent-workspace\p4-09-fresh-nrf52840dk-20260717\.claude\settings.local.json
+2026-07-18T08:23:36.396Z [DEBUG] Broken symlink or missing file encountered for settings.json at path: C:\Program Files\ClaudeCode\managed-settings.json
+2026-07-18T08:23:36.397Z [DEBUG] Broken symlink or missing file encountered for settings.json at path: C:\Program Files\ClaudeCode\managed-settings.json
+2026-07-18T08:23:36.399Z [DEBUG] Broken symlink or missing file encountered for settings.json at path: C:\Users\Jason\Documents\Jason\FirmCLI\BYO-Server\.agent-workspace\p4-09-fresh-nrf52840dk-20260717\.claude-p4-10-general\settings.json
+2026-07-18T08:23:36.399Z [DEBUG] CA certs: Config fallback - globalEnv keys: , settingsEnv keys: none
+2026-07-18T08:23:36.408Z [ERROR] Failed to save config with lock: Error: ENOENT: no such file or directory, lstat 'C:\Users\Jason\Documents\Jason\FirmCLI\BYO-Server\.agent-workspace\p4-09-fresh-nrf52840dk-20260717\.claude-p4-10-general\.claude.json'
+2026-07-18T08:23:36.412Z [DEBUG] Writing to temp file: C:\Users\Jason\Documents\Jason\FirmCLI\BYO-Server\.agent-workspace\p4-09-fresh-nrf52840dk-20260717\.claude-p4-10-general\.claude.json.tmp.680.1784363016411
+2026-07-18T08:23:36.412Z [DEBUG] Setting permissions for new file: 600
+2026-07-18T08:23:36.416Z [DEBUG] Temp file written successfully, size: 50 bytes
+2026-07-18T08:23:36.416Z [DEBUG] Renaming C:\Users\Jason\Documents\Jason\FirmCLI\BYO-Server\.agent-workspace\p4-09-fresh-nrf52840dk-20260717\.claude-p4-10-general\.claude.json.tmp.680.1784363016411 to C:\Users\Jason\Documents\Jason\FirmCLI\BYO-Server\.agent-workspace\p4-09-fresh-nrf52840dk-20260717\.claude-p4-10-general\.claude.json
+2026-07-18T08:23:36.418Z [DEBUG] File C:\Users\Jason\Documents\Jason\FirmCLI\BYO-Server\.agent-workspace\p4-09-fresh-nrf52840dk-20260717\.claude-p4-10-general\.claude.json written atomically
+2026-07-18T08:23:36.418Z [DEBUG] [init] configureGlobalMTLS starting
+2026-07-18T08:23:36.419Z [DEBUG] [init] configureGlobalMTLS complete
+2026-07-18T08:23:36.419Z [DEBUG] [init] configureGlobalAgents starting
+2026-07-18T08:23:36.420Z [DEBUG] CA certs: useSystemCA=false, extraCertsPath=undefined
+2026-07-18T08:23:36.421Z [DEBUG] [init] configureGlobalAgents complete
+2026-07-18T08:23:36.456Z [DEBUG] Using bash path: "C:\Users\Jason\AppData\Local\Programs\Git\bin\bash.exe"
+2026-07-18T08:23:36.461Z [DEBUG] Error log sink initialized
+2026-07-18T08:23:36.472Z [DEBUG] Writing to temp file: C:\Users\Jason\Documents\Jason\FirmCLI\BYO-Server\.agent-workspace\p4-09-fresh-nrf52840dk-20260717\.claude-p4-10-general\.claude.json.tmp.680.1784363016472
+2026-07-18T08:23:36.472Z [DEBUG] Preserving file permissions: 100666
+2026-07-18T08:23:36.476Z [DEBUG] Temp file written successfully, size: 86 bytes
+2026-07-18T08:23:36.476Z [DEBUG] Applied original permissions to temp file
+2026-07-18T08:23:36.477Z [DEBUG] Renaming C:\Users\Jason\Documents\Jason\FirmCLI\BYO-Server\.agent-workspace\p4-09-fresh-nrf52840dk-20260717\.claude-p4-10-general\.claude.json.tmp.680.1784363016472 to C:\Users\Jason\Documents\Jason\FirmCLI\BYO-Server\.agent-workspace\p4-09-fresh-nrf52840dk-20260717\.claude-p4-10-general\.claude.json
+2026-07-18T08:23:36.478Z [DEBUG] File C:\Users\Jason\Documents\Jason\FirmCLI\BYO-Server\.agent-workspace\p4-09-fresh-nrf52840dk-20260717\.claude-p4-10-general\.claude.json written atomically
+2026-07-18T08:23:36.498Z [DEBUG] Broken symlink or missing file encountered for settings.json at path: C:\Users\Jason\Documents\Jason\FirmCLI\BYO-Server\.agent-workspace\p4-09-fresh-nrf52840dk-20260717\.claude-p4-10-general\settings.json
+2026-07-18T08:23:36.503Z [DEBUG] Writing to temp file: C:\Users\Jason\Documents\Jason\FirmCLI\BYO-Server\.agent-workspace\p4-09-fresh-nrf52840dk-20260717\.claude-p4-10-general\.claude.json.tmp.680.1784363016503
+2026-07-18T08:23:36.503Z [DEBUG] Preserving file permissions: 100666
+2026-07-18T08:23:36.506Z [DEBUG] Temp file written successfully, size: 125 bytes
+2026-07-18T08:23:36.507Z [DEBUG] Applied original permissions to temp file
+2026-07-18T08:23:36.507Z [DEBUG] Renaming C:\Users\Jason\Documents\Jason\FirmCLI\BYO-Server\.agent-workspace\p4-09-fresh-nrf52840dk-20260717\.claude-p4-10-general\.claude.json.tmp.680.1784363016503 to C:\Users\Jason\Documents\Jason\FirmCLI\BYO-Server\.agent-workspace\p4-09-fresh-nrf52840dk-20260717\.claude-p4-10-general\.claude.json
+2026-07-18T08:23:36.509Z [DEBUG] File C:\Users\Jason\Documents\Jason\FirmCLI\BYO-Server\.agent-workspace\p4-09-fresh-nrf52840dk-20260717\.claude-p4-10-general\.claude.json written atomically
+2026-07-18T08:23:36.519Z [DEBUG] Broken symlink or missing file encountered for settings.json at path: C:\Users\Jason\Documents\Jason\FirmCLI\BYO-Server\.agent-workspace\p4-09-fresh-nrf52840dk-20260717\.claude-p4-10-general\settings.json
+2026-07-18T08:23:36.536Z [ERROR] SyntaxError: SyntaxError: JSON Parse error: Unexpected identifier "C"
+    at <parse> (:0)
+    at parse (unknown)
+    at <anonymous> (B:/~BUN/root/src/entrypoints/cli.js:98:1134)
+    at D (B:/~BUN/root/src/entrypoints/cli.js:96:27885)
+    at <anonymous> (B:/~BUN/root/src/entrypoints/cli.js:98:1252)
+    at <anonymous> (B:/~BUN/root/src/entrypoints/cli.js:14763:347)
+    at processTicksAndRejections (native:7:39)
+2026-07-18T08:23:36.545Z [DEBUG] Broken symlink or missing file encountered for settings.json at path: C:\Program Files\ClaudeCode\managed-settings.json
+2026-07-18T08:23:36.546Z [DEBUG] Broken symlink or missing file encountered for settings.json at path: C:\Users\Jason\Documents\Jason\FirmCLI\BYO-Server\.agent-workspace\p4-09-fresh-nrf52840dk-20260717\.claude-p4-10-general\settings.json
+2026-07-18T08:23:36.547Z [DEBUG] Broken symlink or missing file encountered for settings.json at path: C:\Users\Jason\Documents\Jason\FirmCLI\BYO-Server\.agent-workspace\p4-09-fresh-nrf52840dk-20260717\.claude\settings.json
+2026-07-18T08:23:36.548Z [DEBUG] Broken symlink or missing file encountered for settings.json at path: C:\Users\Jason\Documents\Jason\FirmCLI\BYO-Server\.agent-workspace\p4-09-fresh-nrf52840dk-20260717\.claude\settings.local.json
+2026-07-18T08:23:36.549Z [DEBUG] Broken symlink or missing file encountered for settings.json at path: C:\Program Files\ClaudeCode\managed-settings.json
+2026-07-18T08:23:36.561Z [DEBUG] Writing to temp file: C:\Users\Jason\Documents\Jason\FirmCLI\BYO-Server\.agent-workspace\p4-09-fresh-nrf52840dk-20260717\.claude-p4-10-general\.claude.json.tmp.680.1784363016561
+2026-07-18T08:23:36.562Z [DEBUG] Preserving file permissions: 100666
+2026-07-18T08:23:36.565Z [DEBUG] Temp file written successfully, size: 205 bytes
+2026-07-18T08:23:36.566Z [DEBUG] Applied original permissions to temp file
+2026-07-18T08:23:36.567Z [DEBUG] Renaming C:\Users\Jason\Documents\Jason\FirmCLI\BYO-Server\.agent-workspace\p4-09-fresh-nrf52840dk-20260717\.claude-p4-10-general\.claude.json.tmp.680.1784363016561 to C:\Users\Jason\Documents\Jason\FirmCLI\BYO-Server\.agent-workspace\p4-09-fresh-nrf52840dk-20260717\.claude-p4-10-general\.claude.json
+2026-07-18T08:23:36.569Z [DEBUG] File C:\Users\Jason\Documents\Jason\FirmCLI\BYO-Server\.agent-workspace\p4-09-fresh-nrf52840dk-20260717\.claude-p4-10-general\.claude.json written atomically
+2026-07-18T08:23:36.579Z [DEBUG] [STARTUP] Loading MCP configs...
+2026-07-18T08:23:36.584Z [DEBUG] [ToolSearch:optimistic] mode=tst, ENABLE_TOOL_SEARCH=undefined, result=true
+2026-07-18T08:23:36.585Z [DEBUG] [STARTUP] Running setup()...
+2026-07-18T08:23:36.588Z [DEBUG] Broken symlink or missing file encountered for settings.json at path: C:\Program Files\ClaudeCode\managed-settings.json
+2026-07-18T08:23:36.592Z [DEBUG] Loading skills from: managed=C:\Program Files\ClaudeCode\.claude\skills, user=C:\Users\Jason\Documents\Jason\FirmCLI\BYO-Server\.agent-workspace\p4-09-fresh-nrf52840dk-20260717\.claude-p4-10-general\skills, project=[C:\Users\Jason\Documents\Jason\FirmCLI\BYO-Server\.agent-workspace\.claude\skills]
+2026-07-18T08:23:36.596Z [DEBUG] Error log sink initialized
+2026-07-18T08:23:36.612Z [DEBUG] Broken symlink or missing file encountered for settings.json at path: C:\Program Files\ClaudeCode\managed-settings.json
+2026-07-18T08:23:36.613Z [DEBUG] Broken symlink or missing file encountered for settings.json at path: C:\Program Files\ClaudeCode\managed-settings.json
+2026-07-18T08:23:36.614Z [DEBUG] installed_plugins.json doesn't exist, returning empty V2 object
+2026-07-18T08:23:36.615Z [DEBUG] Broken symlink or missing file encountered for settings.json at path: C:\Program Files\ClaudeCode\managed-settings.json
+2026-07-18T08:23:36.616Z [DEBUG] Found 0 plugins (0 enabled, 0 disabled)
+2026-07-18T08:23:36.616Z [DEBUG] getPluginSkills: Processing 0 enabled plugins
+2026-07-18T08:23:36.617Z [DEBUG] Registered 0 hooks from 0 plugins
+2026-07-18T08:23:36.617Z [DEBUG] Total plugin skills loaded: 0
+2026-07-18T08:23:36.618Z [DEBUG] Total plugin commands loaded: 0
+2026-07-18T08:23:36.619Z [DEBUG] [STARTUP] setup() completed in 34ms
+2026-07-18T08:23:36.619Z [DEBUG] Cleared CA certificates cache
+2026-07-18T08:23:36.619Z [DEBUG] Cleared mTLS configuration cache
+2026-07-18T08:23:36.620Z [DEBUG] Cleared proxy agent cache
+2026-07-18T08:23:36.620Z [DEBUG] CA certs: useSystemCA=false, extraCertsPath=undefined
+2026-07-18T08:23:36.621Z [DEBUG] [STARTUP] Loading commands and agents...
+2026-07-18T08:23:36.667Z [DEBUG] Git remote URL: https://github.com/JasonPeng2019/CodexClaudeWorkflow.git
+2026-07-18T08:23:36.668Z [DEBUG] Parsed repository: github.com/JasonPeng2019/CodexClaudeWorkflow from URL: https://github.com/JasonPeng2019/CodexClaudeWorkflow.git
+2026-07-18T08:23:36.674Z [DEBUG] Loaded 28 unique skills (28 unconditional, 0 conditional, managed: 0, user: 0, project: 28, additional: 0, legacy commands: 0)
+2026-07-18T08:23:36.675Z [DEBUG] getSkills returning: 28 skill dir commands, 0 plugin skills, 6 bundled skills, 0 builtin plugin skills
+2026-07-18T08:23:36.679Z [DEBUG] Total plugin agents loaded: 0
+2026-07-18T08:23:36.680Z [DEBUG] [STARTUP] Commands and agents loaded in 58ms
+2026-07-18T08:23:36.682Z [DEBUG] [LSP MANAGER] initializeLspServerManager() called
+2026-07-18T08:23:36.683Z [DEBUG] [LSP MANAGER] Created manager instance, state=pending
+2026-07-18T08:23:36.684Z [DEBUG] [LSP MANAGER] Starting async initialization (generation 1)
+2026-07-18T08:23:36.685Z [DEBUG] Starting background startup prefetches
+2026-07-18T08:23:36.686Z [DEBUG] [clientData] skipped: not OAuth subscriber or missing profile scope
+2026-07-18T08:23:36.687Z [DEBUG] [clientData] cache updated, persisting to disk
+2026-07-18T08:23:36.693Z [DEBUG] Writing to temp file: C:\Users\Jason\Documents\Jason\FirmCLI\BYO-Server\.agent-workspace\p4-09-fresh-nrf52840dk-20260717\.claude-p4-10-general\.claude.json.tmp.680.1784363016693
+2026-07-18T08:23:36.694Z [DEBUG] Preserving file permissions: 100666
+2026-07-18T08:23:36.697Z [DEBUG] Temp file written successfully, size: 282 bytes
+2026-07-18T08:23:36.697Z [DEBUG] Applied original permissions to temp file
+2026-07-18T08:23:36.698Z [DEBUG] Renaming C:\Users\Jason\Documents\Jason\FirmCLI\BYO-Server\.agent-workspace\p4-09-fresh-nrf52840dk-20260717\.claude-p4-10-general\.claude.json.tmp.680.1784363016693 to C:\Users\Jason\Documents\Jason\FirmCLI\BYO-Server\.agent-workspace\p4-09-fresh-nrf52840dk-20260717\.claude-p4-10-general\.claude.json
+2026-07-18T08:23:36.700Z [DEBUG] File C:\Users\Jason\Documents\Jason\FirmCLI\BYO-Server\.agent-workspace\p4-09-fresh-nrf52840dk-20260717\.claude-p4-10-general\.claude.json written atomically
+2026-07-18T08:23:36.701Z [DEBUG] [STARTUP] MCP configs resolved in 3ms (awaited at +121ms)
+2026-07-18T08:23:36.714Z [DEBUG] Total LSP servers loaded: 0
+2026-07-18T08:23:36.715Z [DEBUG] [LSP SERVER MANAGER] getAllLspServers returned 0 server(s)
+2026-07-18T08:23:36.715Z [DEBUG] LSP manager initialized with 0 servers
+2026-07-18T08:23:36.721Z [DEBUG] CLAUDE_CODE_WEBSOCKET_AUTH_FILE_DESCRIPTOR not set, no file descriptor token available
+2026-07-18T08:23:36.727Z [DEBUG] MCP server "pyocd-debug": Starting connection with timeout of 30000ms
+2026-07-18T08:23:36.748Z [DEBUG] LSP server manager initialized successfully
+2026-07-18T08:23:36.748Z [DEBUG] LSP notification handlers registered successfully for all 0 server(s)
+2026-07-18T08:23:39.447Z [DEBUG] MCP server "pyocd-debug": Successfully connected to stdio server in 2726ms
+2026-07-18T08:23:39.448Z [DEBUG] MCP server "pyocd-debug": Connection established with capabilities: {"hasTools":true,"hasPrompts":true,"hasResources":true,"hasResourceSubscribe":false,"serverVersion":{"name":"pyocd-debug","version":"1.28.1"}}
+2026-07-18T08:23:39.449Z [DEBUG] [MCP] Server "pyocd-debug" connected with subscribe=false
+2026-07-18T08:23:39.508Z [DEBUG] Broken symlink or missing file encountered for settings.json at path: C:\Program Files\ClaudeCode\managed-settings.json
+2026-07-18T08:23:39.509Z [DEBUG] Broken symlink or missing file encountered for settings.json at path: C:\Users\Jason\Documents\Jason\FirmCLI\BYO-Server\.agent-workspace\p4-09-fresh-nrf52840dk-20260717\.claude\settings.local.json
+2026-07-18T08:23:39.510Z [DEBUG] Broken symlink or missing file encountered for settings.json at path: C:\Users\Jason\Documents\Jason\FirmCLI\BYO-Server\.agent-workspace\p4-09-fresh-nrf52840dk-20260717\.claude-p4-10-general\settings.json
+2026-07-18T08:23:39.526Z [DEBUG] Broken symlink or missing file encountered for settings.json at path: C:\Program Files\ClaudeCode\managed-settings.json
+2026-07-18T08:23:39.527Z [DEBUG] Initialized versioned plugins system with 0 plugins
+2026-07-18T08:23:39.528Z [DEBUG] Cleared CA certificates cache
+2026-07-18T08:23:39.529Z [DEBUG] Cleared mTLS configuration cache
+2026-07-18T08:23:39.530Z [DEBUG] Cleared proxy agent cache
+2026-07-18T08:23:39.530Z [DEBUG] CA certs: useSystemCA=false, extraCertsPath=undefined
+2026-07-18T08:23:39.532Z [DEBUG] Broken symlink or missing file encountered for settings.json at path: C:\Program Files\ClaudeCode\managed-settings.json
+2026-07-18T08:23:39.618Z [DEBUG] Fast mode unavailable: Fast mode is not available in the Agent SDK
+2026-07-18T08:23:39.621Z [DEBUG] [Perfetto] initializePerfettoTracing called, env value: undefined
+2026-07-18T08:23:39.622Z [DEBUG] [3P telemetry] isTelemetryEnabled=false (CLAUDE_CODE_ENABLE_TELEMETRY=undefined)
+2026-07-18T08:23:39.689Z [DEBUG] Broken symlink or missing file encountered for settings.json at path: C:\Program Files\ClaudeCode\managed-settings.json
+2026-07-18T08:23:39.690Z [WARN] auto mode disabled: tengu_auto_mode_config.enabled === "disabled" (circuit breaker)
+2026-07-18T08:23:39.694Z [DEBUG] Broken symlink or missing file encountered for settings.json at path: C:\Program Files\ClaudeCode\managed-settings.json
+2026-07-18T08:23:39.696Z [DEBUG] Broken symlink or missing file encountered for settings.json at path: C:\Program Files\ClaudeCode\managed-settings.json
+2026-07-18T08:23:39.696Z [DEBUG] Getting matching hook commands for SessionStart with query: startup
+2026-07-18T08:23:39.697Z [DEBUG] Found 0 hook matchers in settings
+2026-07-18T08:23:39.698Z [DEBUG] Matched 0 unique hooks for query "startup" (0 before deduplication)
+2026-07-18T08:23:39.706Z [DEBUG] [ScheduledTasks] scheduler start() — enabled=false, hasTasks=false
+2026-07-18T08:23:39.712Z [DEBUG] installPluginsForHeadless: starting
+2026-07-18T08:23:39.713Z [DEBUG] Found 0 installed plugins
+2026-07-18T08:23:39.714Z [DEBUG] installPluginsForHeadless: no missing plugins or marketplaces configured
+2026-07-18T08:23:39.772Z [DEBUG] Total plugin output styles loaded: 0
+2026-07-18T08:23:39.809Z [DEBUG] Fetching plugin security messages from https://raw.githubusercontent.com/anthropics/claude-plugins-official/refs/heads/security/security.json
+2026-07-18T08:23:39.831Z [DEBUG] Ripgrep first use test: PASSED (mode=embedded, path=C:\Users\Jason\.local\bin\claude.exe)
+2026-07-18T08:23:39.865Z [DEBUG] LSP Diagnostics: getLSPDiagnosticAttachments called
+2026-07-18T08:23:39.866Z [DEBUG] LSP Diagnostics: Checking registry - 0 pending
+2026-07-18T08:23:39.866Z [DEBUG] Hooks: Found 0 total hooks in registry
+2026-07-18T08:23:39.867Z [DEBUG] Sending 4 skills via attachment (initial, 4 total sent)
+2026-07-18T08:23:39.868Z [DEBUG] Hooks: checkForNewResponses returning 0 responses
+2026-07-18T08:23:39.871Z [WARN] [3P telemetry] Event dropped (no event logger initialized): user_prompt
+2026-07-18T08:23:39.873Z [DEBUG] Fast mode unavailable: Fast mode is not available in the Agent SDK
+2026-07-18T08:23:39.880Z [DEBUG] autocompact: tokens=383 threshold=167000 effectiveWindow=180000
+2026-07-18T08:23:39.885Z [DEBUG] Dynamic tool loading: 0/64 deferred tools included
+2026-07-18T08:23:39.888Z [DEBUG] attribution header x-anthropic-billing-header: cc_version=2.1.76.b57; cc_entrypoint=sdk-cli; cch=00000;
+2026-07-18T08:23:39.889Z [DEBUG] Fast mode unavailable: Fast mode is not available in the Agent SDK
+2026-07-18T08:23:39.891Z [DEBUG] [API:request] Creating client, ANTHROPIC_CUSTOM_HEADERS present: false, has Authorization header: false
+2026-07-18T08:23:39.891Z [DEBUG] [API:auth] OAuth token check starting
+2026-07-18T08:23:39.892Z [DEBUG] Fast mode unavailable: Fast mode is not available in the Agent SDK
+2026-07-18T08:23:39.893Z [DEBUG] [API:auth] OAuth token check complete
+2026-07-18T08:23:39.895Z [DEBUG] Fast mode unavailable: Fast mode is not available in the Agent SDK
+2026-07-18T08:23:39.899Z [ERROR] API error (attempt 1/11): Could not resolve authentication method. Expected either apiKey or authToken to be set. Or for one of the "X-Api-Key" or "Authorization" headers to be explicitly omitted
+2026-07-18T08:23:39.902Z [ERROR] Error in API request: Could not resolve authentication method. Expected either apiKey or authToken to be set. Or for one of the "X-Api-Key" or "Authorization" headers to be explicitly omitted
+2026-07-18T08:23:39.903Z [ERROR] "Error: Error: Could not resolve authentication method. Expected either apiKey or authToken to be set. Or for one of the \"X-Api-Key\" or \"Authorization\" headers to be explicitly omitted\n    at validateHeaders (B:/~BUN/root/src/entrypoints/cli.js:503:1013)\n    at buildHeaders (B:/~BUN/root/src/entrypoints/cli.js:503:8580)\n    at processTicksAndRejections (native:7:39)"
+2026-07-18T08:23:39.906Z [DEBUG] Fast mode unavailable: Fast mode is not available in the Agent SDK
+2026-07-18T08:23:39.910Z [DEBUG] MCP server "pyocd-debug": Sending SIGINT to MCP server process
+2026-07-18T08:23:39.912Z [DEBUG] LSP server manager shut down successfully
+2026-07-18T08:23:39.915Z [DEBUG] Failed to check metrics opt-out status: Auth error: No API key available
+2026-07-18T08:23:39.915Z [ERROR] "Error: Error: Auth error: No API key available\n    at TV8 (B:/~BUN/root/src/entrypoints/cli.js:2420:24050)\n    at NP6 (B:/~BUN/root/src/entrypoints/cli.js:2420:24413)\n    at <anonymous> (B:/~BUN/root/src/entrypoints/cli.js:96:27476)\n    at XV8 (B:/~BUN/root/src/entrypoints/cli.js:2420:24942)\n    at VV8 (B:/~BUN/root/src/entrypoints/cli.js:2420:25356)\n    at doExport (B:/~BUN/root/src/entrypoints/cli.js:2420:26074)\n    at export (B:/~BUN/root/src/entrypoints/cli.js:2420:25782)\n    at <anonymous> (B:/~BUN/root/src/entrypoints/cli.js:103:154969)\n    at <anonymous> (B:/~BUN/root/src/entrypoints/cli.js:103:154909)\n    at new Promise (native:1:11)"
+2026-07-18T08:23:39.916Z [DEBUG] Metrics export disabled by organization setting
+2026-07-18T08:23:39.916Z [DEBUG] BigQuery metrics exporter flush complete
+2026-07-18T08:23:39.917Z [DEBUG] BigQuery metrics exporter flush complete
+2026-07-18T08:23:39.917Z [DEBUG] BigQuery metrics exporter shutdown complete
+2026-07-18T08:23:39.919Z [DEBUG] "rg error (signal=undefined, code=2, stderr: rg: C:\\Users\\Jason\\Documents\\Jason\\FirmCLI\\BYO-Server\\.agent-workspace\\p4-09-fresh-nrf52840dk-20260717\\.claude-p4-10-general\\plugins\\cache: IO error for operation on C:\\Users\\Jason\\Documents\\Jason\\FirmCLI\\BYO-Server\\.agent-workspace\\p4-09-fresh-nrf52840dk-20260717\\.claude-p4-10-general\\plugins\\cache: The system cannot find the path specified. (os error 3)\n), 0 results"
+2026-07-18T08:23:39.965Z [DEBUG] Security messages saved successfully
+2026-07-18T08:23:39.973Z [DEBUG] MCP server "pyocd-debug": MCP server process exited cleanly
+2026-07-18T08:23:40.162Z [DEBUG] MCP server "pyocd-debug": STDIO connection closed after 0s (cleanly)
+2026-07-18T08:23:40.163Z [DEBUG] MCP server "pyocd-debug": Cleared connection cache for reconnection
+2026-07-18T08:23:40.165Z [DEBUG] Broken symlink or missing file encountered for settings.json at path: C:\Program Files\ClaudeCode\managed-settings.json
+2026-07-18T08:23:40.165Z [DEBUG] Broken symlink or missing file encountered for settings.json at path: C:\Program Files\ClaudeCode\managed-settings.json
+2026-07-18T08:23:40.166Z [DEBUG] Getting matching hook commands for SessionEnd with query: other
+2026-07-18T08:23:40.166Z [DEBUG] Found 0 hook matchers in settings
+2026-07-18T08:23:40.167Z [DEBUG] Matched 0 unique hooks for query "other" (0 before deduplication)

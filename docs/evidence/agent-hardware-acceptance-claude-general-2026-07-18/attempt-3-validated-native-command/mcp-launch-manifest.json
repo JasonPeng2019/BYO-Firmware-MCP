@@ -1,0 +1,18 @@
+{
+  "schema_version": 1,
+  "server": {
+    "name": "pyocd-debug",
+    "transport": "stdio",
+    "command": "uv",
+    "args": [
+      "run",
+      "--project",
+      "C:\\Users\\Jason\\Documents\\Jason\\FirmCLI\\BYO-Server",
+      "--locked",
+      "pyocd-debug-mcp"
+    ],
+    "cwd": "C:\\Users\\Jason\\Documents\\Jason\\FirmCLI\\BYO-Server",
+    "env": {}
+  },
+  "note": "This is a neutral launch manifest. The configured CLI or wrapper must translate it to that client's MCP configuration format."
+}

@@ -1,0 +1,29 @@
+# P4-10 Codex GPT-5.4 hardware parity pass ? generic collected artifact
+
+You are the sole hardware operator for this one bounded parity pass. Work in `C:\Users\Jason\Documents\Jason\FirmCLI\BYO-Server\.agent-workspace\p4-09-fresh-nrf52840dk-20260717` and use its checkout-scoped `pyocd-debug` MCP server. The user explicitly authorizes this run's one application-partition flash of the already-built application. Never call target_unlock, mass erase, flash_bootloader, raw memory/register writes, build helpers, west, CMake, compilers, board_safety_refresh, or unrelated destructive actions. Do not rebuild or recollect anything.
+
+Known and already proven by P4-09 plus the immediately preceding Sonnet phase:
+- familiar name: P4-09 nRF52840 DK
+- machine board ID: p4_09_nrf52840dk
+- exact MCU: nRF52840-QIAA
+- expected probe UID: 683377322
+- stable UART identity: 000683377322, currently COM11, 115200
+- generic workflow: Sonnet used the native local NCS CLI directly, never the BYO Zephyr helper/fallback
+- live generic collector bundle: `C:\Users\Jason\Documents\Jason\FirmCLI\BYO-Server\.agent-workspace\p4-09-fresh-nrf52840dk-20260717\collected-general-final`
+- canonical application ELF: `C:\Users\Jason\Documents\Jason\FirmCLI\BYO-Server\.agent-workspace\p4-09-fresh-nrf52840dk-20260717\collected-general-final\firmware.elf`
+- canonical application HEX: `C:\Users\Jason\Documents\Jason\FirmCLI\BYO-Server\.agent-workspace\p4-09-fresh-nrf52840dk-20260717\collected-general-final\firmware.hex`
+- canonical linker map: `C:\Users\Jason\Documents\Jason\FirmCLI\BYO-Server\.agent-workspace\p4-09-fresh-nrf52840dk-20260717\collected-general-final\firmware.map`
+- recorded SHA-256: {"build-manifest.json": "b2d5982d1fab66aba75bce06cbaf1625cce39eb25782a952664fdd9c3e9f5838", "firmware.elf": "557eb46e64a2793fe3719d372200cf08ab4b2e11700eee0f8c4aa7856608d482", "firmware.hex": "b349994aba49a8665ff049fae229f1d22b8ac589874c8ead702d85b05cce3a3b", "firmware.map": "ae7624dd8d82b11390c90cef90a8f9acb422edf59e2c579c9065dfc8ae110749"}
+- `board_safety_refresh` already returned `safety_refresh_completed` for exactly these canonical artifacts; do not refresh again.
+
+Perform once, in order. Stop on failure, write a truthful result, and do only safe final-state/disconnect cleanup. Do not retry a plan, flash, or UART conversation.
+
+1. Call `initialization_handshake`; call `setup_overview` with the familiar name; call `load_setup_tool` for the route's `board_validate`; call `board_validate` while positively matching probe UID 683377322; call `get_setup_status`. Require current configuration, live session, and UART attachment readiness and exact stable identities. Confirm the safety map fingerprint is current for the canonical collected bundle.
+
+2. Call `flash_application-plan` once with every live plan field NULL and read the teaching. Submit one exact populated fixed 1+0 plan bound to this board and canonical application ELF (or HEX only if the server teaching explicitly requires it). Omit permission fields when the live definition says none. After acceptance, prefer a dynamically exposed direct `flash_application`. If and only if the client still lacks a direct binding, use the accepted response's exact one-child `action_batch` fallback unchanged. Flash exactly once, record direct-versus-fallback, and leave the application running.
+
+3. Call `serial_exchange-plan` all-NULL, then submit one exact populated plan for a single state-preserving UART conversation on one open: `blink on` with LF expecting `BLINK ON`, then `blink off` with LF expecting `BLINK OFF`. Use 115200, the server-resolved current port, bounded readiness/read windows, and a consistent clear-input policy. Prefer direct dynamically exposed `serial_exchange`; only if unavailable use the exact returned one-child fallback unchanged. Require both matches and require the returned UART excerpt to contain a tagged blink-transition line proving the dedicated blink thread executed between commands.
+
+4. Confirm the target is running, then disconnect exactly once. Give a brief conversational result without internal IDs, JSON, or plan fields.
+
+Return one JSON object containing at least: `status`, `provider`, `model`, `board_id`, `probe_uid`, `serial_id`, `artifact_paths`, `artifact_hashes`, `validation_status`, `flash_plan_id`, `flash_execution_path`, `flash_result`, `serial_plan_id`, `serial_execution_path`, `serial_all_steps_matched`, `blink_thread_event_observed`, `uart_excerpt`, `final_target_state`, `disconnected`, `mcp_tools_used`, `unlisted_tool_requested`, `internal_ids_leaked_to_user`, `user_facing_response`, and `notes`.

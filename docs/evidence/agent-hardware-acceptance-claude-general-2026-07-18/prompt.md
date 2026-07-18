@@ -1,0 +1,34 @@
+# P4-10 primary Sonnet hardware acceptance ? generic native-build path
+
+You are the sole firmware author and hardware operator for this one bounded acceptance journey. Work only in `C:\Users\Jason\Documents\Jason\FirmCLI\BYO-Server\.agent-workspace\p4-09-fresh-nrf52840dk-20260717`. Use the checkout-scoped `pyocd-debug` MCP server and ordinary local project build tools. The user explicitly authorizes this run's one application-partition flash. Never call target_unlock, flash_bootloader, mass erase, raw memory/register writes, action_batch, or any unrelated destructive action.
+
+Known P4-09 identity:
+- familiar name: P4-09 nRF52840 DK
+- machine board ID: p4_09_nrf52840dk
+- reviewed board type: nrf52840dk
+- exact MCU: nRF52840-QIAA
+- expected probe UID: 683377322
+- stable UART identity: 000683377322 (currently COM11)
+- baud: 115200
+
+Critical build rule: use the server's provider-neutral `native_project_build` workflow and its live always-visible `collect_build_artifacts` MCP tool. DO NOT call, import, or execute `pyocd_debug_mcp.zephyr_build`, `pyocd-zephyr-build`, or the returned `toolchain_fallback`; those are explicitly forbidden backups in this run. Do not download an SDK. Discover and reuse the already-installed local NCS/Zephyr environment, then invoke that project's ordinary native `west build` CLI directly. The native build may set the local toolchain environment variables it genuinely requires. Run exactly one build command. After it succeeds, explicitly supply the coherent application ELF, HEX, and linker map paths to `collect_build_artifacts`; the collector must not search or build.
+
+Perform these phases in order. Stop on failure, write a truthful blocked result, and do only safe disconnect/final-state cleanup. Do not retry any build, refresh, flash, or UART conversation.
+
+1. Call `initialization_handshake`; call `setup_overview` with the familiar name; load the returned `board_validate` guidance; call `board_validate` and positively match probe UID 683377322; then call `get_setup_status`. Require configuration, live session, and UART attachment readiness and matching stable identities. Confirm `build_guidance.primary_workflow` is `native_project_build`, record its generic artifact-collection template, and ignore the optional Zephyr fallback.
+
+2. Author a new application only under `app-general/`. It must be a genuine Zephyr multithreaded program: a dedicated blink thread controls the board `led0` while the independent Zephyr UART shell accepts commands. Required commands and responses are `blink on` -> `BLINK ON`, `blink status` -> `BLINK STATUS: ON` or `BLINK STATUS: OFF`, and `blink off` -> `BLINK OFF`. Emit a tagged terminal print for each physical blink transition so UART evidence proves the blink thread executed. Use bounded sleeps, safe atomic/shared state, 115200 UART shell, and no networking, bootloader, MCUboot, security/provisioning, or erase behavior.
+
+3. Build exactly once to a new `native-build-general/` directory using the already-installed local NCS workspace and its ordinary native `west build` command. Do not use any BYO Zephyr helper or server fallback. Do not perform a probe build first and do not retry. Record the exact native command, environment selections, exit code, and local NCS/SDK paths. Identify the coherent application-domain ELF, HEX, and matching linker map produced by that one build; do not choose an aggregate or bootloader image.
+
+4. Call live MCP `collect_build_artifacts` once with those explicit ELF/HEX/map paths, `output_dir` set to new `collected-general/`, and `expected_roles` exactly `["elf", "hex", "map"]`. Use only its returned canonical paths afterward. Record its manifest and hashes. This is provenance only, not authority.
+
+5. Call `board_safety_refresh` once using the collector-returned canonical application ELF, HEX, and map and no bootloader artifacts. Require a completed scoped refresh. Verify the application segments, entry point, vector table, and erase geometry remain within the pre-existing reviewed deployment envelope and do not overlap prohibited space; refresh must not widen authority.
+
+6. Call `flash_application-plan` with all live plan fields NULL, read the teaching, then submit one exact populated fixed 1+0 plan bound to this board and the collector-returned application artifact. Omit permission fields when the live definition says none. After acceptance, refresh/list tools and call the dynamically exposed direct `flash_application`, never action_batch. Flash exactly once and leave the application running.
+
+7. Call `serial_exchange-plan` all-NULL, then submit one exact populated plan for a single direct state-preserving four-step exchange on one UART open: `blink on` expecting `BLINK ON`; `blink status` expecting `BLINK STATUS: ON`; `blink off` expecting `BLINK OFF`; `blink status` expecting `BLINK STATUS: OFF`. Use LF, 115200, the current resolved port, bounded readiness/read windows, and one consistent clear-input policy. Require all four matches. The UART excerpt must also contain at least one tagged blink-transition line emitted by the dedicated thread. Call direct dynamically exposed `serial_exchange`, never action_batch or separate serial tools.
+
+8. Confirm the target is running, then disconnect exactly once. Give only a brief conversational final response without internal IDs, JSON, or plan fields.
+
+Write one machine result JSON object containing at least: `status`, `provider`, `model`, `board_id`, `probe_uid`, `serial_id`, `build_workflow`, `forbidden_helper_used`, `native_build_command`, `native_build_environment`, `build_count`, `build_exit_code`, `local_workspace`, `local_sdk`, `source_files`, `raw_build_artifacts`, `collector_call`, `collected_artifacts`, `collector_manifest`, `artifact_hashes`, `safety_refresh_status`, `safety_containment_proven`, `flash_plan_id`, `flash_artifact`, `flash_direct_action`, `flash_result`, `serial_plan_id`, `serial_direct_action`, `serial_all_steps_matched`, `blink_thread_event_observed`, `uart_excerpt`, `final_target_state`, `disconnected`, `mcp_tools_used`, `user_facing_response`, and `notes`. Internal IDs belong only in this machine file.
