@@ -164,9 +164,7 @@ def _policy(
 
 
 def _ihex_record(address: int, record_type: int, data: bytes = b"") -> str:
-    payload = bytes(
-        [len(data), (address >> 8) & 0xFF, address & 0xFF, record_type, *data]
-    )
+    payload = bytes([len(data), (address >> 8) & 0xFF, address & 0xFF, record_type, *data])
     return f":{payload.hex().upper()}{(-sum(payload)) & 0xFF:02X}"
 
 
@@ -180,6 +178,89 @@ def test_ac_14_3_memory_writes_are_fully_contained_in_ram(tmp_path: Path) -> Non
     with pytest.raises(SafetyPolicyError) as boundary:
         policy.check_memory_write("board_a", 0x2000FFFF, 32)
     assert boundary.value.code == "safety/unknown"
+
+
+def test_gap_09_memory_reads_require_mapped_non_prohibited_containment(
+    tmp_path: Path,
+) -> None:
+    policy = _policy(tmp_path)
+
+    for address in (0x08000000, 0x20000000, 0x40000000):
+        assert policy.check_memory_read("board_a", address, 4)
+
+    with pytest.raises(SafetyPolicyError) as unknown:
+        policy.check_memory_read("board_a", 0x60000000, 4)
+    assert unknown.value.code == "safety/unknown"
+    assert "region kind 'unknown'" in str(unknown.value)
+    assert unknown.value.remedy == ("board_safety_setup",)
+
+    with pytest.raises(SafetyPolicyError) as prohibited:
+        policy.check_memory_read("board_a", 0x40001000, 4)
+    assert prohibited.value.code == "safety/prohibited"
+    assert "region kind 'prohibited'" in str(prohibited.value)
+    assert prohibited.value.remedy == ("choose a mapped, non-prohibited address",)
+
+
+def test_memory_read_handlers_check_exact_spans_before_backend_access(
+    tmp_path: Path,
+) -> None:
+    policy = _policy(tmp_path)
+    backend_calls: list[tuple[str, int, int]] = []
+    checked: list[tuple[str, int, int]] = []
+
+    def check_read(board: str, address: int, size_bytes: int) -> None:
+        checked.append((board, address, size_bytes))
+        policy.check_memory_read(board, address, size_bytes)
+
+    common = {
+        "runtime_for": lambda board: None,
+        "active_session_id": lambda board: None,
+        "duration_ms": lambda started: 1,
+        "record_event": lambda *args, **kwargs: None,
+        "format_refusal": lambda refusal, **kwargs: str(refusal),
+    }
+    symbol_address = {"value": 0x20000010}
+    memory = build_memory_handlers(
+        MemoryToolServices(
+            **common,
+            handle_for=lambda board: object(),
+            symbol_artifact_for=lambda handle: NUCLEO_ELF,
+            find_symbols=lambda artifact, query: (),
+            resolve_symbol=lambda artifact, symbol: ResolvedSymbol(
+                symbol, symbol_address["value"], 128, "STT_OBJECT"
+            ),
+            read_target_memory=lambda handle, address, width: (
+                backend_calls.append(("scalar", address, width)) or 0
+            ),
+            read_target_block=lambda handle, address, length: (
+                backend_calls.append(("block", address, length)) or []
+            ),
+            write_target_memory=lambda *args: None,
+            check_memory_read=check_read,
+        )
+    )
+
+    memory["read_memory_symbol"]("board_a", "buffer", 16)
+    memory["read_memory_address"]("board_a", "0x08000000", 32, None)
+    memory["read_memory_address"]("board_a", "0x40000000", 8, 12)
+    assert checked == [
+        ("board_a", 0x20000010, 2),
+        ("board_a", 0x08000000, 4),
+        ("board_a", 0x40000000, 12),
+    ]
+    assert len(backend_calls) == 3
+
+    backend_calls.clear()
+    symbol_address["value"] = 0x40001000
+    with pytest.raises(SafetyPolicyError) as prohibited:
+        memory["read_memory_symbol"]("board_a", "sensitive", 32)
+    assert prohibited.value.code == "safety/prohibited"
+    assert backend_calls == []
+
+    with pytest.raises(SafetyPolicyError) as unknown:
+        memory["read_memory_address"]("board_a", "0x60000000", 8, 16)
+    assert unknown.value.code == "safety/unknown"
+    assert backend_calls == []
 
 
 def test_persisted_legacy_authority_map_cannot_be_restored_after_restart(
@@ -366,10 +447,13 @@ def test_ac_14_4_and_14_10_crafted_flash_rejection_has_zero_backend_calls(
 
     with pytest.raises(SafetyPolicyError) as refusal:
         handlers["flash_application"]("board_a", str(artifact))
-    assert refusal.value.code == {
-        "partition-crossing": "build/hex-outside-elf",
-        "erase-crossing": "safety/erase-sector-outside-partition",
-    }[case]
+    assert (
+        refusal.value.code
+        == {
+            "partition-crossing": "build/hex-outside-elf",
+            "erase-crossing": "safety/erase-sector-outside-partition",
+        }[case]
+    )
     assert refusal.value.remedy in {
         ("select_valid_build_artifact", "board_safety_refresh"),
         ("select_correct_build", "board_safety_refresh"),
@@ -460,6 +544,39 @@ def test_live_fingerprint_inputs_are_recomputed_on_every_write_check(tmp_path: P
     assert stale.value.remedy == ("board_safety_setup",)
 
 
+@pytest.mark.parametrize("source", ["geometry", "schema"])
+def test_structural_drift_requires_full_safety_setup_then_validation(
+    tmp_path: Path,
+    source: str,
+) -> None:
+    persisted = _policy(tmp_path)
+    original = _inputs()
+    values = original.values()
+    values[FingerprintSource.GEOMETRY if source == "geometry" else FingerprintSource.SCHEMA] = {
+        "changed": source
+    }
+    changed = FingerprintInputs(
+        values[FingerprintSource.PROFILE],
+        values[FingerprintSource.PART_TARGET],
+        values[FingerprintSource.PACK],
+        values[FingerprintSource.EVIDENCE],
+        values[FingerprintSource.APPLICATION_ARTIFACTS],
+        values[FingerprintSource.BOOTLOADER_ARTIFACTS],
+        values[FingerprintSource.GEOMETRY],
+        values[FingerprintSource.SCHEMA],
+    )
+    policy = SafetyPolicy(
+        persisted.repository,
+        live_inputs=lambda _board, _artifacts: changed,
+        authority_verifier=persisted.authority_verifier,
+    )
+
+    with pytest.raises(SafetyPolicyError) as stale:
+        policy.current_aggregate("board_a")
+
+    assert stale.value.remedy == ("board_safety_setup", "board_validate")
+
+
 def test_backend_mutations_are_never_called_after_containment_refusal(tmp_path: Path) -> None:
     policy = _policy(tmp_path)
     calls: list[str] = []
@@ -502,6 +619,7 @@ def test_backend_mutations_are_never_called_after_containment_refusal(tmp_path: 
             read_target_memory=lambda handle, address, width: 0,
             read_target_block=lambda handle, address, length: [],
             write_target_memory=lambda *args: calls.append("memory-write"),
+            check_memory_read=lambda board, address, size: None,
             check_memory_write=check_memory,
         )
     )

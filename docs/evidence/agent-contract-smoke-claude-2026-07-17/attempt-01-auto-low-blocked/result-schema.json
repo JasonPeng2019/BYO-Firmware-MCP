@@ -1,0 +1,51 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "scenario_status",
+    "setup_status",
+    "stopped_hardware_path",
+    "null_plan_read_only",
+    "populated_plan_submitted",
+    "real_setup_validation_or_hardware_called",
+    "user_facing_response",
+    "notes"
+  ],
+  "properties": {
+    "scenario_status": {
+      "enum": [
+        "completed",
+        "failed",
+        "blocked"
+      ]
+    },
+    "setup_status": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "stopped_hardware_path": {
+      "type": "boolean"
+    },
+    "null_plan_read_only": {
+      "type": "boolean"
+    },
+    "populated_plan_submitted": {
+      "type": "boolean"
+    },
+    "real_setup_validation_or_hardware_called": {
+      "type": "boolean"
+    },
+    "user_facing_response": {
+      "type": "string"
+    },
+    "notes": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    }
+  }
+}

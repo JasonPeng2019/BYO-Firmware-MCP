@@ -167,11 +167,10 @@ def build_session_options(
     if board and board.probe_family == "jlink":
         # Match the Stage 0/J-Link open-by-serial workaround proven on hardware.
         options["jlink.non_interactive"] = False
-    if board and board.board_id == "nucleo_l476rg":
-        # Current STM32 bench truth on this host requires connecting under reset
-        # at a lower SWD clock to avoid STLink "DP wait" attach failures.
-        options["connect_mode"] = "under-reset"
-        options["frequency"] = 1_000_000
+    if board and board.debug_connect_mode:
+        options["connect_mode"] = board.debug_connect_mode
+    if board and board.debug_clock_hz:
+        options["frequency"] = board.debug_clock_hz
     return options or None
 
 
@@ -477,6 +476,12 @@ class PyOCDSWDInterface(SWDInterface):
                 FlashEraser(handle.session, FlashEraser.Mode.MASS).erase()
         except Exception as exc:  # noqa: BLE001 - preserve backend context
             raise _typed_backend_error(exc) from exc
+
+    def supports_recovery(self, handle: TargetSessionHandle, mechanism: str) -> bool:
+        return (
+            mechanism == "backend_mass_erase"
+            and getattr(handle.session, "target", None) is not None
+        )
 
     def set_breakpoint(self, handle: TargetSessionHandle, address: int) -> None:
         try:

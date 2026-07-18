@@ -1,0 +1,54 @@
+{
+  "assertions": {
+    "board_setup_plan_all_null_once": {
+      "reason": "provider rejected model before MCP use",
+      "status": "blocked"
+    },
+    "initialization_handshake_called": {
+      "reason": "provider rejected model before MCP use",
+      "status": "blocked"
+    },
+    "no_hardware_setup_or_validation_action": {
+      "reason": "captured MCP timeline contains zero calls",
+      "status": "pass"
+    },
+    "no_populated_plan": {
+      "reason": "no plan call was made",
+      "status": "not_evaluated"
+    },
+    "only_advertised_tools_requested": {
+      "reason": "no tool was requested",
+      "status": "not_evaluated"
+    },
+    "plain_user_facing_response_no_internal_payload": {
+      "reason": "no assistant result was produced",
+      "status": "blocked"
+    },
+    "setup_overview_no_board_called": {
+      "reason": "provider rejected model before MCP use",
+      "status": "blocked"
+    },
+    "stopped_on_setup_no_board": {
+      "reason": "setup_overview was never reached",
+      "status": "blocked"
+    }
+  },
+  "assistant_turn_completed": false,
+  "blocker_code": "provider_cli_upgrade_required",
+  "derived_at": "2026-07-18T05:22:18.570367+00:00",
+  "evidence": [
+    "raw-codex-events.jsonl",
+    "stderr.txt",
+    "provider-exit.json",
+    "advertised-tools.json",
+    "launch-metadata.json"
+  ],
+  "mcp_call_count": 0,
+  "model_request_started": true,
+  "overall_status": "blocked",
+  "provider": "codex",
+  "provider_cli_version": "codex-cli 0.142.2",
+  "provider_error": "The gpt-5.6-luna model requires a newer version of Codex. Please upgrade to the latest app or CLI and try again.",
+  "requested_model": "gpt-5.6-luna",
+  "retry_policy": "No model retry was performed after the provider-side model request failed."
+}

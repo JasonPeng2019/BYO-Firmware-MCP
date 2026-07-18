@@ -1,0 +1,45 @@
+{
+  "schema_version": 1,
+  "name": "claude",
+  "command": [
+    "claude",
+    "-p",
+    "--model",
+    "claude-sonnet-4-5-20250929",
+    "--effort",
+    "medium",
+    "--permission-mode",
+    "default",
+    "--allowedTools",
+    "Read,Write,Edit,Bash,Glob,Grep,ToolSearch,mcp__pyocd-debug__initialization_handshake,mcp__pyocd-debug__setup_overview,mcp__pyocd-debug__load_setup_tool,mcp__pyocd-debug__board_validate,mcp__pyocd-debug__get_setup_status,mcp__pyocd-debug__board_safety_refresh,mcp__pyocd-debug__flash_application-plan,mcp__pyocd-debug__flash_application,mcp__pyocd-debug__serial_exchange-plan,mcp__pyocd-debug__serial_exchange,mcp__pyocd-debug__get_state,mcp__pyocd-debug__reset_and_run,mcp__pyocd-debug__disconnect",
+    "--mcp-config",
+    "{workspace}\\claude-mcp-p4-10.json",
+    "--strict-mcp-config",
+    "--no-session-persistence",
+    "--output-format",
+    "stream-json",
+    "--verbose",
+    "--debug",
+    "mcp",
+    "--debug-file",
+    "{workspace}\\p4-10-claude-debug.log",
+    "Read and follow the complete acceptance scenario in {prompt_path}. Write the required machine result to {result_path}. Execute no other scenario."
+  ],
+  "version_command": [
+    "claude",
+    "--version"
+  ],
+  "registration_check": null,
+  "mcp_mode": "preconfigured",
+  "result_transport": "file",
+  "permission_profile": "isolated-default-exact-allowed-tools",
+  "model": "claude-sonnet-4-5-20250929",
+  "effort": "medium",
+  "inherit_env": [
+    "PATH",
+    "CLAUDE_CODE_GIT_BASH_PATH"
+  ],
+  "env": {
+    "CLAUDE_CONFIG_DIR": "{workspace}\\.claude-config"
+  }
+}

@@ -86,6 +86,9 @@ warnings, soft guardrails, exit state, and a complete example from
 the same definition. `docs/plan-tool-contract.md` is a deterministic human-readable
 rendering of every live plan/action field, budget, and permission mode. Archived
 design prose is historical evidence rather than a second runtime authority.
+After a populated plan is accepted, the response switches to a compact structured unlock payload:
+the unlocked action, exact preferred call, unchanged static-client fallback, bounded usage guidance,
+and reminders. It never repeats the initialization tutorial.
 
 The pinned FastMCP SDK normally ignores unknown function arguments while
 building its Pydantic call model. Plan-tool registration deliberately rebuilds
@@ -126,6 +129,13 @@ Guarded dispatch applies the standard order before starting a handler:
 7. decrement the plan/permission budget exactly once at execution start; and
 8. call the bounded backend operation.
 
+Raw memory-read containment is part of step 6, so rejection occurs before a
+planned call burns budget. The memory handler repeats the same check as a
+defense at the backend boundary, and symbol reads check after resolving the
+symbol but before target I/O. Checks cover only bytes actually read: scalar
+width for scalar/symbol access and requested byte length for block access.
+Mapped region kinds are readable; UNKNOWN and PROHIBITED are fail-closed.
+
 `safety/regions.py` uses typed non-empty half-open ranges. Classification is
 UNKNOWN unless authoritative regions fully contain the request, and any
 prohibited overlap wins. `safety/linker.py` extracts build partitions,
@@ -155,6 +165,14 @@ The resulting action policy is:
 Every refusal is before the corresponding backend mutation and names the
 required remedy.
 
+Normal connection is structurally separate from manual override. The visible
+`connect(board_id)` schema and handler resolve only the named project profile,
+disable legacy launch-environment probe/config fallbacks, and reject unknown
+fields before backend dispatch. The hidden `connect_override` retains explicit
+run-scoped probe, target, and external-config values behind its plan. Batch
+children traverse the same strict FastMCP argument model, so batching cannot
+reintroduce the removed public override channel.
+
 ## Setup and agent relay boundary
 
 Setup deterministically inventories probes, serial ports, cache matches,
@@ -178,13 +196,33 @@ target into the paired repair attempt. Pack candidates are staged under the
 project `.firm` root, checked, enumerated, live-connected, and only then added
 to the authoritative project manifest.
 
-`get_setup_status` is the explicit pre-code barrier. For a known catalog MCU it
-also returns advisory Zephyr board-target guidance and the
-exact running-Python module command for `pyocd-zephyr-build`, avoiding any
-dependency on ambient `PATH`. The helper can move generated build work to a
-short scratch path on Windows. This guidance is never safety authority; the
+`get_setup_status` is the explicit pre-code barrier. It always returns a
+provider-neutral native-build and visible artifact-collector handoff. Reviewed
+Zephyr profiles may additionally return an optional, labeled and parameterized
+Zephyr terminal fallback. This guidance is never safety authority; the
 resulting ELF/map must still pass `board_safety_refresh` before application
 flash.
+
+Safety refresh compares canonical sub-fingerprints and returns a stable drift
+classification plus exact public remedies. Application and bootloader build
+inputs are symmetric, but authority is not: application builds must remain
+inside the reviewed deployment ceiling, while bootloader builds may replace
+only build-derived regions already contained by an authoritative bootloader
+partition. A missing bootloader envelope is an honest terminal maintainer
+blocker, never an invitation to supply ranges. Pack and official-evidence
+sources remain coupled. Their migration path reloads current pinned assets and
+runtime identity, reruns two-source verification, reproduces retained build
+regions from content-addressed artifacts, and then atomically promotes the
+coupled replacement. A failure writes a blocked report and leaves the old map
+closed. Part/target, geometry, and schema changes require
+full safety setup followed by validation; unclear profile scope requires full
+safety setup. Safety responses do not expose internal continuation IDs because
+no public safety tool consumes them; report records retain correlation IDs.
+
+If a profile's board type lacks complete pinned reviewed evidence,
+`board_safety_setup` returns `safety_setup_unsupported_board` with the reviewed
+automatic board list and the maintainer evidence requirements. It does not
+advertise a dead research continuation and never opens a gate.
 
 `scripts/run_fresh_workspace_e2e.py` is a narrow real-stdio adapter for a clean
 artifact root. Its input surface is fixed to board/probe/UART/datasheet
@@ -255,6 +293,41 @@ does not silently reset it. Reset-and-run is explicit through a reset tool or
 eligible structured finalizer. Ordinary stateful work is cooperatively
 interruptible. Stdio EOF and normal shutdown use the same cleanup ownership.
 
+## Build artifact intake
+
+Firmware builds remain native-project work: the agent or developer uses the
+validated local IDE/CLI and existing SDK. The always-visible
+`collect_build_artifacts` MCP tool then provides an optional build-system-neutral
+handoff for explicit ELF, HEX, BIN, and linker-map outputs. It performs no build,
+search, subprocess, download, or hardware access. Collection stages a canonical
+`firmware.*` bundle and deterministic SHA-256 manifest outside `.firm`; the
+manifest contains provenance but no allowed ranges, plans, permissions, or gate
+state. Current safety refresh consumes the returned ELF/HEX/MAP paths explicitly
+and remains the sole route to build-derived containment evidence.
+
+The Zephyr helper is a separate terminal convenience, not an MCP hardware action.
+It reuses the same collector after selecting the declared sysbuild default domain,
+which keeps the application ELF and linker map coherent and preserves the native
+incremental build tree. Other build systems need no provider adapter: their normal
+build output can enter through the same visible collector.
+
+## Target and host de-biasing boundaries
+
+Reviewed board identities, parts, geometry, attach facts, and evidence hashes
+live in the packaged `setup_flow/reviewed_boards.json` data resource. Production
+setup code validates that schema and contains no branches for a particular board
+name or memory address. Missing read/attach/recovery facts remain missing; no MCU
+prefix invents them. Validation refuses missing safe-read evidence before a
+backend connection and names setup repair as the remedy.
+
+Serial association uses stable USB identity and generic metadata scoring first.
+Optional vendor helpers are selected from the packaged
+`serial_fallbacks.json` registry only when generic evidence stays ambiguous;
+their executables come from an explicit environment path or `PATH`, never a
+compiled host installation path. Recovery exposes only `backend_mass_erase` or
+`manual_only`, checks the connected backend capability before disclosure, and
+retains the existing exact-map disclosure and fresh one-time approval boundary.
+
 ## Contracts, performance, and historical evidence
 
 The active MCP contract is `tests/contracts/product-server-tools.json`. It
@@ -280,7 +353,11 @@ The software suite exercises the layers and invariants described here,
 including stdio discovery, handler locks, `InMemorySessionStore`, per-board
 dispatch, exact plans, permission consumption, safety freshness, cleanup,
 contract ownership, and M10 hardening assertions. This is checkout-only
-software evidence; the optional R11 harness remains a Codex-specific benchmark.
+software evidence. The optional R11 harness retains its legacy Codex adapter
+and can instead use an explicit, operator-owned argv adapter for any CLI or
+thin wrapper that satisfies the documented prompt/result contract. The MCP
+server itself remains provider-neutral over stdio; the harness does not pretend
+that vendor-specific CLI flags or MCP registration formats are standardized.
 
 ## Pending verification
 

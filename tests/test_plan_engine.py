@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import threading
 from concurrent.futures import ThreadPoolExecutor
 
@@ -336,7 +337,15 @@ def test_ac_4_5_valid_plan_unlocks_one_tool_for_exactly_one_board() -> None:
     assert result.plan is not None
     assert result.plan.plan_id in result.message
     assert "read_serial" in result.message
-    assert "Total permitted calls: 2" in result.message
+    payload = json.loads(result.message)
+    assert payload["status"] == "plan_accepted"
+    assert "Unlocked read_serial" in payload["message"]
+    assert "2 permitted call(s)" in payload["message"]
+    assert "already bound" in payload["guidance"]
+    assert payload["reminders"]
+    assert "all-NULL" not in result.message
+    assert "hypothesis_made" not in result.message
+    assert "how to submit" not in result.message.lower()
     assert registry.is_unlocked("read_serial", "board_a") is True
     assert registry.is_unlocked("read_serial", "board_b") is False
 

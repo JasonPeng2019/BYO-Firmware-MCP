@@ -26,6 +26,7 @@ from pyocd_debug_mcp.safety.regions import (
     AddressRange,
     Allowed,
     Refusal,
+    RegionKind,
     SafetyMap,
 )
 
@@ -98,9 +99,9 @@ class SafetyPolicy:
                 )
                 remedy = (
                     ("board_safety_setup", "board_validate")
-                    if anchor
+                    if anchor or structural
                     else ("board_safety_setup",)
-                    if structural or FingerprintSource.PROFILE in changed
+                    if FingerprintSource.PROFILE in changed
                     else ("board_safety_refresh",)
                 )
                 raise SafetyPolicyError(
@@ -132,6 +133,28 @@ class SafetyPolicy:
             ActionCategory.MEMORY_WRITE,
             AddressRange.from_start_size(address, width_bits // 8),
         )
+
+    def check_memory_read(self, board_id: str, address: int, size_bytes: int) -> Allowed:
+        """Require the exact bytes read to be mapped and non-prohibited."""
+
+        requested = AddressRange.from_start_size(address, size_bytes)
+        result = self.load(board_id).safety_map.check(
+            ActionCategory.MEMORY_READ,
+            (requested,),
+        )
+        if isinstance(result, Refusal):
+            remedy = (
+                ("choose a mapped, non-prohibited address",)
+                if result.classification is RegionKind.PROHIBITED
+                else ("board_safety_setup",)
+            )
+            raise SafetyPolicyError(
+                result.code,
+                f"Memory-read range {requested.to_document()} has region kind "
+                f"'{result.classification.value}': {result.reason}",
+                remedy=remedy,
+            )
+        return result
 
     def check_register_write(self, board_id: str, address: int) -> Allowed:
         return self.check_range(

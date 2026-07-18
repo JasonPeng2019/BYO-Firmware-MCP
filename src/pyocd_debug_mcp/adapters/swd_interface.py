@@ -122,6 +122,12 @@ class SWDInterface(ABC):
     def recover(self, handle: TargetSessionHandle) -> None:
         """Run the backend's native recover/unlock path."""
 
+    def supports_recovery(self, handle: TargetSessionHandle, mechanism: str) -> bool:
+        """Return whether this live backend exposes the requested typed recovery primitive."""
+
+        del handle, mechanism
+        return False
+
     @abstractmethod
     def set_breakpoint(self, handle: TargetSessionHandle, address: int) -> None:
         """Set a breakpoint."""

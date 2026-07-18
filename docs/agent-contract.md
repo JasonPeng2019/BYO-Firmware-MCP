@@ -50,7 +50,8 @@ placeholders or partial NULL requests. An accepted plan is bound to one run,
 board, session, tool, and canonical parameter set.
 
 An accepted plan returns machine-readable `preferred_call` and
-`stable_client_fallback` objects. Prefer the direct action when the client
+`stable_client_fallback` objects plus only concise unlock guidance and reminders. It does not
+repeat the all-NULL planning tutorial or ask the agent to construct the plan again. Prefer the direct action when the client
 exposes it. If it does not, submit the fallback's exact `action_batch`
 arguments. Never edit its board, child name, or arguments, and never combine a
 primary setup call with its separately conditioned paired-repair fallback.
@@ -61,6 +62,20 @@ Plan replacement is atomic. A pre-execution refusal does not spend a call.
 Once execution starts, success, backend failure, timeout, and cancellation all
 spend exactly one call. When a budget is exhausted, initialize and submit a new
 plan instead of retrying the hidden action.
+
+## Connection routing
+
+Use visible `connect` only with the server-generated `board_id`. It is a
+profile-only action: do not supply or infer a probe UID, pyOCD target, external
+board-config path, or launch-environment override. Unknown fields are rejected
+through direct MCP dispatch and through `action_batch`.
+
+If normal profile/probe resolution fails and a deliberate exceptional manual
+connection is appropriate, initialize `connect_override-plan`. Only its hidden
+`connect_override` action accepts run-scoped `probe_uid`, `target_override`, or
+`external_board_config`; those values never rewrite a profile. Do not use the
+override path to conceal a profile/hardware mismatch that setup or validation
+should correct.
 
 ## Permission
 
@@ -146,18 +161,46 @@ artifacts and reconciled device evidence. Guarded reads require current board
 validation. Writes additionally require a gate whose aggregate fingerprint is
 fresh on that call.
 
+Every raw or symbol-resolved memory read checks the exact scalar width or block
+length before backend access. Reads may use mapped RAM, flash, ROM, CPU-system,
+or peripheral regions, but UNKNOWN and PROHIBITED spans are denied. For
+`safety/unknown`, complete `board_safety_setup`; for `safety/prohibited`, choose
+a mapped, non-prohibited address. A safety rebuild never turns a deliberately
+prohibited security/provisioning range into readable memory.
+
 Follow the exact remedy named in a refusal:
 
 - `board_validate` establishes a live validation stamp;
-- `board_safety_refresh` handles refreshable source drift while a live stamp
-  still exists;
+- `board_safety_refresh` handles scoped application, already-authorized
+  bootloader, pack, or official-evidence drift while a live stamp still exists;
 - `board_safety_setup` rebuilds structural safety evidence; and
-- full setup plus validation is required for board/target anchor changes.
+- full safety setup plus validation is required for board/target, geometry, or
+  schema anchor changes. Unclear scope routes to full safety setup.
+
+Refresh accepts symmetric `application_elf`/`application_hex`/`application_map`
+and `bootloader_elf`/`bootloader_hex`/`bootloader_map` fields. An explicit
+bootloader refresh can replace only build-derived regions already inside a
+server-owned reviewed bootloader partition; it cannot create or widen that
+partition. A board without complete pinned catalog evidence returns terminal
+`safety_setup_unsupported_board`, lists the reviewed automatic board types,
+and exposes no unusable continuation. Adding support is a maintainer task that
+requires pinned device-support and official-document evidence, runtime
+identity, deterministic reconciliation, and reviewed geometry—not caller
+ranges.
+
+For pack or official-evidence drift, refresh reloads the current repository-
+pinned assets and installed reviewed runtime, reruns deterministic two-source
+reconciliation, and promotes the coupled replacement only if retained build
+regions can be reproduced from their content-addressed artifacts. A failed
+reconciliation returns an explicit blocked refresh with a report and leaves the
+old map closed.
 
 Before a coding workflow begins, require `get_setup_status` to report both
 `configuration_ready` and `live_session_ready`. After relinking, pass the
 selected application ELF to `board_safety_refresh`; the build may narrow but
-cannot widen the catalog deployment envelope. Use `serial_exchange` when a
+cannot widen the catalog deployment envelope. Pass bootloader artifacts only
+when the existing map already owns a reviewed bootloader envelope. Use
+`serial_exchange` when a
 console command's immediate acknowledgement or later command depends on
 volatile application state. It validates the complete bounded step list before
 opening one UART handle. Separate serial calls may reopen a board UART and some
@@ -174,14 +217,37 @@ flash, UART writes, or arbitrary commands. Treat a nonzero exit or any evidence
 status other than `pass` as a hard stop; only a separate orchestrator may begin
 coding after verifying the exact readiness payload.
 
-When `get_setup_status` includes `build_guidance`, use its exact returned
-Python-module command and Zephyr board target. The command runs in the server's
-known Python environment instead of relying on a console script on `PATH`; it
-prefers compatible local workspaces and toolchains, bootstraps only as a
-fallback, and handles Windows long-path
-build failures via a short scratch path. Treat this as advisory convenience
-only: do not infer memory permission from it, and always refresh safety from
-the final ELF/map.
+When `get_setup_status` includes `build_guidance`, follow its provider-neutral
+`native_project_build` workflow first: reuse the project's validated local IDE
+or CLI, then call the returned `collect_build_artifacts` template with the
+outputs that actually exist. A reviewed profile may also return a labeled
+`toolchain_fallback`; use the Zephyr fallback only for a Zephyr project without
+an already-valid local build command. Treat every build route as advisory only:
+do not infer memory permission from it, and always refresh safety from the final
+ELF/map.
+
+For any other native build system, keep using its normal validated CLI or IDE
+build and optionally normalize explicit outputs with the always-visible
+`collect_build_artifacts` MCP tool (or
+`python -m pyocd_debug_mcp.artifact_collector` outside MCP). Supply typed `--elf`, `--hex`,
+`--bin`, and `--map` paths rather than asking the collector to search or guess.
+The result uses canonical `firmware.*` names and a deterministic provenance
+manifest, but it grants no memory authority. Pass the canonical ELF/HEX/MAP
+paths explicitly to `board_safety_refresh`; the safety flow does not currently
+ingest the collector manifest automatically. HEX-only and BIN-only bundles may
+be valid provenance outputs, but a raw BIN has no trusted address and collection
+alone never makes either safe to flash.
+
+For Zephyr sysbuild, the helper selects the generated `domains.yaml` default
+domain and takes ELF, HEX, BIN, and linker map only from that coherent image. It
+does not choose an aggregate or bootloader image by basename or directory depth,
+and a missing application linker map is a clear build-output failure rather than
+a silently incomplete safety handoff.
+
+Recovery plans use the target-neutral `backend_mass_erase` mechanism. The
+server checks that the live typed backend reports that capability before it
+renders a disclosure or asks for fresh one-time permission. Never substitute a
+vendor command, and never treat a legacy profile label as authorization.
 
 Apply the same local-first rule to all heavy dependencies. Before downloading
 an SDK, RTOS, toolchain, device pack, or large library, inspect only bounded

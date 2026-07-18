@@ -1,0 +1,105 @@
+{
+  "schema_version": 1,
+  "checkpoint": "P4-07",
+  "status": "pass",
+  "date": "2026-07-17",
+  "completed_at": "2026-07-17T22:08:36.9747299-07:00",
+  "host": {
+    "os": "Windows",
+    "branch": "Jason-v3-BYO",
+    "commit": "5a98858ca0213cb318b96a835d95f8bee863ba4d"
+  },
+  "versions": {
+    "uv": "0.11.19",
+    "python": "3.12.13",
+    "pytest": "9.1.1",
+    "ruff": "0.15.21",
+    "pyright": "1.1.411",
+    "mcp": "1.28.1",
+    "pyocd": "0.45.0",
+    "pyocd-debug-mcp": "0.1.0"
+  },
+  "commands": [
+    {
+      "command": "uv run --locked pytest",
+      "attempt": 1,
+      "status": "fail",
+      "result": "8 failed, 941 passed, 1 skipped, 66 warnings in 69.94s",
+      "failures": [
+        "historical extraction manifest test still compared live product hashes",
+        "archived design/plan/prompt documents were referenced at obsolete root paths",
+        "provider-neutral docs invalidated a Codex-specific packaging phrase",
+        "two connect tests had stale resolve_board_config monkeypatch signatures"
+      ]
+    },
+    {
+      "command": "uv run --locked pytest <eight failing areas>",
+      "attempt": 1,
+      "status": "fail",
+      "result": "1 failed, 13 passed",
+      "failures": [
+        "Task 20 assertion-inspection evidence contained stale test line numbers"
+      ]
+    },
+    {
+      "command": "uv run --locked pytest tests/test_m10_acceptance_plan.py::test_task20_traceability_is_exact_and_assertions_were_inspected",
+      "status": "pass",
+      "result": "1 passed"
+    },
+    {
+      "command": "uv run --locked pytest",
+      "attempt": 2,
+      "status": "pass",
+      "result": "949 passed, 1 skipped, 66 warnings in 64.77s"
+    },
+    {
+      "command": "uv run --locked ruff check .",
+      "attempt": 1,
+      "status": "pass",
+      "result": "All checks passed"
+    },
+    {
+      "command": "uv run --locked pyright",
+      "attempt": 1,
+      "status": "fail",
+      "result": "8 test-typing errors",
+      "failures": [
+        "new Mapping[str, object] assertions needed explicit runtime narrowing/casts"
+      ]
+    },
+    {
+      "command": "uv run --locked pyright",
+      "attempt": 2,
+      "status": "pass",
+      "result": "0 errors, 0 warnings, 0 informations"
+    },
+    {
+      "command": "uv build",
+      "status": "pass",
+      "result": "sdist and wheel built successfully"
+    },
+    {
+      "command": "uv run --locked python - <MCP stdio initialize/list-tools smoke>",
+      "status": "pass",
+      "result": "stdio smoke passed; initialization_handshake advertised"
+    },
+    {
+      "command": "uv run --locked ruff check .",
+      "attempt": 2,
+      "status": "pass",
+      "result": "All checks passed"
+    },
+    {
+      "command": "uv run --locked pytest",
+      "attempt": 3,
+      "status": "pass",
+      "result": "949 passed, 1 skipped, 66 warnings in 57.19s"
+    }
+  ],
+  "software_boundary": {
+    "zephyr_build_execution_gate": "pass; tests/test_zephyr_build.py passed with one environment-dependent skip",
+    "hardware_used": false,
+    "live_agent_models_used": false,
+    "new_genuine_product_gaps": []
+  }
+}

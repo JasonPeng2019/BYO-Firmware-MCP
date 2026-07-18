@@ -108,7 +108,11 @@ def test_setup_status_exposes_uart_readiness_as_a_separate_barrier(monkeypatch) 
     }
     guidance = cast(dict[str, object], status["build_guidance"])
     assert guidance["authority"] == "advisory_only"
-    assert guidance["zephyr_board_target"] == "nrf52840dk/nrf52840"
+    assert guidance["primary_workflow"] == "native_project_build"
+    collector = cast(dict[str, object], guidance["artifact_collection"])
+    assert collector["tool"] == "collect_build_artifacts"
+    fallback = cast(dict[str, object], guidance["toolchain_fallback"])
+    assert fallback["zephyr_board_target"] == "nrf52840dk/nrf52840"
     expected_argv = [
         server.sys.executable,
         "-m",
@@ -120,12 +124,10 @@ def test_setup_status_exposes_uart_readiness_as_a_separate_barrier(monkeypatch) 
         "--board",
         "nrf52840dk/nrf52840",
     ]
-    assert guidance["recommended_argv"] == expected_argv
-    assert str(guidance["recommended_powershell"]).startswith("& '")
-    assert "-m" in str(guidance["recommended_command"])
-    assert "does not depend on a console-script being present on PATH" in str(
-        guidance["reason"]
-    )
+    assert fallback["recommended_argv"] == expected_argv
+    assert str(fallback["recommended_powershell"]).startswith("& '")
+    assert "-m" in str(fallback["recommended_command"])
+    assert "optional parameterized fallback" in str(fallback["reason"])
     assert "Build guidance is not safety authority" in str(guidance["safety_boundary"])
 
 
@@ -186,7 +188,8 @@ def test_returned_build_guidance_is_executable_in_powershell(monkeypatch) -> Non
 
     status = server._get_setup_status("board_a")
     guidance = cast(dict[str, object], status["build_guidance"])
-    command = str(guidance["recommended_powershell"])
+    fallback = cast(dict[str, object], guidance["toolchain_fallback"])
+    command = str(fallback["recommended_powershell"])
     help_command = command.split(" '--app-dir'", 1)[0] + " '--help'"
     completed = subprocess.run(
         ["powershell", "-NoProfile", "-NonInteractive", "-Command", help_command],

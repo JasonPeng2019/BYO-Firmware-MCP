@@ -1,0 +1,24 @@
+{
+  "artifact_root": "C:\\Users\\Jason\\Documents\\Jason\\FirmCLI\\BYO-Server\\.agent-workspace\\p4-09-fresh-nrf52840dk-20260717",
+  "board_id": "p4_09_nrf52840dk",
+  "probe_uid": "683377322",
+  "serial_id": "000683377322",
+  "resolved_port": "COM11",
+  "safety_files": [
+    {
+      "path": "C:\\Users\\Jason\\Documents\\Jason\\FirmCLI\\BYO-Server\\.agent-workspace\\p4-09-fresh-nrf52840dk-20260717\\.firm\\safety\\p4_09_nrf52840dk\\memory_map.yaml",
+      "sha256": "941e0fa37c3d155fc1213203a00d2693b326bc68f3d49683fc4ce0fdbef8bc3f",
+      "bytes": 6032
+    },
+    {
+      "path": "C:\\Users\\Jason\\Documents\\Jason\\FirmCLI\\BYO-Server\\.agent-workspace\\p4-09-fresh-nrf52840dk-20260717\\.firm\\safety\\p4_09_nrf52840dk\\source_manifest.json",
+      "sha256": "d85047f856a44101a9e1d3d77e5f1a6ae845d2fa0918182831d187c303154236",
+      "bytes": 19470
+    },
+    {
+      "path": "C:\\Users\\Jason\\Documents\\Jason\\FirmCLI\\BYO-Server\\.agent-workspace\\p4-09-fresh-nrf52840dk-20260717\\.firm\\safety\\p4_09_nrf52840dk\\safety_report.json",
+      "sha256": "88989ca13ad9b5e1d4b6d07f7fac2755607d897380e5e9388e8e9e2b43275ff8",
+      "bytes": 517
+    }
+  ]
+}

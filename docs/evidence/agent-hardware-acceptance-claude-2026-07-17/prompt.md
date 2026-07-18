@@ -1,0 +1,40 @@
+# P4-10 primary Sonnet hardware acceptance ? one sequential bounded journey
+
+You are the sole agent author and hardware operator for this run. Work in `C:\Users\Jason\Documents\Jason\FirmCLI\BYO-Server\.agent-workspace\p4-09-fresh-nrf52840dk-20260717`. Use only the checkout-scoped `pyocd-debug` MCP tools it advertises and ordinary local file/build tools. The user explicitly authorizes exactly one application-partition flash of the firmware you create in this run. That conversational authorization does not become a permission enum: the live `flash_application` and `serial_exchange` plans are PermissionMode.NONE, so omit `user_permission` entirely from their populated plan calls. Never call target_unlock, flash_bootloader, mass erase, a bootloader write, raw memory/register writes, action_batch, or any other destructive action.
+
+Known identity, supplied by the user and already proven by P4-09:
+- familiar name: P4-09 nRF52840 DK
+- server board ID (machine-only): p4_09_nrf52840dk
+- board type: nrf52840dk
+- exact MCU: nRF52840-QIAA
+- expected probe UID: 683377322
+- stable UART identity: 000683377322, currently resolved as COM11
+- baud: 115200
+
+Perform these phases in order. Stop on any failure and perform only safe run-state/disconnect cleanup. Do not repeat a build, refresh, flash, or UART conversation.
+
+1. Call `initialization_handshake` once. Call `setup_overview` with the familiar name exactly. Copy server-generated routing values rather than inventing them. Call `load_setup_tool` for `board_validate`, then call `board_validate` using the exact route/guidance and positively match the expected probe. Call `get_setup_status`; require configuration and the current live session to be ready, and require its resolved probe/UART to match the expected stable identities. Record the exact `build_guidance.recommended_argv`, `recommended_command`, and board target.
+
+2. Author a simple Zephyr application under `C:\Users\Jason\Documents\Jason\FirmCLI\BYO-Server\.agent-workspace\p4-09-fresh-nrf52840dk-20260717\app`. You, the Claude session, must write every firmware source/config/build file; no outer orchestrator will do so. It must be genuinely multithreaded: define a dedicated Zephyr blink thread that toggles the board's `led0` GPIO while an atomic/shared enabled flag is true, while Zephyr's UART shell handles commands independently. Implement exact shell commands and observable lines:
+   - `blink on` -> `BLINK ON`
+   - `blink status` -> `BLINK STATUS: ON` or `BLINK STATUS: OFF`
+   - `blink off` -> `BLINK OFF`
+   - `blink status` -> `BLINK STATUS: OFF`
+Use bounded sleeps and normal Zephyr APIs. Configure the UART shell at 115200. Keep the app small and do not add networking, bootloader, partition-manager, MCUboot, security/provisioning, or erase behavior.
+
+3. Build exactly once into `C:\Users\Jason\Documents\Jason\FirmCLI\BYO-Server\.agent-workspace\p4-09-fresh-nrf52840dk-20260717\build`. Execute exactly the Python-module build command returned by `get_setup_status.build_guidance`, changing only `<app-dir>` and `<build-dir>` to those absolute directories. On this Windows Claude client, it is acceptable to invoke the returned `recommended_powershell` as the exact inner command via PowerShell solely to select the correct shell; do not add build flags. Do not run west, CMake, the helper, or any compiler before or after this one build. Do not download Zephyr/NCS/SDK content; the helper must reuse a compatible local NCS/Zephyr installation. Record the exact command and its one exit result. Locate the resulting ELF, HEX, and map without rebuilding.
+
+4. Call `board_safety_refresh` once with the built application ELF, HEX, and map and no bootloader artifacts. Require completion. Read the resulting safety map and prove the new build-derived application regions, entry point, vector table, and segments remain fully contained within the pre-existing reviewed physical-flash/deployment envelope and do not overlap prohibited regions. A refresh may narrow/describe the app but must never widen reviewed authority. Stop before flash on any uncertainty or refusal.
+
+5. Call `flash_application-plan` first with every top-level plan field NULL. Read the teaching. Then call it once with a complete exact fixed 1+0 plan bound to this board and one built application artifact. Omit `user_permission` from this populated plan because the live definition is PermissionMode.NONE. After acceptance, refresh/discover the advertised tools and call dynamically exposed direct `flash_application`; do not use `action_batch`. Flash exactly once. Use a normal application artifact and leave the target running (`flash_application` itself has only board_id and artifact; do not invent halt parameters).
+
+6. Call `serial_exchange-plan` first with every top-level plan field NULL. Read the teaching. Then submit one exact populated plan, omitting `user_permission`, for one direct `serial_exchange` with four ordered state-preserving steps on one UART handle:
+   1. text `blink on`, line ending `lf`, expected text `BLINK ON`
+   2. text `blink status`, line ending `lf`, expected text `BLINK STATUS: ON`
+   3. text `blink off`, line ending `lf`, expected text `BLINK OFF`
+   4. text `blink status`, line ending `lf`, expected text `BLINK STATUS: OFF`
+Use 115200 baud and the current resolved port. Use a bounded per-step read window. Because this follows reset/flash, use the plan's bounded readiness/probe fields if needed to wait for or elicit the Zephyr shell prompt before the first command. Preserve one UART open, set `clear_input` consistently, and execute direct dynamically exposed `serial_exchange` exactly once, never separate serial reads/writes or action_batch. Require all four expected responses to match and retain the returned UART excerpt.
+
+7. Confirm the board is running (use `get_state`, and only use always-available `reset_and_run` if safe running cleanup is actually needed). Call `disconnect` once to release probe/UART and finish. Do not reconnect. Give the user only a brief plain-English outcome without plan IDs, internal IDs, JSON, continuation tokens, or internal parameter names.
+
+Machine evidence result: write one JSON object to the absolute adapter result path. Include: `status`; `board_id`; `build_command`; `build_count`; `build_exit_code`; `build_artifacts` (absolute ELF/HEX/map paths); `safety_refresh_status`; `safety_containment_proven`; `flash_plan_id`; `flash_artifact`; `flash_direct_action`; `flash_result`; `serial_plan_id`; `serial_direct_action`; `serial_all_steps_matched`; `uart_excerpt`; `final_target_state`; `disconnected`; `mcp_tools_used` in order; `user_facing_response`; and `notes`. Internal IDs belong only in this machine result, never in user-facing prose.

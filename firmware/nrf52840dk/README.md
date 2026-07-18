@@ -62,7 +62,7 @@ Validated toolchain note for this bench:
 - `silicon_id_label = FICR.INFO.PART`
 - `reference_uart_patterns[0] = "boot ok"`
 - `requires_recover_validation = true`
-- `recover_mode = nrf_pyocd_unlock`
+- `recover_mode = backend_mass_erase`
 
 These values are still useful as the retained alternate-board contract, but
 they are not part of the current scoped-gate proof story.

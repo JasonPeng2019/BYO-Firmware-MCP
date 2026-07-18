@@ -29,7 +29,7 @@ from pyocd_debug_mcp.safety.linker import (
 from pyocd_debug_mcp.serial_resolver import list_serial_ports
 
 ROOT = Path(__file__).resolve().parents[1]
-SPEC = ROOT / "Design_Proto_Spec.md"
+SPEC = ROOT / "archive_docs/Design_Proto_Spec.md"
 
 
 def _node(path: str, function: str) -> str:
@@ -803,7 +803,7 @@ def main() -> None:
                 "verified_firmware_backup_present": bool(
                     args.nrf_backup_hex and args.nrf_backup_hex.is_file()
                 ),
-                "profile_recovery_mode": "nrf_pyocd_unlock",
+                "profile_recovery_mode": "backend_mass_erase",
                 "current_safety_map_present": False,
                 "fresh_one_time_human_permission": "obtain only immediately before execution",
             },
@@ -835,7 +835,7 @@ def main() -> None:
                 "absolute_external_artifact_root",
                 "machine_readable_result_path",
             ],
-            "connect_requires": ["board_id", "probe_id", "target"],
+            "connect_requires": ["board_id"],
             "nrf52833_requires_live_check": "FICR.INFO.PART == 0x00052833",
             "mismatch_action": "stop_before_setup, validation, flash, or recovery",
         },

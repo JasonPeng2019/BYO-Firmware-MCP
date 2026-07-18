@@ -647,6 +647,43 @@ async def test_server_composition_exposes_a_working_batch_without_an_outer_board
 
 
 @pytest.mark.asyncio
+async def test_server_batch_cannot_smuggle_manual_fields_through_visible_connect(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    backend_calls: list[object] = []
+    monkeypatch.setattr(
+        server,
+        "_connect_impl",
+        lambda *args, **kwargs: backend_calls.append((args, kwargs)) or "unexpected",
+    )
+
+    result = await server.mcp.call_tool(
+        "action_batch",
+        {
+            "board_id": "composition_board",
+            "actions": [
+                {
+                    "tool_name": "connect",
+                    "arguments": {
+                        "board_id": "composition_board",
+                        "unique_id": "wrong-probe",
+                        "target": "wrong-target",
+                        "board_config": "wrong-config.yaml",
+                    },
+                }
+            ],
+        },
+    )
+    payload = _payload(result)
+
+    assert payload["status"] == "batch_failed"
+    assert payload["completed"] == []
+    assert payload["failure"]["tool_name"] == "connect"
+    assert "unique_id" in payload["failure"]["message"]
+    assert backend_calls == []
+
+
+@pytest.mark.asyncio
 async def test_simultaneous_same_board_batches_serialize_each_child_dispatch() -> None:
     mcp = RegistryFastMCP("batch-same-board-concurrency")
     execution_lock = Lock()

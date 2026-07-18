@@ -1,0 +1,198 @@
+{
+  "schema_version": 1,
+  "boards": [
+    {
+      "board_type": "nrf52833dk",
+      "mcu_names": [
+        "nRF52833",
+        "nRF52833-QIAA"
+      ],
+      "package_part_number": "nRF52833-QIAA",
+      "pyocd_target": "nrf52833",
+      "probe_family": "jlink",
+      "default_baudrate": 115200,
+      "test_read_address": 268435456,
+      "silicon_id_address": 268435712,
+      "silicon_id_expected": 337971,
+      "silicon_id_mask": 4294967295,
+      "flash_start": 0,
+      "flash_end": 524288,
+      "ram_start": 536870912,
+      "ram_end": 537001984,
+      "erase_size": 4096,
+      "application_start": 0,
+      "application_end": 524288,
+      "hardware_regions": [
+        {
+          "name": "UICR and persistent configuration",
+          "kind": "prohibited",
+          "start": 268439552,
+          "end": 268443648
+        },
+        {
+          "name": "factory information",
+          "kind": "rom",
+          "start": 268435456,
+          "end": 268439552
+        },
+        {
+          "name": "peripheral registers",
+          "kind": "peripheral",
+          "start": 1073741824,
+          "end": 1610612736
+        },
+        {
+          "name": "Cortex-M system control",
+          "kind": "cpu_system",
+          "start": 3758096384,
+          "end": 3759144960
+        }
+      ],
+      "datasheet_sha256": [],
+      "document_revision": "repository-reviewed board support v1",
+      "zephyr_board_target": "nrf52833dk/nrf52833",
+      "device_support_evidence_resource": null,
+      "device_support_evidence_sha256": null,
+      "official_evidence_resource": null,
+      "official_evidence_sha256": null,
+      "pyocd_version": null,
+      "pyocd_target_module": null,
+      "pyocd_target_module_sha256": null,
+      "pyocd_svd_bundle_sha256": null
+    },
+    {
+      "board_type": "nrf52840dk",
+      "mcu_names": [
+        "nRF52840",
+        "nRF52840-QIAA"
+      ],
+      "package_part_number": "nRF52840-QIAA",
+      "pyocd_target": "nrf52840",
+      "probe_family": "jlink",
+      "default_baudrate": 115200,
+      "test_read_address": 268435456,
+      "silicon_id_address": 268435712,
+      "silicon_id_expected": 337984,
+      "silicon_id_mask": 4294967295,
+      "flash_start": 0,
+      "flash_end": 1048576,
+      "ram_start": 536870912,
+      "ram_end": 537133056,
+      "erase_size": 4096,
+      "application_start": 0,
+      "application_end": 1048576,
+      "hardware_regions": [
+        {
+          "name": "UICR and persistent configuration",
+          "kind": "prohibited",
+          "start": 268439552,
+          "end": 268443648
+        },
+        {
+          "name": "factory information",
+          "kind": "rom",
+          "start": 268435456,
+          "end": 268439552
+        },
+        {
+          "name": "volatile GPIO registers",
+          "kind": "peripheral",
+          "start": 1342178560,
+          "end": 1342179584
+        },
+        {
+          "name": "nonvolatile memory and access control registers",
+          "kind": "prohibited",
+          "start": 1073864704,
+          "end": 1073868800
+        },
+        {
+          "name": "Cortex-M system control",
+          "kind": "cpu_system",
+          "start": 3758096384,
+          "end": 3759144960
+        }
+      ],
+      "datasheet_sha256": [
+        "c619e336b9c0610663273041f057f2537a65fd408ce0c5b8214a26de2aa88422"
+      ],
+      "document_revision": "nRF52840 PS v1.1 plus nRF52840 DK reviewed deployment policy v1",
+      "zephyr_board_target": "nrf52840dk/nrf52840",
+      "device_support_evidence_resource": "evidence/nrf52840_device_support.json",
+      "device_support_evidence_sha256": "8ffa48e16fb03d491660c93faaa1a34f9654873e7c27b7113cc23216fe47a8e7",
+      "official_evidence_resource": "evidence/nrf52840_official_document.json",
+      "official_evidence_sha256": "c159d4eec5af036fcca72c06ea620db370750b88a086de965040235317f74daa",
+      "pyocd_version": "0.45.0",
+      "pyocd_target_module": "pyocd.target.builtin.target_nRF52840_xxAA",
+      "pyocd_target_module_sha256": "c4713dea41facd880a92eb3b4a12924305290b36753e1fe592a463b856b9b29f",
+      "pyocd_svd_bundle_sha256": "e452ca593edadbb0d6f960c19f761977e35e2a33e027d7b84fbd4e82b2608d8c"
+    },
+    {
+      "board_type": "nucleo_l476rg",
+      "mcu_names": [
+        "STM32L476RG",
+        "STM32L476RGT6"
+      ],
+      "package_part_number": "STM32L476RGT6",
+      "pyocd_target": "stm32l476rgtx",
+      "probe_family": "stlink",
+      "default_baudrate": 115200,
+      "test_read_address": 134217728,
+      "silicon_id_address": null,
+      "silicon_id_expected": null,
+      "silicon_id_mask": 4294967295,
+      "flash_start": 134217728,
+      "flash_end": 135266304,
+      "ram_start": 536870912,
+      "ram_end": 536969216,
+      "erase_size": 2048,
+      "application_start": 134217728,
+      "application_end": 135266304,
+      "hardware_regions": [
+        {
+          "name": "system-memory ROM bootloader",
+          "kind": "rom_bootloader",
+          "start": 536805376,
+          "end": 536834048
+        },
+        {
+          "name": "OTP and persistent configuration",
+          "kind": "prohibited",
+          "start": 536834048,
+          "end": 536836096
+        },
+        {
+          "name": "option bytes",
+          "kind": "prohibited",
+          "start": 536836096,
+          "end": 536838144
+        },
+        {
+          "name": "peripheral registers",
+          "kind": "peripheral",
+          "start": 1073741824,
+          "end": 1610612736
+        },
+        {
+          "name": "Cortex-M system control",
+          "kind": "cpu_system",
+          "start": 3758096384,
+          "end": 3759144960
+        }
+      ],
+      "datasheet_sha256": [],
+      "document_revision": "repository-reviewed board support v1",
+      "zephyr_board_target": "nucleo_l476rg",
+      "device_support_evidence_resource": null,
+      "device_support_evidence_sha256": null,
+      "official_evidence_resource": null,
+      "official_evidence_sha256": null,
+      "pyocd_version": null,
+      "pyocd_target_module": null,
+      "pyocd_target_module_sha256": null,
+      "pyocd_svd_bundle_sha256": null,
+      "debug_connect_mode": "under-reset",
+      "debug_clock_hz": 1000000
+    }
+  ]
+}

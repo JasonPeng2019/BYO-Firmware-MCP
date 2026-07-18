@@ -10,7 +10,7 @@ import pytest
 from pyocd_debug_mcp.adapters.swd_interface import TargetSessionHandle
 from pyocd_debug_mcp.board_config import (
     RECOVER_MODE_MANUAL_ONLY,
-    RECOVER_MODE_NRF_PYOCD_UNLOCK,
+    RECOVER_MODE_BACKEND_MASS_ERASE,
 )
 from pyocd_debug_mcp.firmstore.profiles import ProfileRepository
 from pyocd_debug_mcp.firmstore.reports import ReportWriter
@@ -103,7 +103,7 @@ def _complete_fields(**changes: object) -> dict[str, object]:
         "max_calls_buffer": 0,
         "user_permission": None,
         "action_parameters": {
-            "recovery_mechanism": RECOVER_MODE_NRF_PYOCD_UNLOCK,
+            "recovery_mechanism": RECOVER_MODE_BACKEND_MASS_ERASE,
         },
     }
     raw_parameters = values["action_parameters"]
@@ -134,8 +134,9 @@ class UnlockFixture:
 def _fixture(
     tmp_path: Path,
     *,
-    recover_mode: str | None = RECOVER_MODE_NRF_PYOCD_UNLOCK,
+    recover_mode: str | None = RECOVER_MODE_BACKEND_MASS_ERASE,
     backend_failure: bool = False,
+    backend_supports_recovery: bool = True,
     geometry: object | None = None,
 ) -> UnlockFixture:
     store = FirmStore(tmp_path)
@@ -251,6 +252,10 @@ def _fixture(
             lambda board_id: state["connection_id"],
             lambda board_id: state["session_id"],
             lambda board_id: state["fingerprint"],
+            lambda handle, mechanism: (
+                backend_supports_recovery
+                and mechanism == RECOVER_MODE_BACKEND_MASS_ERASE
+            ),
             recover,
             lambda board_id: None,
             revoke_unlock_permission,
@@ -309,7 +314,7 @@ def test_ac_15_2_and_15_3_permission_payload_is_complete_and_relayable(
         "connection_id": "connection-1",
         "safety_map_fingerprint": fixture.state["fingerprint"],
     }
-    assert payload["mechanism"]["vendor"] == "Nordic Semiconductor"
+    assert payload["mechanism"]["vendor"] == "connected target backend"
     assert payload["mechanism"]["mass_erase"] is True
     disclosure = payload["disclosure"]
     assert disclosure["all_nonvolatile_erased"] is True
@@ -401,15 +406,15 @@ def test_ac_5_7_and_15_5_full_session_never_authorizes_or_carries_forward(
     assert fixture.permissions.active_grant("target_unlock", BOARD_ID) is None
     fixture.coordinator.plan(_complete_fields(user_permission="one-time"))
     fixture.coordinator.validate_execution(
-        BOARD_ID, {"recovery_mechanism": RECOVER_MODE_NRF_PYOCD_UNLOCK}
+        BOARD_ID, {"recovery_mechanism": RECOVER_MODE_BACKEND_MASS_ERASE}
     )
     fixture.engine.enforce(
         "target_unlock",
         BOARD_ID,
-        {"recovery_mechanism": RECOVER_MODE_NRF_PYOCD_UNLOCK},
+        {"recovery_mechanism": RECOVER_MODE_BACKEND_MASS_ERASE},
         session_id=SESSION_ID,
     )
-    fixture.coordinator.execute(BOARD_ID, RECOVER_MODE_NRF_PYOCD_UNLOCK)
+    fixture.coordinator.execute(BOARD_ID, RECOVER_MODE_BACKEND_MASS_ERASE)
 
     second = json.loads(fixture.coordinator.plan(_complete_fields()))
     assert second["status"] == "unlock_permission_requested"
@@ -450,7 +455,7 @@ def test_replacement_plan_invalidates_prior_approved_plan(tmp_path: Path) -> Non
     assert not fixture.registry.is_unlocked("target_unlock", BOARD_ID)
     with pytest.raises(PlanRefusal, match="No active"):
         fixture.coordinator.validate_execution(
-            BOARD_ID, {"recovery_mechanism": RECOVER_MODE_NRF_PYOCD_UNLOCK}
+            BOARD_ID, {"recovery_mechanism": RECOVER_MODE_BACKEND_MASS_ERASE}
         )
 
 
@@ -471,7 +476,7 @@ def test_ac_15_6_live_binding_change_invalidates_before_execution(
 
     with pytest.raises(PlanRefusal) as caught:
         fixture.coordinator.validate_execution(
-            BOARD_ID, {"recovery_mechanism": RECOVER_MODE_NRF_PYOCD_UNLOCK}
+            BOARD_ID, {"recovery_mechanism": RECOVER_MODE_BACKEND_MASS_ERASE}
         )
 
     assert caught.value.code == "unlock/binding-changed"
@@ -484,7 +489,7 @@ def test_cross_board_approval_never_transfers(tmp_path: Path) -> None:
     fixture = _fixture(tmp_path)
     _approve(fixture)
     other_board = "other_board"
-    parameters = {"recovery_mechanism": RECOVER_MODE_NRF_PYOCD_UNLOCK}
+    parameters = {"recovery_mechanism": RECOVER_MODE_BACKEND_MASS_ERASE}
 
     assert fixture.registry.is_unlocked("target_unlock", BOARD_ID)
     assert not fixture.registry.is_unlocked("target_unlock", other_board)
@@ -509,7 +514,7 @@ def test_expired_and_restarted_runs_restore_no_unlock_authority(tmp_path: Path) 
     assert not fixture.registry.is_unlocked("target_unlock", BOARD_ID)
     with pytest.raises(PlanRefusal, match="No active"):
         fixture.coordinator.validate_execution(
-            BOARD_ID, {"recovery_mechanism": RECOVER_MODE_NRF_PYOCD_UNLOCK}
+            BOARD_ID, {"recovery_mechanism": RECOVER_MODE_BACKEND_MASS_ERASE}
         )
 
     restarted_run = ServerRun(run_id="run-task-15-restarted")
@@ -539,6 +544,7 @@ def test_expired_and_restarted_runs_restore_no_unlock_authority(tmp_path: Path) 
             old.connection_id_for,
             old.session_id_for,
             old.current_fingerprint,
+            old.supports_recovery,
             old.recover_target,
             old.mark_recover_completed,
             revoke_restarted,
@@ -546,7 +552,7 @@ def test_expired_and_restarted_runs_restore_no_unlock_authority(tmp_path: Path) 
     )
     with pytest.raises(PlanRefusal, match="No active"):
         restarted.validate_execution(
-            BOARD_ID, {"recovery_mechanism": RECOVER_MODE_NRF_PYOCD_UNLOCK}
+            BOARD_ID, {"recovery_mechanism": RECOVER_MODE_BACKEND_MASS_ERASE}
         )
     assert restarted_run.plans == {}
     assert restarted_run.permissions == {}
@@ -558,17 +564,17 @@ def test_ac_15_7_execution_closes_gate_writes_report_and_consumes_once(
 ) -> None:
     fixture = _fixture(tmp_path)
     plan_id = _approve(fixture)
-    params = {"recovery_mechanism": RECOVER_MODE_NRF_PYOCD_UNLOCK}
+    params = {"recovery_mechanism": RECOVER_MODE_BACKEND_MASS_ERASE}
     fixture.coordinator.validate_execution(BOARD_ID, params)
     fixture.engine.enforce(
         "target_unlock", BOARD_ID, params, session_id=SESSION_ID
     )
 
-    response = fixture.coordinator.execute(BOARD_ID, RECOVER_MODE_NRF_PYOCD_UNLOCK)
+    response = fixture.coordinator.execute(BOARD_ID, RECOVER_MODE_BACKEND_MASS_ERASE)
 
     assert plan_id in response
     assert "board_validate" in response
-    assert fixture.backend_calls == [RECOVER_MODE_NRF_PYOCD_UNLOCK]
+    assert fixture.backend_calls == [RECOVER_MODE_BACKEND_MASS_ERASE]
     assert fixture.gate.snapshot(BOARD_ID) is None
     assert "target_unlock" not in fixture.registry.advertised()
     reports = list(fixture.store.layout.validation.glob("target-unlock-*/report.json"))
@@ -578,7 +584,7 @@ def test_ac_15_7_execution_closes_gate_writes_report_and_consumes_once(
         for report in completed
     )
     with pytest.raises(PlanRefusal, match="no longer active"):
-        fixture.coordinator.execute(BOARD_ID, RECOVER_MODE_NRF_PYOCD_UNLOCK)
+        fixture.coordinator.execute(BOARD_ID, RECOVER_MODE_BACKEND_MASS_ERASE)
 
     with pytest.raises(GateRefusal) as closed:
         fixture.gate.require_write(BOARD_ID, "connection-1", fixture.state["fingerprint"])
@@ -614,20 +620,32 @@ def test_ac_15_8_only_typed_vendor_recovery_and_manual_only_refuses(
     assert manual.backend_calls == []
 
 
+def test_recovery_capability_is_checked_before_disclosure_or_permission(tmp_path: Path) -> None:
+    fixture = _fixture(tmp_path, backend_supports_recovery=False)
+    _initialize(fixture)
+
+    with pytest.raises(PlanRefusal) as refused:
+        fixture.coordinator.plan(_complete_fields())
+
+    assert refused.value.code == "unlock/mechanism-backend-unsupported"
+    assert fixture.permissions.active_grant("target_unlock", BOARD_ID) is None
+    assert fixture.backend_calls == []
+
+
 def test_started_backend_failure_still_closes_gate_and_writes_attempt_report(
     tmp_path: Path,
 ) -> None:
     fixture = _fixture(tmp_path, backend_failure=True)
     _approve(fixture)
-    params = {"recovery_mechanism": RECOVER_MODE_NRF_PYOCD_UNLOCK}
+    params = {"recovery_mechanism": RECOVER_MODE_BACKEND_MASS_ERASE}
     fixture.coordinator.validate_execution(BOARD_ID, params)
     fixture.engine.enforce("target_unlock", BOARD_ID, params, session_id=SESSION_ID)
 
     with pytest.raises(RuntimeError, match="backend failed"):
-        fixture.coordinator.execute(BOARD_ID, RECOVER_MODE_NRF_PYOCD_UNLOCK)
+        fixture.coordinator.execute(BOARD_ID, RECOVER_MODE_BACKEND_MASS_ERASE)
 
     assert fixture.gate.snapshot(BOARD_ID) is None
-    assert fixture.backend_calls == [RECOVER_MODE_NRF_PYOCD_UNLOCK]
+    assert fixture.backend_calls == [RECOVER_MODE_BACKEND_MASS_ERASE]
     reports = list(fixture.store.layout.validation.glob("target-unlock-*/report.json"))
     payloads = [json.loads(path.read_text(encoding="utf-8")) for path in reports]
     assert any(
@@ -680,12 +698,12 @@ def test_unlock_reports_preserve_exact_disclosure_without_persisted_authority(
 ) -> None:
     fixture = _fixture(tmp_path)
     _approve(fixture)
-    parameters = {"recovery_mechanism": RECOVER_MODE_NRF_PYOCD_UNLOCK}
+    parameters = {"recovery_mechanism": RECOVER_MODE_BACKEND_MASS_ERASE}
     fixture.coordinator.validate_execution(BOARD_ID, parameters)
     fixture.engine.enforce(
         "target_unlock", BOARD_ID, parameters, session_id=SESSION_ID
     )
-    fixture.coordinator.execute(BOARD_ID, RECOVER_MODE_NRF_PYOCD_UNLOCK)
+    fixture.coordinator.execute(BOARD_ID, RECOVER_MODE_BACKEND_MASS_ERASE)
 
     report_paths = sorted(
         fixture.store.layout.validation.glob("target-unlock-*/report.json")
@@ -742,7 +760,7 @@ def test_approved_unlock_returns_exact_non_authority_static_client_fallback(
                     "tool_name": "target_unlock",
                     "arguments": {
                         "board_id": BOARD_ID,
-                        "recovery_mechanism": RECOVER_MODE_NRF_PYOCD_UNLOCK,
+                        "recovery_mechanism": RECOVER_MODE_BACKEND_MASS_ERASE,
                     },
                 }
             ],

@@ -17,6 +17,7 @@ for entry in (REPO_ROOT, SRC_ROOT):
 from pyocd_debug_mcp.board_config import (  # noqa: E402
     ConfigError,
     LegacyPackNameWarning,
+    LegacyRecoverModeWarning,
     load_board_configs_from_paths,
 )
 
@@ -57,7 +58,7 @@ def test_nrf52833_board_profile_matches_frozen_official_contract() -> None:
     assert not hasattr(board, "pack_name")
     assert board.default_baudrate == 115200
     assert board.test_addr == 0x10000000
-    assert board.recover_mode == "nrf_pyocd_unlock"
+    assert board.recover_mode == "backend_mass_erase"
     assert board.silicon_id_addr == 0x10000100
     assert board.silicon_id_expected == 0x00052833
     assert board.silicon_id_label == "FICR.INFO.PART"
@@ -82,7 +83,7 @@ def test_nrf52840_board_profile_loads_as_retained_alternate_profile() -> None:
     assert board.silicon_id_label == "FICR.INFO.PART"
     assert board.expected_uart_substring == "boot ok"
     assert board.requires_recover_validation is True
-    assert board.recover_mode == "nrf_pyocd_unlock"
+    assert board.recover_mode == "backend_mass_erase"
 
 
 def test_non_nrf_recover_validation_defaults_to_manual_only(tmp_path: Path) -> None:
@@ -106,6 +107,49 @@ def test_non_nrf_recover_validation_defaults_to_manual_only(tmp_path: Path) -> N
 
     assert board.requires_recover_validation is True
     assert board.recover_mode == "manual_only"
+
+
+def test_missing_family_specific_defaults_remain_unconfigured(tmp_path: Path) -> None:
+    board_path = tmp_path / "explicit_facts.json"
+    board_path.write_text(
+        json.dumps(
+            {
+                "board_id": "explicit_facts",
+                "display_name": "Explicit Facts",
+                "mcu_family": "nrf_future",
+                "probe_family": "jlink",
+                "pyocd_target": "future_target",
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    [board] = load_board_configs_from_paths([board_path])
+    assert board.test_addr is None
+    assert board.requires_recover_validation is False
+    assert board.recover_mode is None
+
+
+def test_legacy_recover_mode_is_warning_only_read_alias(tmp_path: Path) -> None:
+    board_path = tmp_path / "legacy.json"
+    board_path.write_text(
+        json.dumps(
+            {
+                "board_id": "legacy",
+                "display_name": "Legacy",
+                "mcu_family": "legacy-family",
+                "probe_family": "jlink",
+                "pyocd_target": "legacy_target",
+                "requires_recover_validation": True,
+                "recover_mode": "nrf_pyocd_unlock",
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.warns(LegacyRecoverModeWarning, match="backend_mass_erase"):
+        [board] = load_board_configs_from_paths([board_path])
+    assert board.recover_mode == "backend_mass_erase"
 
 
 def test_invalid_recover_mode_is_rejected(tmp_path: Path) -> None:

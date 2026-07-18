@@ -44,7 +44,7 @@ def make_nordic_board() -> BoardConfig:
         serial_hint_terms=("jlink",),
         test_addr=0x10000000,
         requires_recover_validation=True,
-        recover_mode="nrf_pyocd_unlock",
+        recover_mode="backend_mass_erase",
     )
 
 

@@ -89,7 +89,9 @@ def _sha256_file(path: Path) -> str:
     return digest.hexdigest()
 
 
-def _load_asset(resource: str | None, expected_digest: str | None, label: str) -> tuple[dict[str, Any], str]:
+def _load_asset(
+    resource: str | None, expected_digest: str | None, label: str
+) -> tuple[dict[str, Any], str]:
     if not resource or not expected_digest:
         raise BoardCatalogError(f"{label} evidence is not reviewed for automatic setup")
     root = (Path(__file__).resolve().parent / "evidence").resolve()
@@ -97,7 +99,9 @@ def _load_asset(resource: str | None, expected_digest: str | None, label: str) -
     try:
         path.relative_to(root)
     except ValueError as exc:
-        raise BoardCatalogError(f"{label} evidence resource escapes the reviewed evidence directory") from exc
+        raise BoardCatalogError(
+            f"{label} evidence resource escapes the reviewed evidence directory"
+        ) from exc
     if path.is_symlink() or not path.is_file():
         raise BoardCatalogError(f"{label} evidence resource is missing or not a regular file")
     digest = _sha256_file(path)
@@ -138,24 +142,26 @@ def _runtime_pyocd_identity(catalog: CatalogBoard) -> tuple[str, str, str]:
     target_digest = _sha256_file(target_path)
     svd_digest = _sha256_file(svd_path)
     if target_digest != catalog.pyocd_target_module_sha256:
-        raise BoardCatalogError("installed pyOCD target implementation failed its pinned SHA-256 check")
+        raise BoardCatalogError(
+            "installed pyOCD target implementation failed its pinned SHA-256 check"
+        )
     if svd_digest != catalog.pyocd_svd_bundle_sha256:
         raise BoardCatalogError("installed pyOCD SVD bundle failed its pinned SHA-256 check")
     return installed_version, target_digest, svd_digest
 
 
-def load_reviewed_evidence(
+def load_pinned_reviewed_evidence(
     catalog: CatalogBoard,
-    datasheet_path: Path,
     datasheet_sha256: str,
 ) -> ReviewedEvidenceBundle:
-    """Verify distinct source authorities and require deterministic agreement."""
+    """Resolve current pinned authorities for an already-reviewed datasheet digest."""
 
     if not catalog.automatic_setup_reviewed:
         raise BoardCatalogError(
             f"{catalog.board_type} lacks complete reviewed automatic-setup evidence"
         )
-    catalog.validate_datasheet(datasheet_path, datasheet_sha256)
+    if datasheet_sha256 not in catalog.datasheet_sha256:
+        raise BoardCatalogError("datasheet SHA-256 is not a reviewed catalog anchor")
     support_document, support_hash = _load_asset(
         catalog.device_support_evidence_resource,
         catalog.device_support_evidence_sha256,
@@ -172,8 +178,7 @@ def load_reviewed_evidence(
         official = HardwareEvidence.from_document(official_document)
         expected_official_revision = f"sha256:{datasheet_sha256}"
         if not any(
-            source.kind.value == "datasheet"
-            and source.revision == expected_official_revision
+            source.kind.value == "datasheet" and source.revision == expected_official_revision
             for source in official.sources
         ):
             raise BoardCatalogError(
@@ -222,8 +227,7 @@ def load_reviewed_evidence(
             )
     geometry = reconciliation.erase_geometry
     if geometry is None or (
-        geometry.erase_origin != catalog.flash_start
-        or geometry.erase_size != catalog.erase_size
+        geometry.erase_origin != catalog.flash_start or geometry.erase_size != catalog.erase_size
     ):
         raise BoardCatalogError(
             "reconciled erase geometry does not match the reviewed catalog deployment geometry"
@@ -239,6 +243,17 @@ def load_reviewed_evidence(
         svd_hash,
         reconciliation,
     )
+
+
+def load_reviewed_evidence(
+    catalog: CatalogBoard,
+    datasheet_path: Path,
+    datasheet_sha256: str,
+) -> ReviewedEvidenceBundle:
+    """Verify supplied datasheet bytes and current pinned independent authorities."""
+
+    catalog.validate_datasheet(datasheet_path, datasheet_sha256)
+    return load_pinned_reviewed_evidence(catalog, datasheet_sha256)
 
 
 def verify_persisted_reviewed_evidence(
@@ -270,10 +285,7 @@ def verify_persisted_reviewed_evidence(
         raise BoardCatalogError("persisted official-document authority record is missing")
     persisted_official = official_record.get("document")
     datasheet_hash = official_record.get("datasheet_sha256")
-    if (
-        pack_record.get("asset_sha256") != support_hash
-        or persisted_support != support_document
-    ):
+    if pack_record.get("asset_sha256") != support_hash or persisted_support != support_document:
         raise BoardCatalogError(
             "persisted device-support evidence does not match its pinned repository asset"
         )
@@ -327,8 +339,7 @@ def verify_persisted_reviewed_evidence(
         raise BoardCatalogError("persisted reviewed evidence has unexpected deployment geometry")
     geometry = reconciliation.erase_geometry
     if geometry is None or (
-        geometry.erase_origin != catalog.flash_start
-        or geometry.erase_size != catalog.erase_size
+        geometry.erase_origin != catalog.flash_start or geometry.erase_size != catalog.erase_size
     ):
         raise BoardCatalogError("persisted reviewed erase geometry is not the catalog geometry")
     return ReviewedEvidenceBundle(

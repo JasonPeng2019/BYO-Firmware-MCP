@@ -7,6 +7,7 @@ ranges through the MCP schema.
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 from hashlib import sha256
 from pathlib import Path
@@ -59,6 +60,8 @@ class CatalogBoard:
     pyocd_target_module: str | None = None
     pyocd_target_module_sha256: str | None = None
     pyocd_svd_bundle_sha256: str | None = None
+    debug_connect_mode: str | None = None
+    debug_clock_hz: int | None = None
 
     def accepts_mcu(self, value: str) -> bool:
         normalized = value.strip().casefold().replace("-", "").replace("_", "")
@@ -117,123 +120,147 @@ class CatalogBoard:
         )
 
 
-_CATALOG = {
-    "nrf52840dk": CatalogBoard(
-        board_type="nrf52840dk",
-        mcu_names=("nRF52840", "nRF52840-QIAA"),
-        package_part_number="nRF52840-QIAA",
-        pyocd_target="nrf52840",
-        probe_family="jlink",
-        default_baudrate=115200,
-        test_read_address=0x10000000,
-        silicon_id_address=0x10000100,
-        silicon_id_expected=0x00052840,
-        silicon_id_mask=0xFFFFFFFF,
-        flash_start=0x00000000,
-        flash_end=0x00100000,
-        ram_start=0x20000000,
-        ram_end=0x20040000,
-        erase_size=0x1000,
-        application_start=0x00000000,
-        application_end=0x00100000,
-        hardware_regions=(
-            CatalogHardwareRegion(
-                "UICR and persistent configuration", RegionKind.PROHIBITED, 0x10001000, 0x10002000
+_CATALOG_RESOURCE = Path(__file__).with_name("reviewed_boards.json")
+
+
+def _required_string(raw: dict[str, object], name: str) -> str:
+    value = raw.get(name)
+    if not isinstance(value, str) or not value.strip():
+        raise BoardCatalogError(f"Catalog field '{name}' must be a non-empty string")
+    return value.strip()
+
+
+def _required_int(raw: dict[str, object], name: str) -> int:
+    value = raw.get(name)
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise BoardCatalogError(f"Catalog field '{name}' must be an integer")
+    return value
+
+
+def _optional_int(raw: dict[str, object], name: str) -> int | None:
+    value = raw.get(name)
+    if value is None:
+        return None
+    return _required_int(raw, name)
+
+
+def _optional_string(raw: dict[str, object], name: str) -> str | None:
+    value = raw.get(name)
+    if value is None:
+        return None
+    return _required_string(raw, name)
+
+
+def _string_tuple(raw: dict[str, object], name: str, *, required: bool = False) -> tuple[str, ...]:
+    value = raw.get(name)
+    if value is None and not required:
+        return ()
+    if not isinstance(value, list) or (required and not value):
+        raise BoardCatalogError(f"Catalog field '{name}' must be a non-empty string list")
+    result = tuple(item.strip() for item in value if isinstance(item, str) and item.strip())
+    if len(result) != len(value):
+        raise BoardCatalogError(f"Catalog field '{name}' must contain only non-empty strings")
+    return result
+
+
+def _load_catalog(path: Path = _CATALOG_RESOURCE) -> dict[str, CatalogBoard]:
+    """Load reviewed board facts from the packaged, server-owned data document."""
+
+    try:
+        document = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise BoardCatalogError(f"Reviewed board catalog is unreadable: {path}") from exc
+    if not isinstance(document, dict) or document.get("schema_version") != 1:
+        raise BoardCatalogError("Reviewed board catalog must use schema_version 1")
+    rows = document.get("boards")
+    if not isinstance(rows, list):
+        raise BoardCatalogError("Reviewed board catalog 'boards' must be a list")
+
+    result: dict[str, CatalogBoard] = {}
+    for raw_row in rows:
+        if not isinstance(raw_row, dict):
+            raise BoardCatalogError("Each reviewed board entry must be an object")
+        raw = dict(raw_row)
+        board_type = _required_string(raw, "board_type")
+        key = board_type.casefold()
+        if key in result:
+            raise BoardCatalogError(f"Duplicate reviewed board type: {board_type}")
+
+        regions_value = raw.get("hardware_regions")
+        if not isinstance(regions_value, list):
+            raise BoardCatalogError(f"{board_type}: hardware_regions must be a list")
+        regions: list[CatalogHardwareRegion] = []
+        for raw_region in regions_value:
+            if not isinstance(raw_region, dict):
+                raise BoardCatalogError(f"{board_type}: hardware region must be an object")
+            region_raw = dict(raw_region)
+            try:
+                kind = RegionKind(_required_string(region_raw, "kind"))
+            except ValueError as exc:
+                raise BoardCatalogError(f"{board_type}: unsupported hardware region kind") from exc
+            start = _required_int(region_raw, "start")
+            end = _required_int(region_raw, "end")
+            if start < 0 or end <= start:
+                raise BoardCatalogError(f"{board_type}: hardware region must be a non-empty range")
+            regions.append(
+                CatalogHardwareRegion(_required_string(region_raw, "name"), kind, start, end)
+            )
+
+        flash_start = _required_int(raw, "flash_start")
+        flash_end = _required_int(raw, "flash_end")
+        ram_start = _required_int(raw, "ram_start")
+        ram_end = _required_int(raw, "ram_end")
+        application_start = _required_int(raw, "application_start")
+        application_end = _required_int(raw, "application_end")
+        erase_size = _required_int(raw, "erase_size")
+        if not (0 <= flash_start < flash_end and 0 <= ram_start < ram_end):
+            raise BoardCatalogError(f"{board_type}: flash and RAM ranges must be non-empty")
+        if not (flash_start <= application_start < application_end <= flash_end):
+            raise BoardCatalogError(f"{board_type}: application range must be inside flash")
+        if erase_size <= 0:
+            raise BoardCatalogError(f"{board_type}: erase_size must be positive")
+
+        result[key] = CatalogBoard(
+            board_type=board_type,
+            mcu_names=_string_tuple(raw, "mcu_names", required=True),
+            package_part_number=_required_string(raw, "package_part_number"),
+            pyocd_target=_required_string(raw, "pyocd_target"),
+            probe_family=_required_string(raw, "probe_family"),
+            default_baudrate=_required_int(raw, "default_baudrate"),
+            test_read_address=_required_int(raw, "test_read_address"),
+            silicon_id_address=_optional_int(raw, "silicon_id_address"),
+            silicon_id_expected=_optional_int(raw, "silicon_id_expected"),
+            silicon_id_mask=_required_int(raw, "silicon_id_mask"),
+            flash_start=flash_start,
+            flash_end=flash_end,
+            ram_start=ram_start,
+            ram_end=ram_end,
+            erase_size=erase_size,
+            application_start=application_start,
+            application_end=application_end,
+            hardware_regions=tuple(regions),
+            datasheet_sha256=_string_tuple(raw, "datasheet_sha256"),
+            document_revision=_required_string(raw, "document_revision"),
+            zephyr_board_target=_optional_string(raw, "zephyr_board_target"),
+            device_support_evidence_resource=_optional_string(
+                raw, "device_support_evidence_resource"
             ),
-            CatalogHardwareRegion("factory information", RegionKind.ROM, 0x10000000, 0x10001000),
-            CatalogHardwareRegion(
-                "volatile GPIO registers", RegionKind.PERIPHERAL, 0x50000500, 0x50000900
+            device_support_evidence_sha256=_optional_string(
+                raw, "device_support_evidence_sha256"
             ),
-            CatalogHardwareRegion(
-                "nonvolatile memory and access control registers",
-                RegionKind.PROHIBITED,
-                0x4001E000,
-                0x4001F000,
-            ),
-            CatalogHardwareRegion(
-                "Cortex-M system control", RegionKind.CPU_SYSTEM, 0xE0000000, 0xE0100000
-            ),
-        ),
-        datasheet_sha256=("c619e336b9c0610663273041f057f2537a65fd408ce0c5b8214a26de2aa88422",),
-        document_revision="nRF52840 PS v1.1 plus nRF52840 DK reviewed deployment policy v1",
-        zephyr_board_target="nrf52840dk/nrf52840",
-        device_support_evidence_resource="evidence/nrf52840_device_support.json",
-        device_support_evidence_sha256="8ffa48e16fb03d491660c93faaa1a34f9654873e7c27b7113cc23216fe47a8e7",
-        official_evidence_resource="evidence/nrf52840_official_document.json",
-        official_evidence_sha256="c159d4eec5af036fcca72c06ea620db370750b88a086de965040235317f74daa",
-        pyocd_version="0.45.0",
-        pyocd_target_module="pyocd.target.builtin.target_nRF52840_xxAA",
-        pyocd_target_module_sha256="c4713dea41facd880a92eb3b4a12924305290b36753e1fe592a463b856b9b29f",
-        pyocd_svd_bundle_sha256="e452ca593edadbb0d6f960c19f761977e35e2a33e027d7b84fbd4e82b2608d8c",
-    ),
-    "nrf52833dk": CatalogBoard(
-        board_type="nrf52833dk",
-        mcu_names=("nRF52833", "nRF52833-QIAA"),
-        package_part_number="nRF52833-QIAA",
-        pyocd_target="nrf52833",
-        probe_family="jlink",
-        default_baudrate=115200,
-        test_read_address=0x10000000,
-        silicon_id_address=0x10000100,
-        silicon_id_expected=0x00052833,
-        silicon_id_mask=0xFFFFFFFF,
-        flash_start=0x00000000,
-        flash_end=0x00080000,
-        ram_start=0x20000000,
-        ram_end=0x20020000,
-        erase_size=0x1000,
-        application_start=0x00000000,
-        application_end=0x00080000,
-        hardware_regions=(
-            CatalogHardwareRegion(
-                "UICR and persistent configuration", RegionKind.PROHIBITED, 0x10001000, 0x10002000
-            ),
-            CatalogHardwareRegion("factory information", RegionKind.ROM, 0x10000000, 0x10001000),
-            CatalogHardwareRegion(
-                "peripheral registers", RegionKind.PERIPHERAL, 0x40000000, 0x60000000
-            ),
-            CatalogHardwareRegion(
-                "Cortex-M system control", RegionKind.CPU_SYSTEM, 0xE0000000, 0xE0100000
-            ),
-        ),
-        zephyr_board_target="nrf52833dk/nrf52833",
-    ),
-    "nucleo_l476rg": CatalogBoard(
-        board_type="nucleo_l476rg",
-        mcu_names=("STM32L476RG", "STM32L476RGT6"),
-        package_part_number="STM32L476RGT6",
-        pyocd_target="stm32l476rgtx",
-        probe_family="stlink",
-        default_baudrate=115200,
-        test_read_address=0x08000000,
-        silicon_id_address=None,
-        silicon_id_expected=None,
-        silicon_id_mask=0xFFFFFFFF,
-        flash_start=0x08000000,
-        flash_end=0x08100000,
-        ram_start=0x20000000,
-        ram_end=0x20018000,
-        erase_size=0x800,
-        application_start=0x08000000,
-        application_end=0x08100000,
-        hardware_regions=(
-            CatalogHardwareRegion(
-                "system-memory ROM bootloader", RegionKind.ROM_BOOTLOADER, 0x1FFF0000, 0x1FFF7000
-            ),
-            CatalogHardwareRegion(
-                "OTP and persistent configuration", RegionKind.PROHIBITED, 0x1FFF7000, 0x1FFF7800
-            ),
-            CatalogHardwareRegion("option bytes", RegionKind.PROHIBITED, 0x1FFF7800, 0x1FFF8000),
-            CatalogHardwareRegion(
-                "peripheral registers", RegionKind.PERIPHERAL, 0x40000000, 0x60000000
-            ),
-            CatalogHardwareRegion(
-                "Cortex-M system control", RegionKind.CPU_SYSTEM, 0xE0000000, 0xE0100000
-            ),
-        ),
-        zephyr_board_target="nucleo_l476rg",
-    ),
-}
+            official_evidence_resource=_optional_string(raw, "official_evidence_resource"),
+            official_evidence_sha256=_optional_string(raw, "official_evidence_sha256"),
+            pyocd_version=_optional_string(raw, "pyocd_version"),
+            pyocd_target_module=_optional_string(raw, "pyocd_target_module"),
+            pyocd_target_module_sha256=_optional_string(raw, "pyocd_target_module_sha256"),
+            pyocd_svd_bundle_sha256=_optional_string(raw, "pyocd_svd_bundle_sha256"),
+            debug_connect_mode=_optional_string(raw, "debug_connect_mode"),
+            debug_clock_hz=_optional_int(raw, "debug_clock_hz"),
+        )
+    return result
+
+
+_CATALOG = _load_catalog()
 
 
 def catalog_board(board_type: str) -> CatalogBoard:

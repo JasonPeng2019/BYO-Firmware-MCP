@@ -166,6 +166,31 @@ def test_action_category_matrix(action: ActionCategory, kind: RegionKind, allowe
     assert isinstance(result, Refusal) is not allowed
 
 
+def test_memory_read_denies_unknown_and_prohibited_but_allows_mapped_kinds() -> None:
+    safety = SafetyMap(
+        [
+            region("Application", RegionKind.APPLICATION_FLASH, 0x1000, 0x2000),
+            region("RAM", RegionKind.RAM, 0x2000, 0x3000),
+            region("Peripheral", RegionKind.PERIPHERAL, 0x4000, 0x5000),
+            region("Security", RegionKind.PROHIBITED, 0x4800, 0x4810),
+        ]
+    )
+
+    for requested in (
+        AddressRange(0x1000, 0x1004),
+        AddressRange(0x2000, 0x2004),
+        AddressRange(0x4000, 0x4004),
+    ):
+        assert isinstance(safety.check(ActionCategory.MEMORY_READ, [requested]), Allowed)
+
+    unknown = safety.check(ActionCategory.MEMORY_READ, [AddressRange(0x5000, 0x5004)])
+    prohibited = safety.check(ActionCategory.MEMORY_READ, [AddressRange(0x4800, 0x4804)])
+    assert isinstance(unknown, Refusal)
+    assert unknown.classification is RegionKind.UNKNOWN
+    assert isinstance(prohibited, Refusal)
+    assert prohibited.classification is RegionKind.PROHIBITED
+
+
 def test_breakpoint_requires_full_executable_segment_containment() -> None:
     safety = SafetyMap(
         [

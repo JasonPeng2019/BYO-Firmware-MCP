@@ -40,7 +40,7 @@ def make_nordic_board() -> BoardConfig:
         silicon_id_label="FICR.INFO.PART",
         default_baudrate=115200,
         requires_recover_validation=True,
-        recover_mode="nrf_pyocd_unlock",
+        recover_mode="backend_mass_erase",
         expected_uart_substring="boot ok",
     )
 
@@ -297,7 +297,7 @@ def test_recover_gate_allows_supported_nordic_recover() -> None:
     )
 
     assert request.board_id == "nrf52833dk"
-    assert request.recover_mode == "nrf_pyocd_unlock"
+    assert request.recover_mode == "backend_mass_erase"
 
 
 def test_recover_gate_refuses_unsupported_stm32_recover() -> None:

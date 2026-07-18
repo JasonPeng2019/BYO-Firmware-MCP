@@ -66,7 +66,7 @@ def test_task7_plan_budget_and_permission_metadata_matches_spec() -> None:
 
 def test_task7_runtime_schemas_match_the_spec_table() -> None:
     expected_action_fields = {
-        "connect": {"board_id", "unique_id", "target", "board_config"},
+        "connect": {"board_id"},
         "disconnect": {"board_id"},
         "get_board_info": {"board_id"},
         "get_state": {"board_id"},
@@ -163,6 +163,7 @@ def test_session_override_forwards_manual_values_without_profile_writes() -> Non
     handlers = build_session_handlers(
         SessionToolServices(
             connect=connect,
+            connect_override=connect,
             disconnect=lambda board: f"disconnected:{board}",
             get_board_info=lambda board: f"info:{board}",
             get_state=lambda board: f"state:{board}",
@@ -197,7 +198,8 @@ def test_every_session_result_has_safe_exit_and_routes_the_named_board() -> None
 
     handlers = build_session_handlers(
         SessionToolServices(
-            connect=lambda board, **values: result("connect", board),
+            connect=lambda board: result("connect", board),
+            connect_override=lambda board, **values: result("connect_override", board),
             disconnect=lambda board: result("disconnect", board),
             get_board_info=lambda board: result("get_board_info", board),
             get_state=lambda board: result("get_state", board),

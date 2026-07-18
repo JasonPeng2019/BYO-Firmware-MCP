@@ -123,17 +123,19 @@ def _load_guidance(board_id: str, tool_name: str) -> dict[str, Any]:
                 "expected_statuses": [
                     "safety_setup_completed",
                     "safety_setup_needs_user_input",
-                    "safety_setup_research_required",
                     "safety_setup_incomplete",
                     "safety_setup_conflict",
                     "safety_setup_blocked",
+                    "safety_setup_unsupported_board",
                 ],
                 "accepted_response_shape": (
-                    "Follow only the exact continuation or remedy in the returned status; this "
-                    "tool has no caller-supplied allowed ranges."
+                    "Follow only the exact public-tool remedy in the returned status. Terminal "
+                    "unsupported-board responses have accepted_response null and no continuation; "
+                    "this tool never accepts caller-supplied allowed ranges."
                 ),
                 "common_remedies": [
-                    "Supply the requested authoritative artifact or official evidence.",
+                    "For reviewed boards, rerun board_setup with the reviewed datasheet when pinned authority must be rebuilt.",
+                    "For unsupported boards, maintainers must add pinned two-source evidence and catalog geometry.",
                     "Resolve conflicting evidence fail-closed.",
                     "After completion, load and call board_validate.",
                 ],
@@ -148,17 +150,25 @@ def _load_guidance(board_id: str, tool_name: str) -> dict[str, Any]:
                 "application_elf": None,
                 "application_hex": None,
                 "application_map": None,
+                "bootloader_elf": None,
+                "bootloader_hex": None,
+                "bootloader_map": None,
             },
         },
         "guidance": {
-            "purpose": "Refresh an existing valid safety map after safely scoped artifact drift.",
+            "purpose": (
+                "Refresh an existing valid safety map after safely scoped application, "
+                "bootloader, pack, or official-evidence drift."
+            ),
             "when_to_use": (
                 "Use when validation or a guarded action specifically reports refreshable "
-                "fingerprint drift, normally after rebuilding the application."
+                "fingerprint drift, normally after rebuilding an application or an already-"
+                "authorized bootloader partition."
             ),
             "when_not_to_use": (
                 "Do not use for a missing or conflicting map or for board, MCU, target, probe, "
-                "geometry, or schema anchor changes. Refresh cannot reopen a disconnected gate."
+                "geometry, or schema anchor changes. It cannot create a new bootloader authority "
+                "envelope, accept caller ranges, or reopen a disconnected gate."
             ),
             "expected_statuses": [
                 "safety_refresh_completed",
@@ -167,12 +177,13 @@ def _load_guidance(board_id: str, tool_name: str) -> dict[str, Any]:
                 "safety_refresh_blocked",
             ],
             "accepted_response_shape": (
-                "Copy any application artifact paths named by the triggering remedy into the "
-                "matching optional next_call fields; leave unrelated fields null."
+                "Copy application or bootloader artifact paths named by the triggering remedy "
+                "into the matching optional next_call fields; leave unrelated fields null."
             ),
             "common_remedies": [
-                "Use full board_safety_setup when scope is unclear or anchors changed.",
+                "Use full board_safety_setup when scope is unclear; follow with board_validate for anchor, geometry, or schema changes.",
                 "Resolve a safety conflict before retrying.",
+                "A missing reviewed bootloader envelope is a maintainer evidence task, not a caller-supplied-range prompt.",
                 "Run board_validate if a new live gate stamp is required.",
             ],
             "relay_rule": relay_rule,
@@ -511,13 +522,17 @@ def build_setup_handlers(services: SetupToolServices) -> dict[str, Callable[...,
         application_elf: str | None = None,
         application_hex: str | None = None,
         application_map: str | None = None,
+        bootloader_elf: str | None = None,
+        bootloader_hex: str | None = None,
+        bootloader_map: str | None = None,
     ) -> str:
         """Refresh an existing valid safety map after safely scoped source or build drift.
 
         Trigger this only when a current map already exists and validation or a guarded action names
-        refreshable fingerprint drift as the remedy, such as a rebuilt application with unchanged
-        board/target anchors. Use board_safety_setup for a missing/conflicting map and full setup for
-        board, MCU, target, or probe-anchor changes. Refresh never reopens a disconnected gate.
+        refreshable fingerprint drift as the remedy, such as a rebuilt application or a rebuilt
+        bootloader already contained by a reviewed bootloader partition. Use board_safety_setup for
+        a missing/conflicting map and full setup plus validation for board, MCU, target, geometry,
+        or schema-anchor changes. Refresh never creates authority and never reopens a disconnected gate.
         """
 
         if not services.loader.is_loaded(board_id, "board_safety_refresh"):
@@ -528,6 +543,9 @@ def build_setup_handlers(services: SetupToolServices) -> dict[str, Callable[...,
                 application_elf=application_elf,
                 application_hex=application_hex,
                 application_map=application_map,
+                bootloader_elf=bootloader_elf,
+                bootloader_hex=bootloader_hex,
+                bootloader_map=bootloader_map,
             )
         )
 
@@ -538,10 +556,10 @@ def build_setup_handlers(services: SetupToolServices) -> dict[str, Callable[...,
         a connection or gate and never treats persisted reports as authority. UART readiness is
         reported separately so a project that does not need a console is not blocked, while a
         console-dependent workflow can require ready_for_uart_work before it starts. For a known
-        reviewed MCU, build_guidance returns the exact Zephyr board target and recommends the
-        cross-platform pyocd-zephyr-build helper, which uses short scratch paths when necessary on
-        Windows. That guidance is advisory only: inspect the resulting ELF/map with
-        board_safety_refresh before flashing.
+        MCU, build_guidance first returns the provider-neutral native-build and
+        collect_build_artifacts workflow. Reviewed Zephyr profiles may also include a labeled,
+        parameterized Zephyr terminal fallback. All build guidance is advisory only: inspect the
+        resulting ELF/map with board_safety_refresh before flashing.
         """
 
         if services.setup_status is None:

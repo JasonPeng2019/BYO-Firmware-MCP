@@ -96,6 +96,8 @@ def test_build_session_options_adds_nucleo_under_reset_workaround() -> None:
         probe_hint_terms=("stlink",),
         serial_hint_terms=("stlink",),
         test_addr=0x08000000,
+        debug_connect_mode="under-reset",
+        debug_clock_hz=1_000_000,
     )
 
     options = target_control.build_session_options(stlink_board, stlink_board.pyocd_target)

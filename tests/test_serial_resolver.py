@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 from dataclasses import dataclass
 
@@ -103,7 +103,7 @@ def test_nordic_dual_port_prefers_vcom0(monkeypatch) -> None:
     board = FakeBoard(
         "nrf52840dk",
         "nRF52840-DK",
-        "nrf52840",
+        "family-not-used-for-fallback-selection",
         "jlink",
         ("jlink", "segger", "virtual com"),
     )
@@ -116,7 +116,7 @@ def test_nordic_dual_port_prefers_vcom0(monkeypatch) -> None:
     monkeypatch.setattr(
         serial_resolver,
         "resolve_command_path",
-        lambda name: "nrfjprog" if name == "nrfjprog" else None,
+        lambda name, *_args: "nrfjprog" if name == "nrfjprog" else None,
     )
 
     result = resolve_serial_port(
@@ -159,7 +159,7 @@ Manufacturer: STMicroelectronics
     monkeypatch.setattr(
         serial_resolver,
         "resolve_command_path",
-        lambda name: "STM32_Programmer_CLI" if name == "STM32_Programmer_CLI" else None,
+        lambda name, *_args: "STM32_Programmer_CLI" if name == "STM32_Programmer_CLI" else None,
     )
 
     result = resolve_serial_port(
@@ -192,7 +192,7 @@ def test_probe_linked_metadata_match_bypasses_vendor_helper(monkeypatch) -> None
     monkeypatch.setattr(
         serial_resolver,
         "resolve_command_path",
-        lambda name: "STM32_Programmer_CLI" if name == "STM32_Programmer_CLI" else None,
+        lambda name, *_args: "STM32_Programmer_CLI" if name == "STM32_Programmer_CLI" else None,
     )
 
     calls: list[list[str]] = []
@@ -217,7 +217,7 @@ def test_vendor_tool_missing_falls_back_to_generic(monkeypatch) -> None:
     board = FakeBoard("nrf52840dk", "nRF52840-DK", "nrf52840", "jlink", ("segger", "uart"))
     ports = [make_port("COM7", "Segger UART Port")]
 
-    monkeypatch.setattr(serial_resolver, "resolve_command_path", lambda name: None)
+    monkeypatch.setattr(serial_resolver, "resolve_command_path", lambda name, *_args: None)
 
     result = resolve_serial_port(
         board=board,
@@ -264,7 +264,7 @@ def test_single_port_fallback_refuses_conflicting_probe_family(
 ) -> None:
     board = FakeBoard("selected", "Selected Board", mcu_family, probe_family, ("virtual com",))
     ports = [make_port("COM12", description)]
-    monkeypatch.setattr(serial_resolver, "resolve_command_path", lambda name: None)
+    monkeypatch.setattr(serial_resolver, "resolve_command_path", lambda name, *_args: None)
 
     result = resolve_serial_port(
         board=board,
@@ -367,3 +367,4 @@ def test_external_usb_serial_adapter_surfaces_for_decoupled_board() -> None:
 
     assert result.port is not None
     assert result.port.device == "COM21"
+

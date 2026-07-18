@@ -338,6 +338,14 @@ class BoardValidator:
                 )
             steps.append(ValidationStep(4, "Confirm built-in or pinned target support", "passed"))
 
+            if profile.board.test_addr is None:
+                raise ValidationBackendError(
+                    "validation_blocked",
+                    "validation/test-read-evidence-missing",
+                    "The profile has no reviewed test_read_address. Run board_setup to enrich "
+                    "the profile, or board_fix_setup to repair this missing setup evidence.",
+                )
+
             # Step 5: bounded live connection. No reset, halt, flash, erase, or recovery.
             connection = self._backend.connect(
                 profile, selected_probe, self._step_timeout_seconds

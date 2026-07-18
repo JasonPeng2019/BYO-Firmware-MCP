@@ -29,6 +29,7 @@ class MemoryToolServices:
     read_target_memory: Callable[[Any, int, int], int]
     read_target_block: Callable[[Any, int, int], list[int]]
     write_target_memory: Callable[[Any, int, int, int], None]
+    check_memory_read: Callable[[str, int, int], None]
     check_memory_write: Callable[[str, int, int], None] | None = None
 
 
@@ -126,12 +127,10 @@ def build_memory_handlers(
                 for item in matches
             )
             result = f"Symbols matching '{query}' in {artifact}: {rendered}"
-        return _record_success(
-            services, "find_symbol", board_id, args, result, started, runtime
-        )
+        return _record_success(services, "find_symbol", board_id, args, result, started, runtime)
 
     def read_memory_symbol(board_id: str, symbol: str, width: int = 32) -> str:
-        """Resolve and read a firmware symbol; prefer this over raw-address access."""
+        """Resolve and read a mapped, non-prohibited symbol; prefer it to raw access."""
 
         started = time.monotonic()
         runtime = services.runtime_for(board_id)
@@ -159,6 +158,7 @@ def build_memory_handlers(
         handle = services.handle_for(board_id)
         artifact = services.symbol_artifact_for(handle)
         resolved = services.resolve_symbol(artifact, symbol)
+        services.check_memory_read(board_id, resolved.address, width // 8)
         value = services.read_target_memory(handle, resolved.address, width)
         result = (
             f"Symbol {resolved.name} from {artifact} @0x{resolved.address:08X} "
@@ -174,7 +174,7 @@ def build_memory_handlers(
         width: int = 32,
         length: int | None = None,
     ) -> str:
-        """Read one raw value or a bounded block under a multi-call address plan."""
+        """Read a mapped, non-prohibited value or bounded block under an address plan."""
 
         started = time.monotonic()
         runtime = services.runtime_for(board_id)
@@ -231,6 +231,8 @@ def build_memory_handlers(
                 started,
                 runtime,
             )
+        size_bytes = width // 8 if length is None else length
+        services.check_memory_read(board_id, parsed_address, size_bytes)
         handle = services.handle_for(board_id)
         if length is None:
             value = services.read_target_memory(handle, parsed_address, width)
@@ -313,8 +315,7 @@ def build_memory_handlers(
                 args,
                 PolicyRefusal(
                     "memory/address-fallback-reason-required",
-                    "Raw-address fallback requires a brief concrete reason symbols are "
-                    "unsuitable.",
+                    "Raw-address fallback requires a brief concrete reason symbols are unsuitable.",
                 ),
                 started,
                 runtime,
@@ -349,9 +350,7 @@ def build_memory_handlers(
         services.write_target_memory(handle, address, parsed_value, width)
         target = f"0x{address:08X}" if is_address else str(symbol_or_address)
         result = f"Wrote 0x{parsed_value:X} to mapped RAM at {target}."
-        return _record_success(
-            services, "write_memory", board_id, args, result, started, runtime
-        )
+        return _record_success(services, "write_memory", board_id, args, result, started, runtime)
 
     return {
         "find_symbol": find_symbol,

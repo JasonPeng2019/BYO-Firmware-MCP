@@ -3,6 +3,8 @@ display_name: "Nucleo-L476RG"  # PROJECT-DEFINED (human-facing board label)
 mcu_family: stm32l476  # HW-FIXED (the silicon family on the reference board)
 probe_family: stlink  # HW-FIXED (the onboard debug probe family)
 pyocd_target: stm32l476rgtx  # VENDOR-FIXED, BENCH-VERIFIED on the live Nucleo-L476RG Stage 0 path
+debug_connect_mode: under-reset  # BENCH-VERIFIED attach fact; consumed generically by the backend
+debug_clock_hz: 1000000  # BENCH-VERIFIED debug clock fact
 serial_baudrate: 115200  # PROJECT-DEFINED, BENCH-VERIFIED by the repo-owned reference firmware
 test_read_address: 0x08000000  # HW-FIXED (STM32 flash base; safe readable smoke-test address)
 pack_name: stm32l476  # VENDOR-FIXED, BENCH-VERIFIED (`pyocd pack install stm32l476` supplies the target)

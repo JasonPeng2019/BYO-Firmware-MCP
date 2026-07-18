@@ -99,7 +99,7 @@ def repository(tmp_path: Path, *, uart: bool = True, silicon: bool = False) -> P
             }
         )
     )
-    optional: dict[str, object] = {}
+    optional: dict[str, object] = {"test_read_address": 0x08000000}
     if uart:
         optional["expected_uart_substring"] = "boot ready"
     if silicon:
@@ -245,7 +245,29 @@ def test_validation_backend_call_order_is_bounded_and_non_destructive(tmp_path: 
     capture = next(call for call in backend.calls if call[0] == "capture_serial")
     assert capture[3:] == (3.0, MAX_SERIAL_CAPTURE_BYTES)
     assert hook_events == ["load_layer0", "stamp"]
-    assert all(call[0] not in {"write", "flash", "erase", "reset", "recover"} for call in backend.calls)
+    assert all(
+        call[0] not in {"write", "flash", "erase", "reset", "recover"}
+        for call in backend.calls
+    )
+
+
+def test_missing_test_read_evidence_blocks_before_backend_connect(tmp_path: Path) -> None:
+    profiles = repository(tmp_path)
+    current = profiles.load("bench_board", include_legacy=False)
+    document = current.to_document()
+    document.pop("test_read_address", None)
+    profiles.store.atomic_write_yaml(
+        profiles.store.layout.board_profile("bench_board"), document
+    )
+    backend = FakeBackend()
+
+    result = validator(tmp_path, profiles, backend, hooks=open_hooks()).validate(
+        ValidationRequest("bench_board")
+    )
+
+    assert result.status == "validation_blocked"
+    assert "board_fix_setup" in result.agent_prompt
+    assert not any(call[0] == "connect" for call in backend.calls)
 
 
 def test_silicon_mismatch_does_not_mutate_profile_and_only_offers_assignment_remedy(

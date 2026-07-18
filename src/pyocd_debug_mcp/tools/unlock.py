@@ -12,7 +12,7 @@ from typing import Any
 from pyocd_debug_mcp.adapters.swd_interface import TargetSessionHandle
 from pyocd_debug_mcp.board_config import (
     RECOVER_MODE_MANUAL_ONLY,
-    RECOVER_MODE_NRF_PYOCD_UNLOCK,
+    RECOVER_MODE_BACKEND_MASS_ERASE,
 )
 from pyocd_debug_mcp.firmstore.profiles import ProfileRepository
 from pyocd_debug_mcp.firmstore.reports import ReportWriter
@@ -49,10 +49,10 @@ class RecoveryMechanism:
 
 
 RECOVERY_MECHANISMS = {
-    RECOVER_MODE_NRF_PYOCD_UNLOCK: RecoveryMechanism(
-        RECOVER_MODE_NRF_PYOCD_UNLOCK,
-        "Nordic Semiconductor",
-        "pyOCD Nordic debug-protection recovery using the documented target unlock primitive",
+    RECOVER_MODE_BACKEND_MASS_ERASE: RecoveryMechanism(
+        RECOVER_MODE_BACKEND_MASS_ERASE,
+        "connected target backend",
+        "the backend's typed, documented whole-device mass-erase recovery primitive",
         True,
     )
 }
@@ -98,6 +98,7 @@ class UnlockToolServices:
     connection_id_for: Callable[[str], str]
     session_id_for: Callable[[str], str | None]
     current_fingerprint: Callable[[str], str]
+    supports_recovery: Callable[[TargetSessionHandle, str], bool]
     recover_target: Callable[[TargetSessionHandle, str], str]
     mark_recover_completed: Callable[[str], None]
     revoke_permission: Callable[[str, str], None]
@@ -209,13 +210,12 @@ class UnlockCoordinator:
                 f"The reviewed mechanism '{candidate}' does not match configured mechanism "
                 f"'{configured}'.",
             )
-        if (
-            candidate == RECOVER_MODE_NRF_PYOCD_UNLOCK
-            and "nrf" not in (identity.pyocd_target + identity.live_target_part).casefold()
-        ):
+        handle = self.services.handle_for(identity.board_id)
+        if not self.services.supports_recovery(handle, candidate):
             raise PlanRefusal(
-                "unlock/mechanism-target-mismatch",
-                "The Nordic recovery primitive is unavailable for the exact connected target.",
+                "unlock/mechanism-backend-unsupported",
+                "The connected target backend does not report support for this typed recovery "
+                "primitive. Use the documented manual recovery path for this target.",
             )
         return mechanism
 

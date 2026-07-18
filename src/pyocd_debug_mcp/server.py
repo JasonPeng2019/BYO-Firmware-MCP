@@ -118,7 +118,10 @@ from pyocd_debug_mcp.setup_flow.board_catalog import (
     catalog_board_types,
     reviewed_setup_board_types,
 )
-from pyocd_debug_mcp.setup_flow.reviewed_evidence import load_reviewed_evidence
+from pyocd_debug_mcp.setup_flow.reviewed_evidence import (
+    load_pinned_reviewed_evidence,
+    load_reviewed_evidence,
+)
 from pyocd_debug_mcp.setup_flow.setup import (
     SetupPhase,
     SetupPhaseContext,
@@ -156,17 +159,22 @@ from pyocd_debug_mcp.safety.map_build import (
     RegionContribution,
     SafetyArtifactError,
     SafetyArtifactRepository,
+    SafetyArtifacts,
     SafetyIssue,
     SafetyMapBuilder,
     SafetySetupRequest,
+    build_documents,
     require_reconciled_authority,
     region_conflicts,
 )
 from pyocd_debug_mcp.safety.refresh import SafetyRefreshRequest, SafetyRefresher
 from pyocd_debug_mcp.safety.regions import (
+    ActionCategory,
     AddressRange,
     Provenance,
+    Refusal,
     RegionKind,
+    SafetyMap,
     SafetyRegion,
     SourceAuthority,
 )
@@ -191,6 +199,7 @@ from pyocd_debug_mcp.services.connections import (
     stable_connection_identity,
 )
 from pyocd_debug_mcp.tools.handshake import register_initialization_handshake
+from pyocd_debug_mcp.tools.artifacts import build_artifact_handlers
 from pyocd_debug_mcp.tools.breakpoints import (
     BreakpointToolServices,
     build_breakpoint_handlers,
@@ -384,6 +393,10 @@ def _check_memory_safety(board_id: str, address: int, width: int) -> None:
     _safety_policy.check_memory_write(board_id, address, width)
 
 
+def _check_memory_read_safety(board_id: str, address: int, size_bytes: int) -> None:
+    _safety_policy.check_memory_read(board_id, address, size_bytes)
+
+
 def _check_register_safety(board_id: str, address: int) -> None:
     _safety_policy.check_register_write(board_id, address)
 
@@ -441,6 +454,18 @@ def _enforce_action_containment(
             _safety_policy.check_register_write(
                 board_id, _parse_action_integer(parameters["address"], "address")
             )
+        elif tool_name == "read_memory_address":
+            address = _parse_action_integer(parameters["address"], "address")
+            width = _parse_action_integer(parameters["width"], "width")
+            if width not in {8, 16, 32}:
+                raise ValueError("width must be one of: 8, 16, 32")
+            length_value = parameters.get("length")
+            size_bytes = (
+                width // 8
+                if length_value is None
+                else _parse_action_integer(length_value, "length")
+            )
+            _safety_policy.check_memory_read(board_id, address, size_bytes)
         elif tool_name == "write_memory":
             target = parameters["symbol_or_address"]
             try:
@@ -690,23 +715,32 @@ def _run_cmd(
     return result.returncode, result.stdout or "", result.stderr or ""
 
 
-def resolve_board_config(board_id: str | None, board_config: str | None) -> BoardConfig | None:
+def resolve_board_config(
+    board_id: str | None,
+    board_config: str | None,
+    *,
+    allow_environment_overrides: bool = True,
+) -> BoardConfig | None:
     """Load one board definition through the shared loader, or None if unselected.
 
     This is the server's single path to ``boards/<board>.yaml`` — the same loader
     the Stage 0 CLI uses — so a custom ST/nRF board's facts (pyOCD target, recover
     policy, silicon id, baud) reach the MCP tools, not just the CLI.
 
-    ``board_id``/``board_config`` fall back to the ``PYOCD_BOARD_ID`` /
-    ``PYOCD_BOARD_CONFIG`` environment variables (the stdio-launch config
-    channel). Returns ``None`` when no board is named, so ``connect`` still works
-    with a raw target. Raises ``ConfigError`` if a named board cannot be found or
-    a config file is malformed.
+    When ``allow_environment_overrides`` is true, ``board_id``/``board_config``
+    fall back to the ``PYOCD_BOARD_ID`` / ``PYOCD_BOARD_CONFIG`` environment
+    variables (the stdio-launch config channel). Public profile-only ``connect``
+    disables that fallback. Returns ``None`` when no board is named. Raises
+    ``ConfigError`` if a named board cannot be found or a config file is malformed.
     """
-    bid = (board_id or os.environ.get("PYOCD_BOARD_ID") or "").strip()
+    environment_board = os.environ.get("PYOCD_BOARD_ID") if allow_environment_overrides else None
+    bid = (board_id or environment_board or "").strip()
     if not bid:
         return None
-    extra = board_config or os.environ.get("PYOCD_BOARD_CONFIG") or None
+    environment_config = (
+        os.environ.get("PYOCD_BOARD_CONFIG") if allow_environment_overrides else None
+    )
+    extra = board_config or environment_config or None
     if extra is None:
         # Schema-v2 project-local profiles are the authoritative result of the
         # setup workflow.  Resolve them before the checkout's legacy boards/
@@ -736,7 +770,11 @@ def format_board_info(b: BoardConfig) -> str:
         f"probe_family: {b.probe_family}",
         f"pyocd_target: {b.pyocd_target}",
         f"default_baudrate: {b.default_baudrate}",
-        f"test_read_address: 0x{b.test_addr:08X}",
+        (
+            f"test_read_address: 0x{b.test_addr:08X}"
+            if b.test_addr is not None
+            else "test_read_address: (not configured)"
+        ),
         f"requires_recover_validation: {b.requires_recover_validation}",
         f"recover_mode: {b.recover_mode or '(none)'}",
     ]
@@ -773,10 +811,12 @@ def _should_bypass_jlink_probe_resolution(
 def _resolve_probe_uid_for_connect(
     board: BoardConfig | None,
     unique_id: str | None,
+    *,
+    allow_environment_override: bool = True,
 ) -> str | None:
     if unique_id is not None:
         return unique_id
-    env_uid = os.environ.get("PYOCD_PROBE_UID") or None
+    env_uid = os.environ.get("PYOCD_PROBE_UID") or None if allow_environment_override else None
     if env_uid is not None:
         return env_uid
     if board is None:
@@ -802,9 +842,14 @@ def _resolve_probe_uid_for_connect(
             return None
         raise RuntimeError(f"Probe resolution failed for {board.display_name}: {resolution.note}")
     if not resolution.probe.uid:
+        remedy = (
+            "Initialize connect_override-plan for a deliberate exceptional manual probe "
+            "selection; do not add an override to normal connect."
+            if not allow_environment_override
+            else "Supply the planned probe UID through guarded connect_override."
+        )
         raise RuntimeError(
-            f"Probe resolution for {board.display_name} did not yield a unique id. "
-            "Rerun with unique_id=... or set PYOCD_PROBE_UID."
+            f"Probe resolution for {board.display_name} did not yield a unique id. {remedy}"
         )
     return resolution.probe.uid
 
@@ -826,6 +871,7 @@ def _connect_impl(
     target: str | None = None,
     board_config: str | None = None,
     *,
+    allow_environment_overrides: bool,
     allow_missing_profile: bool = False,
 ) -> str:
     """Assign one connected probe session to the required logical board.
@@ -833,16 +879,14 @@ def _connect_impl(
     Args:
         board_id: Required logical board identity. It also selects facts from
             ``boards/<board_id>.yaml`` through the shared board-config loader.
-        unique_id: Whole or partial probe serial/unique ID to select a specific
-            probe. Omit when exactly one probe is attached. Defaults to the
-            ``PYOCD_PROBE_UID`` environment variable if unset.
+        unique_id: Whole or partial probe serial/unique ID for the guarded override path.
         target: Target type override, e.g. "stm32f407vg" or "nrf52833". Takes
             precedence over a board config. Omit to use the selected board's
             target (when ``board_id`` is given), else the ``PYOCD_TARGET``
             environment variable, else pyOCD auto-detection.
-        board_config: Path to an extra board-config file outside the tracked
-            ``boards/`` directory, for a custom board. Defaults to the
-            ``PYOCD_BOARD_CONFIG`` environment variable.
+        board_config: Path to an extra board-config file for the guarded override path.
+        allow_environment_overrides: Whether guarded/manual launch-time override variables may
+            participate. Public normal connect always passes false.
     """
     with connection_manager.lock_for(board_id):
         started = time.monotonic()
@@ -872,16 +916,24 @@ def _connect_impl(
         tgt = None
         try:
             try:
-                board = resolve_board_config(board_id, board_config)
+                board = resolve_board_config(
+                    board_id,
+                    board_config,
+                    allow_environment_overrides=allow_environment_overrides,
+                )
             except ConfigError:
                 if not allow_missing_profile or not target:
                     raise
                 board = None
-            uid = _resolve_probe_uid_for_connect(board, unique_id)
+            uid = _resolve_probe_uid_for_connect(
+                board,
+                unique_id,
+                allow_environment_override=allow_environment_overrides,
+            )
             tgt = (
                 target
                 or (board.pyocd_target if board else None)
-                or os.environ.get("PYOCD_TARGET")
+                or (os.environ.get("PYOCD_TARGET") if allow_environment_overrides else None)
                 or None
             )
             handle = target_control.open_session(
@@ -954,19 +1006,14 @@ def _connect_impl(
 
 
 @mcp.tool()
-def connect(
-    board_id: str,
-    unique_id: str | None = None,
-    target: str | None = None,
-    board_config: str | None = None,
-) -> str:
-    """Assign one connected probe session to the required logical board.
+def connect(board_id: str) -> str:
+    """Connect using only the named schema-v2 project profile.
 
-    Normal connection resolves the schema-v2 project profile first and retains
-    the checkout boards directory only as a compatibility fallback.
+    Normal connection accepts no manual probe, target, or external board-config override.
+    Initialize connect_override-plan for a deliberate exceptional manual connection.
     """
 
-    return _connect_impl(board_id, unique_id, target, board_config)
+    return _connect_impl(board_id, allow_environment_overrides=False)
 
 
 def _connect_override_impl(
@@ -982,6 +1029,7 @@ def _connect_override_impl(
         unique_id,
         target,
         board_config,
+        allow_environment_overrides=True,
         allow_missing_profile=True,
     )
 
@@ -1757,6 +1805,7 @@ memory_services = MemoryToolServices(
     read_target_memory=target_control.read_memory,
     read_target_block=target_control.read_memory_block,
     write_target_memory=target_control.write_memory,
+    check_memory_read=_check_memory_read_safety,
     check_memory_write=_check_memory_safety,
 )
 memory_tool_handlers = build_memory_handlers(memory_services)
@@ -1835,6 +1884,7 @@ misc_tool_handlers = build_misc_handlers(
         record_event=_record_event,
     )
 )
+artifact_tool_handlers = build_artifact_handlers()
 
 for _legacy_name in (
     "connect",
@@ -1868,6 +1918,7 @@ for _handler_name, _handler in (
     | serial_tool_handlers
     | breakpoint_tool_handlers
     | misc_tool_handlers
+    | artifact_tool_handlers
 ).items():
     mcp.add_tool(
         _handler,
@@ -1875,6 +1926,11 @@ for _handler_name, _handler in (
         description=_handler.__doc__,
         structured_output=False,
     )
+
+# FastMCP ignores unknown fields by default. Normal connect must fail closed rather than silently
+# dropping manual override fields, including when it is dispatched as an action_batch child.
+forbid_unknown_tool_arguments(mcp, "connect")
+forbid_unknown_tool_arguments(mcp, "collect_build_artifacts")
 
 M5_LAYER2_ACTIONS = tuple(
     session_tool_handlers
@@ -2364,8 +2420,7 @@ def _build_region_replacements(
                 (source,),
             )
             for segment in evidence.loadable_segments
-            if segment.executable
-            and evidence.flash_partition.contains(segment.runtime_range)
+            if segment.executable and evidence.flash_partition.contains(segment.runtime_range)
         )
     # RAM authority is hardware-owned. Linker RAM remains fingerprint evidence
     # only and can never widen the reconciled writable-RAM boundary.
@@ -2380,10 +2435,10 @@ def _run_board_safety_setup(board_id: str) -> Mapping[str, object]:
     except (SafetyArtifactError, ValueError):
         try:
             inputs = _bootstrap_safety_inputs(board_id)
+            profile = _profile_repository.load(board_id, include_legacy=False)
         except (ProfileError, ValueError) as exc:
             return {
                 "status": "safety_setup_blocked",
-                "continuation_id": continuation,
                 "agent_prompt": (
                     f"The schema-v2 board profile is unavailable: {exc}. Complete board_setup "
                     "before safety setup. Relay this guidance conversationally and do not "
@@ -2394,8 +2449,43 @@ def _run_board_safety_setup(board_id: str) -> Mapping[str, object]:
                 "constraints": ["No gate or authority state was created."],
                 "rejected_candidates": [],
                 "accepted_response": None,
-                "validation_plan": ["board_setup", "board_safety_setup"],
+                "validation_plan": [
+                    "board_setup-plan",
+                    "board_setup",
+                    "board_safety_setup",
+                    "board_validate",
+                ],
             }
+        catalog = catalog_board_for_mcu(profile.mcu_part_number or "")
+        if catalog is None or not catalog.automatic_setup_reviewed:
+            reviewed = reviewed_setup_board_types()
+            reviewed_text = ", ".join(reviewed) if reviewed else "none"
+            result = _safety_builder.build(
+                SafetySetupRequest(
+                    board_id,
+                    continuation,
+                    inputs,
+                    (),
+                    (
+                        SafetyIssue(
+                            "safety_setup_unsupported_board",
+                            "safety/unsupported-board",
+                            "Automatic safety setup is unavailable for this board type. "
+                            f"The reviewed automatic-safety board types are: {reviewed_text}. "
+                            "Extending this list requires maintainers to add pinned device-support "
+                            "and official-document evidence, exact runtime identities, deterministic "
+                            "two-source reconciliation, and reviewed catalog geometry. Caller-supplied "
+                            "allowed ranges are never accepted.",
+                            details={
+                                "board_type": (catalog.board_type if catalog is not None else None),
+                                "mcu_part_number": profile.mcu_part_number,
+                                "reviewed_board_types": list(reviewed),
+                            },
+                        ),
+                    ),
+                )
+            )
+            return result.to_payload()
         result = _safety_builder.build(
             SafetySetupRequest(
                 board_id,
@@ -2404,11 +2494,21 @@ def _run_board_safety_setup(board_id: str) -> Mapping[str, object]:
                 (),
                 (
                     SafetyIssue(
-                        "safety_setup_research_required",
-                        "safety/authoritative-sources-required",
-                        "No current safety map exists. Resolve server-loaded device support, "
-                        "official-document evidence, and selected build artifacts before retrying "
-                        "safety setup; never supply caller-defined allowed ranges.",
+                        "safety_setup_blocked",
+                        "safety/reviewed-setup-required",
+                        "This reviewed board has no current authoritative safety map. Run "
+                        "board_setup-plan and board_setup with the reviewed datasheet so the "
+                        "server can rebuild pinned two-source evidence, then retry "
+                        "board_safety_setup and board_validate. No caller-defined ranges are accepted.",
+                        details={
+                            "board_type": catalog.board_type,
+                            "remedy": [
+                                "board_setup-plan",
+                                "board_setup",
+                                "board_safety_setup",
+                                "board_validate",
+                            ],
+                        },
                     ),
                 ),
             )
@@ -2418,24 +2518,7 @@ def _run_board_safety_setup(board_id: str) -> Mapping[str, object]:
     live_inputs = _live_safety_inputs(board_id, current)
     changed = current.fingerprints.changed_sources(FingerprintSet.build(live_inputs))
     if changed:
-        result = _safety_builder.build(
-            SafetySetupRequest(
-                board_id,
-                continuation,
-                live_inputs,
-                current.regions,
-                (
-                    SafetyIssue(
-                        "safety_setup_research_required",
-                        "safety/source-rebuild-required",
-                        "Authoritative safety inputs changed. Rebuild and re-verify the named "
-                        "sources before replacing the current map.",
-                        details={"changed_sources": [item.value for item in changed]},
-                    ),
-                ),
-            )
-        )
-        return result.to_payload()
+        return _run_board_safety_refresh(board_id)
 
     result = _safety_builder.build(
         SafetySetupRequest(board_id, continuation, live_inputs, current.regions)
@@ -2451,172 +2534,582 @@ def _run_board_safety_setup(board_id: str) -> Mapping[str, object]:
     return result.to_payload()
 
 
+def _artifact_refresh_selection(
+    role: BuildRole,
+    elf: str | None,
+    hex_file: str | None,
+    linker_map: str | None,
+) -> BuildArtifactSelection:
+    if elf is None:
+        raise LinkerEvidenceError(
+            f"build/{role.value}-elf-required",
+            f"{role.value.title()} refresh requires an ELF path.",
+        )
+    return BuildArtifactSelection(
+        f"runtime_{role.value}",
+        role,
+        Path(elf).expanduser().resolve(),
+        Path(linker_map).expanduser().resolve() if linker_map else None,
+        Path(hex_file).expanduser().resolve() if hex_file else None,
+    )
+
+
+def _artifact_requested_ranges(evidence: object) -> tuple[AddressRange, ...]:
+    loadable_segments = getattr(evidence, "loadable_segments")
+    requested = [
+        segment.load_range for segment in loadable_segments if segment.load_range is not None
+    ]
+    requested.extend(segment.runtime_range for segment in loadable_segments if segment.executable)
+    requested.extend(getattr(evidence, "hex_ranges"))
+    flash_partition = getattr(evidence, "flash_partition")
+    if flash_partition is not None:
+        requested.append(flash_partition)
+    for value in (getattr(evidence, "entry_point"), getattr(evidence, "vector_table")):
+        if value is not None:
+            requested.append(AddressRange.from_start_size(value, 1))
+    return tuple(requested)
+
+
+def _artifact_refresh_contributions(
+    selection: BuildArtifactSelection,
+    evidence: object,
+) -> tuple[RegionContribution, ...]:
+    source = (
+        FingerprintSource.APPLICATION_ARTIFACTS
+        if selection.role is BuildRole.APPLICATION
+        else FingerprintSource.BOOTLOADER_ARTIFACTS
+    )
+    kind = (
+        RegionKind.APPLICATION_FLASH
+        if selection.role is BuildRole.APPLICATION
+        else RegionKind.BOOTLOADER_FLASH
+    )
+    flash_partition = getattr(evidence, "flash_partition")
+    if flash_partition is None:
+        raise LinkerEvidenceError(
+            "build/flash-partition-missing",
+            f"The selected {selection.role.value} build has no linker-owned flash partition.",
+        )
+    provenance = tuple(
+        Provenance(
+            SourceAuthority.BUILD,
+            item.artifact_kind,
+            f"{item.path} sha256 {item.sha256}",
+        )
+        for item in getattr(evidence, "provenance")
+    )
+    if not provenance:
+        raise LinkerEvidenceError(
+            "build/provenance-missing",
+            f"The selected {selection.role.value} build has no content-addressed provenance.",
+        )
+    partition = RegionContribution(
+        SafetyRegion(
+            f"{selection.role.value} flash",
+            kind,
+            flash_partition,
+            provenance,
+            executable=False,
+        ),
+        (source,),
+    )
+    executable = tuple(
+        RegionContribution(
+            SafetyRegion(
+                f"{selection.role.value} executable segment {segment.index}",
+                kind,
+                segment.runtime_range,
+                provenance,
+                executable=True,
+            ),
+            (source,),
+        )
+        for segment in getattr(evidence, "loadable_segments")
+        if segment.executable and flash_partition.contains(segment.runtime_range)
+    )
+    return (partition,) + executable
+
+
+def _validated_artifact_refresh(
+    current,
+    inputs: FingerprintInputs,
+    selection: BuildArtifactSelection,
+) -> tuple[FingerprintSource, object, tuple[RegionContribution, ...]]:
+    evidence = extract_build_evidence(selection)
+    requested = _artifact_requested_ranges(evidence)
+    if not requested:
+        raise LinkerEvidenceError(
+            "build/no-loadable-ranges",
+            f"The selected {selection.role.value} build has no loadable ranges.",
+        )
+    if selection.role is BuildRole.APPLICATION:
+        source_record = inputs.evidence
+        deployment = (
+            source_record.get("deployment_policy") if isinstance(source_record, Mapping) else None
+        )
+        if not isinstance(deployment, Mapping):
+            raise LinkerEvidenceError(
+                "build/deployment-policy-missing",
+                "The current source manifest has no reviewed application deployment ceiling.",
+            )
+        envelope = AddressRange(
+            int(deployment["application_start"]),
+            int(deployment["application_end"]),
+        )
+        if any(not envelope.contains(item) for item in requested):
+            raise LinkerEvidenceError(
+                "build/deployment-policy-exceeded",
+                "The application artifact would widen or exit the reviewed deployment envelope.",
+            )
+        envelope_document: object = envelope.to_document()
+        source = FingerprintSource.APPLICATION_ARTIFACTS
+    else:
+        bootloader_regions = tuple(
+            item.region
+            for item in current.regions
+            if item.region.kind is RegionKind.BOOTLOADER_FLASH
+            and FingerprintSource.BOOTLOADER_ARTIFACTS not in item.source_groups
+            and set(item.source_groups).intersection(
+                {FingerprintSource.PACK, FingerprintSource.EVIDENCE}
+            )
+            and all(
+                provenance.authority is SourceAuthority.RECONCILED
+                for provenance in item.region.provenance
+            )
+        )
+        if not bootloader_regions:
+            raise LinkerEvidenceError(
+                "build/bootloader-envelope-missing",
+                "The current map has no server-owned reviewed bootloader partition. Refresh "
+                "cannot create or widen bootloader authority; maintainers must add reviewed "
+                "bootloader evidence before a full safety setup can establish it.",
+            )
+        prohibited = tuple(
+            item.region for item in current.regions if item.region.kind is RegionKind.PROHIBITED
+        )
+        containment = SafetyMap([*bootloader_regions, *prohibited]).check(
+            ActionCategory.FLASH_BOOTLOADER,
+            requested,
+        )
+        if isinstance(containment, Refusal):
+            raise LinkerEvidenceError(
+                "build/bootloader-envelope-exceeded",
+                "The bootloader artifact would widen, exit, or cross a prohibited part of the "
+                f"existing reviewed bootloader partition: {containment.reason}",
+            )
+        envelope_document = [item.address_range.to_document() for item in bootloader_regions]
+        source = FingerprintSource.BOOTLOADER_ARTIFACTS
+    artifact_document = {
+        "configuration": selection.configuration_id,
+        "role": selection.role.value,
+        "artifacts": [
+            {
+                "kind": item.artifact_kind,
+                "path": str(item.path),
+                "sha256": item.sha256,
+            }
+            for item in getattr(evidence, "provenance")
+        ],
+        "deployment_envelope": envelope_document,
+    }
+    return source, artifact_document, _artifact_refresh_contributions(selection, evidence)
+
+
+def _blocked_artifact_refresh(
+    board_id: str,
+    role: BuildRole,
+    exc: Exception,
+    continuation: str,
+    inputs: FingerprintInputs,
+) -> Mapping[str, object]:
+    missing_authority = getattr(exc, "code", None) == "build/bootloader-envelope-missing"
+    source = (
+        FingerprintSource.APPLICATION_ARTIFACTS
+        if role is BuildRole.APPLICATION
+        else FingerprintSource.BOOTLOADER_ARTIFACTS
+    )
+    return _safety_refresher.blocked(
+        SafetyRefreshRequest(board_id, continuation, inputs),
+        message=(
+            f"The {role.value} build could not be proven inside existing server-owned safety "
+            f"authority: {exc} No safety state changed. Relay this plainly and do not expose "
+            "structured internals."
+        ),
+        classification=(
+            "bootloader_authority_missing" if missing_authority else f"{role.value}_change"
+        ),
+        changed=(source,),
+        remedy=(
+            () if missing_authority else ("select_valid_build_artifact", "board_safety_refresh")
+        ),
+        details={"reason": str(exc), "terminal": missing_authority},
+    ).to_payload()
+
+
+def _manifest_source_evidence(current, source: FingerprintSource) -> object:
+    sources = current.source_manifest.get("sources")
+    row = sources.get(source.value) if isinstance(sources, Mapping) else None
+    if not isinstance(row, Mapping) or "evidence" not in row:
+        raise SafetyArtifactError(f"{source.value} source evidence is missing")
+    return row["evidence"]
+
+
+def _contribution_documents(
+    contributions: tuple[RegionContribution, ...],
+) -> tuple[Mapping[str, object], ...]:
+    documents = [cast(Mapping[str, object], item.to_document()) for item in contributions]
+    return tuple(
+        sorted(
+            documents,
+            key=lambda item: (
+                str(item["kind"]),
+                str(item["start"]),
+                str(item["end"]),
+                str(item["name"]),
+            ),
+        )
+    )
+
+
+def _server_owned_hardware_authority_refresh(
+    board_id: str,
+    continuation: str,
+    current,
+) -> Mapping[str, object]:
+    """Migrate stale pinned pack/evidence only after current server sources reconcile."""
+
+    current_values = _live_safety_inputs(board_id, current).values()
+    part_target = current_values[FingerprintSource.PART_TARGET]
+    evidence_record = current_values[FingerprintSource.EVIDENCE]
+    if not isinstance(part_target, Mapping) or not isinstance(evidence_record, Mapping):
+        raise SafetyArtifactError("persisted safety anchors are malformed")
+    board_type = part_target.get("board_type")
+    if not isinstance(board_type, str):
+        raise SafetyArtifactError("persisted safety authority has no reviewed board type")
+    catalog = catalog_board(board_type)
+    profile = _profile_repository.load(board_id, include_legacy=False)
+    if (
+        profile.mcu_part_number != catalog.package_part_number
+        or profile.board.pyocd_target != catalog.pyocd_target
+        or part_target.get("mcu_part_number") != catalog.package_part_number
+        or part_target.get("target") != catalog.pyocd_target
+    ):
+        raise SafetyArtifactError(
+            "board, MCU, or target anchors changed; full safety setup and validation are required"
+        )
+    schema = current_values[FingerprintSource.SCHEMA]
+    if not isinstance(schema, Mapping) or schema.get("evidence") != 2 or schema.get("catalog") != 2:
+        raise SafetyArtifactError(
+            "legacy or changed safety schema requires full safety setup and validation"
+        )
+    official = evidence_record.get("official_document")
+    digest = official.get("datasheet_sha256") if isinstance(official, Mapping) else None
+    if not isinstance(digest, str):
+        raise SafetyArtifactError("persisted official evidence has no reviewed datasheet digest")
+    bundle = load_pinned_reviewed_evidence(catalog, digest)
+    source_record = bundle.source_record()
+    geometry = bundle.reconciliation.erase_geometry
+    if geometry is None:
+        raise SafetyArtifactError("current pinned evidence has no reconciled erase geometry")
+    current_values[FingerprintSource.PACK] = source_record["device_support"]
+    current_values[FingerprintSource.EVIDENCE] = {
+        "official_document": source_record["official_document"],
+        "reconciliation": source_record["reconciliation"],
+        "deployment_policy": {
+            "application_start": catalog.application_start,
+            "application_end": catalog.application_end,
+        },
+    }
+    current_values[FingerprintSource.GEOMETRY] = {
+        "flash_start": catalog.flash_start,
+        "flash_end": catalog.flash_end,
+        "ram_start": catalog.ram_start,
+        "ram_end": catalog.ram_end,
+        "erase_origin": geometry.erase_origin,
+        "erase_size": geometry.erase_size,
+    }
+    candidate = FingerprintInputs(
+        current_values[FingerprintSource.PROFILE],
+        current_values[FingerprintSource.PART_TARGET],
+        current_values[FingerprintSource.PACK],
+        current_values[FingerprintSource.EVIDENCE],
+        current_values[FingerprintSource.APPLICATION_ARTIFACTS],
+        current_values[FingerprintSource.BOOTLOADER_ARTIFACTS],
+        current_values[FingerprintSource.GEOMETRY],
+        current_values[FingerprintSource.SCHEMA],
+    )
+    changed = current.fingerprints.changed_sources(FingerprintSet.build(candidate))
+    changed_set = set(changed)
+    if changed_set.intersection(
+        {
+            FingerprintSource.PART_TARGET,
+            FingerprintSource.GEOMETRY,
+            FingerprintSource.SCHEMA,
+        }
+    ):
+        return _safety_refresher.blocked(
+            SafetyRefreshRequest(board_id, continuation, candidate),
+            message=(
+                "Current pinned evidence changes a board anchor, erase geometry, or schema. "
+                "Run full board_safety_setup and board_validate; scoped refresh did not commit."
+            ),
+            classification=(
+                "anchor_change"
+                if FingerprintSource.PART_TARGET in changed_set
+                else "geometry_change"
+                if FingerprintSource.GEOMETRY in changed_set
+                else "schema_change"
+            ),
+            changed=changed,
+            remedy=("board_safety_setup", "board_validate"),
+        ).to_payload()
+    if not changed_set or not changed_set.issubset(
+        {FingerprintSource.PACK, FingerprintSource.EVIDENCE}
+    ):
+        raise SafetyArtifactError("stale authority cannot be safely scoped to pack/evidence drift")
+
+    authority_groups = {
+        FingerprintSource.PACK,
+        FingerprintSource.EVIDENCE,
+        FingerprintSource.GEOMETRY,
+    }
+    retained = tuple(
+        item for item in current.regions if not authority_groups.intersection(item.source_groups)
+    )
+    for source, role in (
+        (FingerprintSource.APPLICATION_ARTIFACTS, BuildRole.APPLICATION),
+        (FingerprintSource.BOOTLOADER_ARTIFACTS, BuildRole.BOOTLOADER),
+    ):
+        document = current_values[source]
+        rows = document.get("artifacts") if isinstance(document, Mapping) else None
+        expected = () if rows == [] else _build_region_replacements(document, role)
+        observed = tuple(item for item in retained if source in item.source_groups)
+        if _contribution_documents(observed) != _contribution_documents(expected):
+            raise SafetyArtifactError(
+                f"persisted {role.value} regions cannot be reproduced from tracked artifacts"
+            )
+    if any(
+        not set(item.source_groups).intersection(
+            {
+                FingerprintSource.APPLICATION_ARTIFACTS,
+                FingerprintSource.BOOTLOADER_ARTIFACTS,
+            }
+        )
+        for item in retained
+    ):
+        raise SafetyArtifactError("persisted non-hardware regions have unclear ownership")
+
+    replacements = tuple(
+        RegionContribution(
+            region.to_safety_region(),
+            (
+                FingerprintSource.PACK,
+                FingerprintSource.EVIDENCE,
+                FingerprintSource.GEOMETRY,
+            ),
+        )
+        for region in bundle.reconciliation.regions
+    )
+    retained_bootloader = tuple(
+        item.region
+        for item in retained
+        if FingerprintSource.BOOTLOADER_ARTIFACTS in item.source_groups
+    )
+    if retained_bootloader:
+        reviewed_bootloader = tuple(
+            item.region for item in replacements if item.region.kind is RegionKind.BOOTLOADER_FLASH
+        )
+        prohibited = tuple(
+            item.region for item in replacements if item.region.kind is RegionKind.PROHIBITED
+        )
+        if not reviewed_bootloader:
+            raise SafetyArtifactError(
+                "current pinned evidence has no independent bootloader envelope for the retained build"
+            )
+        bootloader_map = SafetyMap([*reviewed_bootloader, *prohibited])
+        for region in retained_bootloader:
+            containment = bootloader_map.check(
+                ActionCategory.FLASH_BOOTLOADER,
+                (region.address_range,),
+            )
+            if isinstance(containment, Refusal):
+                raise SafetyArtifactError(
+                    "retained bootloader build exceeds the newly reconciled bootloader envelope"
+                )
+    final_regions = tuple(
+        sorted(
+            (*retained, *replacements),
+            key=lambda item: (
+                item.region.address_range.start,
+                item.region.address_range.end,
+                item.region.kind.value,
+                item.region.name,
+            ),
+        )
+    )
+    conflicts = region_conflicts(final_regions)
+    if conflicts:
+        raise SafetyArtifactError("current pinned evidence conflicts with retained build regions")
+    candidate_fingerprints = FingerprintSet.build(candidate)
+    preflight_request = SafetySetupRequest(
+        board_id,
+        continuation,
+        candidate,
+        final_regions,
+    )
+    memory, manifest, _report = build_documents(
+        preflight_request,
+        candidate_fingerprints,
+        status="safety_refresh_preflight",
+        prompt="Server-owned candidate authority preflight.",
+    )
+    require_reconciled_authority(
+        SafetyArtifacts(
+            board_id,
+            candidate_fingerprints,
+            final_regions,
+            memory,
+            manifest,
+        )
+    )
+    migration_refresher = SafetyRefresher(
+        _firm_store,
+        on_commit=_restamp_after_refresh,
+        authority_verifier=lambda _artifacts: None,
+    )
+    result = migration_refresher.refresh(
+        SafetyRefreshRequest(
+            board_id,
+            continuation,
+            candidate,
+            (FingerprintSource.PACK, FingerprintSource.EVIDENCE),
+            replacements,
+        )
+    )
+    return result.to_payload()
+
+
 def _run_board_safety_refresh(
     board_id: str,
     *,
     application_elf: str | None = None,
     application_hex: str | None = None,
     application_map: str | None = None,
+    bootloader_elf: str | None = None,
+    bootloader_hex: str | None = None,
+    bootloader_map: str | None = None,
 ) -> Mapping[str, object]:
     continuation = _safety_continuation("safety-refresh")
     try:
         current = _safety_repository.load_current(board_id)
+    except (SafetyArtifactError, ValueError):
+        inputs = _bootstrap_safety_inputs(board_id)
+        return _safety_refresher.refresh(
+            SafetyRefreshRequest(board_id, continuation, inputs)
+        ).to_payload()
+    try:
         require_reconciled_authority(current)
+    except SafetyArtifactError as stale_exc:
+        try:
+            return _server_owned_hardware_authority_refresh(
+                board_id,
+                continuation,
+                current,
+            )
+        except (
+            BoardCatalogError,
+            LinkerEvidenceError,
+            ProfileError,
+            SafetyArtifactError,
+            ValueError,
+        ) as exc:
+            values = {
+                source: _manifest_source_evidence(current, source) for source in FingerprintSource
+            }
+            inputs = FingerprintInputs(
+                values[FingerprintSource.PROFILE],
+                values[FingerprintSource.PART_TARGET],
+                values[FingerprintSource.PACK],
+                values[FingerprintSource.EVIDENCE],
+                values[FingerprintSource.APPLICATION_ARTIFACTS],
+                values[FingerprintSource.BOOTLOADER_ARTIFACTS],
+                values[FingerprintSource.GEOMETRY],
+                values[FingerprintSource.SCHEMA],
+            )
+            return _safety_refresher.blocked(
+                SafetyRefreshRequest(board_id, continuation, inputs),
+                message=(
+                    "Pack or official-evidence authority could not be migrated from current "
+                    "server-owned reviewed sources. The old map remains closed; resolve the "
+                    "maintainer evidence issue, then run board_safety_refresh again."
+                ),
+                classification="pack_or_official_evidence_blocked",
+                changed=(FingerprintSource.PACK, FingerprintSource.EVIDENCE),
+                remedy=("resolve_reviewed_safety_sources", "board_safety_refresh"),
+                details={"reason": str(exc), "stale_reason": str(stale_exc)},
+            ).to_payload()
+    try:
         live_inputs = _live_safety_inputs(board_id, current)
-    except (SafetyArtifactError, SafetyPolicyError, ProfileError, ValueError):
+    except (SafetyPolicyError, ProfileError, ValueError):
         inputs = _bootstrap_safety_inputs(board_id)
         return _safety_refresher.refresh(
             SafetyRefreshRequest(board_id, continuation, inputs)
         ).to_payload()
 
-    if any(value is not None for value in (application_elf, application_hex, application_map)):
-        if application_elf is None:
-            return {
-                "status": "safety_refresh_blocked",
-                "continuation_id": continuation,
-                "agent_prompt": "Application refresh requires an ELF path; no safety state changed.",
-                "observed": {"board_id": board_id},
-            }
+    provided = {
+        BuildRole.APPLICATION: (application_elf, application_hex, application_map),
+        BuildRole.BOOTLOADER: (bootloader_elf, bootloader_hex, bootloader_map),
+    }
+    selected_roles = [role for role, paths in provided.items() if any(paths)]
+    if selected_roles:
+        values = live_inputs.values()
+        replacements_by_source: dict[FingerprintSource, tuple[RegionContribution, ...]] = {}
+        failing_role = selected_roles[0]
         try:
-            selection = BuildArtifactSelection(
-                "runtime_application",
-                BuildRole.APPLICATION,
-                Path(application_elf).expanduser().resolve(),
-                Path(application_map).expanduser().resolve() if application_map else None,
-                Path(application_hex).expanduser().resolve() if application_hex else None,
-            )
-            evidence = extract_build_evidence(selection)
-            values = live_inputs.values()
-            evidence_source = values[FingerprintSource.EVIDENCE]
-            deployment = (
-                evidence_source.get("deployment_policy")
-                if isinstance(evidence_source, Mapping)
-                else None
-            )
-            if not isinstance(deployment, Mapping):
-                raise LinkerEvidenceError(
-                    "build/deployment-policy-missing",
-                    "The current source manifest has no reviewed application deployment ceiling.",
+            for role in selected_roles:
+                failing_role = role
+                elf, hex_file, linker_map = provided[role]
+                selection = _artifact_refresh_selection(role, elf, hex_file, linker_map)
+                source, document, replacements = _validated_artifact_refresh(
+                    current, live_inputs, selection
                 )
-            policy_envelope = AddressRange(
-                int(deployment["application_start"]),
-                int(deployment["application_end"]),
-            )
-            requested = [
-                segment.load_range
-                for segment in evidence.loadable_segments
-                if segment.load_range is not None
-            ]
-            requested.extend(
-                segment.runtime_range
-                for segment in evidence.loadable_segments
-                if segment.executable
-            )
-            requested.extend(evidence.hex_ranges)
-            if evidence.flash_partition is not None:
-                requested.append(evidence.flash_partition)
-            if evidence.entry_point is not None:
-                requested.append(AddressRange.from_start_size(evidence.entry_point, 1))
-            if evidence.vector_table is not None:
-                requested.append(AddressRange.from_start_size(evidence.vector_table, 1))
-            if not requested or any(not policy_envelope.contains(item) for item in requested):
-                raise LinkerEvidenceError(
-                    "build/deployment-policy-exceeded",
-                    "The application artifact would widen or exit the reviewed deployment envelope.",
-                )
-            artifact_document = {
-                "configuration": selection.configuration_id,
-                "artifacts": [
-                    {
-                        "kind": item.artifact_kind,
-                        "path": str(item.path),
-                        "sha256": item.sha256,
-                    }
-                    for item in evidence.provenance
-                ],
-                "deployment_envelope": policy_envelope.to_document(),
-            }
-            updated_inputs = FingerprintInputs(
-                values[FingerprintSource.PROFILE],
-                values[FingerprintSource.PART_TARGET],
-                values[FingerprintSource.PACK],
-                values[FingerprintSource.EVIDENCE],
-                artifact_document,
-                values[FingerprintSource.BOOTLOADER_ARTIFACTS],
-                values[FingerprintSource.GEOMETRY],
-                values[FingerprintSource.SCHEMA],
-            )
-            if evidence.flash_partition is None:
-                raise LinkerEvidenceError(
-                    "build/flash-partition-missing",
-                    "The selected build has no linker-owned application partition.",
-                )
-            build_provenance = tuple(
-                Provenance(
-                    SourceAuthority.BUILD,
-                    item.artifact_kind,
-                    f"{item.path} sha256 {item.sha256}",
-                )
-                for item in evidence.provenance
-            )
-            base_regions = tuple(
-                item
-                for item in current.regions
-                if item.region.kind is not RegionKind.APPLICATION_FLASH
-                and FingerprintSource.APPLICATION_ARTIFACTS not in item.source_groups
-            )
-            application_region = RegionContribution(
-                SafetyRegion(
-                    "application flash",
-                    RegionKind.APPLICATION_FLASH,
-                    evidence.flash_partition,
-                    build_provenance,
-                    executable=False,
-                ),
-                (FingerprintSource.APPLICATION_ARTIFACTS,),
-            )
-            executable_regions = tuple(
-                RegionContribution(
-                    SafetyRegion(
-                        f"application executable segment {segment.index}",
-                        RegionKind.APPLICATION_FLASH,
-                        segment.runtime_range,
-                        build_provenance,
-                        executable=True,
-                    ),
-                    (FingerprintSource.APPLICATION_ARTIFACTS,),
-                )
-                for segment in evidence.loadable_segments
-                if segment.executable
-                and evidence.flash_partition.contains(segment.runtime_range)
-            )
-            result = _safety_builder.build(
-                SafetySetupRequest(
-                    board_id,
-                    continuation,
-                    updated_inputs,
-                    base_regions + (application_region,) + executable_regions,
-                )
-            )
-            if result.status == "safety_setup_completed" and result.aggregate_fingerprint:
-                _restamp_after_refresh(board_id, result.aggregate_fingerprint)
-            payload = result.to_payload()
-            payload["status"] = (
-                "safety_refresh_completed"
-                if result.status == "safety_setup_completed"
-                else result.status
-            )
-            return payload
+                values[source] = document
+                replacements_by_source[source] = replacements
         except (LinkerEvidenceError, OSError, ValueError) as exc:
-            return {
-                "status": "safety_refresh_blocked",
-                "continuation_id": continuation,
-                "agent_prompt": (
-                    f"The application build could not be proven inside the trusted deployment "
-                    f"policy: {exc}"
-                ),
-                "observed": {"board_id": board_id},
-            }
+            return _blocked_artifact_refresh(
+                board_id,
+                failing_role,
+                exc,
+                continuation,
+                live_inputs,
+            )
+        updated_inputs = FingerprintInputs(
+            values[FingerprintSource.PROFILE],
+            values[FingerprintSource.PART_TARGET],
+            values[FingerprintSource.PACK],
+            values[FingerprintSource.EVIDENCE],
+            values[FingerprintSource.APPLICATION_ARTIFACTS],
+            values[FingerprintSource.BOOTLOADER_ARTIFACTS],
+            values[FingerprintSource.GEOMETRY],
+            values[FingerprintSource.SCHEMA],
+        )
+        changed = set(current.fingerprints.changed_sources(FingerprintSet.build(updated_inputs)))
+        rebuilt = tuple(source for source in replacements_by_source if source in changed)
+        replacements = tuple(
+            contribution
+            for source, contributions in replacements_by_source.items()
+            if source in changed
+            for contribution in contributions
+        )
+        return _safety_refresher.refresh(
+            SafetyRefreshRequest(
+                board_id,
+                continuation,
+                updated_inputs,
+                rebuilt,
+                replacements,
+            )
+        ).to_payload()
 
     changed = current.fingerprints.changed_sources(FingerprintSet.build(live_inputs))
     changed_set = set(changed)
@@ -2837,9 +3330,7 @@ def _setup_inventory(user_input: SetupUserInput) -> PreflightInventory:
     )
     if user_input.serial_id:
         serial = tuple(
-            item
-            for item in serial
-            if _stable_identity_equal(user_input.serial_id, item.serial_id)
+            item for item in serial if _stable_identity_equal(user_input.serial_id, item.serial_id)
         )
     if len(probes) == 1 and probes[0].usb_serial:
         matching_serial = tuple(
@@ -2913,11 +3404,7 @@ def _setup_inventory(user_input: SetupUserInput) -> PreflightInventory:
 
 def _mcu_family(mcu_part_number: str, target: str) -> str:
     normalized = _normalized_target_identity(mcu_part_number)
-    if normalized.startswith("stm32") and len(normalized) >= 7:
-        return normalized[:7]
-    if normalized.startswith("nrf") and len(normalized) >= 8:
-        return normalized[:8]
-    return target.casefold()
+    return normalized or _normalized_target_identity(target)
 
 
 def _setup_connection_phase(context: SetupPhaseContext) -> SetupPhaseOutcome:
@@ -3014,6 +3501,16 @@ def _setup_connection_phase(context: SetupPhaseContext) -> SetupPhaseOutcome:
                 context.user_input.board_id,
                 {
                     "test_read_address": catalog.test_read_address,
+                    **(
+                        {"debug_connect_mode": catalog.debug_connect_mode}
+                        if catalog.debug_connect_mode is not None
+                        else {}
+                    ),
+                    **(
+                        {"debug_clock_hz": catalog.debug_clock_hz}
+                        if catalog.debug_clock_hz is not None
+                        else {}
+                    ),
                     **(
                         {
                             "silicon_id_address": catalog.silicon_id_address,
@@ -3360,6 +3857,34 @@ def _get_setup_status(board_id: str) -> Mapping[str, object]:
         remedy = "Setup is ready; normal guarded plans may now be used."
     build_guidance: dict[str, object] | None = None
     if profile is not None and profile.mcu_part_number:
+        build_guidance = {
+            "authority": "advisory_only",
+            "primary_workflow": "native_project_build",
+            "guidance": (
+                "Reuse the project's validated local IDE or CLI build and its existing SDK. "
+                "Do not download or change toolchains merely to match this server."
+            ),
+            "artifact_collection": {
+                "tool": "collect_build_artifacts",
+                "arguments_template": {
+                    "output_dir": "<new-or-empty-collection-dir>",
+                    "elf_path": "<native-build ELF when produced>",
+                    "hex_path": None,
+                    "bin_path": None,
+                    "map_path": "<matching native-build linker map>",
+                    "expected_roles": ["elf", "map"],
+                },
+                "purpose": (
+                    "Normalize explicit outputs from any build system into canonical hashed "
+                    "artifacts. Collection does not build, search, validate, or authorize."
+                ),
+            },
+            "safety_boundary": (
+                "Build guidance is not safety authority; board_safety_refresh must inspect "
+                "the resulting ELF and map before flash_application."
+            ),
+            "toolchain_fallback": None,
+        }
         catalog = catalog_board_for_mcu(profile.mcu_part_number)
         if catalog is not None and catalog.zephyr_board_target:
             target = catalog.zephyr_board_target
@@ -3377,8 +3902,12 @@ def _get_setup_status(board_id: str) -> Mapping[str, object]:
             powershell_command = "& " + " ".join(
                 "'" + item.replace("'", "''") + "'" for item in build_argv
             )
-            build_guidance = {
-                "authority": "advisory_only",
+            build_guidance["toolchain_fallback"] = {
+                "provider": "zephyr_west",
+                "use_when": (
+                    "Use only when this project is a Zephyr application and no compatible "
+                    "local project build command is already available."
+                ),
                 "zephyr_board_target": target,
                 "recommended_argv": build_argv,
                 "recommended_command": (
@@ -3386,14 +3915,8 @@ def _get_setup_status(board_id: str) -> Mapping[str, object]:
                 ),
                 "recommended_powershell": powershell_command,
                 "reason": (
-                    "This exact Python-module command uses the running server environment, so it "
-                    "does not depend on a console-script being present on PATH. The helper "
-                    "bootstraps or reuses Zephyr and automatically uses a short scratch path when "
-                    "Windows path length would make west or CMake fail."
-                ),
-                "safety_boundary": (
-                    "Build guidance is not safety authority; board_safety_refresh must inspect "
-                    "the resulting ELF and map before flash_application."
+                    "This optional parameterized fallback reuses or bootstraps a Zephyr workspace; "
+                    "it is not the generic build route and is not an MCP hardware action."
                 ),
             }
     return {
@@ -3585,9 +4108,7 @@ def _setup_overview(board_names: list[str] | None) -> Mapping[str, object]:
                 if len(serial_rows) == 0:
                     required_user_facts.append("attach and identify the board's UART connection")
                 elif len(serial_rows) > 1:
-                    required_user_facts.append(
-                        "which friendly UART choice belongs to this board"
-                    )
+                    required_user_facts.append("which friendly UART choice belongs to this board")
                     accepted_response["serial_id"] = (
                         "<one serial_choices[].choice_id selected from its friendly_name>"
                     )
@@ -4031,6 +4552,7 @@ _unlock_coordinator = UnlockCoordinator(
         connection_id_for=lambda board_id: _connection(board_id).connection_id,
         session_id_for=_active_session_id,
         current_fingerprint=_safety_policy.current_aggregate,
+        supports_recovery=target_control.supports_recovery,
         recover_target=lambda handle, mechanism: target_control.recover_target(
             handle, recover_mode=mechanism
         ),

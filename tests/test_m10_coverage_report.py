@@ -8,7 +8,7 @@ from typing import Any
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 REPORT_PATH = PROJECT_ROOT / "docs/evidence/m10-software-boundary-2026-07-17.json"
 PERFORMANCE_PATH = PROJECT_ROOT / "docs/evidence/m10-performance-2026-07-17.json"
-PLAN_PATH = PROJECT_ROOT / "Implementation_Plan.md"
+PLAN_PATH = PROJECT_ROOT / "archive_docs/Implementation_Plan.md"
 
 
 def _load(path: Path) -> dict[str, Any]:

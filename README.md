@@ -1,202 +1,125 @@
-# BYO Server
+# BYO Server Firmware Workflow
 
-BYO Server is a headless local MCP server for safe embedded-board setup,
-debugging, serial I/O, flash, and recovery through pyOCD. It runs over stdio
-only. Any compatible MCP client can use it; the server, not the client, owns
-plans, permissions, board routing, validation, safety containment, timeouts,
-and cleanup.
+BYO Server is a guarded local MCP server for embedded-board setup, debugging, serial I/O,
+deployment, and recovery. Its agent workflow lives in the `.agent-workspace` submodule.
 
-## Run from the checkout
+## Install the workflow and launch an agent
 
-Operational use is checkout-only and requires the complete checkout because board profiles, pack
-metadata, firmware, and `.firm` evidence are not wheel package data. Python
-3.12 is the team pin; package metadata supports Python 3.10 and newer.
+Add the workflow submodule to an existing BYO Server checkout once:
 
-1. Read [init.md](init.md) for host prerequisites.
-2. Follow [stage0_setup.md](stage0_setup.md) for board readiness.
-3. Register this command with an MCP client:
-
-   ```json
-   {
-     "mcpServers": {
-       "pyocd-debug": {
-         "command": "uv",
-         "args": [
-           "run",
-           "--project",
-           "<absolute-path-to-BYO-Server>",
-           "--locked",
-           "pyocd-debug-mcp"
-         ]
-       }
-     }
-   }
-   ```
-
-Replace the placeholder with this checkout. Stdout is reserved for MCP
-framing. `pyocd-debug-mcp` intentionally has no conventional `--help` mode.
-
-Checkout utilities include:
-
-```text
-uv run --locked python host_bootstrap.py --help
-uv run --locked python stage0_check.py --help
-uv run --locked python scripts/migrate_boards_to_firm.py --help
-uv run --locked python scripts/run_fresh_workspace_e2e.py --help
-uv run --locked pyocd-pack-repair --help
-uv run --locked pyocd-zephyr-build --help
+```powershell
+cd C:\path\to\BYO-Server
+git submodule add <agent-workspace-repository-url> .agent-workspace
+git submodule update --init --recursive
 ```
 
-After setup validation, `get_setup_status` returns advisory build guidance for
-a known MCU, including the exact Zephyr board target and a directly executable
-`<server-python> -m pyocd_debug_mcp.zephyr_build ...` command that does not
-depend on ambient `PATH`. The helper automatically uses a short scratch path
-for generated files when a Windows checkout path would exceed west/CMake
-limits. Final ELF/map artifacts still require `board_safety_refresh`; build
-guidance never grants memory authority.
+When cloning a checkout that already records the submodule, use either:
 
-For a brand-new artifact root, `scripts/run_fresh_workspace_e2e.py` is the
-checkout-local setup-only orchestrator. It takes the exact board, MCU, probe,
-stable UART identity, datasheet path, and artifact-root identity, requires the explicit
-`--authorize-setup` flag, drives the real MCP stdio handshake/plan/setup/
-validation sequence, and writes fixed-path machine-readable evidence. It has
-no callback, shell command, code-generation, build, flash, or UART-write
-option. Any terminal status other than completed setup plus current-run
-readiness stops the process before a coding workflow can begin.
-
-Plan fields, budgets, and permission modes are listed in
-[`docs/plan-tool-contract.md`](docs/plan-tool-contract.md), which is generated
-from the same definitions used by the live MCP schemas. Setup resolves the
-current UART port from the selected stable identity and computes the datasheet
-SHA-256 itself; agents never need to bind a COM path or run a hash command.
-
-## Tool surface
-
-Call `initialization_handshake` first. The live `tools/list` response is the
-authoritative advertised surface; visibility can change after plan/setup calls.
-A visible tool is never proof of authorization.
-After a plan is accepted, dynamic clients should use its newly exposed direct
-action. Clients with a static function binding can use the exact returned
-single-child `action_batch` fallback; it follows the identical guarded dispatch
-path and is never permission to invent hidden calls.
-
-Always-advertised operational tools cover:
-
-- connection and inspection: `connect`, `disconnect`, `get_board_info`,
-  `get_state`, `read_cpu_register`, `read_execution_state`, `find_symbol`, and
-  `read_memory_symbol`;
-- ordinary execution: `halt`, `resume`, `step`, `reset_and_run`,
-  `remove_breakpoint`, and bounded `wait`;
-- setup and safety: familiar-name `setup_overview`, `load_setup_tool`,
-  setup-first `board_setup-plan`, strict `continue_setup`,
-  `board_safety_setup`, build-aware `board_safety_refresh`, `board_validate`,
-  and the non-authoritative `get_setup_status` readiness barrier;
-- orchestration: `action_batch`; and
-- the `*-plan` tools for guarded actions.
-
-Guarded actions are registered but hidden until their exact plan unlocks them:
-
-- connection/execution: `connect_override`, `connect_under_reset`,
-  `reset_and_halt`, `write_cpu_register`, and `set_execution_state`;
-- memory/register/debug: `read_memory_address`, `write_memory`,
-  `register_write`, and `set_breakpoint`;
-- serial and flash: `read_serial`, `write_serial`, single-open
-  `serial_exchange`, `flash_application`, and
-  permission-locked `flash_bootloader`;
-- destructive recovery: `target_unlock`, which requires fresh one-time
-  approval and leaves the validation gate closed; and
-- setup mutation: `board_setup` and `board_fix_setup`, exposed only through
-  the setup loader and plan workflow.
-
-After the handshake, ask the user only for familiar board names and pass them
-to `setup_overview`. The normalized phrase `no board` is a literal sentinel
-that must be passed alone, never treated as a candidate profile name. Every
-matching YAML routes to validation first; unknown names route to setup, and
-validation may return a specific repair. The response supplies bounded
-`load_call`, `next_call`, or plan-template objects with every server-known ID
-already filled. Copy those fields into MCP calls; never ask the user to invent
-them or to hash a datasheet. `load_setup_tool` then returns guidance only for
-the requested setup tool. If setup or validation returns a friendly choice,
-relay its prose and copy its exact `accepted_response`; do not scrape labels,
-invent a target, or ask the user for internal IDs.
-
-Superseded unified reset/core-register/memory/flash tools and
-`unlock_recover` are absent. Exact schemas and status payload behavior are in
-[docs/agent-contract.md](docs/agent-contract.md) and the live MCP descriptions.
-
-## Safety model
-
-Each logical board has one live connection and one operation boundary.
-Same-board calls serialize while different boards can execute concurrently.
-Guarded requests are scoped to their run, board, session, exact parameters,
-plan budget, and permission.
-
-Only successful `board_validate` opens the in-memory gate. Writes recheck the
-current aggregate safety fingerprint on every call and apply typed containment
-before backend mutation. Disconnect and restart clear live assignments, plans,
-permissions, and gates. Files under `.firm` are durable evidence only and can
-never restore authority.
-
-Target recovery and bootloader flash are destructive operations with stronger
-approval rules. Never treat conversational approval, a report, tool visibility,
-or a prior run as current authorization.
-
-## Validation
-
-Run the software suite from the checkout:
-
-```text
-uv run --locked pytest
-uv run --locked ruff check .
-uv run --locked pyright
+```powershell
+git clone --recurse-submodules <BYO-Server-repository-url>
+# or, inside an existing clone:
+git submodule update --init --recursive
 ```
 
-M10 performance targets are measured without making host speed a CI gate:
+Run the submodule loader to render the selected mode and mirror its skills into `.claude/skills`,
+`.agents/skills`, and `.codex`:
 
-```text
-uv run --locked python scripts/measure_m10_performance.py --samples 7
+```powershell
+py .agent-workspace\bin\setup-project --mode firmware
 ```
 
-The tool records host and dependency context and measures gate/freshness,
-eight-device enumeration, and NULL-plan/handshake latency. Current dated
-evidence is in `docs/evidence/`.
+Run it again after updating the submodule. To change mode after initial setup, use:
 
-Hardware acceptance is separate because it requires positively identified,
-recoverable bench boards and explicit destructive authorization. See
-[docs/verification.md](docs/verification.md) for the evidence labels and open
-hardware/client matrix.
+```powershell
+py .agent-workspace\bin\set-mode firmware-full
+```
 
-## More detail
+Launch an agent from the outer BYO Server directory:
 
-- [Architecture and state ownership](docs/architecture.md)
-- [Agent interaction contract](docs/agent-contract.md)
-- [Contract snapshot history](docs/contract-history.md)
-- [Verification status](docs/verification.md)
-- [Historical extraction provenance](docs/extraction-manifest.json)
+```powershell
+py .agent-workspace\bin\codex-mode firmware
+# or
+py .agent-workspace\bin\claude-mode firmware
+```
 
-No authoritative project-root LICENSE or NOTICE was available. This project
-makes no license claim; publication remains blocked on the authoritative human
-licensing decision.
+Then explicitly tell the agent to register and connect to the local server by running:
 
-## Verified
+```powershell
+uv run --project C:\path\to\BYO-Server byo-mcp-register server
+```
 
-The current software suite covers the MCP product contract, board-scoped
-routing, plans and permissions, safety containment, managed cleanup, stdio-only
-exposure, authority-free persistence, relay text, Unicode profile names, and
-the non-gating M10 performance measurements. `InMemorySessionStore` remains the
-process-local session implementation; durable reports are evidence only. The
-optional R11 path is a Codex-specific benchmark and does not define ordinary
-server behavior.
+Replace the path with this checkout. The workflow never silently connects an agent to hardware.
 
-Build/setup guidance is local-first for heavy dependencies. Agents are told to
-reuse validated SDKs, RTOS trees, toolchains, packs, and large libraries from
-bounded standard locationsâ€”including NCS/Zephyr and STM32CubeIDE-provided
-STM32Cube/ThreadXâ€”before using a managed network fallback. Discovery validates
-versions and executable tools and never recursively scans a whole disk.
+## Firmware MCP capabilities
 
-## Pending verification
+The server provides a guarded board-development surface:
 
-Fresh hardware/client acceptance remains separately scoped in
-[docs/verification.md](docs/verification.md), including the exact
-`nrf52833dk` and `nucleo_l476rg` pair, cross-host proof, and any authorized destructive work. Publication licensing
-and independent process-tree cleanup evidence also remain human/bench gates.
+- **Board readiness:** discover connections, route familiar board names to validation or setup,
+  establish board profiles, validate live hardware, and report readiness.
+- **Debug and inspection:** inspect board, CPU, execution, symbol, and bounded-memory state;
+  control breakpoints, stepping, reset/run, and other bounded diagnostic actions.
+- **Serial evidence:** capture UART output and run controlled serial exchanges for declared tests
+  or diagnosis.
+- **Firmware deployment:** refresh artifact safety information and flash the approved application.
+  A successful flash is deployment evidence, not proof of behavior.
+- **Guarded mutation and recovery:** writes, execution changes, bootloader work, and recovery
+  require the current board gate, the exact `*-plan` action, and any required human permission.
+- **Per-board safety:** validation, plans, permissions, budgets, and results never transfer between
+  connections. Disconnects, stale artifacts, and new server runs require the server's stated
+  refresh or validation path.
+
+Always follow live MCP guidance. Visibility is not authorization: guarded actions use an all-null
+`*-plan` guidance call, the returned populated plan submission, then the paired action.
+
+### Portable native-build artifacts
+
+The server does not require a particular IDE or build system. Build with the project's native
+tooling, then optionally normalize its explicit outputs with the small collector:
+
+```text
+uv run --locked python -m pyocd_debug_mcp.artifact_collector \
+  --output-dir build/collected --producer native-project-build \
+  --elf path/to/application.elf --hex path/to/application.hex \
+  --map path/to/application.map --expect elf --expect map
+```
+
+The collector copies explicitly typed ELF, HEX, BIN, and linker-map files byte-for-byte into
+canonical `firmware.*` names and records portable SHA-256 provenance in `build-manifest.json`. It
+does not run a build, discover memory permissions, access hardware, or authorize flashing. Pass
+the canonical ELF/HEX/MAP paths explicitly to safety refresh; the current safety flow does not
+automatically consume the manifest, and a raw BIN has no trusted load address.
+
+Agents connected through MCP can use the same behavior through the always-visible
+`collect_build_artifacts` tool. Its indexed description gives the exact call contract and its
+response returns canonical paths plus the next safety handoff. For guarded firmware, normally
+supply the coherent ELF and linker map with `expected_roles=["elf", "map"]`. The standalone CLI
+remains useful to developers and terminal-driven agents outside an MCP session.
+
+`pyocd_debug_mcp.zephyr_build` remains an optional Zephyr convenience. It uses generated sysbuild
+domain metadata to keep the application ELF and linker map together instead of guessing by path,
+and it exports the same canonical bundle without deleting the incremental native build tree.
+`get_setup_status` presents that command only as a labeled toolchain fallback; the native project
+build plus the visible collector is the default for every MCU and build system.
+
+Reviewed board geometry and attach facts are packaged data, not Python board-name branches. Missing
+facts stay missing and setup/validation names the repair. Serial resolution uses generic USB
+identity first, with configured vendor helpers only as ambiguity fallbacks. Destructive recovery
+uses the target-neutral `backend_mass_erase` capability after live-backend support, complete erase
+disclosure, and fresh one-time permission checks; `manual_only` remains fail-closed.
+
+## Firmware workflow skills
+
+Skills are manually invoked with `/name` in Claude Code or `$name` in Codex, except `mcp-help`,
+the sole auto-invocable firmware skill. It gives the model MCP setup, gate, and two-call plan
+guidance without exposing server internals.
+
+Common skills include `spec`, `read-spec`, `plan`, `test-first`, `verify`, `adversarial`,
+`implement-high`, `implement-low`, `bug-fix-simple`, and `bug-fix-complex`.
+
+Firmware adds `board-setup`, `verify-firmware-hil`, `implement-hil`,
+`bug-fix-firmware-hil`, `verify-firmware-large`, `implement-firmware-large`,
+`bug-fix-firmware-large`, `hard-fault-triage`, `memory-map-safety`,
+`peripheral-contract`, `rtos-patterns`, and `server-help`.
+
+Run `py .agent-workspace\bin\doctor --mode firmware` after setup. For the full server reference,
+see [SERVER_GUIDE.md](SERVER_GUIDE.md).

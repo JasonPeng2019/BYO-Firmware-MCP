@@ -11,8 +11,8 @@ from typing import Any
 ROOT = Path(__file__).resolve().parents[1]
 PLAN_PATH = ROOT / "docs/evidence/m10-task20-acceptance-plan-2026-07-17.json"
 BOUNDARY_PATH = ROOT / "docs/evidence/m10-software-boundary-2026-07-17.json"
-SPEC_PATH = ROOT / "Design_Proto_Spec.md"
-PROMPTS_PATH = ROOT / "codex_prompts.md"
+SPEC_PATH = ROOT / "archive_docs/Design_Proto_Spec.md"
+PROMPTS_PATH = ROOT / "archive_docs/codex_prompts.md"
 PROMPT_AUDIT_PATH = ROOT / "docs/evidence/prompt-audit-through-20.1-2026-07-17.md"
 
 
@@ -173,7 +173,7 @@ def test_current_identity_readiness_fails_closed_without_nrf52833() -> None:
     assert recovery_checks["designated_nrf52833_present"] is False
     assert recovery_checks["live_ficr_info_part_verified"] is False
     assert recovery_checks["verified_firmware_backup_present"] is False
-    assert recovery_checks["profile_recovery_mode"] == "nrf_pyocd_unlock"
+    assert recovery_checks["profile_recovery_mode"] == "backend_mass_erase"
     assert recovery_checks["current_safety_map_present"] is False
 
 
@@ -224,7 +224,7 @@ def test_bounded_run_order_requires_identity_and_avoids_repeat_destruction() -> 
         "absolute_external_artifact_root",
         "machine_readable_result_path",
     ]
-    assert command_contract["connect_requires"] == ["board_id", "probe_id", "target"]
+    assert command_contract["connect_requires"] == ["board_id"]
     assert command_contract["nrf52833_requires_live_check"] == (
         "FICR.INFO.PART == 0x00052833"
     )

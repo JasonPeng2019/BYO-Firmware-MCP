@@ -23,7 +23,7 @@ adding vendor-specific ceremony or unlikely-edge-case hardening.
 | GAP-11 | **Keep** | Ambiguous validation returns choices without a machine-readable retry recipe. Generate `accepted_response` from the actual error code/choice kind and keep it absent for terminal outcomes. |
 | GAP-12 | **Keep the truthfulness goal; modify the document remedy** | Flash documentation is genuinely drifted. However, the current worktree has moved `Plan_Prompt_Contents_Spec.md` into `archive_docs/` while tests/contracts still treat the root file as normative. Do not silently make a historical archive a forever-synchronized source. First choose one clear authority: either restore the plan-prompt spec as a normative root document, or mark the archived copy historical and make `plan_defs.py` plus generated/live contract checks authoritative. In either case, every live plan definition must be schema-tested; avoid brittle prose parsing as the sole check. |
 | GAP-18 | **Keep; prefer server-resolved ports** | `serial_port` is volatile and the route does not expose it machine-readably. Remove it from immutable plan/action parameters, keep stable `serial_id`, resolve the current path from inventory/cache at execution, and record the observed path in reports. Update the setup-only runner accordingly. |
-| GAP-19 | **Reject as a required product gap; optional test infrastructure only** | The New Brain product contract is MCP-client-neutral. Making the benchmark layer depend on exactly two proprietary CLIs and hard-coded, possibly changing model IDs would reduce flexibility and does not repair server behavior. If a later acceptance task needs another provider, use a small configurable adapter and record the operator-selected provider/model/version; do not hard-code `claude-sonnet-5` or a guessed `Codex 5.6 luna` identifier, and do not make network credentials part of pytest. |
+| GAP-19 | **Reject the mandatory dual-provider/model-pinned form; optional generic adapter implemented** | The New Brain product contract is MCP-client-neutral. Making the benchmark layer depend on exactly two proprietary CLIs and hard-coded, possibly changing model IDs would reduce flexibility and does not repair server behavior. A later concrete request justified a small configurable agent-command adapter: it records the operator-selected adapter/model/version, accepts validated argv for any compatible CLI or thin wrapper, and leaves vendor-specific MCP registration translation to that trusted operator configuration. It does not hard-code provider model IDs or make network credentials part of pytest. |
 | GAP-20 | **Optional acceptance evidence, not an implementation gap** | Real-client smoke can improve confidence, but dynamic tool exposure is a protocol behavior that should remain covered by SDK/in-process tests and server-side locks. A bounded live Claude or other-client check is worthwhile only when the client, credentials, and authorization are available. It must not be a release-blocking semantic change, must not assume undocumented client behavior, and must not repeat destructive hardware work merely for model parity. Exact model mandates from the sheet are not adopted. |
 
 ## Previously closed items
@@ -38,8 +38,9 @@ adding vendor-specific ceremony or unlikely-edge-case hardening.
 ## Follow-on prompt policy
 
 - Implement P4-01 through P4-05 only within the boundaries above.
-- P4-06's mandatory dual-provider/model-pinning work is skipped. A provider adapter may be added
-  later only when a concrete acceptance need justifies it, and it must be configurable.
+- P4-06's mandatory dual-provider/model-pinning work remains rejected. The subsequent concrete
+  request for provider-neutral acceptance justified a configurable agent-command adapter; it does
+  not install providers, pin models, or claim a universal vendor CLI protocol.
 - P4-07 remains useful as consolidated software verification, adjusted for whichever normative
   document location is chosen under GAP-12.
 - P4-08 and the dual-model portion of P4-10 are optional/manual evidence, not missing product
@@ -56,18 +57,75 @@ adding vendor-specific ceremony or unlikely-edge-case hardening.
   `docs/plan-tool-contract.md`, deterministically generated from every live plan definition, while
   `archive_docs/Plan_Prompt_Contents_Spec.md` remains historical. The requested schema suite passed
   105 tests and affected-file Ruff checks passed.
+- **P4-02 completed (2026-07-17):** GAP-01, GAP-03, GAP-04, and GAP-11 are implemented. The
+  normalized literal `no board` sentinel cannot create a route; setup routes now carry exact
+  loader/action composition and pre-filled server-known fields; each loadable setup tool returns
+  its own bounded operating guide; and validation choice retries preserve selectors across a
+  probe-then-UART conversation. The requested 61-test setup/validation/handshake suite, real stdio
+  MCP flow smoke, affected-file Ruff, Pyright, and contract checks passed.
+- **P4-03 completed (2026-07-17):** GAP-02 is implemented. Visible `connect` now accepts only
+  `board_id`, uses the named project profile, and suppresses legacy launch-environment probe,
+  target, and external-config overrides. Manual values remain available only through planned,
+  hidden `connect_override`. Direct and real-composition `action_batch` regressions prove unknown
+  override fields fail before backend dispatch. The requested 46-test suite, stdio schema smoke,
+  affected integration tests, Ruff, Pyright, and active product-contract checks passed.
+- **P4-04 completed (2026-07-17):** GAP-09's remaining behavior is implemented without changing
+  the already-correct memory-read kind table. Raw scalar, raw block, and symbol reads now check the
+  exact bytes their backend will access. Mapped RAM, flash, and peripheral reads pass; UNKNOWN and
+  PROHIBITED spans fail before backend I/O with distinct remedies. Raw planned reads also perform
+  containment as a pre-execution guard before budget decrement. The requested 53-test suite plus
+  active product-contract checks, affected-file Ruff, and Pyright passed.
+- **P4-05 completed (2026-07-17):** GAP-08 is implemented within its reviewed fail-closed boundary.
+  Safety refresh accepts symmetric application and bootloader artifacts, but a bootloader rebuild
+  can replace only regions inside an independent reconciled PACK/EVIDENCE-owned bootloader
+  envelope; an old build-derived region cannot authorize its own replacement, and missing authority
+  is an honest terminal maintainer blocker. Pack/official drift reloads current pinned sources,
+  reruns two-source reconciliation, and reproduces retained build regions before atomic promotion;
+  failures write a blocked report and preserve the closed old map. Drift payloads expose stable classifications, changed
+  sources, and exact remedies; geometry and schema changes route through full safety setup plus
+  validation. Boards without complete pinned reviewed evidence now return terminal
+  `safety_setup_unsupported_board`, list the reviewed automatic board types, and expose no dead
+  continuation. Safety setup/refresh responses no longer advertise correlation IDs that no public
+  safety tool can consume; immutable reports retain them. Caller-supplied ranges and general
+  evidence continuations remain deliberately absent.
+- **Configurable agent-command adapter completed (2026-07-17):** the MCP server remains directly
+  usable by any standard stdio MCP client. The optional R11 harness now also accepts an explicit
+  trusted argv configuration for any agent CLI or thin wrapper that can consume a neutral MCP
+  launch manifest (or a preconfigured MCP registration) and produce the benchmark result JSON.
+  Provider CLI flags are not falsely treated as standardized; version/registration checks are
+  optional, secret values are excluded from metadata, all subprocesses use finite timeouts, and
+  local fake-provider integration tests exercise both file and stdout result transports. The
+  legacy Codex adapter remains the default for backward compatibility; no provider or model is
+  installed or pinned automatically.
+- **P4-07 completed (2026-07-17):** the consolidated checkpoint is green. The final complete
+  software run passed 949 tests with one explicit environment-dependent skip; Ruff, Pyright,
+  wheel/sdist build, and a real MCP stdio initialize/list-tools smoke all passed. Minimal repairs
+  aligned historical acceptance tests with archived documents, preserved extraction hashes as
+  provenance rather than a live contract, updated stale test doubles/evidence line references,
+  and narrowed test payload types for Pyright. No new genuine product gap was found. Exact
+  versions, commands, intermediate failures, and final outcomes are in
+  `docs/evidence/p4-07-software-verification-2026-07-17.json`.
+- **P4-08 completed (2026-07-17):** the bounded board-free real-agent contract smoke passed for
+  Claude Code 2.1.76 using exact Sonnet 4.5 (`claude-sonnet-4-5-20250929`) at medium effort and
+  Codex CLI 0.142.2 using exact `gpt-5.4` at medium effort. Each run made only the expected
+  handshake, literal `no board` overview, and all-NULL `board_setup-plan` calls; no populated plan,
+  setup, validation, connection, safety, or hardware action ran, and final user prose contained no
+  internal identifiers or JSON. Claude's provider-side auto circuit breaker remained disabled at
+  medium effort, so the passing isolated run used a checkout-scoped strict MCP config and an exact
+  bounded allowlist without an interactive permission prompt. Both passing bundles and the prior
+  blocked attempts are retained under `docs/evidence/agent-contract-smoke-*-2026-07-17/`.
+- **P4-09 completed (2026-07-17):** the non-destructive clean-root hardware smoke passed on the
+  positively identified nRF52840 DK: J-Link `683377322`, stable UART identity `000683377322`
+  resolved by the server to COM11, exact `nRF52840-QIAA`, and the local authoritative nRF52840
+  PDF. The root began without the named profile; setup committed exactly one schema-v2 profile
+  after live connection, same-run validation made `ready_for_code` true, and no code or
+  destructive action ran. A different restarted Server Run proved disk artifacts did not restore
+  the live gate (`live_session_ready=false`, `ready_for_code=false`) until `board_validate` passed
+  again. Exact commands, MCP timelines, report IDs/hashes, and both run IDs are in
+  `docs/evidence/fresh-setup-hardware-2026-07-17.json`.
 
 ## Verification performed for this assessment
 
-With workspace-local temporary/cache directories:
-
-```text
-136 passed
-```
-
-across setup catalog/workflow/tools, handshake, UART, safety verification/regions/enforcement,
-fresh-workspace runner, and reviewed-evidence suites. The plan-prompt suite passed `36` tests with
-the one root-document synchronization test deselected. That test currently fails before assertions
-because the worktree moved `Plan_Prompt_Contents_Spec.md` to `archive_docs/` without updating its
-test and contract references. This is the repository-consistency choice called out under GAP-12,
-not evidence that the live plan engine failed.
+P4-07 supersedes the earlier focused-only note: the complete repository suite passed **949 tests**
+with one explicit skip, and whole-repository Ruff and Pyright are clean. Packaging and real stdio
+discovery also passed. See `docs/evidence/p4-07-software-verification-2026-07-17.json`.

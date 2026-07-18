@@ -261,6 +261,7 @@ def fake_run(cmd, **_kwargs):
     output = Path(cmd[cmd.index('-d') + 1]) / 'zephyr'
     output.mkdir(parents=True, exist_ok=True)
     (output / 'zephyr.elf').write_bytes(str(os.getpid()).encode())
+    (output / 'zephyr.map').write_text('map', encoding='utf-8')
     with log.open('a', encoding='utf-8') as handle:
         handle.write(f'END {os.getpid()}\n')
 zb._run = fake_run
@@ -325,31 +326,97 @@ def test_copy_artifacts_preserves_live_build_tree_when_output_dir_matches_work_d
     zephyr_dir.mkdir(parents=True)
     elf_contents = "elf"
     hex_contents = "hex"
+    map_contents = "map"
     (zephyr_dir / "zephyr.elf").write_text(elf_contents, encoding="utf-8")
     (zephyr_dir / "zephyr.hex").write_text(hex_contents, encoding="utf-8")
+    (zephyr_dir / "zephyr.map").write_text(map_contents, encoding="utf-8")
     (build_dir / "build.ninja").write_text("ninja", encoding="utf-8")
 
-    zephyr_build._copy_artifacts(build_dir, build_dir, app_dir=app_dir, app_dir_name="app")
+    zephyr_build._copy_artifacts(build_dir, build_dir, app_dir=app_dir)
 
     assert (build_dir / "build.ninja").read_text(encoding="utf-8") == "ninja"
     assert (zephyr_dir / "zephyr.elf").read_text(encoding="utf-8") == elf_contents
     assert (build_dir / "firmware.elf").read_text(encoding="utf-8") == elf_contents
     assert (build_dir / "firmware.hex").read_text(encoding="utf-8") == hex_contents
+    assert (build_dir / "firmware.map").read_text(encoding="utf-8") == map_contents
+    assert (build_dir / "build-manifest.json").is_file()
 
 
 def test_copy_artifacts_resolves_sysbuild_app_subdir(tmp_path: Path) -> None:
     app_dir = tmp_path / "app"
     app_dir.mkdir()
     build_dir = tmp_path / "build"
-    app_zephyr_dir = build_dir / "src" / "zephyr"
+    app_zephyr_dir = build_dir / "main_domain" / "zephyr"
     app_zephyr_dir.mkdir(parents=True)
     (app_zephyr_dir / "zephyr.elf").write_text("elf", encoding="utf-8")
     (app_zephyr_dir / "zephyr.hex").write_text("hex", encoding="utf-8")
+    (app_zephyr_dir / "zephyr.map").write_text("map", encoding="utf-8")
 
-    zephyr_build._copy_artifacts(build_dir, build_dir, app_dir=app_dir, app_dir_name="src")
+    (app_zephyr_dir / "zephyr.bin").write_bytes(b"bin")
+    aggregate = build_dir / "zephyr"
+    aggregate.mkdir()
+    (aggregate / "zephyr.elf").write_text("aggregate", encoding="utf-8")
+    (aggregate / "zephyr.map").write_text("aggregate-map", encoding="utf-8")
+    bootloader = build_dir / "mcuboot" / "zephyr"
+    bootloader.mkdir(parents=True)
+    (bootloader / "zephyr.elf").write_text("bootloader", encoding="utf-8")
+    (bootloader / "zephyr.map").write_text("bootloader-map", encoding="utf-8")
+    (build_dir / "domains.yaml").write_text(
+        "default: main_domain\n"
+        "build_dir: ignored-root\n"
+        "domains:\n"
+        "  - name: mcuboot\n"
+        f"    build_dir: {bootloader.parent.as_posix()}\n"
+        "  - name: main_domain\n"
+        f"    build_dir: {app_zephyr_dir.parent.as_posix()}\n",
+        encoding="utf-8",
+    )
+
+    zephyr_build._copy_artifacts(build_dir, build_dir, app_dir=app_dir)
 
     assert (build_dir / "firmware.elf").read_text(encoding="utf-8") == "elf"
     assert (build_dir / "firmware.hex").read_text(encoding="utf-8") == "hex"
+    assert (build_dir / "firmware.map").read_text(encoding="utf-8") == "map"
+    assert (build_dir / "firmware.bin").read_bytes() == b"bin"
+
+
+def test_copy_artifacts_requires_map_and_preserves_prior_exports_when_zephyr_omits_it(
+    tmp_path: Path,
+) -> None:
+    app_dir = tmp_path / "app"
+    app_dir.mkdir()
+    build_dir = tmp_path / "build"
+    zephyr_dir = build_dir / "zephyr"
+    zephyr_dir.mkdir(parents=True)
+    (zephyr_dir / "zephyr.elf").write_text("elf", encoding="utf-8")
+    (build_dir / "firmware.elf").write_text("prior", encoding="utf-8")
+    (build_dir / "build-manifest.json").write_text("prior-manifest", encoding="utf-8")
+
+    with pytest.raises(RuntimeError, match="linker map"):
+        zephyr_build._copy_artifacts(build_dir, build_dir, app_dir=app_dir)
+
+    assert (build_dir / "firmware.elf").read_text(encoding="utf-8") == "prior"
+    assert (build_dir / "build-manifest.json").read_text(encoding="utf-8") == "prior-manifest"
+    assert not (build_dir / "firmware.map").exists()
+
+
+def test_resolve_artifacts_rejects_ambiguous_sysbuild_default(tmp_path: Path) -> None:
+    build_dir = tmp_path / "build"
+    for name in ("one", "two"):
+        zephyr_dir = build_dir / name / "zephyr"
+        zephyr_dir.mkdir(parents=True)
+        (zephyr_dir / "zephyr.elf").write_text(name, encoding="utf-8")
+        (zephyr_dir / "zephyr.map").write_text(f"{name}-map", encoding="utf-8")
+    (build_dir / "domains.yaml").write_text(
+        "default: app\n"
+        "domains:\n"
+        f"  - {{name: app, build_dir: {str(build_dir / 'one')!r}}}\n"
+        f"  - {{name: app, build_dir: {str(build_dir / 'two')!r}}}\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(RuntimeError, match="missing or ambiguous"):
+        zephyr_build._resolve_artifact_paths(build_dir)
 
 
 def test_build_parser_defaults_to_incremental_pristine_mode() -> None:
@@ -1706,11 +1773,6 @@ def test_run_build_rejects_destructive_output_relationship_before_any_work(
     sentinel = app / "main.c"
     sentinel.write_text("must survive", encoding="utf-8")
     build = app if build_relation == "equal" else root
-    monkeypatch.setattr(
-        zephyr_build,
-        "_ensure_workspace_projects",
-        lambda *_args: pytest.fail("runtime work started before path validation"),
-    )
     runtime = zephyr_build.ZephyrRuntime(
         workspace_dir=tmp_path / "zephyr-workspace",
         workspace_source="test",

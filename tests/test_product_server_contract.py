@@ -36,9 +36,7 @@ def _resolve_delta(path: Path) -> dict[str, Any]:
     base = json.loads(base_payload)
     baseline = _resolve_delta(base_path) if "base_contract" in base else base
     baseline["tool_contract_sha256"].update(delta["tool_contract_sha256_overrides"])
-    baseline["implementation_module_sha256"].update(
-        delta["implementation_module_sha256_overrides"]
-    )
+    baseline["implementation_module_sha256"].update(delta["implementation_module_sha256_overrides"])
     return baseline
 
 
@@ -48,9 +46,7 @@ def _imported_baseline(contract: dict[str, Any]) -> tuple[Path, dict[str, Any]]:
     payload = path.read_bytes()
     assert _sha256_bytes(payload) == imported["sha256"]
     baseline = _resolve_delta(path)
-    baseline["tool_contract_sha256"].update(
-        contract.get("tool_contract_sha256_overrides", {})
-    )
+    baseline["tool_contract_sha256"].update(contract.get("tool_contract_sha256_overrides", {}))
     baseline["implementation_module_sha256"].update(
         contract.get("implementation_module_sha256_overrides", {})
     )
@@ -61,14 +57,15 @@ def test_m10_active_contract_formally_supersedes_the_extraction_named_baseline()
     contract = _active_contract()
 
     assert contract["status"] == "active"
-    assert contract["milestone"] == "post-M10-adversarial-usability-contract"
+    assert contract["milestone"] == "post-M10-artifact-collector-mcp"
     assert contract["supersedes"] == contract["imported_baseline"]["path"]
     assert (CONTRACT_PATH.parent / contract["supersedes"]).is_file()
     for relative_path in contract["hardening_evidence"].values():
         assert (CONTRACT_PATH.parents[2] / relative_path).is_file(), relative_path
-    assert _sha256_bytes(
-        (CONTRACT_PATH.parents[2] / "docs" / "plan-tool-contract.md").read_bytes()
-    ) == contract["plan_tool_contract_sha256"]
+    assert (
+        _sha256_bytes((CONTRACT_PATH.parents[2] / "docs" / "plan-tool-contract.md").read_bytes())
+        == contract["plan_tool_contract_sha256"]
+    )
 
 
 def test_m10_live_tools_and_implementation_owners_match_the_imported_baseline() -> None:

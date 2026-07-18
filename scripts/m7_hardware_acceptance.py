@@ -564,9 +564,7 @@ async def _run(args: argparse.Namespace) -> dict[str, Any]:
         }
 
     try:
-        evidence["connect_initial"] = await call(
-            "connect", {"board_id": args.board_id, "unique_id": args.probe_id, "target": None, "board_config": None}
-        )
+        evidence["connect_initial"] = await call("connect", {"board_id": args.board_id})
         evidence["gate_before_validation"] = gate_document()
         first_validation = await validate("initial")
         evidence["initial_validation"] = first_validation
@@ -634,9 +632,7 @@ async def _run(args: argparse.Namespace) -> dict[str, Any]:
 
         evidence["disconnect"] = await call("disconnect", {"board_id": args.board_id})
         evidence["gate_after_disconnect"] = gate_document()
-        evidence["reconnect"] = await call(
-            "connect", {"board_id": args.board_id, "unique_id": args.probe_id, "target": None, "board_config": None}
-        )
+        evidence["reconnect"] = await call("connect", {"board_id": args.board_id})
         refresh_after_disconnect = server._safety_refresher.refresh(
             SafetyRefreshRequest(args.board_id, "m7-refresh-after-disconnect", inputs_v2)
         )

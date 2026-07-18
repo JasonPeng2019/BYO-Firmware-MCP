@@ -146,9 +146,7 @@ def request(**changes: object) -> SafetySetupRequest:
 def artifact_keys(value: object) -> set[str]:
     if isinstance(value, dict):
         return {str(key) for key in value} | {
-            nested
-            for item in value.values()
-            for nested in artifact_keys(item)
+            nested for item in value.values() for nested in artifact_keys(item)
         }
     if isinstance(value, list):
         return {nested for item in value for nested in artifact_keys(item)}
@@ -194,18 +192,14 @@ def test_unchanged_rebuild_preserves_map_manifest_and_aggregate_bytes(tmp_path: 
     builder = SafetyMapBuilder(store)
     first = builder.build(request())
     paths = SafetyArtifactRepository(store).paths("board")
-    before = {
-        name: paths[name].read_bytes() for name in ("memory_map", "source_manifest")
-    }
+    before = {name: paths[name].read_bytes() for name in ("memory_map", "source_manifest")}
 
     second = builder.build(request(continuation_id="safety-2"))
 
     assert second.status == "safety_setup_completed"
     assert second.aggregate_fingerprint == first.aggregate_fingerprint
     assert second.observed["unchanged_rebuild"] is True
-    assert {
-        name: paths[name].read_bytes() for name in ("memory_map", "source_manifest")
-    } == before
+    assert {name: paths[name].read_bytes() for name in ("memory_map", "source_manifest")} == before
 
 
 @pytest.mark.parametrize(
@@ -223,12 +217,36 @@ def test_noncomplete_statuses_write_reports_without_committing_a_map(
     issue = SafetyIssue(status, "safety/test", "More authoritative input is required.")  # type: ignore[arg-type]
     store = FirmStore(tmp_path)
     result = SafetyMapBuilder(store).build(request(issues=(issue,)))
+    payload = result.to_payload()
 
     assert result.status == status
+    assert "continuation_id" not in payload
+    assert payload["accepted_response"] is None
     paths = SafetyArtifactRepository(store).paths("board")
     assert paths["safety_report"].is_file()
     assert not paths["memory_map"].exists()
     assert not paths["source_manifest"].exists()
+
+
+def test_unsupported_board_is_terminal_and_does_not_advertise_a_continuation(
+    tmp_path: Path,
+) -> None:
+    issue = SafetyIssue(
+        "safety_setup_unsupported_board",
+        "safety/unsupported-board",
+        "Automatic safety evidence is unavailable for this board type.",
+        details={"reviewed_board_types": ["nrf52840dk"]},
+    )
+    store = FirmStore(tmp_path)
+    result = SafetyMapBuilder(store).build(request(issues=(issue,)))
+    payload = result.to_payload()
+
+    assert result.status == "safety_setup_unsupported_board"
+    assert "continuation_id" not in payload
+    assert payload["accepted_response"] is None
+    assert not SafetyArtifactRepository(store).paths("board")["memory_map"].exists()
+    report = json.loads(result.report_path.read_text(encoding="utf-8"))
+    assert report["continuation_id"] == "safety-1"
 
 
 def test_partition_prohibited_conflict_fails_closed_and_preserves_no_map(tmp_path: Path) -> None:

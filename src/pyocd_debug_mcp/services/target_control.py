@@ -11,7 +11,7 @@ from pyocd_debug_mcp.adapters.swd_pyocd import (
 )
 from pyocd_debug_mcp.board_config import (
     RECOVER_MODE_MANUAL_ONLY,
-    RECOVER_MODE_NRF_PYOCD_UNLOCK,
+    RECOVER_MODE_BACKEND_MASS_ERASE,
     BoardConfig,
 )
 from pyocd_debug_mcp.timeouts import ServerTimeoutConfig
@@ -151,10 +151,18 @@ def recover_target(
         raise RuntimeError(
             f"Requested recover mode {selected!r} does not match configured mode {configured!r}."
         )
-    if selected == RECOVER_MODE_NRF_PYOCD_UNLOCK:
+    if selected == RECOVER_MODE_BACKEND_MASS_ERASE:
+        if not _BACKEND.supports_recovery(handle, selected):
+            raise RuntimeError("The connected target backend does not support typed mass erase.")
         _BACKEND.recover(handle)
-        return "pyOCD API mass erase"
+        return "typed backend mass erase"
     raise RuntimeError(f"Unsupported recover mode: {selected}")
+
+
+def supports_recovery(handle: TargetSessionHandle, mechanism: str) -> bool:
+    """Check a destructive capability on the live typed backend before authorization."""
+
+    return _BACKEND.supports_recovery(handle, mechanism)
 
 
 def set_breakpoint(handle: TargetSessionHandle, address: int) -> None:

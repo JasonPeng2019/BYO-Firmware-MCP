@@ -1,0 +1,12 @@
+{
+  "cli_version": "codex-cli 0.142.2",
+  "effective_model_evidence": "The exact requested slug appears in argv and the provider completed without a model fallback or migration warning.",
+  "effort": "medium",
+  "ephemeral": true,
+  "hardware_permitted": false,
+  "mcp_registration_scope": "invocation-only config overrides; no global registration mutation",
+  "permission_profile": "danger-full-access/approval-never",
+  "provider": "codex",
+  "requested_model": "gpt-5.4",
+  "workspace": "C:\\Users\\Jason\\Documents\\Jason\\FirmCLI\\byo-p4-08-codex-gpt54-5741_kyq"
+}

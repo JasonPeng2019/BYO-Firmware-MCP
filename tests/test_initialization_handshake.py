@@ -3,13 +3,15 @@ from __future__ import annotations
 import json
 import subprocess
 import sys
+from argparse import Namespace
+from pathlib import Path
 
 import mcp.types as types
 import pytest
 from mcp.server.fastmcp.exceptions import ToolError
 from mcp.shared.memory import create_connected_server_and_client_session
 
-from pyocd_debug_mcp import server
+from pyocd_debug_mcp import server, zephyr_build
 from pyocd_debug_mcp.guardrails.plan_defs import PLAN_DEFINITIONS
 from pyocd_debug_mcp.kernel.registry import RegistryFastMCP
 from pyocd_debug_mcp.tools.handshake import (
@@ -51,6 +53,10 @@ def assert_required_guidance(guidance: str) -> None:
     assert "STM32CubeIDE-provided STM32Cube, ThreadX" in prose
     assert "never recursively crawl the whole disk" in prose
     assert "network download only when no compatible local copy exists" in prose
+    assert "always-visible collect_build_artifacts MCP tool" in prose
+    assert 'expected_roles to ["elf", "map"]' in prose
+    assert "pass its returned ELF/HEX/MAP paths explicitly to board_safety_refresh" in prose
+    assert "never treat collection as validation" in prose
 
 
 def test_handshake_is_visible_at_server_run_start() -> None:
@@ -59,9 +65,7 @@ def test_handshake_is_visible_at_server_run_start() -> None:
 
 def test_m4_pilot_actions_start_hidden_with_generated_plan_tools_visible() -> None:
     advertised = set(server.tool_registry.advertised())
-    runtime_tools = {
-        tool.name: tool for tool in server.mcp._tool_manager.list_tools()
-    }
+    runtime_tools = {tool.name: tool for tool in server.mcp._tool_manager.list_tools()}
 
     for action_name in server.PILOT_PLAN_ACTIONS:
         definition = PLAN_DEFINITIONS[action_name]
@@ -98,6 +102,134 @@ async def test_in_process_client_lists_and_calls_handshake_before_hardware() -> 
     assert isinstance(content, types.TextContent)
     assert "Guarded Hardware Server operating guidance" in content.text
     assert_required_guidance(content.text)
+
+
+async def test_in_process_client_lists_and_uses_visible_artifact_collector(
+    tmp_path: Path,
+) -> None:
+    elf = tmp_path / "native-app.out"
+    linker_map = tmp_path / "native-app.linkermap"
+    elf.write_bytes(b"elf")
+    linker_map.write_bytes(b"map")
+    output = tmp_path / "canonical"
+
+    async with create_connected_server_and_client_session(server.mcp) as session:
+        tools = {tool.name: tool for tool in (await session.list_tools()).tools}
+        collector = tools["collect_build_artifacts"]
+        assert "after a native IDE or CLI build" in (collector.description or "")
+        assert set(collector.inputSchema.get("properties", {})) == {
+            "output_dir",
+            "elf_path",
+            "hex_path",
+            "bin_path",
+            "map_path",
+            "expected_roles",
+        }
+        assert set(
+            collector.inputSchema["properties"]["expected_roles"]["anyOf"][0]["items"]["enum"]
+        ) == {
+            "elf",
+            "hex",
+            "bin",
+            "map",
+        }
+        result = await session.call_tool(
+            "collect_build_artifacts",
+            {
+                "output_dir": str(output),
+                "elf_path": str(elf),
+                "map_path": str(linker_map),
+                "expected_roles": ["elf", "map"],
+            },
+        )
+        refused = await session.call_tool(
+            "collect_build_artifacts",
+            {
+                "output_dir": str(output),
+                "elf_path": str(elf),
+            },
+        )
+
+    assert result.isError is not True
+    content = result.content[0]
+    assert isinstance(content, types.TextContent)
+    payload = json.loads(content.text)
+    assert payload["status"] == "artifacts_collected"
+    assert payload["authority"] == "provenance_only"
+    assert payload["safety_handoff"]["status"] == "explicit_elf_and_map_available"
+    assert payload["canonical_paths"]["elf"] == str(output.resolve() / "firmware.elf")
+    assert (output / "firmware.map").read_bytes() == b"map"
+    assert refused.isError is not True
+    refused_content = refused.content[0]
+    assert isinstance(refused_content, types.TextContent)
+    refused_payload = json.loads(refused_content.text)
+    assert refused_payload["status"] == "artifact_collection_refused"
+    assert "new or empty output_dir" in refused_payload["remedy"]
+
+
+async def test_generic_mcp_collection_and_labeled_zephyr_fallback_share_one_run(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    native_elf = tmp_path / "native" / "application.out"
+    native_map = tmp_path / "native" / "application.linkermap"
+    native_elf.parent.mkdir()
+    native_elf.write_bytes(b"native-elf")
+    native_map.write_bytes(b"native-map")
+
+    app_dir = tmp_path / "zephyr-app"
+    build_dir = tmp_path / "zephyr-build"
+    app_dir.mkdir()
+
+    def fake_west(command: list[str], **_kwargs: object) -> None:
+        output = Path(command[command.index("-d") + 1]) / "zephyr"
+        output.mkdir(parents=True, exist_ok=True)
+        (output / "zephyr.elf").write_bytes(b"zephyr-elf")
+        (output / "zephyr.map").write_bytes(b"zephyr-map")
+
+    monkeypatch.setattr(zephyr_build, "_run", fake_west)
+    runtime = zephyr_build.ZephyrRuntime(
+        workspace_dir=tmp_path / "workspace",
+        workspace_source="bounded-test",
+        sdk_dir=tmp_path / "sdk",
+        sdk_source="bounded-test",
+        west_python=Path(sys.executable),
+        managed_workspace_dir=tmp_path / "managed",
+    )
+    zephyr_build.run_build(
+        Namespace(
+            app_dir=str(app_dir),
+            build_dir=str(build_dir),
+            board="configured/board-target",
+            pristine="auto",
+        ),
+        runtime,
+    )
+
+    async with create_connected_server_and_client_session(server.mcp) as session:
+        native = await session.call_tool(
+            "collect_build_artifacts",
+            {
+                "output_dir": str(tmp_path / "native-collected"),
+                "elf_path": str(native_elf),
+                "map_path": str(native_map),
+                "expected_roles": ["elf", "map"],
+            },
+        )
+        fallback = await session.call_tool(
+            "collect_build_artifacts",
+            {
+                "output_dir": str(tmp_path / "zephyr-collected"),
+                "elf_path": str(build_dir / "firmware.elf"),
+                "map_path": str(build_dir / "firmware.map"),
+                "expected_roles": ["elf", "map"],
+            },
+        )
+
+    contents = [result.content[0] for result in (native, fallback)]
+    assert all(isinstance(content, types.TextContent) for content in contents)
+    payloads = [json.loads(content.text) for content in contents if isinstance(content, types.TextContent)]
+    assert [sorted(payload["artifacts"]) for payload in payloads] == [["elf", "map"]] * 2
+    assert all(payload["authority"] == "provenance_only" for payload in payloads)
 
 
 def test_handshake_guidance_contains_every_required_operating_rule() -> None:

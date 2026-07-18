@@ -61,6 +61,17 @@ before reuse; never trust a folder name alone and never recursively crawl the wh
 network download only when no compatible local copy exists, and tell the user what was missing
 before fetching a large dependency. Do not copy or persist unrelated files found during discovery.
 
+Build firmware with the project's native validated CLI or IDE. Treat the provider-neutral native
+workflow and collect_build_artifacts template returned by get_setup_status.build_guidance as the
+default. A reviewed profile may additionally return a clearly labeled optional Zephyr terminal
+fallback; it is not the generic route or an MCP hardware action. After any native build whose outputs
+are scattered or vendor-named, use the always-visible collect_build_artifacts MCP tool with the
+explicit paths the build actually produced. For guarded application or bootloader work, normally
+collect a coherent ELF and linker map and set expected_roles to ["elf", "map"]. Do not ask the
+collector to search or build. It only creates canonical, hashed provenance: pass its returned
+ELF/HEX/MAP paths explicitly to board_safety_refresh, and never treat collection as validation,
+flash permission, memory authority, or an open hardware gate.
+
 Dynamic clients should call the newly exposed action directly. Some MCP clients keep static callable
 bindings even after notifications/tools/list_changed. If the accepted plan's action is absent
 from those bindings, submit only the exact server-returned single-child action_batch fallback

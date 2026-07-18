@@ -15,6 +15,7 @@ from pyocd_debug_mcp.kernel.operations import SAFE_EXIT_REMINDER
 
 ALWAYS_VISIBLE = {
     "action_batch",
+    "collect_build_artifacts",
     "connect",
     "continue_setup",
     "disconnect",
@@ -135,7 +136,7 @@ def _locked_arguments(name: str) -> dict[str, object]:
         },
         "target_unlock": {
             "board_id": "m5-lock-board",
-            "recovery_mechanism": "nrf_pyocd_unlock",
+            "recovery_mechanism": "backend_mass_erase",
         },
     }
     return arguments[name]
@@ -184,7 +185,7 @@ async def test_m5_in_process_surface_is_exact_and_every_hidden_handler_is_locked
 
 def test_m5_every_revised_runtime_and_plan_schema_is_exact() -> None:
     expected_action_fields = {
-        "connect": {"board_id", "unique_id", "target", "board_config"},
+        "connect": {"board_id"},
         "disconnect": {"board_id"},
         "get_board_info": {"board_id"},
         "get_state": {"board_id"},
@@ -288,6 +289,9 @@ def test_m5_every_revised_runtime_and_plan_schema_is_exact() -> None:
             "application_elf",
             "application_hex",
             "application_map",
+            "bootloader_elf",
+            "bootloader_hex",
+            "bootloader_map",
         },
         "action_batch": {"board_id", "actions"},
     }

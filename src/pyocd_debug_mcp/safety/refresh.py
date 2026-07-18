@@ -55,11 +55,11 @@ class SafetyRefreshResult:
     remedy: tuple[str, ...]
     report_path: Path
     aggregate_fingerprint: str | None
+    drift_classification: str
 
     def to_payload(self) -> dict[str, object]:
         return {
             "status": self.status,
-            "continuation_id": self.continuation_id,
             "agent_prompt": self.agent_prompt,
             "choices": [],
             "observed": {
@@ -67,6 +67,7 @@ class SafetyRefreshResult:
                 "changed_sources": [item.value for item in self.changed_sources],
                 "rebuilt_groups": [item.value for item in self.rebuilt_groups],
                 "aggregate_fingerprint": self.aggregate_fingerprint,
+                "drift_classification": self.drift_classification,
                 "report": str(self.report_path),
             },
             "constraints": [
@@ -105,6 +106,7 @@ class SafetyRefresher:
         rebuilt: tuple[FingerprintSource, ...] = (),
         remedy: tuple[str, ...],
         aggregate: str | None = None,
+        classification: str,
         details: Mapping[str, object] | None = None,
     ) -> SafetyRefreshResult:
         prompt = f"{message.strip()} {NO_INTERNALS}"
@@ -133,6 +135,7 @@ class SafetyRefresher:
             remedy,
             report_path,
             aggregate,
+            classification,
         )
 
     def refresh(self, request: SafetyRefreshRequest) -> SafetyRefreshResult:
@@ -149,6 +152,7 @@ class SafetyRefresher:
                 message="Current safety sources are missing, stale, or inconsistent; run full safety setup.",
                 changed=(),
                 remedy=("board_safety_setup",),
+                classification="unclear_scope",
                 details={"reason": str(exc)},
             )
         candidate = FingerprintSet.build(request.inputs)
@@ -162,6 +166,7 @@ class SafetyRefresher:
                 changed=(),
                 remedy=("board_validate_if_gate_is_closed",),
                 aggregate=current.fingerprints.aggregate,
+                classification="fresh",
             )
 
         changed_set = set(changed)
@@ -172,6 +177,7 @@ class SafetyRefresher:
                 message="The MCU part number or target changed. Refresh is insufficient; run full safety setup and validation.",
                 changed=changed,
                 remedy=("board_safety_setup", "board_validate"),
+                classification="anchor_change",
             )
         structural = changed_set.intersection(
             {FingerprintSource.GEOMETRY, FingerprintSource.SCHEMA}
@@ -182,7 +188,8 @@ class SafetyRefresher:
                 status="safety_refresh_blocked",
                 message="Flash geometry or the map schema changed and requires full safety setup.",
                 changed=changed,
-                remedy=("board_safety_setup",),
+                remedy=("board_safety_setup", "board_validate"),
+                classification=_drift_classification(changed_set),
             )
         if FingerprintSource.PROFILE in changed_set:
             return self._result(
@@ -191,6 +198,7 @@ class SafetyRefresher:
                 message="Profile drift cannot be safely scoped from its fingerprint; run full safety setup.",
                 changed=changed,
                 remedy=("board_safety_setup",),
+                classification="unclear_scope",
             )
 
         rebuild = set(changed_set)
@@ -206,6 +214,7 @@ class SafetyRefresher:
                 changed=changed,
                 rebuilt=supplied_rebuilt,
                 remedy=("board_safety_setup",),
+                classification=_drift_classification(changed_set),
                 details={
                     "required_rebuilt_groups": [item.value for item in expected_rebuilt],
                 },
@@ -221,6 +230,7 @@ class SafetyRefresher:
                 changed=changed,
                 rebuilt=supplied_rebuilt,
                 remedy=("board_safety_setup",),
+                classification="unclear_scope",
             )
         hardware_groups = {FingerprintSource.PACK, FingerprintSource.EVIDENCE}
         if rebuild.intersection(hardware_groups) and not all(
@@ -234,12 +244,11 @@ class SafetyRefresher:
                 changed=changed,
                 rebuilt=supplied_rebuilt,
                 remedy=("board_safety_setup",),
+                classification=_drift_classification(changed_set),
             )
 
         retained = tuple(
-            item
-            for item in current.regions
-            if not set(item.source_groups).intersection(rebuild)
+            item for item in current.regions if not set(item.source_groups).intersection(rebuild)
         )
         refreshed_regions = tuple(
             sorted(
@@ -260,6 +269,7 @@ class SafetyRefresher:
                 changed=changed,
                 rebuilt=supplied_rebuilt,
                 remedy=("board_safety_setup",),
+                classification="unclear_scope",
             )
         conflicts = region_conflicts(refreshed_regions)
         if conflicts:
@@ -270,6 +280,7 @@ class SafetyRefresher:
                 changed=changed,
                 rebuilt=supplied_rebuilt,
                 remedy=("resolve_safety_sources", "board_safety_refresh"),
+                classification="safety_conflict",
                 details={"conflicts": conflicts},
             )
 
@@ -279,7 +290,9 @@ class SafetyRefresher:
             request.inputs,
             refreshed_regions,
         )
-        prompt = f"Safety refresh completed. Board validation still owns gate opening. {NO_INTERNALS}"
+        prompt = (
+            f"Safety refresh completed. Board validation still owns gate opening. {NO_INTERNALS}"
+        )
         memory, manifest, report = build_documents(
             setup_request,
             candidate,
@@ -306,4 +319,59 @@ class SafetyRefresher:
             ("board_validate_if_gate_is_closed",),
             self.repository.paths(request.board_id)["safety_report"],
             candidate.aggregate,
+            _drift_classification(changed_set),
         )
+
+    def blocked(
+        self,
+        request: SafetyRefreshRequest,
+        *,
+        message: str,
+        classification: str,
+        changed: tuple[FingerprintSource, ...],
+        remedy: tuple[str, ...],
+        details: Mapping[str, object] | None = None,
+    ) -> SafetyRefreshResult:
+        """Write the standard immutable report for a pre-promotion refresh blocker."""
+
+        return self._result(
+            request,
+            status="safety_refresh_blocked",
+            message=message,
+            changed=changed,
+            remedy=remedy,
+            classification=classification,
+            details=details,
+        )
+
+
+def _drift_classification(changed: set[FingerprintSource]) -> str:
+    if FingerprintSource.PART_TARGET in changed:
+        return "anchor_change"
+    geometry = FingerprintSource.GEOMETRY in changed
+    schema = FingerprintSource.SCHEMA in changed
+    if geometry and schema:
+        return "geometry_and_schema_change"
+    if geometry:
+        return "geometry_change"
+    if schema:
+        return "schema_change"
+    if FingerprintSource.PROFILE in changed:
+        return "unclear_scope"
+    pack = FingerprintSource.PACK in changed
+    evidence = FingerprintSource.EVIDENCE in changed
+    if pack and evidence:
+        return "pack_and_official_evidence_change"
+    if pack:
+        return "pack_change"
+    if evidence:
+        return "official_evidence_change"
+    application = FingerprintSource.APPLICATION_ARTIFACTS in changed
+    bootloader = FingerprintSource.BOOTLOADER_ARTIFACTS in changed
+    if application and bootloader:
+        return "application_and_bootloader_change"
+    if application:
+        return "application_change"
+    if bootloader:
+        return "bootloader_change"
+    return "unclear_scope"

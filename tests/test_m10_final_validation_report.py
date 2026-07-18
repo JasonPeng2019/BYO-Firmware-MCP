@@ -26,7 +26,10 @@ def _sha256(path: Path) -> str:
 def _criterion_ids(prefix: str) -> set[str]:
     pattern = rf"- \*\*({prefix}-\d+(?:\.\d+)?)\*\*"
     return set(
-        re.findall(pattern, (ROOT / "Design_Proto_Spec.md").read_text(encoding="utf-8"))
+        re.findall(
+            pattern,
+            (ROOT / "archive_docs/Design_Proto_Spec.md").read_text(encoding="utf-8"),
+        )
     )
 
 
@@ -132,4 +135,3 @@ def test_repo_and_external_final_reports_are_identical_and_linked() -> None:
     assert "repository is not complete" in markdown
     assert "0x00052840" in markdown
     assert "Fail: 0" in markdown
-

@@ -1,0 +1,16 @@
+{
+  "source": "independently derived from preserved MCP debug log; provider result file was missing",
+  "scenario_status": "blocked",
+  "setup_status": null,
+  "stopped_hardware_path": true,
+  "null_plan_read_only": false,
+  "populated_plan_submitted": false,
+  "real_setup_validation_or_hardware_called": false,
+  "user_facing_response": null,
+  "notes": [
+    "initialization_handshake was selected but denied by Claude permission handling before the MCP call reached the server",
+    "setup_overview and board_setup-plan were not called",
+    "the model-authored result file was not produced",
+    "the model run was not retried"
+  ]
+}

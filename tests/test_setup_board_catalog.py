@@ -6,6 +6,7 @@ import pytest
 
 from pyocd_debug_mcp.setup_flow.board_catalog import (
     BoardCatalogError,
+    _load_catalog,
     catalog_board,
     catalog_board_types,
     reviewed_setup_board_types,
@@ -69,3 +70,17 @@ def test_catalog_rejects_non_pdf_evidence(tmp_path: Path) -> None:
     text.write_text("not a PDF", encoding="utf-8")
     with pytest.raises(BoardCatalogError, match="local PDF"):
         catalog_board("nrf52840dk").validate_datasheet(Path(text), "0" * 64)
+
+
+def test_reviewed_board_facts_are_packaged_data_not_python_branches(tmp_path: Path) -> None:
+    module_text = Path(
+        "src/pyocd_debug_mcp/setup_flow/board_catalog.py"
+    ).read_text(encoding="utf-8")
+    assert "nrf52840dk" not in module_text
+    assert "nucleo_l476rg" not in module_text
+    assert "0x10000000" not in module_text
+
+    bad = tmp_path / "bad.json"
+    bad.write_text('{"schema_version": 1, "boards": [{"board_type": "x"}]}', encoding="utf-8")
+    with pytest.raises(BoardCatalogError):
+        _load_catalog(bad)

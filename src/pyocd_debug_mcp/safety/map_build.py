@@ -47,6 +47,7 @@ SafetySetupStatus = Literal[
     "safety_setup_incomplete",
     "safety_setup_conflict",
     "safety_setup_blocked",
+    "safety_setup_unsupported_board",
 ]
 IncompleteSafetyStatus = Literal[
     "safety_setup_needs_user_input",
@@ -54,6 +55,7 @@ IncompleteSafetyStatus = Literal[
     "safety_setup_incomplete",
     "safety_setup_conflict",
     "safety_setup_blocked",
+    "safety_setup_unsupported_board",
 ]
 
 
@@ -67,7 +69,9 @@ def _timestamp() -> str:
 
 def _require_board_id(value: str) -> str:
     if _BOARD_ID.fullmatch(value) is None:
-        raise SafetyArtifactError("board_id must be 1-64 lowercase letters, numbers, or underscores")
+        raise SafetyArtifactError(
+            "board_id must be 1-64 lowercase letters, numbers, or underscores"
+        )
     return value
 
 
@@ -119,9 +123,8 @@ class SafetySetupResult:
     aggregate_fingerprint: str | None
 
     def to_payload(self) -> dict[str, object]:
-        return {
+        payload: dict[str, object] = {
             "status": self.status,
-            "continuation_id": self.continuation_id,
             "agent_prompt": self.agent_prompt,
             "choices": [dict(choice) for choice in self.choices],
             "observed": dict(self.observed),
@@ -139,6 +142,7 @@ class SafetySetupResult:
                 "fingerprint and atomically persist the map",
             ],
         }
+        return payload
 
 
 @dataclass(frozen=True, slots=True)
@@ -270,13 +274,9 @@ class SafetyArtifactRepository:
         for source in FingerprintSource:
             row = source_rows[source.value]
             if not isinstance(row, Mapping) or set(row) != {"fingerprint", "evidence"}:
-                raise SafetyArtifactError(
-                    f"source manifest entry for {source.value} is malformed"
-                )
+                raise SafetyArtifactError(f"source manifest entry for {source.value} is malformed")
             if row["fingerprint"] != expected_sub[source]:
-                raise SafetyArtifactError(
-                    f"source manifest entry for {source.value} is stale"
-                )
+                raise SafetyArtifactError(f"source manifest entry for {source.value} is stale")
             source_documents[source] = row["evidence"]
         recomputed = FingerprintSet.build(
             FingerprintInputs(
@@ -370,10 +370,9 @@ def require_reconciled_authority(artifacts: SafetyArtifacts) -> None:
     geometry = source_evidence(FingerprintSource.GEOMETRY)
     reconciled_geometry = reconciliation["erase_geometry"]
     assert isinstance(reconciled_geometry, Mapping)
-    if (
-        geometry.get("erase_origin") != reconciled_geometry.get("erase_origin")
-        or geometry.get("erase_size") != reconciled_geometry.get("erase_size")
-    ):
+    if geometry.get("erase_origin") != reconciled_geometry.get("erase_origin") or geometry.get(
+        "erase_size"
+    ) != reconciled_geometry.get("erase_size"):
         raise SafetyArtifactError("persisted erase geometry is not the reconciled geometry")
 
     authority_groups = {
@@ -405,8 +404,7 @@ def require_reconciled_authority(artifacts: SafetyArtifacts) -> None:
             region.address_range.end,
             region.executable,
             tuple(
-                (item.authority.value, item.source_id, item.detail)
-                for item in region.provenance
+                (item.authority.value, item.source_id, item.detail) for item in region.provenance
             ),
         )
 
@@ -420,9 +418,7 @@ def require_reconciled_authority(artifacts: SafetyArtifacts) -> None:
         )
 
 
-def _ambiguous_overlap(
-    first: RegionContribution, second: RegionContribution
-) -> bool:
+def _ambiguous_overlap(first: RegionContribution, second: RegionContribution) -> bool:
     if not first.region.address_range.overlaps(second.region.address_range):
         return False
     left = first.region.kind
@@ -465,9 +461,7 @@ def region_conflicts(
                         "range": intersection.to_document(),
                     }
                 )
-    return tuple(
-        sorted(conflicts, key=lambda item: (str(item["code"]), str(item["regions"])))
-    )
+    return tuple(sorted(conflicts, key=lambda item: (str(item["code"]), str(item["regions"]))))
 
 
 def build_documents(
@@ -479,15 +473,18 @@ def build_documents(
     conflicts: tuple[Mapping[str, object], ...] = (),
 ) -> tuple[dict[str, object], dict[str, object], dict[str, object]]:
     created_at = _timestamp()
-    region_documents = [item.to_document() for item in sorted(
-        request.regions,
-        key=lambda item: (
-            item.region.address_range.start,
-            item.region.address_range.end,
-            item.region.kind.value,
-            item.region.name,
-        ),
-    )]
+    region_documents = [
+        item.to_document()
+        for item in sorted(
+            request.regions,
+            key=lambda item: (
+                item.region.address_range.start,
+                item.region.address_range.end,
+                item.region.kind.value,
+                item.region.name,
+            ),
+        )
+    ]
     fingerprint_document = fingerprints.to_document()
     memory_map: dict[str, object] = {
         "schema_version": SAFETY_MAP_SCHEMA_VERSION,
@@ -601,7 +598,9 @@ class SafetyMapBuilder:
                 ),
             )
         )
-        prompt = f"Safety setup completed. Run board_validate before any gate may open. {NO_INTERNALS}"
+        prompt = (
+            f"Safety setup completed. Run board_validate before any gate may open. {NO_INTERNALS}"
+        )
         try:
             current = self.repository.load_current(request.board_id)
         except (SafetyArtifactError, ValueError):

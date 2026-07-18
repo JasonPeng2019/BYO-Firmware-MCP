@@ -396,6 +396,9 @@ def test_record_case_artifacts_writes_expected_files(tmp_path: Path) -> None:
     assert (run_root / "run-metadata" / "benchmark_result.json").exists()
     assert (run_root / "run-metadata" / "score.json").exists()
     assert (run_root / "run-metadata" / "firmware_identity.json").exists()
+    assert (run_root / "run-metadata" / "agent_adapter.json").exists()
+    assert (run_root / "logs" / "agent_stdout.txt").exists()
+    assert (run_root / "logs" / "agent_stderr.txt").exists()
     assert (run_root / "logs" / "codex_exec.jsonl").read_text(
         encoding="utf-8"
     ) == '{"event":"done"}\n'
@@ -536,6 +539,25 @@ def test_build_parser_exposes_codex_timeout_override() -> None:
     args = parser.parse_args(["--case-id", "nucleo_l476rg__k001_reference_green"])
 
     assert args.codex_timeout_seconds == r11.DEFAULT_CODEX_TIMEOUT_SECONDS
+
+
+def test_build_parser_accepts_explicit_generic_agent_config(tmp_path: Path) -> None:
+    parser = r11.build_parser()
+    config = tmp_path / "agent.json"
+
+    args = parser.parse_args(
+        [
+            "--case-id",
+            "nucleo_l476rg__k001_reference_green",
+            "--agent-config",
+            str(config),
+            "--agent-timeout-seconds",
+            "42",
+        ]
+    )
+
+    assert args.agent_config == config
+    assert args.codex_timeout_seconds == 42
 
 
 def test_run_case_forwards_requested_timeout_to_codex(

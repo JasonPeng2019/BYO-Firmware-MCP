@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from typing import Any, cast
 
 import pytest
 
@@ -118,9 +119,10 @@ def services(tmp_path: Path):
                 "status": "safety_setup_completed",
                 "board_id": board_id,
             },
-            lambda board_id, **_artifacts: {
+            lambda board_id, **artifacts: {
                 "status": "safety_refresh_completed",
                 "board_id": board_id,
+                "artifacts": artifacts,
             },
             setup_overview=lambda names: {
                 "status": "setup_routes_ready" if names else "setup_names_required",
@@ -229,6 +231,19 @@ def test_load_setup_tool_returns_distinct_bounded_next_step_guidance(tmp_path: P
         "tool": "board_validate",
         "arguments": {"board_id": "bench_board"},
     }
+    assert set(payloads["board_safety_refresh"]["next_call"]["arguments"]) == {
+        "board_id",
+        "application_elf",
+        "application_hex",
+        "application_map",
+        "bootloader_elf",
+        "bootloader_hex",
+        "bootloader_map",
+    }
+    assert (
+        "safety_setup_unsupported_board"
+        in payloads["board_safety_setup"]["guidance"]["expected_statuses"]
+    )
 
 
 def test_setup_overview_routes_names_without_user_facing_internal_fields(tmp_path: Path) -> None:
@@ -296,7 +311,7 @@ def test_real_unknown_setup_route_supplies_exact_machine_call_composition(
         ),
     )
 
-    payload = server._setup_overview(["Brand New Board"])
+    payload = cast(dict[str, Any], server._setup_overview(["Brand New Board"]))
     route = payload["routes"][0]
 
     assert route["load_call"] == {
@@ -352,7 +367,8 @@ def test_real_unknown_setup_route_maps_ambiguous_friendly_hardware_choices(
         ),
     )
 
-    route = server._setup_overview(["Brand New Board"])["routes"][0]
+    payload = cast(dict[str, Any], server._setup_overview(["Brand New Board"]))
+    route = payload["routes"][0]
 
     assert route["plan_action_parameters_template"]["connection_id"] is None
     assert route["plan_action_parameters_template"]["serial_id"] is None
@@ -428,7 +444,40 @@ def test_a20_safety_tools_redirect_then_invoke_their_scoped_engines(tmp_path: Pa
 
         handlers["load_setup_tool"]("bench_board", tool_name)
         result = json.loads(handlers[tool_name]("bench_board"))
-        assert result == {
+        expected: dict[str, object] = {
             "board_id": "bench_board",
             "status": expected_status,
         }
+        if tool_name == "board_safety_refresh":
+            expected["artifacts"] = {
+                "application_elf": None,
+                "application_hex": None,
+                "application_map": None,
+                "bootloader_elf": None,
+                "bootloader_hex": None,
+                "bootloader_map": None,
+            }
+        assert result == expected
+
+
+def test_safety_refresh_forwards_symmetric_bootloader_artifacts(tmp_path: Path) -> None:
+    _, _, _, _, handlers = services(tmp_path)
+    handlers["load_setup_tool"]("bench_board", "board_safety_refresh")
+
+    result = json.loads(
+        handlers["board_safety_refresh"](
+            "bench_board",
+            bootloader_elf="boot.elf",
+            bootloader_hex="boot.hex",
+            bootloader_map="boot.map",
+        )
+    )
+
+    assert result["artifacts"] == {
+        "application_elf": None,
+        "application_hex": None,
+        "application_map": None,
+        "bootloader_elf": "boot.elf",
+        "bootloader_hex": "boot.hex",
+        "bootloader_map": "boot.map",
+    }

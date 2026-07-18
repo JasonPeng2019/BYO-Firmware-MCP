@@ -1,4 +1,4 @@
-board_id: nrf52840dk  # PROJECT-DEFINED (our canonical board id for the retained alternate Nordic profile)
+﻿board_id: nrf52840dk  # PROJECT-DEFINED (our canonical board id for the retained alternate Nordic profile)
 display_name: "nRF52840-DK"  # PROJECT-DEFINED (human-facing board label)
 mcu_family: nrf52840  # HW-FIXED (the silicon on the reference board)
 probe_family: jlink  # HW-FIXED (the onboard debug probe family)
@@ -25,6 +25,6 @@ serial_hint_terms:  # PROJECT-DEFINED, UNVERIFIED (host-side serial-port matchin
 reference_uart_patterns:  # PROJECT-DEFINED, UNVERIFIED (expected repo-owned reference-firmware UART signature for the alternate Nordic board)
   - "boot ok"
 requires_recover_validation: true  # PROJECT-DEFINED (Stage 0 policy for this board family)
-recover_mode: nrf_pyocd_unlock  # PROJECT-DEFINED (selects the Stage 0 recover backend for Nordic APPROTECT boards)
+recover_mode: backend_mass_erase  # PROJECT-DEFINED (selects the Stage 0 recover backend for Nordic APPROTECT boards)
 # Do not add firmware paths, user project paths, build commands, or output artifact paths here.
 # Those are runtime/session inputs supplied by the host, not board metadata.

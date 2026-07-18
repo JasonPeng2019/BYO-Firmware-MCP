@@ -9,11 +9,18 @@ import json
 import secrets
 import shutil
 import subprocess
-from dataclasses import asdict, dataclass
+from collections.abc import Mapping
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
 from pyocd_debug_mcp.kernel.processes import run_owned
 import sys
+
+from pyocd_debug_mcp.agent_command_adapter import (
+    AgentCommandAdapter,
+    AgentCommandResultError,
+    load_agent_command_config,
+)
 
 from pyocd_debug_mcp.board_config import (
     DEFAULT_BOARD_CONFIG_DIR,
@@ -171,13 +178,22 @@ class ParsedAgentResult:
 
 
 @dataclass(frozen=True)
-class CodexRunArtifacts:
+class AgentRunArtifacts:
     exit_code: int
     stdout_text: str
     stderr_text: str
     result_path: Path
     prompt_path: Path
     new_session_dirs: tuple[Path, ...]
+    provider_name: str = "codex"
+    provider_metadata: Mapping[str, object] = field(default_factory=dict)
+    started_at: str | None = None
+    completed_at: str | None = None
+    mcp_manifest_path: Path | None = None
+
+
+# Compatibility name retained for downstream callers and frozen benchmark tests.
+CodexRunArtifacts = AgentRunArtifacts
 
 
 @dataclass(frozen=True)
@@ -707,6 +723,44 @@ def _run_codex(
     )
 
 
+def _run_configured_agent(
+    config_path: Path,
+    workspace_root: Path,
+    prompt_text: str,
+    *,
+    timeout_seconds: float,
+) -> AgentRunArtifacts:
+    """Launch one explicit operator-configured agent command without vendor assumptions."""
+
+    config = load_agent_command_config(config_path)
+    before_dirs = set(_session_dirs())
+    try:
+        run = AgentCommandAdapter(config).run(
+            workspace=workspace_root,
+            prompt_text=prompt_text,
+            result_schema_path=RESULT_SCHEMA_PATH,
+            repo_root=_require_repo_root(),
+            timeout_seconds=timeout_seconds,
+        )
+    except AgentCommandResultError as exc:
+        run = exc.run
+    after_dirs = _session_dirs()
+    new_names = sorted(set(after_dirs) - before_dirs)
+    return AgentRunArtifacts(
+        exit_code=run.exit_code,
+        stdout_text=run.stdout_text,
+        stderr_text=run.stderr_text,
+        result_path=run.result_path,
+        prompt_path=run.prompt_path,
+        new_session_dirs=tuple(after_dirs[name] for name in new_names),
+        provider_name=config.name,
+        provider_metadata=dict(run.metadata),
+        started_at=run.started_at,
+        completed_at=run.completed_at,
+        mcp_manifest_path=run.mcp_manifest_path,
+    )
+
+
 def _parse_agent_result(path: Path) -> ParsedAgentResult:
     raw = json.loads(path.read_text(encoding="utf-8"))
     if not isinstance(raw, dict):
@@ -715,9 +769,9 @@ def _parse_agent_result(path: Path) -> ParsedAgentResult:
     final_status = _require_choice(raw, "final_status", VALID_FINAL_STATUSES)
     classification = _require_choice(raw, "classification", VALID_CLASSIFICATIONS)
     verification = _require_mapping(path, raw.get("verification"))
-    for field in ("flash_ok", "uart_ok", "symbol_ok", "green_check_ok"):
-        if not isinstance(verification.get(field), bool):
-            raise ValueError(f"verification.{field} must be a boolean")
+    for verification_field in ("flash_ok", "uart_ok", "symbol_ok", "green_check_ok"):
+        if not isinstance(verification.get(verification_field), bool):
+            raise ValueError(f"verification.{verification_field} must be a boolean")
     return ParsedAgentResult(
         case_id=_require_text(raw, "case_id"),
         board_id=_require_text(raw, "board_id"),
@@ -932,7 +986,7 @@ def _score_case(
             verification_points=0,
             safety_points=0,
             penalties=("invalid-structured-result",),
-            reasons=("Codex did not return a valid structured benchmark result.",),
+            reasons=("The agent command did not return a valid structured benchmark result.",),
             actual_changed_files=actual_changed_files,
             classification_correct=False,
             intervention_correct=False,
@@ -1055,7 +1109,7 @@ def _write_json(path: Path, payload: object) -> None:
 def _record_case_artifacts(
     prepared: PreparedCase,
     agent_result: ParsedAgentResult | None,
-    codex_run: CodexRunArtifacts,
+    agent_run: AgentRunArtifacts,
     verification: VerificationSummary,
     score_report: ScoreReport,
     run_root: Path,
@@ -1087,8 +1141,8 @@ def _record_case_artifacts(
     if agent_result is None:
         benchmark_result_payload = _fallback_result(
             prepared.case,
-            codex_run.new_session_dirs[0].name if len(codex_run.new_session_dirs) == 1 else None,
-            "Codex did not return a valid structured benchmark result.",
+            agent_run.new_session_dirs[0].name if len(agent_run.new_session_dirs) == 1 else None,
+            f"{agent_run.provider_name} did not return a valid structured benchmark result.",
         )
     else:
         benchmark_result_payload = asdict(agent_result)
@@ -1106,7 +1160,9 @@ def _record_case_artifacts(
         "intervention_correct": score_report.intervention_correct,
         "actual_changed_files": list(score_report.actual_changed_files),
         "runner_verification": asdict(verification),
-        "codex_exit_code": codex_run.exit_code,
+        "agent_exit_code": agent_run.exit_code,
+        "agent_adapter": agent_run.provider_name,
+        "codex_exit_code": agent_run.exit_code if agent_run.provider_name == "codex" else None,
         "canonical_session_id": session_selection.canonical_run_root.name
         if session_selection
         else run_root.name,
@@ -1122,11 +1178,28 @@ def _record_case_artifacts(
     _write_json(run_root / "run-metadata" / "benchmark_result.json", benchmark_result_payload)
     _write_json(run_root / "run-metadata" / "score.json", score_payload)
     _write_json(run_root / "run-metadata" / "firmware_identity.json", firmware_identity)
+    _write_json(
+        run_root / "run-metadata" / "agent_adapter.json",
+        {
+            "adapter_name": agent_run.provider_name,
+            "started_at": agent_run.started_at,
+            "completed_at": agent_run.completed_at,
+            **dict(agent_run.provider_metadata),
+        },
+    )
     (run_root / "logs").mkdir(parents=True, exist_ok=True)
     (run_root / "captured-serial").mkdir(parents=True, exist_ok=True)
     (run_root / "applied-patches").mkdir(parents=True, exist_ok=True)
-    (run_root / "logs" / "codex_exec.jsonl").write_text(codex_run.stdout_text, encoding="utf-8")
-    shutil.copy2(codex_run.prompt_path, run_root / "logs" / "prompt.txt")
+    (run_root / "logs" / "agent_stdout.txt").write_text(agent_run.stdout_text, encoding="utf-8")
+    (run_root / "logs" / "agent_stderr.txt").write_text(agent_run.stderr_text, encoding="utf-8")
+    if agent_run.provider_name == "codex":
+        (run_root / "logs" / "codex_exec.jsonl").write_text(agent_run.stdout_text, encoding="utf-8")
+    shutil.copy2(agent_run.prompt_path, run_root / "logs" / "prompt.txt")
+    if agent_run.mcp_manifest_path is not None:
+        shutil.copy2(
+            agent_run.mcp_manifest_path,
+            run_root / "run-metadata" / "mcp_launch_manifest.json",
+        )
     (run_root / "captured-serial" / "final_excerpt.txt").write_text(
         (verification.excerpt or "") + ("\n" if verification.excerpt else ""),
         encoding="utf-8",
@@ -1142,8 +1215,10 @@ def run_case(
     case_id: str,
     *,
     codex_timeout_seconds: float = DEFAULT_CODEX_TIMEOUT_SECONDS,
+    agent_config_path: Path | None = None,
 ) -> CaseRunReport:
-    _ensure_codex_registration()
+    if agent_config_path is None:
+        _ensure_codex_registration()
     case = load_case(case_id)
     if case.scoring_profile != DEFAULT_SCORING_PROFILE:
         raise RuntimeError(f"Unsupported scoring profile: {case.scoring_profile}")
@@ -1151,15 +1226,24 @@ def run_case(
     _ensure_stage1_preflight(prepared.case.board_id, prepared.probe_uid)
     _prepare_target_state(prepared)
     prompt_text = _render_prompt(case)
-    codex_run = _run_codex(
-        case,
-        prepared.workspace.workspace_root,
-        prompt_text,
-        timeout_seconds=codex_timeout_seconds,
+    agent_run = (
+        _run_codex(
+            case,
+            prepared.workspace.workspace_root,
+            prompt_text,
+            timeout_seconds=codex_timeout_seconds,
+        )
+        if agent_config_path is None
+        else _run_configured_agent(
+            agent_config_path,
+            prepared.workspace.workspace_root,
+            prompt_text,
+            timeout_seconds=codex_timeout_seconds,
+        )
     )
 
     try:
-        agent_result = _parse_agent_result(codex_run.result_path)
+        agent_result = _parse_agent_result(agent_run.result_path)
     except Exception:
         agent_result = None
 
@@ -1175,14 +1259,14 @@ def run_case(
             session_selection = _select_canonical_session(
                 prepared,
                 agent_result,
-                codex_run.new_session_dirs,
+                agent_run.new_session_dirs,
             )
         except RuntimeError as exc:
             session_root_error = str(exc)
         else:
             run_root = session_selection.canonical_run_root
-    elif len(codex_run.new_session_dirs) == 1:
-        run_root = codex_run.new_session_dirs[0]
+    elif len(agent_run.new_session_dirs) == 1:
+        run_root = agent_run.new_session_dirs[0]
 
     if run_root is None:
         verification = VerificationSummary(
@@ -1193,8 +1277,9 @@ def run_case(
             excerpt="",
             error_text=session_root_error
             or (
-                "Codex did not return a valid structured result and no canonical session root "
-                f"could be reconciled from {len(codex_run.new_session_dirs)} new session directories."
+                f"{agent_run.provider_name} did not return a valid structured result and no "
+                "canonical session root could be reconciled from "
+                f"{len(agent_run.new_session_dirs)} new session directories."
             ),
         )
         score_report = ScoreReport(
@@ -1239,7 +1324,7 @@ def run_case(
     _record_case_artifacts(
         prepared,
         agent_result,
-        codex_run,
+        agent_run,
         verification,
         score_report,
         run_root,
@@ -1261,9 +1346,14 @@ def run_suite(
     suite_name: str,
     *,
     codex_timeout_seconds: float = DEFAULT_CODEX_TIMEOUT_SECONDS,
+    agent_config_path: Path | None = None,
 ) -> list[CaseRunReport]:
     return [
-        run_case(case.case_id, codex_timeout_seconds=codex_timeout_seconds)
+        run_case(
+            case.case_id,
+            codex_timeout_seconds=codex_timeout_seconds,
+            agent_config_path=agent_config_path,
+        )
         for case in load_suite(suite_name)
     ]
 
@@ -1331,13 +1421,23 @@ def build_parser() -> argparse.ArgumentParser:
     group.add_argument("--case-id", help="Run exactly one benchmark case.")
     group.add_argument("--suite", help="Run a named benchmark suite.")
     parser.add_argument(
+        "--agent-timeout-seconds",
         "--codex-timeout-seconds",
+        dest="codex_timeout_seconds",
         type=float,
         default=DEFAULT_CODEX_TIMEOUT_SECONDS,
         help=(
-            "Maximum timeout for the embedded Codex provider turn. "
+            "Maximum timeout for the configured agent command (or legacy Codex adapter). "
             "Defaults to 180s so diagnose -> patch/build -> flash/verify bug cases "
             "have enough time to finish without a blanket 60s cap."
+        ),
+    )
+    parser.add_argument(
+        "--agent-config",
+        type=Path,
+        help=(
+            "Explicit trusted-operator JSON config for any compatible agent CLI or wrapper. "
+            "When omitted, the legacy registered Codex adapter remains the default."
         ),
     )
     return parser
@@ -1349,11 +1449,19 @@ def main() -> int:
     if args.codex_timeout_seconds <= 0:
         parser.error("--codex-timeout-seconds must be greater than 0")
     if args.case_id:
-        report = run_case(args.case_id, codex_timeout_seconds=args.codex_timeout_seconds)
+        report = run_case(
+            args.case_id,
+            codex_timeout_seconds=args.codex_timeout_seconds,
+            agent_config_path=args.agent_config,
+        )
         print_case_summary(report)
         return 0 if report.score_report.outcome_label == "full_success" else 1
 
-    reports = run_suite(args.suite, codex_timeout_seconds=args.codex_timeout_seconds)
+    reports = run_suite(
+        args.suite,
+        codex_timeout_seconds=args.codex_timeout_seconds,
+        agent_config_path=args.agent_config,
+    )
     for report in reports:
         print_case_summary(report)
     print_suite_summary(args.suite, reports)

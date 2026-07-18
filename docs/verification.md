@@ -11,6 +11,21 @@ Evidence labels are intentionally separate:
 
 ## Current non-hardware evidence
 
+### P4-07 consolidated software checkpoint (2026-07-17)
+
+The post-gap-fix repository checkpoint is green on Windows, branch `Jason-v3-BYO`, baseline
+commit `5a98858ca0213cb318b96a835d95f8bee863ba4d`. The final complete run of
+`uv run --locked pytest` passed **949 tests** with one explicit environment-dependent skip and 66
+legacy-profile warnings. `uv run --locked ruff check .` passed; `uv run --locked pyright` reported
+zero errors and warnings; `uv build` produced both the wheel and sdist; and a real MCP SDK stdio
+client initialized the server, listed tools, and found `initialization_handshake`.
+
+Tool context was uv 0.11.19, Python 3.12.13, pytest 9.1.1, Ruff 0.15.21, Pyright 1.1.411,
+MCP 1.28.1, pyOCD 0.45.0, and pyocd-debug-mcp 0.1.0. Exact commands, intermediate corrective
+failures, durations, and final results are machine-readable in
+[`evidence/p4-07-software-verification-2026-07-17.json`](evidence/p4-07-software-verification-2026-07-17.json).
+No hardware or live provider model was used in this software checkpoint.
+
 S1-S4 established the standalone scaffold, copied runtime/data/bootstrap/R11
 closure, ordinary 20-tool schema parity, exact-copy hashes, checkout-owned
 resource roots, parent-root isolation, and full current BYO test suite. At S4,
@@ -90,16 +105,21 @@ and symbol paths, deterministic refusal behavior, convergence blocking, normal
 disconnect, and process/probe cleanup. Flash or recover only with explicit
 authorization and the reviewed board/artifact.
 
-The optional Codex-specific benchmark is:
+The optional agent-command benchmark is:
 
 ```text
 uv run --locked python -m tests.harness.r11_benchmark --case-id <known-good-case-id>
 ```
 
-It requires a registered Codex CLI, provider/network availability, the live
-board, and the checkout's cases/firmware/run roots. Start with one known-good
-case per official board before a frozen suite. Benchmark success is not generic
-proof for all MCP clients.
+Without extra arguments it retains the registered Codex compatibility adapter.
+Pass `--agent-config <absolute-json-path>` to launch any operator-selected CLI
+or wrapper that satisfies the documented prompt/result/MCP-manifest contract;
+see [agent-command-adapter.md](agent-command-adapter.md). It requires provider/
+network availability, the live board, and the checkout's cases/firmware/run
+roots. Start with one known-good case per official board before a frozen suite.
+Benchmark success is evidence for the recorded adapter, not generic proof for
+all MCP clients. Unit tests use only local fake executables and never invoke a
+real model.
 
 ## Prompt 9 / H1 live evidence (Windows)
 
@@ -178,6 +198,86 @@ distribution remains blocked pending the authoritative human decision.
 S1-S5 evidence is retained. S6 clean-room integration, S6D1 manifest repair,
 the mandatory full restart, and the board-free real MCP connection are verified
 as described above.
+
+## P4-08 board-free dual-agent contract smoke (2026-07-17)
+
+No hardware was attached or used for this smoke. Both real-agent runs passed
+the same bounded scenario and made exactly these advertised MCP calls:
+
+1. `initialization_handshake`
+2. `setup_overview` with the literal `no board` answer, returning
+   `setup_no_board` and no routes
+3. one `board_setup-plan` call with every live plan field null
+
+Neither run submitted a populated plan or called setup, validation, safety,
+connection, or hardware actions. Both final answers stayed conversational and
+contained no JSON, continuation tokens, or internal board/connection/plan IDs.
+
+- Claude: Claude Code `2.1.76`, exact model
+  `claude-sonnet-4-5-20250929`, medium effort, 180-second bound, isolated
+  configuration, checkout-scoped strict MCP config, and exact bounded tool
+  allowlist. The passing session had no interactive permission block and used
+  at most 17,952 of 180,000 logged context tokens. Auto permission was tried at
+  medium effort first, but the provider's service-side circuit breaker disabled
+  it; that blocked attempt is preserved rather than called a pass.
+- Codex: Codex CLI `0.142.2`, exact model `gpt-5.4`, medium effort,
+  danger-full-access/approval-never test profile, invocation-scoped MCP
+  registration, and 180-second bound. The provider exited zero; recorded usage
+  was 108,442 input tokens (89,728 cached), 1,014 output, and 429 reasoning.
+
+Evidence is under
+`docs/evidence/agent-contract-smoke-claude-2026-07-17/`,
+`docs/evidence/agent-contract-smoke-codex-2026-07-17/`, and the combined index
+`docs/evidence/p4-08-agent-contract-smoke-2026-07-17.json`. No Fable, Opus, or
+5.6-Sol model was used. P4-08 closes only GAP-20's board-free half; hardware
+acceptance remains separately authorized.
+
+Post-run focused verification passed 112 tests; affected Ruff and Pyright
+checks were clean, and `git diff --check` reported no whitespace errors.
+
+## P4-09 non-destructive clean-root hardware smoke (2026-07-17)
+
+The setup-only runner passed on the attached reviewed nRF52840 DK using:
+
+- board/profile: `p4_09_nrf52840dk`, display name `P4-09 nRF52840 DK`, reviewed
+  type `nrf52840dk`, exact MCU `nRF52840-QIAA`;
+- probe: J-Link UID `683377322`;
+- UART: stable USB identity `000683377322`, resolved by the server to COM11 at
+  115200 baud without a caller-supplied port path; and
+- local authoritative `Nano_BLE_MCU-nRF52840_PS_v1.1.pdf`.
+
+The isolated artifact root began without the named profile. Live setup returned
+`setup_completed`, recorded the `setup/core-profile-committed-after-connect`
+phase, and produced exactly one schema-v2 profile. Same-run `board_validate`
+returned `validation_passed_uart_not_configured`; the readiness payload still
+proved the stable UART attachment and reported `ready_for_code=true` and
+`ready_for_uart_work=true`. The runner's fixed surface started no code phase and
+exposed no flash, erase, bootloader-write, unlock, callback, or arbitrary-command
+path.
+
+The first run ID was `run-20260718T054738Z-4fb648ba`. A new stdio server started
+as `run-20260718T054905Z-751b555f`; before repeated validation it reported the
+persisted configuration current but `live_session_ready=false` and
+`ready_for_code=false`, with the remedy to connect and run `board_validate`.
+Repeating validation restored both to true. Thus disk artifacts did not reopen
+the per-run hardware gate.
+
+The exact commands, full MCP timelines, readiness payloads, immutable report
+IDs and SHA-256 hashes, profile hash, and source-evidence hashes are in
+`docs/evidence/fresh-setup-hardware-2026-07-17.json`.
+
+### Generic artifact collector MCP integration — 2026-07-17
+
+The build-system-neutral collector is now an always-visible MCP tool as well as
+a library and CLI. A focused software pass covered discovery, exact schema,
+initialization guidance, success/refusal responses, staged byte/hash fidelity,
+the `.firm` persistence boundary, metadata-driven Zephyr sysbuild ELF/map
+selection, safety handoff compatibility, the active tool contract, and package
+entry points: 129 passed and 2 host-link tests skipped. A separate stdio client
+listed `collect_build_artifacts`, read its handshake guidance, collected fake
+vendor-named ELF/map files, and verified canonical paths and provenance-only
+status. Ruff, Pyright, and `uv build` passed. No SDK, network, or hardware was
+used.
 
 ## Pending verification
 

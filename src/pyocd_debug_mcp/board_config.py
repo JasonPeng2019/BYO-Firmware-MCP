@@ -28,12 +28,13 @@ PROBE_FAMILY_HINTS = {
 
 # Typed recover-mode selector — board YAML names a backend, never a raw shell command.
 # PROJECT-DEFINED (the recover policy vocabulary for board configs).
-RECOVER_MODE_NRF_PYOCD_UNLOCK = "nrf_pyocd_unlock"
+RECOVER_MODE_BACKEND_MASS_ERASE = "backend_mass_erase"
 RECOVER_MODE_MANUAL_ONLY = "manual_only"
 SUPPORTED_RECOVER_MODES = {
-    RECOVER_MODE_NRF_PYOCD_UNLOCK,
+    RECOVER_MODE_BACKEND_MASS_ERASE,
     RECOVER_MODE_MANUAL_ONLY,
 }
+_LEGACY_RECOVER_MODE_ALIASES = {"nrf_pyocd_unlock": RECOVER_MODE_BACKEND_MASS_ERASE}
 
 
 class ConfigError(Exception):
@@ -42,6 +43,10 @@ class ConfigError(Exception):
 
 class LegacyPackNameWarning(UserWarning):
     """A legacy profile tried to own package metadata."""
+
+
+class LegacyRecoverModeWarning(UserWarning):
+    """A legacy MCU-named recovery selector was normalized on read."""
 
 
 @dataclass(frozen=True)
@@ -54,7 +59,7 @@ class BoardConfig:
     probe_type: str
     probe_hint_terms: tuple[str, ...]
     serial_hint_terms: tuple[str, ...]
-    test_addr: int
+    test_addr: int | None
     silicon_id_addr: int | None = None
     silicon_id_expected: int | None = None
     silicon_id_mask: int | None = None
@@ -64,6 +69,8 @@ class BoardConfig:
     uart_note: str = ""
     requires_recover_validation: bool = False
     recover_mode: str | None = None
+    debug_connect_mode: str | None = None
+    debug_clock_hz: int | None = None
     expected_uart_substring: str | None = None
     source_path: Path | None = None
 
@@ -107,20 +114,26 @@ def resolve_recover_mode(
     raw_mode: object,
     *,
     requires_recover_validation: bool,
-    mcu_family: str,
 ) -> str | None:
     """Resolve the typed recover-mode selector for a board.
 
     An explicit ``recover_mode`` is honored and validated against
-    ``SUPPORTED_RECOVER_MODES``. When absent, default by policy: boards that do
-    not require recover validation get ``None``; Nordic-family boards that do get
-    the built-in pyOCD unlock/mass-erase path; any other family that requires
-    recover validation falls back to ``manual_only`` (no automated backend yet).
+    ``SUPPORTED_RECOVER_MODES``. Legacy MCU-named selectors are accepted only as
+    a non-authorizing read compatibility alias. Missing recovery policy never
+    infers behavior from a part or family name.
     """
     if raw_mode is not None:
         recover_mode = str(raw_mode).strip().lower()
         if not recover_mode:
             return None
+        legacy = _LEGACY_RECOVER_MODE_ALIASES.get(recover_mode)
+        if legacy is not None:
+            warnings.warn(
+                f"Legacy recover_mode '{recover_mode}' is deprecated; use '{legacy}'.",
+                LegacyRecoverModeWarning,
+                stacklevel=2,
+            )
+            recover_mode = legacy
         if recover_mode not in SUPPORTED_RECOVER_MODES:
             supported = ", ".join(sorted(SUPPORTED_RECOVER_MODES))
             raise ConfigError(f"Field 'recover_mode' must be one of: {supported}")
@@ -128,8 +141,6 @@ def resolve_recover_mode(
 
     if not requires_recover_validation:
         return None
-    if mcu_family.startswith("nrf"):
-        return RECOVER_MODE_NRF_PYOCD_UNLOCK
     return RECOVER_MODE_MANUAL_ONLY
 
 
@@ -140,17 +151,6 @@ def tokenize_hint_text(*values: str) -> set[str]:
             if len(token) >= 3:
                 terms.add(token)
     return terms
-
-
-def default_test_address(mcu_family: str) -> int:
-    lowered = mcu_family.lower()
-    if lowered.startswith("nrf"):
-        return 0x10000000  # HW-FIXED (nRF FICR base; safe readable smoke-test region)
-    if lowered.startswith("stm32"):
-        return 0x08000000  # HW-FIXED (STM32 flash base; safe readable smoke-test region)
-    raise ConfigError(
-        "Custom board config must set 'test_read_address' for non-nRF/non-STM32 families"
-    )
 
 
 def load_board_config_document(path: Path) -> dict[str, object]:
@@ -226,25 +226,32 @@ def make_board_config(raw: dict[str, object], source_path: Path | None) -> Board
         raw.get("probe_type") or PROBE_FAMILY_LABELS.get(probe_family, probe_family)
     ).strip()
 
-    if raw.get("test_read_address") is None:
-        test_addr = default_test_address(mcu_family)
-    else:
+    test_addr = None
+    if raw.get("test_read_address") is not None:
         test_addr = parse_int(raw["test_read_address"], "test_read_address")
 
     default_baudrate = parse_int(raw.get("serial_baudrate", 115200), "serial_baudrate")
     uart_note = str(raw.get("uart_note", "")).strip()
 
-    explicit_recover = raw.get("requires_recover_validation")
-    if explicit_recover is None:
-        requires_recover_validation = mcu_family.startswith("nrf")
-    else:
-        requires_recover_validation = bool(explicit_recover)
+    requires_recover_validation = bool(raw.get("requires_recover_validation", False))
 
     recover_mode = resolve_recover_mode(
         raw.get("recover_mode"),
         requires_recover_validation=requires_recover_validation,
-        mcu_family=mcu_family,
     )
+
+    debug_connect_mode = None
+    if raw.get("debug_connect_mode") is not None:
+        debug_connect_mode = str(raw["debug_connect_mode"]).strip().lower()
+        if debug_connect_mode not in {"attach", "halt", "pre-reset", "under-reset"}:
+            raise ConfigError(
+                "Field 'debug_connect_mode' must be one of: attach, halt, pre-reset, under-reset"
+            )
+    debug_clock_hz = None
+    if raw.get("debug_clock_hz") is not None:
+        debug_clock_hz = parse_int(raw["debug_clock_hz"], "debug_clock_hz")
+        if debug_clock_hz <= 0:
+            raise ConfigError("Field 'debug_clock_hz' must be a positive integer")
 
     probe_terms = set(normalize_list(raw.get("probe_hint_terms")))
     serial_terms = set(normalize_list(raw.get("serial_hint_terms")))
@@ -317,6 +324,8 @@ def make_board_config(raw: dict[str, object], source_path: Path | None) -> Board
         uart_note=uart_note,
         requires_recover_validation=requires_recover_validation,
         recover_mode=recover_mode,
+        debug_connect_mode=debug_connect_mode,
+        debug_clock_hz=debug_clock_hz,
         expected_uart_substring=expected_uart_substring,
         source_path=source_path,
     )

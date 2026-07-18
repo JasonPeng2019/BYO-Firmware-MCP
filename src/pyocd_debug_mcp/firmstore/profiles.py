@@ -56,6 +56,8 @@ _OPTIONAL_FIELDS = frozenset(
         "silicon_id_width_bits",
         "silicon_id_label",
         "expected_uart_substring",
+        "debug_connect_mode",
+        "debug_clock_hz",
     }
 )
 _PROFILE_METADATA_FIELDS = frozenset(

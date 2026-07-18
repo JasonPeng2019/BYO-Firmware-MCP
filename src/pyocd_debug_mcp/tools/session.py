@@ -10,32 +10,24 @@ from pyocd_debug_mcp.kernel.operations import wrap_layer2_response
 
 @dataclass(frozen=True, slots=True)
 class SessionToolServices:
-    connect: Callable[..., str]
+    connect: Callable[[str], str]
+    connect_override: Callable[..., str]
     disconnect: Callable[[str], str]
     get_board_info: Callable[[str], str]
     get_state: Callable[[str], str]
-    connect_override: Callable[..., str] | None = None
 
 
 def build_session_handlers(services: SessionToolServices) -> dict[str, Callable[..., str]]:
     """Build the exact revised session surface over composition-root services."""
 
-    def connect(
-        board_id: str,
-        unique_id: str | None = None,
-        target: str | None = None,
-        board_config: str | None = None,
-    ) -> str:
-        """Open a persistent debug session for one named logical board."""
+    def connect(board_id: str) -> str:
+        """Connect from the named project profile only.
 
-        return wrap_layer2_response(
-            services.connect(
-                board_id,
-                unique_id=unique_id,
-                target=target,
-                board_config=board_config,
-            )
-        )
+        Probe, target, and external board-config overrides are intentionally absent. For a
+        deliberate exceptional manual connection, initialize connect_override-plan instead.
+        """
+
+        return wrap_layer2_response(services.connect(board_id))
 
     def disconnect(board_id: str) -> str:
         """Close the named board session and release only its connection."""
@@ -60,8 +52,7 @@ def build_session_handlers(services: SessionToolServices) -> dict[str, Callable[
     ) -> str:
         """Connect with run-scoped manual identifiers without rewriting any profile."""
 
-        connector = services.connect_override or services.connect
-        result = connector(
+        result = services.connect_override(
             board_id,
             unique_id=probe_uid,
             target=target_override,

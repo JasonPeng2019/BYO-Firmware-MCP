@@ -5,8 +5,10 @@ import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
+from mcp.server.fastmcp.exceptions import ToolError
 
 from pyocd_debug_mcp import server
 from pyocd_debug_mcp.kernel import registry as registry_module
@@ -83,7 +85,7 @@ BOARD_FACING_TOOL_ARGUMENTS: dict[str, dict[str, object]] = {
     "wait": {"board_id": "board-b", "ms": 1},
     "target_unlock": {
         "board_id": "board-b",
-        "recovery_mechanism": "nrf_pyocd_unlock",
+        "recovery_mechanism": "backend_mass_erase",
     },
 }
 
@@ -355,6 +357,118 @@ def test_every_board_facing_tool_requires_board_id() -> None:
         schema = tools[name].parameters
         assert "board_id" in schema["properties"], name
         assert "board_id" in schema["required"], name
+
+
+def test_public_connect_schema_is_profile_only_and_manual_override_stays_guarded() -> None:
+    tools = {tool.name: tool for tool in server.mcp._tool_manager.list_tools()}
+
+    connect_schema = tools["connect"].parameters
+    assert set(connect_schema["properties"]) == {"board_id"}
+    assert connect_schema["required"] == ["board_id"]
+    assert connect_schema["additionalProperties"] is False
+    assert "profile" in (tools["connect"].description or "").lower()
+    assert "connect_override-plan" in (tools["connect"].description or "")
+
+    override_schema = tools["connect_override"].parameters
+    assert set(override_schema["properties"]) == {
+        "board_id",
+        "probe_uid",
+        "target_override",
+        "external_board_config",
+    }
+    assert "connect_override" not in server.tool_registry.advertised()
+    assert "connect_override-plan" in server.tool_registry.advertised()
+
+
+def test_public_connect_selects_profile_only_internal_mode_while_override_keeps_manual_values(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[tuple[tuple[object, ...], dict[str, object]]] = []
+
+    def fake_connect(*args: object, **kwargs: object) -> str:
+        calls.append((args, kwargs))
+        return "connected"
+
+    monkeypatch.setattr(server, "_connect_impl", fake_connect)
+
+    assert server.connect("board-a") == "connected"
+    assert calls == [
+        (("board-a",), {"allow_environment_overrides": False}),
+    ]
+
+    calls.clear()
+    assert (
+        server._connect_override_impl(
+            "board-a",
+            unique_id="probe-a",
+            target="nrf52840",
+            board_config="external.yaml",
+        )
+        == "connected"
+    )
+    assert calls == [
+        (
+            ("board-a", "probe-a", "nrf52840", "external.yaml"),
+            {"allow_environment_overrides": True, "allow_missing_profile": True},
+        )
+    ]
+
+
+@pytest.mark.asyncio
+async def test_public_connect_rejects_manual_override_fields_before_backend_dispatch(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[object] = []
+    monkeypatch.setattr(
+        server,
+        "_connect_impl",
+        lambda *args, **kwargs: calls.append((args, kwargs)) or "unexpected",
+    )
+
+    with pytest.raises(ToolError, match="unique_id|Extra inputs"):
+        await server.mcp.call_tool(
+            "connect",
+            {
+                "board_id": "board-a",
+                "unique_id": "probe-a",
+                "target": "nrf52840",
+                "board_config": "external.yaml",
+            },
+        )
+
+    assert calls == []
+
+
+def test_profile_only_resolution_ignores_launch_environment_overrides(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("PYOCD_BOARD_CONFIG", "C:/definitely-not-a-board-config.yaml")
+    monkeypatch.setenv("PYOCD_PROBE_UID", "stale-wrong-probe")
+
+    board = server.resolve_board_config(
+        "nrf52840dk",
+        None,
+        allow_environment_overrides=False,
+    )
+    assert board is not None
+    assert board.board_id == "nrf52840dk"
+
+    monkeypatch.setattr(
+        server,
+        "resolve_probe_for_board",
+        lambda *_args, **_kwargs: SimpleNamespace(
+            probe=SimpleNamespace(uid="profile-resolved-probe"),
+            note="profile match",
+        ),
+    )
+    assert (
+        server._resolve_probe_uid_for_connect(
+            board,
+            None,
+            allow_environment_override=False,
+        )
+        == "profile-resolved-probe"
+    )
 
 
 async def test_every_board_facing_tool_threads_board_id_into_dispatch(monkeypatch) -> None:

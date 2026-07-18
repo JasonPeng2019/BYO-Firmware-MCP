@@ -1,0 +1,17 @@
+{
+  "attempts": [
+    {
+      "id": "gpt-5.6-luna-old-cli",
+      "path": "attempts/gpt-5.6-luna-old-cli",
+      "reason": "installed Codex CLI rejected gpt-5.6-luna as requiring a newer version; preserved after revised model requirement",
+      "status": "blocked"
+    },
+    {
+      "id": "gpt-5.4-medium",
+      "path": ".",
+      "reason": "completed exact board-free MCP scenario",
+      "status": "pass"
+    }
+  ],
+  "selected_outcome": "pass"
+}

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 import re
 import shutil
@@ -124,46 +125,83 @@ USB_SERIAL_BRIDGE_HINT_TERMS: tuple[str, ...] = (
 )
 
 
-WINDOWS_KNOWN_COMMAND_PATHS: dict[str, tuple[str, ...]] = {
-    "nrfjprog": (
-        r"C:\Program Files\Nordic Semiconductor\nrf-command-line-tools\bin\nrfjprog.exe",
-        r"C:\Program Files (x86)\Nordic Semiconductor\nrf-command-line-tools\bin\nrfjprog.exe",
-    ),
-    "STM32_Programmer_CLI": (
-        r"C:\Program Files\STMicroelectronics\STM32Cube\STM32CubeProgrammer\bin\STM32_Programmer_CLI.exe",
-        r"C:\Program Files (x86)\STMicroelectronics\STM32Cube\STM32CubeProgrammer\bin\STM32_Programmer_CLI.exe",
-    ),
-}
+@dataclass(frozen=True, slots=True)
+class SerialFallbackSpec:
+    provider_id: str
+    probe_families: tuple[str, ...]
+    executable: str
+    executable_env: str
+    argv: tuple[str, ...]
+    parser: str
+    preferred_label: str | None = None
 
 
-MACOS_KNOWN_COMMAND_PATHS: dict[str, tuple[str, ...]] = {
-    "nrfjprog": (
-        "/opt/homebrew/bin/nrfjprog",
-        "/usr/local/bin/nrfjprog",
-    ),
-    "STM32_Programmer_CLI": (
-        "/Applications/STMicroelectronics/STM32Cube/STM32CubeProgrammer/STM32CubeProgrammer.app/Contents/MacOs/bin/STM32_Programmer_CLI",
-        "/Applications/STMicroelectronics/STM32Cube/STM32CubeProgrammer.app/Contents/MacOs/bin/STM32_Programmer_CLI",
-        "/Applications/STM32CubeProgrammer.app/Contents/MacOs/bin/STM32_Programmer_CLI",
-    ),
-}
+_FALLBACK_RESOURCE = Path(__file__).with_name("serial_fallbacks.json")
+_SUPPORTED_FALLBACK_PARSERS = frozenset({"nrfjprog_com", "stm32_programmer_list"})
 
 
-def resolve_command_path(name: str) -> str | None:
+def _load_serial_fallbacks(path: Path = _FALLBACK_RESOURCE) -> tuple[SerialFallbackSpec, ...]:
+    try:
+        document = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise RuntimeError(f"Serial fallback registry is unreadable: {path}") from exc
+    if not isinstance(document, dict) or document.get("schema_version") != 1:
+        raise RuntimeError("Serial fallback registry must use schema_version 1")
+    rows = document.get("providers")
+    if not isinstance(rows, list):
+        raise RuntimeError("Serial fallback registry providers must be a list")
+    specs: list[SerialFallbackSpec] = []
+    seen: set[str] = set()
+    for row in rows:
+        if not isinstance(row, dict):
+            raise RuntimeError("Each serial fallback provider must be an object")
+        required = ("provider_id", "executable", "executable_env", "parser")
+        if not all(isinstance(row.get(name), str) and row[name] for name in required):
+            raise RuntimeError("Serial fallback string fields must be non-empty")
+        provider_id = str(row["provider_id"])
+        parser = str(row["parser"])
+        families = row.get("probe_families")
+        argv = row.get("argv")
+        if provider_id in seen:
+            raise RuntimeError(f"Duplicate serial fallback provider: {provider_id}")
+        if parser not in _SUPPORTED_FALLBACK_PARSERS:
+            raise RuntimeError(f"Unsupported serial fallback parser: {parser}")
+        if not isinstance(families, list) or not families or not all(
+            isinstance(item, str) and item for item in families
+        ):
+            raise RuntimeError("Serial fallback probe_families must be a non-empty string list")
+        if not isinstance(argv, list) or not all(isinstance(item, str) and item for item in argv):
+            raise RuntimeError("Serial fallback argv must be a string list")
+        preferred = row.get("preferred_label")
+        if preferred is not None and (not isinstance(preferred, str) or not preferred):
+            raise RuntimeError("Serial fallback preferred_label must be a non-empty string")
+        seen.add(provider_id)
+        specs.append(
+            SerialFallbackSpec(
+                provider_id,
+                tuple(item.casefold() for item in families),
+                str(row["executable"]),
+                str(row["executable_env"]),
+                tuple(argv),
+                parser,
+                preferred,
+            )
+        )
+    return tuple(specs)
+
+
+SERIAL_FALLBACKS = _load_serial_fallbacks()
+
+
+def resolve_command_path(name: str, env_var: str | None = None) -> str | None:
+    if env_var:
+        configured = os.environ.get(env_var, "").strip()
+        if configured:
+            candidate = Path(configured).expanduser()
+            if candidate.is_file():
+                return str(candidate.resolve())
     resolved = shutil.which(name)
-    if resolved:
-        return resolved
-
-    candidates: tuple[str, ...] = ()
-    if os.name == "nt":
-        candidates = WINDOWS_KNOWN_COMMAND_PATHS.get(name, ())
-    elif sys.platform == "darwin":
-        candidates = MACOS_KNOWN_COMMAND_PATHS.get(name, ())
-
-    for candidate in candidates:
-        if Path(candidate).exists():
-            return candidate
-    return None
+    return resolved or None
 
 
 def command_exists(name: str) -> bool:
@@ -424,18 +462,19 @@ def _generic_candidates(
 
 
 def _resolve_nordic_serial(
+    spec: SerialFallbackSpec,
     board: BoardLike,
     ports: list[SerialPortInfo],
     probe: ProbeLike | None,
     run_cmd: RunCommand,
 ) -> SerialResolution | None:
-    if not board.mcu_family.lower().startswith("nrf") or board.probe_family.lower() != "jlink":
+    if board.probe_family.casefold() not in spec.probe_families:
         return None
-    nrfjprog_path = resolve_command_path("nrfjprog")
+    nrfjprog_path = resolve_command_path(spec.executable, spec.executable_env)
     if nrfjprog_path is None:
         return None
 
-    rc, out, _ = run_cmd([nrfjprog_path, "--com"])
+    rc, out, _ = run_cmd([nrfjprog_path, *spec.argv])
     if rc != 0:
         return None
 
@@ -454,7 +493,7 @@ def _resolve_nordic_serial(
     matching = sorted(
         matching,
         key=lambda entry: (
-            0 if entry.label.upper() == "VCOM0" else 1,
+            0 if spec.preferred_label and entry.label.upper() == spec.preferred_label.upper() else 1,
             normalize_port_name(entry.port),
         ),
     )
@@ -466,18 +505,19 @@ def _resolve_nordic_serial(
 
 
 def _resolve_stlink_serial(
+    spec: SerialFallbackSpec,
     board: BoardLike,
     ports: list[SerialPortInfo],
     probe: ProbeLike | None,
     run_cmd: RunCommand,
 ) -> SerialResolution | None:
-    if board.probe_family.lower() != "stlink":
+    if board.probe_family.casefold() not in spec.probe_families:
         return None
-    stm32_cli_path = resolve_command_path("STM32_Programmer_CLI")
+    stm32_cli_path = resolve_command_path(spec.executable, spec.executable_env)
     if stm32_cli_path is None:
         return None
 
-    rc, out, _ = run_cmd([stm32_cli_path, "-l"])
+    rc, out, _ = run_cmd([stm32_cli_path, *spec.argv])
     if rc != 0:
         return None
 
@@ -531,14 +571,24 @@ def resolve_serial_port(
         ):
             return SerialResolution(candidate, "resolved from serial-port metadata")
 
-    vendor_resolution = _resolve_nordic_serial(board, ports, probe, run_cmd)
-    if vendor_resolution is None:
-        vendor_resolution = _resolve_stlink_serial(board, ports, probe, run_cmd)
-    if vendor_resolution is not None:
-        return vendor_resolution
+    if len(candidates) == 1 and not looks_like_usb_serial_bridge(candidates[0]):
+        return SerialResolution(candidates[0], "resolved from generic serial-port metadata")
+
+    for fallback in SERIAL_FALLBACKS:
+        vendor_resolution = None
+        if fallback.parser == "nrfjprog_com":
+            vendor_resolution = _resolve_nordic_serial(
+                fallback, board, ports, probe, run_cmd
+            )
+        elif fallback.parser == "stm32_programmer_list":
+            vendor_resolution = _resolve_stlink_serial(
+                fallback, board, ports, probe, run_cmd
+            )
+        if vendor_resolution is not None:
+            return vendor_resolution
 
     if len(candidates) == 1:
-        return SerialResolution(candidates[0], "")
+        return SerialResolution(candidates[0], "resolved from generic serial-port metadata")
 
     if (
         allow_single_fallback

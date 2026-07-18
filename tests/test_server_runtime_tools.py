@@ -36,7 +36,7 @@ def make_board() -> BoardConfig:
         silicon_id_label="FICR.INFO.PART",
         default_baudrate=115200,
         requires_recover_validation=True,
-        recover_mode="nrf_pyocd_unlock",
+        recover_mode="backend_mass_erase",
         expected_uart_substring="boot ok",
     )
 
@@ -524,7 +524,9 @@ def test_connect_autoresolves_jlink_probe_on_non_windows_when_uid_is_implicit(
     monkeypatch.delenv("PYOCD_PROBE_UID", raising=False)
     monkeypatch.delenv("PYOCD_TARGET", raising=False)
     monkeypatch.setattr(server.sys, "platform", "darwin")
-    monkeypatch.setattr(server, "resolve_board_config", lambda board_id, board_config: board)
+    monkeypatch.setattr(
+        server, "resolve_board_config", lambda board_id, board_config, **kwargs: board
+    )
     monkeypatch.setattr(
         server,
         "resolve_probe_for_board",
@@ -571,7 +573,9 @@ def test_connect_autoresolves_jlink_probe_on_windows_when_multiple_probes_are_at
     monkeypatch.delenv("PYOCD_PROBE_UID", raising=False)
     monkeypatch.delenv("PYOCD_TARGET", raising=False)
     monkeypatch.setattr(server.sys, "platform", "win32")
-    monkeypatch.setattr(server, "resolve_board_config", lambda board_id, board_config: board)
+    monkeypatch.setattr(
+        server, "resolve_board_config", lambda board_id, board_config, **kwargs: board
+    )
     monkeypatch.setattr(
         server,
         "resolve_probe_for_board",

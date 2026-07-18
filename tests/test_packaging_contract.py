@@ -18,6 +18,7 @@ def test_public_scripts_and_dependencies_are_byo_only() -> None:
     assert isinstance(project, dict)
 
     assert project["scripts"] == {
+        "pyocd-collect-artifacts": "pyocd_debug_mcp.artifact_collector:main",
         "pyocd-debug-mcp": "pyocd_debug_mcp.server:main",
         "pyocd-pack-repair": "pyocd_debug_mcp.pack_index_repair:main",
         "pyocd-zephyr-build": "pyocd_debug_mcp.zephyr_build:main",
@@ -79,7 +80,7 @@ def test_required_byo_docs_state_checkout_and_proof_limits() -> None:
     for required_phrase in (
         "checkout-only",
         "inmemorysessionstore",
-        "codex-specific",
+        "agent-command",
         "nrf52833dk",
         "nucleo_l476rg",
         "nrf52840dk",

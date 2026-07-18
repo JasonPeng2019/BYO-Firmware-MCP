@@ -180,7 +180,7 @@ def main() -> None:
                 "Manual deletion remains the supported forget path; no atomic forget-board "
                 "workflow was added without product authorization."
             ),
-            "evidence": ["Design_Proto_Spec.md", "docs/agent-contract.md"],
+            "evidence": ["archive_docs/Design_Proto_Spec.md", "docs/agent-contract.md"],
         },
         {
             "id": "Q-4",
@@ -234,7 +234,7 @@ def main() -> None:
                 "Active session identity remains bound at validation. No mid-session rename behavior "
                 "beyond the specification's implication was invented."
             ),
-            "evidence": ["Design_Proto_Spec.md", "tests/test_profiles_v2.py"],
+            "evidence": ["archive_docs/Design_Proto_Spec.md", "tests/test_profiles_v2.py"],
         },
         {
             "id": "Q-10",
@@ -303,7 +303,7 @@ def main() -> None:
             "id": "R-9",
             "status": "partially_mitigated_pending_signoff",
             "treatment": "Conservative Q-2 and Q-8 behavior is implemented and documented pending confirmation.",
-            "evidence": ["Implementation_Plan.md", "tests/test_setup_validation.py"],
+            "evidence": ["archive_docs/Implementation_Plan.md", "tests/test_setup_validation.py"],
         },
         {
             "id": "R-10",

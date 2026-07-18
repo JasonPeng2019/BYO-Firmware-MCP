@@ -22,7 +22,7 @@ def test_resolve_board_config_loads_tracked_board(monkeypatch) -> None:
     board = server.resolve_board_config("nrf52833dk", None)
     assert board is not None
     assert board.pyocd_target == "nrf52833"
-    assert board.recover_mode == "nrf_pyocd_unlock"
+    assert board.recover_mode == "backend_mass_erase"
 
 
 def test_resolve_board_config_reads_env_board_id(monkeypatch) -> None:
@@ -228,7 +228,7 @@ def test_format_board_info_includes_silicon_and_recover() -> None:
     assert board is not None
     text = server.format_board_info(board)
     assert "pyocd_target: nrf52833" in text
-    assert "recover_mode: nrf_pyocd_unlock" in text
+    assert "recover_mode: backend_mass_erase" in text
     assert "silicon_id: addr=0x10000100" in text
 
 

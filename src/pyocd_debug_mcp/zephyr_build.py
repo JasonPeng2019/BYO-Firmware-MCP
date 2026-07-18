@@ -14,11 +14,20 @@ import sys
 import tarfile
 import tempfile
 import time
+import uuid
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
+import yaml
+
+from pyocd_debug_mcp.artifact_collector import (
+    CANONICAL_NAMES,
+    MANIFEST_NAME,
+    ArtifactRole,
+    collect_artifacts,
+)
 from pyocd_debug_mcp.kernel.processes import run_owned
 from urllib.error import URLError
 from urllib.request import urlopen
@@ -443,9 +452,6 @@ def _workspace_supports_board(workspace_dir: Path, board: str | None) -> bool:
         return True
     if not _workspace_has_exact_board_target(workspace_dir, board):
         return False
-    for _project_name, relative_path in _required_workspace_projects(board):
-        if not (workspace_dir / relative_path).exists():
-            return False
     return True
 
 
@@ -1829,32 +1835,73 @@ def _build_cache_matches_app(build_dir: Path, app_dir: Path) -> bool:
     return cache_source_dir == app_dir.resolve()
 
 
-def _resolve_artifact_paths(work_build_dir: Path, *, app_dir_name: str) -> tuple[Path, Path | None]:
-    preferred_dirs = [
-        work_build_dir / "zephyr",
-        work_build_dir / app_dir_name / "zephyr",
-    ]
-    seen: set[Path] = set()
-    for candidate_dir in preferred_dirs:
-        candidate_dir = candidate_dir.resolve()
-        if candidate_dir in seen:
-            continue
-        seen.add(candidate_dir)
-        elf_path = candidate_dir / "zephyr.elf"
-        hex_path = candidate_dir / "zephyr.hex"
-        if elf_path.is_file():
-            return elf_path, hex_path if hex_path.is_file() else None
+def _resolve_artifact_paths(
+    work_build_dir: Path,
+) -> dict[ArtifactRole, Path]:
+    """Resolve one coherent Zephyr image, using sysbuild metadata when present."""
 
-    candidates = sorted(
-        work_build_dir.rglob("zephyr.elf"),
-        key=lambda path: (len(path.parts), str(path)),
-    )
-    if not candidates:
-        return work_build_dir / "zephyr" / "zephyr.elf", None
+    work_build_dir = work_build_dir.resolve()
+    domains_path = work_build_dir / "domains.yaml"
+    artifact_dir = work_build_dir / "zephyr"
+    if domains_path.exists():
+        if not domains_path.is_file() or _path_is_link_or_junction(domains_path):
+            raise RuntimeError(f"Invalid Zephyr sysbuild domain metadata: {domains_path}")
+        try:
+            payload = yaml.safe_load(domains_path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeDecodeError, yaml.YAMLError) as exc:
+            raise RuntimeError(f"Cannot read Zephyr sysbuild domain metadata: {domains_path}") from exc
+        if not isinstance(payload, dict):
+            raise RuntimeError(f"Invalid Zephyr sysbuild domain metadata: {domains_path}")
+        default = payload.get("default")
+        domains = payload.get("domains")
+        if not isinstance(default, str) or not default or not isinstance(domains, list):
+            raise RuntimeError(
+                f"Zephyr sysbuild metadata must declare a default domain and domain list: {domains_path}"
+            )
+        matches = [
+            item
+            for item in domains
+            if isinstance(item, dict) and item.get("name") == default
+        ]
+        if len(matches) != 1 or not isinstance(matches[0].get("build_dir"), str):
+            raise RuntimeError(
+                f"Zephyr sysbuild default domain {default!r} is missing or ambiguous in {domains_path}"
+            )
+        raw_domain_dir = Path(str(matches[0]["build_dir"])).expanduser()
+        domain_dir = (
+            raw_domain_dir.resolve()
+            if raw_domain_dir.is_absolute()
+            else (work_build_dir / raw_domain_dir).resolve()
+        )
+        if not domain_dir.is_relative_to(work_build_dir):
+            raise RuntimeError(
+                f"Zephyr sysbuild default domain escapes the build directory: {domain_dir}"
+            )
+        artifact_dir = domain_dir / "zephyr"
 
-    elf_path = candidates[0]
-    hex_candidate = elf_path.with_suffix(".hex")
-    return elf_path, hex_candidate if hex_candidate.is_file() else None
+    required = {
+        ArtifactRole.ELF: artifact_dir / "zephyr.elf",
+        ArtifactRole.MAP: artifact_dir / "zephyr.map",
+    }
+    missing = [path for path in required.values() if not path.is_file()]
+    if missing:
+        candidates = sorted(str(path) for path in work_build_dir.rglob("zephyr.elf"))
+        candidate_text = ", ".join(candidates) if candidates else "none"
+        missing_text = ", ".join(str(path) for path in missing)
+        raise RuntimeError(
+            "Build completed without the coherent ELF and linker map required for safety "
+            f"inspection. Missing: {missing_text}. Discovered ELF candidates: {candidate_text}"
+        )
+
+    resolved = dict(required)
+    for role, name in (
+        (ArtifactRole.HEX, "zephyr.hex"),
+        (ArtifactRole.BIN, "zephyr.bin"),
+    ):
+        candidate = artifact_dir / name
+        if candidate.is_file():
+            resolved[role] = candidate
+    return resolved
 
 
 def _copy_artifacts(
@@ -1862,60 +1909,50 @@ def _copy_artifacts(
     canonical_build_dir: Path,
     *,
     app_dir: Path,
-    app_dir_name: str,
 ) -> None:
-    elf_path, hex_path = _resolve_artifact_paths(work_build_dir, app_dir_name=app_dir_name)
-    if not elf_path.is_file():
-        raise RuntimeError(f"Build succeeded but artifact is missing: {elf_path}")
-
-    same_build_dir = work_build_dir.resolve() == canonical_build_dir.resolve()
-    if not same_build_dir:
-        _clean_build_dir(canonical_build_dir, app_dir=app_dir)
-    else:
-        canonical_build_dir.mkdir(parents=True, exist_ok=True)
-
-    shutil.copy2(elf_path, canonical_build_dir / "firmware.elf")
-    _print_step(f"built {canonical_build_dir / 'firmware.elf'}")
-    if hex_path is not None and hex_path.is_file():
-        shutil.copy2(hex_path, canonical_build_dir / "firmware.hex")
-        _print_step(f"built {canonical_build_dir / 'firmware.hex'}")
-
-
-def _required_workspace_projects(board: str) -> list[tuple[str, Path]]:
-    normalized = board.lower()
-    requirements: list[tuple[str, Path]] = []
-    if normalized.startswith("nucleo_") or "stm32" in normalized:
-        requirements.append(("hal_stm32", Path("modules/hal/stm32")))
-    if normalized.startswith("nrf"):
-        requirements.append(("hal_nordic", Path("modules/hal/nordic")))
-    return requirements
-
-
-def _ensure_workspace_projects(runtime: ZephyrRuntime, board: str) -> None:
-    for project_name, relative_path in _required_workspace_projects(board):
-        project_path = runtime.workspace_dir / relative_path
-        if project_path.exists():
-            continue
-        _print_step(
-            f"workspace missing {relative_path}; attempting targeted west update for {project_name}"
+    del app_dir  # The caller already owns and has validated the output directory.
+    sources = _resolve_artifact_paths(work_build_dir)
+    canonical_build_dir.mkdir(parents=True, exist_ok=True)
+    staging_root = Path(
+        tempfile.mkdtemp(prefix=".firmware-artifacts-", dir=canonical_build_dir.parent)
+    )
+    bundle_dir = staging_root / "bundle"
+    temporary_exports: list[Path] = []
+    try:
+        result = collect_artifacts(
+            sources,
+            bundle_dir,
+            producer="zephyr-west",
+            expected_roles=(ArtifactRole.ELF, ArtifactRole.MAP),
         )
-        _run(
-            _west_cmd(runtime.west_python, "update", project_name),
-            cwd=runtime.workspace_dir,
-            env=_west_env(runtime.west_python, runtime.sdk_dir),
-        )
-        if not project_path.exists():
-            raise RuntimeError(
-                f"Workspace still missing required project after `west update {project_name}`: {project_path}"
-            )
+        for record in result.artifacts:
+            temporary = canonical_build_dir / f".{record.path}.{uuid.uuid4().hex}.tmp"
+            shutil.copyfile(bundle_dir / record.path, temporary)
+            temporary_exports.append(temporary)
+        temporary_manifest = canonical_build_dir / f".{MANIFEST_NAME}.{uuid.uuid4().hex}.tmp"
+        shutil.copyfile(result.manifest_path, temporary_manifest)
+        temporary_exports.append(temporary_manifest)
+
+        present_names = {record.path for record in result.artifacts}
+        for record, temporary in zip(result.artifacts, temporary_exports[:-1], strict=True):
+            final_path = canonical_build_dir / record.path
+            os.replace(temporary, final_path)
+            _print_step(f"built {final_path}")
+        for canonical_name in CANONICAL_NAMES.values():
+            if canonical_name not in present_names:
+                (canonical_build_dir / canonical_name).unlink(missing_ok=True)
+        os.replace(temporary_manifest, canonical_build_dir / MANIFEST_NAME)
+        _print_step(f"recorded {canonical_build_dir / MANIFEST_NAME}")
+    finally:
+        for temporary in temporary_exports:
+            temporary.unlink(missing_ok=True)
+        shutil.rmtree(staging_root, ignore_errors=True)
 
 
 def run_build(args: argparse.Namespace, runtime: ZephyrRuntime) -> None:
     app_dir, build_dir = _preflight_build_request(args.app_dir, args.build_dir)
     with _cache_lock(build_dir):
         _claim_build_dir(app_dir, build_dir)
-        _ensure_workspace_projects(runtime, args.board)
-
         env = os.environ.copy()
         env["ZEPHYR_BASE"] = str(runtime.workspace_dir / "zephyr")
         env["ZEPHYR_TOOLCHAIN_VARIANT"] = "zephyr"
@@ -1959,7 +1996,6 @@ def run_build(args: argparse.Namespace, runtime: ZephyrRuntime) -> None:
                 work_build_dir,
                 build_dir,
                 app_dir=app_dir,
-                app_dir_name=work_app_dir.name,
             )
         finally:
             if scratch_root is not None:
@@ -1970,7 +2006,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--app-dir", help="Zephyr application source directory.")
     parser.add_argument(
-        "--build-dir", help="Canonical output directory for firmware.elf / firmware.hex."
+        "--build-dir",
+        help="Canonical output directory for firmware.elf / firmware.hex / firmware.map.",
     )
     parser.add_argument("--board", help="Zephyr board target string, e.g. nucleo_l476rg.")
     parser.add_argument("--workspace-dir", help="Existing Zephyr workspace root to reuse.")

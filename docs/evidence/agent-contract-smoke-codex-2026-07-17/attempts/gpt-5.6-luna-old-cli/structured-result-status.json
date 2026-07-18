@@ -1,0 +1,6 @@
+{
+  "expected_path": "structured-result.json",
+  "present": false,
+  "reason": "Codex CLI rejected gpt-5.6-luna before an assistant response; AgentCommandAdapter correctly failed closed.",
+  "status": "missing"
+}

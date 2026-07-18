@@ -862,7 +862,7 @@ _GUIDANCE: Final = MappingProxyType(
                 "Prepare the post-recovery reflash and board_validate steps.",
             ),
             "The gate stays closed after recovery until board_validate passes again.",
-            {"recovery_mechanism": "nrf_pyocd_unlock"},
+            {"recovery_mechanism": "backend_mass_erase"},
             "TWO-PHASE APPROVAL: first submit the complete populated plan with user_permission=null. "
             "The server returns permission_required with exact live identity, mechanism, mass-erase "
             "flag, all ranges/banks/sectors, all-nonvolatile status, expected losses, and plan_id. Relay "

@@ -211,11 +211,20 @@ def accepted_plan_payload(plan: ActivePlan) -> dict[str, object]:
     return {
         "status": "plan_accepted",
         "message": (
-            f"Accepted plan {plan.plan_id} for {plan.action_name} on {plan.board_id}. "
-            f"Total permitted calls: {plan.total_calls}. Prefer the direct call when the client "
-            "exposes it. If callable bindings remain static, submit only the exact returned "
-            "single-child action_batch fallback unchanged; never invent a hidden tool call."
+            f"Accepted plan {plan.plan_id}. Unlocked {plan.action_name} for {plan.board_id} with "
+            f"{plan.total_calls} permitted call(s). Use preferred_call exactly when the action is "
+            "visible; otherwise use the unchanged single-child stable_client_fallback."
         ),
+        "guidance": (
+            f"{definition.purpose} The action parameters are already bound by this accepted plan; "
+            "do not alter them when making the real call."
+        ),
+        "reminders": [
+            definition.extra_instructions,
+            "Tool visibility is not authorization; the real action still enforces permission, "
+            "validation, safety, freshness, locking, timeout, and remaining budget.",
+            "Do not call this plan tool again unless replacing the plan is intentional.",
+        ],
         "plan_id": plan.plan_id,
         "underlying_action": plan.action_name,
         "total_calls": plan.total_calls,

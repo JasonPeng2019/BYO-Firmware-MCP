@@ -41,7 +41,7 @@ def _format_refusal(refusal, **kwargs) -> str:
     return f"Refused [{refusal.code}]: {refusal.message}"
 
 
-def _memory_handlers(tmp_path: Path):
+def _memory_handlers(tmp_path: Path, *, check_memory_read=None):
     artifact = tmp_path / "firmware.elf"
     artifact.write_bytes(b"elf")
     calls: list[tuple[str, object]] = []
@@ -66,6 +66,7 @@ def _memory_handlers(tmp_path: Path):
         write_target_memory=lambda selected, address, value, width: calls.append(
             ("write", (selected, address, value, width))
         ),
+        check_memory_read=check_memory_read or (lambda board, address, size: None),
     )
     return build_memory_handlers(services), calls
 
@@ -127,6 +128,56 @@ def test_memory_symbol_search_reads_and_raw_cap(tmp_path: Path) -> None:
     assert calls == []
 
 
+def test_memory_reads_check_scalar_block_and_symbol_bytes_before_backend(
+    tmp_path: Path,
+) -> None:
+    checked: list[tuple[str, int, int]] = []
+    handlers, calls = _memory_handlers(
+        tmp_path,
+        check_memory_read=lambda board, address, size: checked.append((board, address, size)),
+    )
+
+    handlers["read_memory_symbol"]("board_b", "counter", 16)
+    handlers["read_memory_address"]("board_b", "0x20000000", 32, None)
+    handlers["read_memory_address"]("board_b", "0x40000000", 8, 17)
+
+    assert checked == [
+        ("board_b", 0x20000010, 2),
+        ("board_b", 0x20000000, 4),
+        ("board_b", 0x40000000, 17),
+    ]
+    assert [call[0] for call in calls] == ["read", "read", "block"]
+
+
+def test_raw_memory_read_containment_is_a_central_pre_execution_check(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    checked: list[tuple[str, int, int]] = []
+    monkeypatch.setattr(
+        server,
+        "_safety_policy",
+        SimpleNamespace(
+            check_memory_read=lambda board, address, size: checked.append((board, address, size))
+        ),
+    )
+
+    server._enforce_action_containment(
+        "read_memory_address",
+        "board_b",
+        {"address": "0x20000000", "width": 16, "length": None},
+    )
+    server._enforce_action_containment(
+        "read_memory_address",
+        "board_b",
+        {"address": "0x40000000", "width": 8, "length": 33},
+    )
+
+    assert checked == [
+        ("board_b", 0x20000000, 2),
+        ("board_b", 0x40000000, 33),
+    ]
+
+
 def test_write_memory_is_symbol_first_and_reports_ram_containment(tmp_path: Path) -> None:
     handlers, calls = _memory_handlers(tmp_path)
 
@@ -186,13 +237,10 @@ def test_split_flash_actions_report_safety_map_validation(tmp_path: Path) -> Non
     handlers, calls, artifact = _flash_handlers(tmp_path)
 
     for name in ("flash_application", "flash_bootloader"):
-        result = handlers[name]("board_b", str(artifact), None)
+        result = handlers[name]("board_b", str(artifact))
         assert "mapped partition" in result
         assert SAFE_EXIT_REMINDER in result
     assert len(calls) == 2
-    refused = handlers["flash_application"]("board_b", str(artifact), "0x08000000")
-    assert "flash/explicit-address-unavailable" in refused
-    assert SAFE_EXIT_REMINDER in refused
 
 
 def test_convergence_watcher_tracks_renamed_bootloader_flash(tmp_path: Path) -> None:
@@ -250,9 +298,7 @@ def test_breakpoint_symbol_and_address_paths_are_wrapped(tmp_path: Path) -> None
             format_refusal=_format_refusal,
             handle_for=lambda board: object(),
             symbol_artifact_for=lambda handle: artifact,
-            resolve_symbol=lambda selected, name: ResolvedSymbol(
-                name, 0x08000100, 4, "STT_FUNC"
-            ),
+            resolve_symbol=lambda selected, name: ResolvedSymbol(name, 0x08000100, 4, "STT_FUNC"),
             set_target_breakpoint=lambda handle, address: calls.append(("set", address)),
             remove_target_breakpoint=lambda handle, address: calls.append(("remove", address)),
         )

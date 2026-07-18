@@ -66,7 +66,7 @@ optional for this board package.
 - `silicon_id_label = FICR.INFO.PART`
 - `reference_uart_patterns[0] = "boot ok"`
 - `requires_recover_validation = true`
-- `recover_mode = nrf_pyocd_unlock`
+- `recover_mode = backend_mass_erase`
 - symbol artifact =
   `firmware/nrf52833dk/reference/build/firmware.elf`
 - flash artifact preference =

@@ -34,8 +34,8 @@ if SRC_DIR.is_dir():
 
 from pyocd_debug_mcp.board_config import (  # noqa: E402
     DEFAULT_BOARD_CONFIG_DIR,
+    RECOVER_MODE_BACKEND_MASS_ERASE,
     RECOVER_MODE_MANUAL_ONLY,
-    RECOVER_MODE_NRF_PYOCD_UNLOCK,
     BoardConfig,
     ConfigError,
     load_selected_board_configs,
@@ -178,19 +178,10 @@ def board_cli_label(board: BoardConfig) -> str:
 def build_recover_attempts(
     board: BoardConfig, probe: ProbeInfo | None
 ) -> list[tuple[str, list[str]]]:
-    if board.recover_mode == RECOVER_MODE_NRF_PYOCD_UNLOCK:
-        # VENDOR-FIXED, BENCH-VERIFIED (pyOCD 0.44.1 built-in recover path for Nordic APPROTECT).
-        unlock_cmd = pyocd_base("cmd", board, probe)
-        unlock_cmd.extend(["-c", "unlock"])
-
-        # VENDOR-FIXED, BENCH-VERIFIED (pyOCD 0.44.1 mass erase fallback when Commander unlock fails).
+    if board.recover_mode == RECOVER_MODE_BACKEND_MASS_ERASE:
         mass_erase_cmd = pyocd_base("erase", board, probe)
         mass_erase_cmd.append("--mass")
-
-        return [
-            ("pyOCD built-in unlock", unlock_cmd),
-            ("pyOCD built-in mass erase fallback", mass_erase_cmd),
-        ]
+        return [("typed backend mass erase", mass_erase_cmd)]
 
     return []
 
@@ -450,6 +441,9 @@ def check_connection(board: BoardConfig, probe: ProbeInfo | None, target_ok: boo
         return False
     if not target_ok:
         check(False, "Skipped - target pack not installed")
+        return False
+    if board.test_addr is None:
+        check(False, "Skipped - profile has no reviewed test_read_address; repair setup first")
         return False
 
     print(

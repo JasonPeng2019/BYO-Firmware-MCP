@@ -1,0 +1,39 @@
+{
+  "final_status": "pass",
+  "attempts": [
+    {
+      "attempt": 1,
+      "model": "claude-sonnet-4-5-20250929",
+      "effort": "low",
+      "permission_mode": "auto",
+      "config_isolation": false,
+      "status": "blocked",
+      "reason": "Claude auto mode circuit breaker fell back to default and denied initialization_handshake; original adapter also discarded streams. Preserved in attempt-01-auto-low-blocked."
+    },
+    {
+      "attempt": 2,
+      "model": "claude-sonnet-4-5-20250929",
+      "effort": "medium",
+      "permission_mode": "auto",
+      "config_isolation": true,
+      "status": "blocked",
+      "reason": "Isolated state did not change the Claude service-side auto-mode circuit breaker; initialization_handshake was denied. Streams preserved in attempt-02-medium-auto."
+    },
+    {
+      "attempt": 3,
+      "model": "claude-sonnet-4-5-20250929",
+      "effort": "medium",
+      "permission_mode": "default",
+      "allowed_tools": [
+        "Read",
+        "Write",
+        "mcp__pyocd-debug__initialization_handshake",
+        "mcp__pyocd-debug__setup_overview",
+        "mcp__pyocd-debug__board_setup-plan"
+      ],
+      "config_isolation": true,
+      "status": "pass",
+      "reason": "Exact bounded allowlist removed interactive permission blocking without granting other MCP actions."
+    }
+  ]
+}

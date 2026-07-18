@@ -1,0 +1,95 @@
+{
+  "advertised_tool_count": 39,
+  "assertions": {
+    "board_setup_plan_all_null": {
+      "status": "pass"
+    },
+    "board_setup_plan_exact_schema_fields": {
+      "status": "pass"
+    },
+    "board_setup_plan_once": {
+      "status": "pass"
+    },
+    "context_budget_sane": {
+      "status": "pass"
+    },
+    "initialization_handshake_once": {
+      "status": "pass"
+    },
+    "mcp_call_order_exact": {
+      "status": "pass"
+    },
+    "mcp_calls_succeeded": {
+      "status": "pass"
+    },
+    "no_internal_ids_or_continuation_tokens_in_user_prose": {
+      "status": "pass"
+    },
+    "no_other_setup_validation_or_hardware_mcp_call": {
+      "status": "pass"
+    },
+    "no_populated_plan": {
+      "status": "pass"
+    },
+    "no_status_or_raw_payload_in_user_prose": {
+      "status": "pass"
+    },
+    "null_plan_guidance_readable": {
+      "status": "pass"
+    },
+    "only_advertised_mcp_tools": {
+      "status": "pass"
+    },
+    "plain_user_facing_prose": {
+      "status": "pass"
+    },
+    "provider_exit_zero": {
+      "status": "pass"
+    },
+    "setup_no_board_observed": {
+      "status": "pass"
+    },
+    "setup_overview_no_board_exact": {
+      "status": "pass"
+    },
+    "structured_result_complete": {
+      "status": "pass"
+    },
+    "workspace_only_command_writes": {
+      "status": "pass"
+    }
+  },
+  "derived_at": "2026-07-18T05:36:14.387225+00:00",
+  "effort": "medium",
+  "evidence": [
+    "advertised-tools.json",
+    "raw-codex-events.jsonl",
+    "mcp-tool-timeline.json",
+    "structured-result.json",
+    "launch-metadata.json",
+    "context-usage.json"
+  ],
+  "observed_mcp_tools": [
+    "initialization_handshake",
+    "setup_overview",
+    "board_setup-plan"
+  ],
+  "overall_status": "pass",
+  "plan_schema_fields": [
+    "action_parameters",
+    "board_id",
+    "expected_fail_return",
+    "expected_success_return",
+    "hypothesis",
+    "hypothesis_made",
+    "max_calls",
+    "max_calls_buffer",
+    "strategy",
+    "strategy_evaluated",
+    "user_permission"
+  ],
+  "provider": "codex",
+  "provider_cli_version": "codex-cli 0.142.2",
+  "requested_model": "gpt-5.4",
+  "user_facing_response": "If you later connect a brand-new board, setup would first need one unique familiar name for that board, then its exact board type, the full package-level MCU part number, and the path to an authoritative local datasheet PDF. It would also need the specific connected probe and UART choice routed by the server, plus a UART baud rate if serial setup is part of the profile. Before downloading any large SDK or toolchain, setup would first check the project, parent folders, environment paths, and normal vendor install locations for a compatible local copy."
+}

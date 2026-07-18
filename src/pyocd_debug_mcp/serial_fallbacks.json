@@ -1,0 +1,22 @@
+{
+  "schema_version": 1,
+  "providers": [
+    {
+      "provider_id": "jlink_nrfjprog_com",
+      "probe_families": ["jlink"],
+      "executable": "nrfjprog",
+      "executable_env": "PYOCD_DEBUG_MCP_NRFJPROG",
+      "argv": ["--com"],
+      "parser": "nrfjprog_com",
+      "preferred_label": "VCOM0"
+    },
+    {
+      "provider_id": "stlink_programmer_list",
+      "probe_families": ["stlink"],
+      "executable": "STM32_Programmer_CLI",
+      "executable_env": "PYOCD_DEBUG_MCP_STM32_PROGRAMMER_CLI",
+      "argv": ["-l"],
+      "parser": "stm32_programmer_list"
+    }
+  ]
+}

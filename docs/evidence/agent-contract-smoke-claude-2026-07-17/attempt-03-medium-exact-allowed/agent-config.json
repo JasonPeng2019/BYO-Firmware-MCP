@@ -1,0 +1,45 @@
+{
+  "schema_version": 1,
+  "name": "claude",
+  "command": [
+    "claude",
+    "-p",
+    "--model",
+    "claude-sonnet-4-5-20250929",
+    "--effort",
+    "medium",
+    "--permission-mode",
+    "default",
+    "--allowedTools",
+    "Read,Write,mcp__pyocd-debug__initialization_handshake,mcp__pyocd-debug__setup_overview,mcp__pyocd-debug__board_setup-plan",
+    "--mcp-config",
+    "{workspace}\\claude-mcp.json",
+    "--strict-mcp-config",
+    "--no-session-persistence",
+    "--output-format",
+    "stream-json",
+    "--verbose",
+    "--debug",
+    "mcp",
+    "--debug-file",
+    "{workspace}\\mcp-debug.log",
+    "Read and follow the complete scenario in {prompt_path}. Write the required structured result to {result_path}. Do not perform any other scenario."
+  ],
+  "version_command": [
+    "claude",
+    "--version"
+  ],
+  "registration_check": null,
+  "mcp_mode": "preconfigured",
+  "result_transport": "file",
+  "permission_profile": "isolated-default-exact-allowed-tools",
+  "model": "claude-sonnet-4-5-20250929",
+  "effort": "medium",
+  "inherit_env": [
+    "PATH",
+    "CLAUDE_CODE_GIT_BASH_PATH"
+  ],
+  "env": {
+    "CLAUDE_CONFIG_DIR": "{workspace}\\.claude-config"
+  }
+}

@@ -1,0 +1,15 @@
+{
+  "mcpServers": {
+    "pyocd-debug": {
+      "type": "stdio",
+      "command": "uv",
+      "args": [
+        "run",
+        "--project",
+        "C:\\Users\\Jason\\Documents\\Jason\\FirmCLI\\BYO-Server",
+        "--locked",
+        "pyocd-debug-mcp"
+      ]
+    }
+  }
+}

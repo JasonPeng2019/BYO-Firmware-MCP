@@ -1,0 +1,52 @@
+{
+  "provider": "claude",
+  "model": "claude-sonnet-4-5-20250929",
+  "effort": "medium",
+  "permission_mode": "default",
+  "permission_profile": "isolated-default-exact-allowed-tools",
+  "timeout_seconds": 1800.0,
+  "exit_code": 4294967295,
+  "started_at": "2026-07-18T05:56:39.641343+00:00",
+  "completed_at": "2026-07-18T06:03:57.700753+00:00",
+  "adapter_error": "agent result file is missing",
+  "adapter_name": "claude",
+  "resolved_executable": "C:\\Users\\Jason\\.local\\bin\\claude.EXE",
+  "argv_template": [
+    "claude",
+    "-p",
+    "--model",
+    "claude-sonnet-4-5-20250929",
+    "--effort",
+    "medium",
+    "--permission-mode",
+    "default",
+    "--allowedTools",
+    "Read,Write,Edit,Bash,Glob,Grep,ToolSearch,mcp__pyocd-debug__initialization_handshake,mcp__pyocd-debug__setup_overview,mcp__pyocd-debug__load_setup_tool,mcp__pyocd-debug__board_validate,mcp__pyocd-debug__get_setup_status,mcp__pyocd-debug__board_safety_refresh,mcp__pyocd-debug__flash_application-plan,mcp__pyocd-debug__flash_application,mcp__pyocd-debug__serial_exchange-plan,mcp__pyocd-debug__serial_exchange,mcp__pyocd-debug__get_state,mcp__pyocd-debug__reset_and_run,mcp__pyocd-debug__disconnect",
+    "--mcp-config",
+    "{workspace}\\claude-mcp-p4-10.json",
+    "--strict-mcp-config",
+    "--no-session-persistence",
+    "--output-format",
+    "stream-json",
+    "--verbose",
+    "--debug",
+    "mcp",
+    "--debug-file",
+    "{workspace}\\p4-10-claude-debug.log",
+    "Read and follow the complete acceptance scenario in {prompt_path}. Write the required machine result to {result_path}. Execute no other scenario."
+  ],
+  "config_path": "C:\\Users\\Jason\\Documents\\Jason\\FirmCLI\\BYO-Server\\docs\\evidence\\agent-hardware-acceptance-claude-2026-07-17\\agent-config.json",
+  "config_sha256": "62a87ba3ea0cbe9ab80410af5a1fc8c2ec4f7c6dcfd5d81f64995a6627ddc50b",
+  "declared_model": "claude-sonnet-4-5-20250929",
+  "declared_effort": "medium",
+  "cli_version": "2.1.76 (Claude Code)",
+  "mcp_mode": "preconfigured",
+  "result_transport": "file",
+  "inherited_env_names": [
+    "PATH",
+    "CLAUDE_CODE_GIT_BASH_PATH"
+  ],
+  "literal_env_names": [
+    "CLAUDE_CONFIG_DIR"
+  ]
+}

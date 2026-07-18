@@ -1,0 +1,16 @@
+{
+  "assessment": "sane",
+  "effective_context_window_95_percent": 258400,
+  "model_context_window": 272000,
+  "records": [
+    {
+      "cached_input_tokens": 89728,
+      "input_tokens": 108442,
+      "output_tokens": 1014,
+      "reasoning_output_tokens": 429
+    }
+  ],
+  "reported_input_tokens_fraction_of_effective_window": 0.419667,
+  "source": "raw-codex-events.jsonl",
+  "usage_emitted": true
+}
