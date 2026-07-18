@@ -1,6 +1,5 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
-from collections.abc import Mapping
 import json
 import subprocess
 from types import SimpleNamespace
@@ -27,9 +26,7 @@ from pyocd_debug_mcp.setup_flow.preflight import (
 )
 from pyocd_debug_mcp.setup_flow.setup import SetupPhase, SetupPhaseContext, SetupPhaseOutcome
 from pyocd_debug_mcp.setup_flow.validate import ValidationInventory, ValidationSerial
-from pyocd_debug_mcp.safety.fingerprints import FingerprintSource
-from pyocd_debug_mcp.safety.regions import SourceAuthority
-from pyocd_debug_mcp.safety.map_build import SafetySetupRequest
+from pyocd_debug_mcp.safety.map_build import SafetyMapError
 
 
 def _call_payload(result: types.CallToolResult) -> dict[str, object]:
@@ -81,12 +78,12 @@ def test_setup_status_exposes_uart_readiness_as_a_separate_barrier(monkeypatch) 
         mcu_part_number="nRF52840-QIAA",
         board=SimpleNamespace(probe_family="jlink"),
     )
-    artifacts = SimpleNamespace(regions=(), fingerprints=SimpleNamespace(aggregate="fingerprint-a"))
+    artifacts = SimpleNamespace(regions=())
     connection = SimpleNamespace(
         connection_id="connection-a",
         handle=SimpleNamespace(probe_uid="683377322"),
     )
-    stamp = SimpleNamespace(connection_id="connection-a", aggregate_fingerprint="fingerprint-a")
+    stamp = SimpleNamespace(connection_id="connection-a", map_digest="fingerprint-a")
     monkeypatch.setattr(server._profile_repository, "load", lambda *_args, **_kwargs: profile)
     monkeypatch.setattr(server._safety_repository, "load_current", lambda _board_id: artifacts)
     monkeypatch.setattr(server, "region_conflicts", lambda _regions: ())
@@ -178,7 +175,7 @@ def test_setup_status_cannot_report_legacy_safety_authority_ready(monkeypatch) -
         raise server.SafetyPolicyError(
             "safety/authority-migration-required",
             "legacy authority schema",
-            remedy=("board_setup", "board_safety_setup", "board_validate"),
+            remedy=("board_safety_refresh", "board_validate"),
         )
 
     monkeypatch.setattr(
@@ -223,25 +220,19 @@ def test_returned_build_guidance_is_executable_in_powershell(monkeypatch) -> Non
     assert "usage:" in completed.stdout.casefold()
 
 
-def test_automatic_setup_builds_only_strictly_reconciled_regions(monkeypatch) -> None:
-    captured: dict[str, object] = {}
+def test_automatic_setup_commits_the_complete_reviewed_candidate(monkeypatch) -> None:
     profile = SimpleNamespace(
         mcu_part_number="nRF52840-QIAA",
-        to_document=lambda: {
-            "schema_version": 2,
-            "board_id": "nrf_board",
-            "mcu_part_number": "nRF52840-QIAA",
-        },
     )
     monkeypatch.setattr(server._profile_repository, "load", lambda *_args, **_kwargs: profile)
-
-    def build(request: object) -> object:
-        captured["request"] = request
-        return SimpleNamespace(status="safety_setup_completed")
-
-    monkeypatch.setattr(server._safety_builder, "build", build)
     sentinel = object()
-    monkeypatch.setattr(server._safety_repository, "load_current", lambda _board_id: sentinel)
+    monkeypatch.setattr(server, "_derive_reviewed_safety_map", lambda _board_id: sentinel)
+    commits: list[tuple[str, object]] = []
+    monkeypatch.setattr(
+        server._safety_repository,
+        "commit",
+        lambda board_id, candidate: commits.append((board_id, candidate)),
+    )
     datasheet = Path("Nano_BLE_MCU-nRF52840_PS_v1.1.pdf").resolve()
     context = SimpleNamespace(
         user_input=SimpleNamespace(
@@ -252,29 +243,7 @@ def test_automatic_setup_builds_only_strictly_reconciled_regions(monkeypatch) ->
     )
 
     assert server._build_automatic_catalog_safety(cast(SetupPhaseContext, context)) is sentinel
-    request = cast(SafetySetupRequest, captured["request"])
-    assert {
-        (item.region.name, item.region.kind.value) for item in request.regions
-    } >= {
-        ("volatile GPIO registers", "peripheral"),
-        ("nonvolatile memory and access control registers", "prohibited"),
-    }
-    assert len(request.regions) == 8
-    for contribution in request.regions:
-        assert contribution.source_groups == (
-            FingerprintSource.EVIDENCE,
-            FingerprintSource.GEOMETRY,
-        )
-        assert {item.authority for item in contribution.region.provenance} == {
-            SourceAuthority.RECONCILED
-        }
-    sources = request.inputs.canonical_documents()
-    support = cast(Mapping[str, object], sources["pack"])
-    evidence = cast(Mapping[str, object], sources["evidence"])
-    official = cast(Mapping[str, object], evidence["official_document"])
-    assert support["asset_sha256"] != official["asset_sha256"]
-    reconciliation = cast(Mapping[str, object], evidence["reconciliation"])
-    assert reconciliation["status"] == "agreement"
+    assert commits == [("nrf_board", sentinel)]
 
 
 def test_automatic_setup_rejects_family_name_without_rewriting_profile(monkeypatch) -> None:
@@ -293,7 +262,7 @@ def test_automatic_setup_rejects_family_name_without_rewriting_profile(monkeypat
         builder_called = True
         return SimpleNamespace(status="safety_setup_completed")
 
-    monkeypatch.setattr(server._safety_builder, "build", build)
+    monkeypatch.setattr(server, "_derive_reviewed_safety_map", build)
     datasheet = Path("Nano_BLE_MCU-nRF52840_PS_v1.1.pdf").resolve()
     context = cast(
         SetupPhaseContext,
@@ -315,12 +284,20 @@ def test_automatic_setup_rejects_family_name_without_rewriting_profile(monkeypat
 def test_setup_safety_research_automatically_rebuilds_obsolete_reviewed_map(
     monkeypatch,
 ) -> None:
-    legacy = SimpleNamespace(source_manifest={})
     rebuilt = SimpleNamespace(
-        source_manifest={"sources": {"evidence": {}}},
-        fingerprints=SimpleNamespace(aggregate="current-reviewed-aggregate"),
+        canonical_digest="current-reviewed-map",
+        source_digests=SimpleNamespace(
+            to_document=lambda: {
+                "semantic_profile": "a" * 64,
+                "reviewed_device_support": "b" * 64,
+            }
+        ),
     )
-    monkeypatch.setattr(server._safety_repository, "load_current", lambda _board: legacy)
+    monkeypatch.setattr(
+        server._safety_repository,
+        "load_current",
+        lambda _board: (_ for _ in ()).throw(SafetyMapError("old schema")),
+    )
     monkeypatch.setattr(server, "_build_automatic_catalog_safety", lambda _context: rebuilt)
     context = cast(
         SetupPhaseContext,
@@ -331,7 +308,7 @@ def test_setup_safety_research_automatically_rebuilds_obsolete_reviewed_map(
 
     assert result.verified is True
     assert result.code == "setup/safety-sources-verified"
-    assert result.details["aggregate_fingerprint"] == "current-reviewed-aggregate"
+    assert result.details["map_digest"] == "current-reviewed-map"
 
 
 def test_fresh_setup_rejects_family_only_mcu_before_profile_commit() -> None:
@@ -450,7 +427,7 @@ def test_reviewed_opaque_target_reaches_live_connect_before_profile_commit(
     committed = profiles.load("reviewed_board", include_legacy=False)
     assert committed.mcu_part_number == "nRF52840-QIAA"
     assert committed.board.pyocd_target == "nrf52840"
-    assert committed.board.silicon_id_label == "silicon_id"
+    assert committed.board.silicon_id_label == "FICR INFO.PART exact part identifier"
     assert committed.board.silicon_id_addr == 0x10000100
     assert committed.board.silicon_id_expected == 0x00052840
     assert committed.board.silicon_id_mask == 0xFFFFFFFF
@@ -544,7 +521,7 @@ async def test_live_mcp_board_setup_commits_target_neutral_silicon_identity_labe
     payload = _call_payload(completed)
     assert payload["status"] == "setup_completed"
     committed = profiles.load(board_id, include_legacy=False)
-    assert committed.board.silicon_id_label == "silicon_id"
+    assert committed.board.silicon_id_label == "FICR INFO.PART exact part identifier"
     assert committed.board.silicon_id_addr == 0x10000100
     assert committed.board.silicon_id_expected == 0x00052840
     assert committed.board.silicon_id_mask == 0xFFFFFFFF

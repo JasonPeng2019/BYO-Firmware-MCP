@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Any
 
 FIXTURE_PATH = Path(__file__).parent / "contracts" / "source-server-tools.json"
+ACTIVE_PATH = Path(__file__).parent / "contracts" / "product-server-tools.json"
 
 
 def _source_contract() -> dict[str, Any]:
@@ -30,5 +31,8 @@ def test_extraction_named_snapshot_remains_well_formed_historical_evidence() -> 
 
 def test_historical_snapshot_paths_still_name_real_implementation_owners() -> None:
     snapshot = _source_contract()
+    active = json.loads(ACTIVE_PATH.read_text(encoding="utf-8"))
+    removed = set(active.get("removed_implementation_modules", []))
     for relative_path in snapshot["implementation_module_sha256"]:
-        assert (FIXTURE_PATH.parents[2] / relative_path).is_file()
+        path = FIXTURE_PATH.parents[2] / relative_path
+        assert path.is_file() or relative_path in removed

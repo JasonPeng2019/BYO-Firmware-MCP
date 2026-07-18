@@ -55,8 +55,14 @@ def assert_required_guidance(guidance: str) -> None:
     assert "network download only when no compatible local copy exists" in prose
     assert "always-visible collect_build_artifacts MCP tool" in prose
     assert 'expected_roles to ["elf", "map"]' in prose
-    assert "pass its returned ELF/HEX/MAP paths explicitly to board_safety_refresh" in prose
-    assert "never treat collection as validation" in prose
+    assert "Continue with the matching flash plan" in prose
+    assert "use board_safety_refresh only for an actual stable-map problem" in prose
+    assert "never treat collection as validation" in prose.casefold()
+    assert "exactly three trigger categories" in prose
+    for trigger in ("initial setup or server restart", "disconnect, reconnect, probe change", "identity repair, mismatch, or destructive recovery"):
+        assert trigger in prose
+    for nontrigger in ("ordinary build or relink", "flash", "reset or halt", "UART work", "safety refresh or full map reconstruction", "artifact collection", "bookkeeping"):
+        assert nontrigger in prose
 
 
 def test_handshake_is_visible_at_server_run_start() -> None:
@@ -156,7 +162,9 @@ async def test_in_process_client_lists_and_uses_visible_artifact_collector(
     payload = json.loads(content.text)
     assert payload["status"] == "artifacts_collected"
     assert payload["authority"] == "provenance_only"
-    assert payload["safety_handoff"]["status"] == "explicit_elf_and_map_available"
+    assert payload["safety_handoff"]["status"] == "flash_plan_artifact_available"
+    assert "flash plan" in payload["safety_handoff"]["next_step"]
+    assert "Refresh only if the stable map is invalid" in payload["safety_handoff"]["next_step"]
     assert payload["canonical_paths"]["elf"] == str(output.resolve() / "firmware.elf")
     assert (output / "firmware.map").read_bytes() == b"map"
     assert refused.isError is not True

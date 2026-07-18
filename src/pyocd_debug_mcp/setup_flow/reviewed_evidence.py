@@ -39,7 +39,7 @@ class ReviewedEvidenceBundle:
     reconciliation: ReconciliationResult
 
     def source_record(self) -> dict[str, object]:
-        """Return the complete authority record included in safety fingerprints."""
+        """Return the complete authority record covered by the map's semantic digest."""
 
         return {
             "device_support": {

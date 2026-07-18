@@ -215,13 +215,14 @@ Extra instructions: All steps, readiness input, and the optional pre-probe delay
 - Safety mode: `fresh-write`
 - Timeout: `30` seconds
 - Populated plan fields, in order: `board_id`, `hypothesis`, `strategy`, `hypothesis_made`, `strategy_evaluated`, `expected_fail_return`, `expected_success_return`, `max_calls`, `max_calls_buffer`, `action_parameters`
-- Exact action-parameter fields, in order: `symbol_or_address`
+- Exact action-parameter fields, in order: `symbol_or_address`, `elf_artifact`
 
 | Action field | Type | Constraints | Description |
 | --- | --- | --- | --- |
 | `symbol_or_address` | `text-or-integer` | required | Exact symbol or address. |
+| `elf_artifact` | `text` | required | Current local ELF whose executable sections contain the breakpoint. |
 
-Extra instructions: The resolved location must be executable and supported by the connected core.
+Extra instructions: The resolved location must be in an executable section of the plan-bound current ELF and supported by the connected core.
 
 ## `set_execution_state-plan`
 

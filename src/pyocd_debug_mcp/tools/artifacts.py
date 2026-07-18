@@ -31,8 +31,9 @@ def build_artifact_handlers() -> dict[str, Callable[..., str]]:
         or accesses hardware. Choose a new or empty output_dir. For an application or bootloader
         that will enter the guarded safety/flash flow, normally include both elf_path and map_path
         and set expected_roles to ["elf", "map"]. HEX-only or BIN-only collection is provenance
-        only and does not make an image safe to flash. The returned canonical paths must still be
-        passed explicitly to board_safety_refresh; collection grants no memory authority or gate.
+        only and does not make an image safe to flash. Continue with the matching flash plan and
+        selected canonical ELF or HEX. Use board_safety_refresh only for an actual stable-map
+        problem; collection grants no memory authority or gate.
         """
 
         supplied = {
@@ -68,20 +69,23 @@ def build_artifact_handlers() -> dict[str, Callable[..., str]]:
         canonical_paths = {
             record.role.value: str(result.output_dir / record.path) for record in result.artifacts
         }
-        has_safety_pair = {"elf", "map"}.issubset(canonical_paths)
+        has_flash_artifact = "elf" in canonical_paths
         payload.update(
             {
                 "canonical_paths": canonical_paths,
                 "authority": "provenance_only",
                 "safety_handoff": {
                     "status": (
-                        "explicit_elf_and_map_available" if has_safety_pair else "provenance_only"
+                        "flash_plan_artifact_available"
+                        if has_flash_artifact
+                        else "provenance_only"
                     ),
                     "next_step": (
-                        "Pass the canonical ELF, HEX when present, and MAP paths explicitly to "
-                        "board_safety_refresh for the correct application or bootloader role."
-                        if has_safety_pair
-                        else "Obtain and collect a coherent ELF and linker map before safety refresh."
+                        "Submit the matching application or bootloader flash plan with the "
+                        "selected canonical ELF or HEX. Refresh only if the stable map is invalid."
+                        if has_flash_artifact
+                        else "Obtain and collect a coherent ELF (and matching ELF for any HEX) "
+                        "before submitting a flash plan."
                     ),
                     "manifest_consumed_automatically": False,
                     "raw_bin_has_trusted_load_address": False,

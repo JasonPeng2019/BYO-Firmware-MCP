@@ -599,6 +599,16 @@ _LOCAL_FIRST_DEPENDENCY_PROTOCOL = (
 )
 
 
+_VALIDATION_TRIGGER_PROTOCOL = (
+    "Validation has exactly three trigger categories: (1) no live proof after initial setup or "
+    "server restart; (2) connection identity change after disconnect, reconnect, probe change, "
+    "or target override; and (3) possible hardware identity change after identity repair, "
+    "mismatch, or destructive recovery. Ordinary build or relink, flash, reset or halt, UART "
+    "work, safety refresh or full map reconstruction, artifact collection, report, cache, and "
+    "bookkeeping changes are not validation triggers."
+)
+
+
 _GUIDANCE: Final = MappingProxyType(
     {
         "board_setup": _PromptGuidance(
@@ -1104,6 +1114,7 @@ def _render_null_response(
         "the tool arguments—no prose, Markdown, wrapper key, flattened action fields, or extra fields.\n\n"
         f"[PURPOSE]\nPurpose: {definition.purpose}\n\n"
         f"[SETUP-FIRST ROUTING]\n{setup_first}\n\n"
+        f"[VALIDATION TRIGGERS]\n{_VALIDATION_TRIGGER_PROTOCOL}\n\n"
         f"[LOCAL-FIRST DEPENDENCIES]\n{_LOCAL_FIRST_DEPENDENCY_PROTOCOL}\n\n"
         f"[USE-WHEN / NOT-WHEN]\n{guidance.use_when}\n\n"
         "[PLAN-FIELDS]\nRequired plan fields:\n"

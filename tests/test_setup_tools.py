@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import inspect
 import json
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any, cast
 
 import pytest
@@ -11,6 +13,7 @@ from pyocd_debug_mcp.firmstore.profiles import ProfileRepository
 from pyocd_debug_mcp.firmstore.reports import ReportWriter
 from pyocd_debug_mcp.firmstore.store import FirmStore
 from pyocd_debug_mcp.guardrails.permissions import PermissionStore
+from pyocd_debug_mcp.guardrails.gate import GateManager
 from pyocd_debug_mcp.guardrails.plan_engine import PlanEngine
 from pyocd_debug_mcp.kernel.registry import ToolRegistry
 from pyocd_debug_mcp.kernel.run_state import ServerRun
@@ -116,13 +119,12 @@ def services(tmp_path: Path):
             workflow,
             validator,
             lambda board_id: {
-                "status": "safety_setup_completed",
+                "status": "internal_compatibility_alias_must_not_be_public",
                 "board_id": board_id,
             },
-            lambda board_id, **artifacts: {
+            lambda board_id: {
                 "status": "safety_refresh_completed",
                 "board_id": board_id,
-                "artifacts": artifacts,
             },
             setup_overview=lambda names: {
                 "status": "setup_routes_ready" if names else "setup_names_required",
@@ -172,14 +174,12 @@ def test_setup_tool_index_descriptions_explain_trigger_and_routing(tmp_path: Pat
     assert "matching YAML profile" in setup_description
     assert "board_validate" in setup_description
 
-    safety_setup_description = handlers["board_safety_setup"].__doc__ or ""
-    assert "first authoritative safety map" in safety_setup_description
-    assert "never opens the hardware gate" in safety_setup_description
+    assert "board_safety_setup" not in handlers
 
     refresh_description = handlers["board_safety_refresh"].__doc__ or ""
-    assert "existing valid safety map" in refresh_description
-    assert "fingerprint drift" in refresh_description
-    assert "never reopens a disconnected gate" in refresh_description
+    assert "complete stable safety map" in refresh_description
+    assert "ordinary firmware builds" in refresh_description
+    assert "accepts no artifact" in refresh_description
 
     validate_description = handlers["board_validate"].__doc__ or ""
     assert "matching board YAML first" in validate_description
@@ -201,13 +201,12 @@ def test_load_setup_tool_returns_distinct_bounded_next_step_guidance(tmp_path: P
         for tool_name in (
             "board_setup-plan",
             "board_validate",
-            "board_safety_setup",
             "board_safety_refresh",
         )
     }
 
     assert {payload["next_call"]["tool"] for payload in payloads.values()} == set(payloads)
-    assert len({payload["guidance"]["purpose"] for payload in payloads.values()}) == 4
+    assert len({payload["guidance"]["purpose"] for payload in payloads.values()}) == 3
     for tool_name, payload in payloads.items():
         guidance = payload["guidance"]
         assert payload["tool_name"] == tool_name
@@ -231,19 +230,48 @@ def test_load_setup_tool_returns_distinct_bounded_next_step_guidance(tmp_path: P
         "tool": "board_validate",
         "arguments": {"board_id": "bench_board"},
     }
-    assert set(payloads["board_safety_refresh"]["next_call"]["arguments"]) == {
-        "board_id",
-        "application_elf",
-        "application_hex",
-        "application_map",
-        "bootloader_elf",
-        "bootloader_hex",
-        "bootloader_map",
+    assert payloads["board_safety_refresh"]["next_call"] == {
+        "tool": "board_safety_refresh",
+        "arguments": {"board_id": "bench_board"},
     }
-    assert (
-        "safety_setup_unsupported_board"
-        in payloads["board_safety_setup"]["guidance"]["expected_statuses"]
+
+    validation_use = payloads["board_validate"]["guidance"]["when_to_use"].lower()
+    assert "no live proof" in validation_use
+    assert "connection identity changes" in validation_use
+    assert "hardware identity may have changed" in validation_use
+    validation_nontriggers = payloads["board_validate"]["guidance"]["when_not_to_use"].lower()
+    for nontrigger in (
+        "build",
+        "flash",
+        "reset/halt",
+        "uart",
+        "safety refresh",
+        "full map reconstruction",
+        "bookkeeping",
+    ):
+        assert nontrigger in validation_nontriggers
+
+    refresh_guidance = payloads["board_safety_refresh"]["guidance"]
+    assert "missing, malformed, old, or inconsistent map" in refresh_guidance["when_to_use"]
+    assert "no build artifacts or caller ranges" in refresh_guidance["when_not_to_use"]
+
+
+def test_removed_safety_setup_cannot_be_loaded_or_called(tmp_path: Path) -> None:
+    _, _, _, _, handlers = services(tmp_path)
+
+    assert "board_safety_setup" not in handlers
+    with pytest.raises(ValueError, match="tool_name must be one of"):
+        handlers["load_setup_tool"]("bench_board", "board_safety_setup")
+
+
+def test_v2_validation_and_refresh_handlers_have_minimal_public_schemas(tmp_path: Path) -> None:
+    _, _, _, _, handlers = services(tmp_path)
+
+    assert tuple(inspect.signature(handlers["board_validate"]).parameters) == (
+        "board_id",
+        "probe_id",
     )
+    assert tuple(inspect.signature(handlers["board_safety_refresh"]).parameters) == ("board_id",)
 
 
 def test_setup_overview_routes_names_without_user_facing_internal_fields(tmp_path: Path) -> None:
@@ -431,53 +459,82 @@ def test_board_validate_redirect_then_structured_incomplete_report(tmp_path: Pat
     assert result["constraints"]
 
 
-def test_a20_safety_tools_redirect_then_invoke_their_scoped_engines(tmp_path: Path) -> None:
+def test_safety_refresh_redirect_then_invokes_single_board_rebuild(tmp_path: Path) -> None:
     _, _, _, _, handlers = services(tmp_path)
 
-    for tool_name, expected_status in (
-        ("board_safety_setup", "safety_setup_completed"),
-        ("board_safety_refresh", "safety_refresh_completed"),
-    ):
-        redirect = json.loads(handlers[tool_name]("bench_board"))
-        assert redirect["status"] == "setup_tool_not_loaded"
-        assert redirect["tool_name"] == tool_name
+    redirect = json.loads(handlers["board_safety_refresh"]("bench_board"))
+    assert redirect["status"] == "setup_tool_not_loaded"
+    assert redirect["tool_name"] == "board_safety_refresh"
 
-        handlers["load_setup_tool"]("bench_board", tool_name)
-        result = json.loads(handlers[tool_name]("bench_board"))
-        expected: dict[str, object] = {
-            "board_id": "bench_board",
-            "status": expected_status,
-        }
-        if tool_name == "board_safety_refresh":
-            expected["artifacts"] = {
-                "application_elf": None,
-                "application_hex": None,
-                "application_map": None,
-                "bootloader_elf": None,
-                "bootloader_hex": None,
-                "bootloader_map": None,
-            }
-        assert result == expected
-
-
-def test_safety_refresh_forwards_symmetric_bootloader_artifacts(tmp_path: Path) -> None:
-    _, _, _, _, handlers = services(tmp_path)
     handlers["load_setup_tool"]("bench_board", "board_safety_refresh")
+    result = json.loads(handlers["board_safety_refresh"]("bench_board"))
+    assert result == {
+        "board_id": "bench_board",
+        "status": "safety_refresh_completed",
+    }
+    with pytest.raises(TypeError, match="unexpected keyword"):
+        handlers["board_safety_refresh"]("bench_board", application_elf="firmware.elf")
 
-    result = json.loads(
-        handlers["board_safety_refresh"](
-            "bench_board",
-            bootloader_elf="boot.elf",
-            bootloader_hex="boot.hex",
-            bootloader_map="boot.map",
+
+def test_real_setup_overview_routes_recorded_mismatch_neutrally_to_new_logical_board(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    profiles = ProfileRepository(FirmStore(tmp_path), legacy_board_dir=tmp_path / "legacy")
+    profiles.commit_core(
+        profiles.stage_core(
+            {
+                "board_id": "bench_board",
+                "display_name": "Bench Board",
+                "mcu_part_number": "STM32L476RGT6",
+                "mcu_family": "stm32l4",
+                "probe_family": "stlink",
+                "pyocd_target": "stm32l476rgtx",
+            }
         )
     )
+    connection = SimpleNamespace(
+        connection_id="connection-a",
+        handle=SimpleNamespace(probe_uid="probe-a"),
+    )
+    gates = GateManager()
+    gates.record_mismatch(
+        board_id="bench_board",
+        connection_id="connection-a",
+        probe_identity="probe-a",
+        expected_mcu="STM32L476RGT6",
+        observed_mcu="STM32F407VGT6",
+        validation_run="validation-mismatch",
+    )
+    monkeypatch.setattr(server, "_profile_repository", profiles)
+    monkeypatch.setattr(server.connection_manager, "maybe_connection", lambda _board: connection)
+    monkeypatch.setattr(server, "gate_manager", gates)
+    monkeypatch.setattr(server, "_validation_inventory", lambda: ValidationInventory())
 
-    assert result["artifacts"] == {
-        "application_elf": None,
-        "application_hex": None,
-        "application_map": None,
-        "bootloader_elf": "boot.elf",
-        "bootloader_hex": "boot.hex",
-        "bootloader_map": "boot.map",
-    }
+    assert server._setup_plan_eligibility("bench_board")[0] is True
+    mismatch = cast(dict[str, Any], server._setup_overview(["Bench Board"]))["routes"][0]
+
+    assert mismatch["route"] == "mismatch"
+    assert mismatch["next_tool"] is None
+    assert mismatch["expected_mcu"] == "STM32L476RGT6"
+    assert mismatch["observed_mcu"] == "STM32F407VGT6"
+    assert "ask what they want" in mismatch["reason"]
+    assert "new logical" in mismatch["reason"]
+    assert "load_call" not in mismatch
+
+    adopted = cast(dict[str, Any], server._setup_overview(["Replacement Board"]))["routes"][0]
+    assert adopted["route"] == "setup"
+    assert adopted["board_id"] != "bench_board"
+    assert server._setup_plan_eligibility(str(adopted["board_id"]))[0] is True
+
+    gates.clear_mismatch("bench_board")
+    eligible, reason = server._setup_plan_eligibility("bench_board")
+    assert eligible is False
+    assert "setup remains locked" in reason
+
+    malformed = profiles.store.layout.board_profile("malformed_board")
+    malformed.parent.mkdir(parents=True, exist_ok=True)
+    malformed.write_text("schema_version: 2\nboard_id: malformed_board\n", encoding="utf-8")
+    eligible, reason = server._setup_plan_eligibility("malformed_board")
+    assert eligible is False
+    assert "malformed or incomplete" in reason

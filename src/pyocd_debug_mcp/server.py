@@ -57,7 +57,7 @@ from pyocd_debug_mcp.kernel.finalizers import build_finalizer
 from pyocd_debug_mcp.kernel.hygiene import cleanup_stale_owned_processes
 from pyocd_debug_mcp.kernel.processes import run_owned
 from pyocd_debug_mcp.kernel.run_state import create_server_run
-from pyocd_debug_mcp.pack_provision import load_manifest, pack_spec_document, sha256_file
+from pyocd_debug_mcp.pack_provision import load_manifest, sha256_file
 from pyocd_debug_mcp.probe_inventory import (
     list_connected_probes,
     probe_family_from_pyocd_probe,
@@ -148,12 +148,7 @@ from pyocd_debug_mcp.setup_flow.validate import (
     ValidationSerial,
 )
 from pyocd_debug_mcp.safety.enforce import SafetyPolicy, SafetyPolicyError
-from pyocd_debug_mcp.safety.linker import (
-    BuildArtifactSelection,
-    BuildRole,
-    LinkerEvidenceError,
-    extract_build_evidence,
-)
+from pyocd_debug_mcp.safety.linker import BuildRole
 from pyocd_debug_mcp.safety.map_build import (
     MapGeometry,
     MapIdentity,
@@ -164,19 +159,15 @@ from pyocd_debug_mcp.safety.map_build import (
     SafetyMapBuilder,
     SafetyMapError,
     SafetyMapRepository,
+    reviewed_map_source_documents,
     require_reconciled_authority,
     region_conflicts,
 )
 from pyocd_debug_mcp.safety.refresh import SafetyRefreshRequest, SafetyRefresher
 from pyocd_debug_mcp.safety.regions import (
-    ActionCategory,
     AddressRange,
-    Provenance,
-    Refusal,
     RegionKind,
-    SafetyMap,
     SafetyRegion,
-    SourceAuthority,
 )
 from pyocd_debug_mcp.target_errors import (
     LockedTargetError,
@@ -319,6 +310,18 @@ def _validate_plan_scope(
 ) -> None:
     connection = connection_manager.maybe_connection(board_id)
     if definition.action_name == "board_setup":
+        existing_profile_paths = tuple(
+            _profile_repository.store.layout.board_profile(board_id, suffix=suffix)
+            for suffix in (".yaml", ".yml", ".json")
+        )
+        if any(path.exists() for path in existing_profile_paths):
+            raise PlanRefusal(
+                "plan/setup-established-profile",
+                f"Board '{board_id}' already has a profile. Setup cannot rewrite established "
+                "identity; validate it, or use setup_overview to create a new logical board after "
+                "the user elects to adopt mismatched hardware.",
+                session_id=session_id,
+            )
         if session_id is not None or connection is not None:
             raise PlanRefusal(
                 "plan/setup-session-active",
@@ -401,8 +404,8 @@ def _check_register_safety(board_id: str, address: int) -> None:
     _safety_policy.check_register_write(board_id, address)
 
 
-def _check_breakpoint_safety(board_id: str, address: int) -> None:
-    _safety_policy.check_breakpoint(board_id, address)
+def _check_breakpoint_safety(board_id: str, address: int, elf_path: Path) -> None:
+    _safety_policy.check_breakpoint(board_id, address, elf_path)
 
 
 def _check_flash_safety(tool_name: str, board_id: str, artifact: Path) -> None:
@@ -479,14 +482,14 @@ def _enforce_action_containment(
             _safety_policy.check_memory_write(board_id, address, width)
         elif tool_name == "set_breakpoint":
             target = parameters["symbol_or_address"]
+            elf_path = Path(cast(str, parameters["elf_artifact"])).expanduser().resolve()
             try:
                 address = _parse_action_integer(target, "symbol_or_address")
             except (TypeError, ValueError):
                 if not isinstance(target, str) or not target.strip():
                     raise ValueError("symbol_or_address must be a symbol or address")
-                handle = _handle(board_id)
-                address = resolve_symbol(_symbol_artifact_for_handle(handle), target).address
-            _safety_policy.check_breakpoint(board_id, address)
+                address = resolve_symbol(elf_path, target).address
+            _safety_policy.check_breakpoint(board_id, address, elf_path)
         elif tool_name in {"flash_application", "flash_bootloader"}:
             handle = _maybe_handle(board_id)
             context = _action_context(tool_name, board_id)
@@ -1869,7 +1872,6 @@ breakpoint_services = BreakpointToolServices(
     record_event=_record_event,
     format_refusal=_format_refusal,
     handle_for=_handle,
-    symbol_artifact_for=_symbol_artifact_for_handle,
     resolve_symbol=resolve_symbol,
     set_target_breakpoint=target_control.set_breakpoint,
     remove_target_breakpoint=target_control.remove_breakpoint,
@@ -2123,9 +2125,17 @@ def _validation_close(connection: object) -> None:
         # session immediately so repair can retry without host intervention.
         assigned = connection_manager.maybe_connection(validation.board_id)
         stamp = gate_manager.snapshot(validation.board_id)
+        mismatch = None
+        if assigned is not None:
+            probe_identity = assigned.handle.probe_uid or assigned.connection_id
+            mismatch = gate_manager.current_mismatch(
+                validation.board_id,
+                assigned.connection_id,
+                probe_identity,
+            )
         if assigned is not None and (
             stamp is None or stamp.connection_id != assigned.connection_id
-        ):
+        ) and mismatch is None:
             connection_manager.clear(validation.board_id)
             _session_store.close_session(assigned.runtime_session)
             target_control.close_session(assigned.handle)
@@ -2181,20 +2191,7 @@ def _derive_reviewed_safety_map(board_id: str):
     erase = bundle.reconciliation.erase_geometry
     if erase is None:
         raise SafetyMapError("reviewed evidence has no reconciled erase geometry")
-    sources = bundle.source_record()
-    reviewed_official = {
-        "official_document": sources["official_document"],
-        "reconciliation": sources["reconciliation"],
-        "deployment_partition_policy": catalog.deployment_partition_policy_document(),
-        "live_identity": {
-            "address": catalog.silicon_id_address,
-            "expected": catalog.silicon_id_expected,
-            "mask": catalog.silicon_id_mask,
-            "width_bits": catalog.silicon_id_width_bits,
-            "label": catalog.silicon_id_label,
-            "limitation": catalog.silicon_id_limitation,
-        },
-    }
+    device_support, reviewed_official = reviewed_map_source_documents(catalog, bundle)
     contributions = tuple(
         RegionContribution(
             region.to_safety_region(),
@@ -2215,7 +2212,7 @@ def _derive_reviewed_safety_map(board_id: str):
                 catalog.board_type,
             ),
             profile_document,
-            sources["device_support"],
+            device_support,
             reviewed_official,
             MapGeometry(
                 AddressRange(catalog.flash_start, catalog.flash_end),
@@ -2229,7 +2226,22 @@ def _derive_reviewed_safety_map(board_id: str):
     )
 
 
-_safety_policy = SafetyPolicy(_safety_repository)
+def _require_current_reviewed_map(document) -> None:
+    """Reject a valid but stale map without consulting any build output."""
+
+    require_reconciled_authority(document)
+    candidate = _derive_reviewed_safety_map(document.board_id)
+    if document != candidate:
+        raise SafetyMapError(
+            "the stable map no longer matches the semantic profile or current reviewed evidence; "
+            "run board_safety_refresh"
+        )
+
+
+_safety_policy = SafetyPolicy(
+    _safety_repository,
+    authority_verifier=_require_current_reviewed_map,
+)
 
 
 def _restamp_after_refresh(board_id: str, map_digest: str, identity_changed: bool) -> None:
@@ -2241,10 +2253,20 @@ def _restamp_after_refresh(board_id: str, map_digest: str, identity_changed: boo
         gate_manager.refresh_map_stamp(board_id, connection.connection_id, map_digest)
 
 
+def _has_current_live_identity(board_id: str) -> bool:
+    connection = connection_manager.maybe_connection(board_id)
+    identity = gate_manager.live_identity(board_id)
+    return bool(
+        connection is not None
+        and identity is not None
+        and identity.connection_id == connection.connection_id
+    )
+
+
 _safety_refresher = SafetyRefresher(
     _firm_store,
     derive=_derive_reviewed_safety_map,
-    has_live_identity=lambda board_id: gate_manager.live_identity(board_id) is not None,
+    has_live_identity=_has_current_live_identity,
     on_commit=_restamp_after_refresh,
 )
 
@@ -2269,62 +2291,52 @@ _REQUIRED_BASE_SAFETY_KINDS = frozenset(
 )
 
 
-def _missing_base_safety_kinds(regions: tuple[RegionContribution, ...]) -> tuple[str, ...]:
-    present = {item.region.kind for item in regions}
+def _missing_base_safety_kinds(regions: tuple[SafetyRegion, ...]) -> tuple[str, ...]:
+    present = {item.kind for item in regions}
     return tuple(sorted(kind.value for kind in _REQUIRED_BASE_SAFETY_KINDS - present))
 
 
-def _load_validation_layer0(profile) -> Layer0Snapshot:
-    expected_ref = (
-        _firm_store.layout.safety_reference_prefix(profile.board_id) / "memory_map.yaml"
-    ).as_posix()
-    if profile.safety_ref != expected_ref:
-        return Layer0Snapshot(
-            False,
-            False,
-            reason=(
-                "The profile has no current safety-map reference. Run board_safety_setup, "
-                "complete the safety-reference commit, then run board_validate."
-            ),
-        )
+def _load_validation_safety_map(profile) -> SafetyMapSnapshot:
     try:
-        artifacts = _safety_repository.load_current(profile.board_id)
-        missing_kinds = _missing_base_safety_kinds(artifacts.regions)
+        document = _safety_repository.load_current(profile.board_id)
+        require_reconciled_authority(document)
+        missing_kinds = _missing_base_safety_kinds(document.regions)
         if missing_kinds:
-            return Layer0Snapshot(
+            return SafetyMapSnapshot(
                 True,
                 False,
                 reason=(
                     "The safety map lacks required base classifications "
-                    f"{', '.join(missing_kinds)}. Run board_safety_setup with complete "
-                    "authoritative evidence."
+                    f"{', '.join(missing_kinds)}. Run board_safety_refresh."
                 ),
             )
-        conflicts = region_conflicts(artifacts.regions)
-        if conflicts:
-            return Layer0Snapshot(
+        if (
+            document.identity.mcu_part_number != profile.mcu_part_number
+            or document.identity.pyocd_target != profile.board.pyocd_target
+        ):
+            return SafetyMapSnapshot(
                 True,
                 False,
-                artifacts.fingerprints.aggregate,
-                "The current safety map contains overlapping prohibited or ambiguous regions. "
-                "Resolve the evidence and run board_safety_setup.",
+                document.canonical_digest,
+                "The safety-map identity does not match the profile. Run board_safety_refresh.",
             )
-        aggregate = _safety_policy.current_aggregate(profile.board_id)
-    except (SafetyArtifactError, SafetyPolicyError, ValueError) as exc:
-        return Layer0Snapshot(
+        map_digest = _safety_policy.current_aggregate(profile.board_id)
+    except (SafetyMapError, SafetyPolicyError, ValueError) as exc:
+        return SafetyMapSnapshot(
             False,
             False,
-            reason=f"Safety map is missing, stale, or inconsistent: {exc}",
+            reason=f"Safety map is missing or inconsistent; run board_safety_refresh: {exc}",
         )
-    return Layer0Snapshot(True, True, aggregate, "Safety map and source fingerprints agree.")
+    return SafetyMapSnapshot(True, True, map_digest, "Profile and reviewed safety map agree.")
 
 
 def _stamp_validation_session(
     board_id: str,
-    hardware_result: str,
+    validation_run: str,
     probe_id: str,
     probe_uid: str | None,
-    aggregate_fingerprint: str,
+    observed_mcu: str,
+    map_digest: str,
 ) -> bool:
     connection = connection_manager.maybe_connection(board_id)
     stable_probe = (probe_uid or probe_id).strip()
@@ -2340,9 +2352,34 @@ def _stamp_validation_session(
     gate_manager.stamp_validation(
         board_id=board_id,
         connection_id=connection_id,
-        hardware_result=hardware_result,
         probe_identity=stable_probe,
-        aggregate_fingerprint=aggregate_fingerprint,
+        observed_mcu=observed_mcu,
+        validation_run=validation_run,
+        map_digest=map_digest,
+    )
+    return True
+
+
+def _record_validation_mismatch(
+    board_id: str,
+    validation_run: str,
+    probe_id: str,
+    probe_uid: str | None,
+    expected_mcu: str,
+    observed_mcu: str,
+) -> bool:
+    connection = connection_manager.maybe_connection(board_id)
+    stable_probe = (probe_uid or probe_id).strip()
+    connection_id = (
+        connection.connection_id if connection is not None else f"probe:{stable_probe.casefold()}"
+    )
+    gate_manager.record_mismatch(
+        board_id=board_id,
+        connection_id=connection_id,
+        probe_identity=stable_probe,
+        expected_mcu=expected_mcu,
+        observed_mcu=observed_mcu,
+        validation_run=validation_run,
     )
     return True
 
@@ -2358,8 +2395,11 @@ _board_validator = BoardValidator(
         _validation_capture,
         _validation_close,
     ),
-    cache=_attachment_cache,
-    hooks=ValidationHooks(_load_validation_layer0, _stamp_validation_session),
+    hooks=ValidationHooks(
+        _load_validation_safety_map,
+        _stamp_validation_session,
+        _record_validation_mismatch,
+    ),
 )
 
 
@@ -2500,7 +2540,7 @@ def _setup_connection_phase(context: SetupPhaseContext) -> SetupPhaseOutcome:
             )
         datasheet = Path(context.user_input.datasheet_path).expanduser().resolve()
         actual_datasheet_hash = sha256_file(datasheet)
-        supplied_datasheet_hash = context.user_input.datasheet_sha256.strip()
+        supplied_datasheet_hash = (context.user_input.datasheet_sha256 or "").strip()
         if supplied_datasheet_hash and (
             actual_datasheet_hash.casefold() != supplied_datasheet_hash.casefold()
         ):
@@ -2593,6 +2633,7 @@ def _setup_connection_phase(context: SetupPhaseContext) -> SetupPhaseOutcome:
                 context.user_input.board_id,
                 {
                     "test_read_address": catalog.test_read_address,
+                    "datasheet_sha256": actual_datasheet_hash,
                     **(
                         {"debug_connect_mode": catalog.debug_connect_mode}
                         if catalog.debug_connect_mode is not None
@@ -2608,7 +2649,8 @@ def _setup_connection_phase(context: SetupPhaseContext) -> SetupPhaseOutcome:
                             "silicon_id_address": catalog.silicon_id_address,
                             "silicon_id_expected": catalog.silicon_id_expected,
                             "silicon_id_mask": catalog.silicon_id_mask,
-                            "silicon_id_label": "silicon_id",
+                            "silicon_id_width_bits": catalog.silicon_id_width_bits,
+                            "silicon_id_label": catalog.silicon_id_label,
                         }
                         if catalog.silicon_id_address is not None
                         else {}
@@ -2633,13 +2675,10 @@ def _setup_connection_phase(context: SetupPhaseContext) -> SetupPhaseOutcome:
 
 def _setup_validation_phase(context: SetupPhaseContext) -> SetupPhaseOutcome:
     result = _board_validator.validate(ValidationRequest(context.user_input.board_id))
-    if result.status in {
-        "validation_passed",
-        "validation_passed_uart_not_configured",
-    } or (
+    if result.status == "validation_passed" or (
         result.status == "validation_incomplete"
         and result.code == "validation/safety-missing"
-        and str(result.observed.get("hardware_result", "")).startswith("validation_passed")
+        and "silicon_actual" in result.observed
     ):
         return SetupPhaseOutcome.success(
             "setup/non-destructive-hardware-validation-passed",
@@ -2655,7 +2694,7 @@ def _setup_validation_phase(context: SetupPhaseContext) -> SetupPhaseOutcome:
 
 
 def _build_automatic_catalog_safety(context: SetupPhaseContext):
-    """Build a base map only after pinned independent authorities agree."""
+    """Build the first v2 map only after pinned independent authorities agree."""
 
     catalog = catalog_board(context.user_input.board_type)
     profile = _profile_repository.load(context.user_input.board_id, include_legacy=False)
@@ -2666,75 +2705,23 @@ def _build_automatic_catalog_safety(context: SetupPhaseContext):
             "profile MCU part number is not the exact reviewed package variant; repair the "
             "profile from the user's exact package marking before safety setup"
         )
-    evidence = load_reviewed_evidence(catalog, datasheet, digest)
-    erase_geometry = evidence.reconciliation.erase_geometry
-    if erase_geometry is None:  # fail closed even if a future reconciler changes accepted semantics
-        raise BoardCatalogError("reviewed erase geometry did not reconcile")
-    source_record = evidence.source_record()
-    inputs = FingerprintInputs(
-        profile.to_document(),
-        {
-            "board_type": catalog.board_type,
-            "mcu_part_number": profile.mcu_part_number or "",
-            "package_part_number": catalog.package_part_number,
-            "target": catalog.pyocd_target,
-        },
-        source_record["device_support"],
-        {
-            "official_document": source_record["official_document"],
-            "reconciliation": source_record["reconciliation"],
-            "deployment_policy": {
-                "application_start": catalog.application_start,
-                "application_end": catalog.application_end,
-            },
-        },
-        {"configuration": None, "artifacts": []},
-        {"configuration": None, "artifacts": []},
-        {
-            "flash_start": catalog.flash_start,
-            "flash_end": catalog.flash_end,
-            "ram_start": catalog.ram_start,
-            "ram_end": catalog.ram_end,
-            "erase_origin": erase_geometry.erase_origin,
-            "erase_size": erase_geometry.erase_size,
-        },
-        {"memory_map": 1, "fingerprints": 1, "evidence": 2, "catalog": 2},
-    )
-    # The catalog deployment envelope is a ceiling used to validate a later
-    # selected linker/ELF.  It is intentionally not persisted as an application
-    # partition: New Brain makes firmware partitions build-owned, and flash must
-    # remain unavailable until board_safety_refresh selects real build evidence.
-    regions = tuple(
-        RegionContribution(
-            region.to_safety_region(),
-            (FingerprintSource.EVIDENCE, FingerprintSource.GEOMETRY),
-        )
-        for region in evidence.reconciliation.regions
-    )
-    result = _safety_builder.build(
-        SafetySetupRequest(
-            context.user_input.board_id,
-            _safety_continuation("automatic-safety-setup"),
-            inputs,
-            regions,
-        )
-    )
-    if result.status != "safety_setup_completed":
-        raise SafetyArtifactError(result.agent_prompt)
-    return _safety_repository.load_current(context.user_input.board_id)
+    load_reviewed_evidence(catalog, datasheet, digest)
+    candidate = _derive_reviewed_safety_map(context.user_input.board_id)
+    _safety_repository.commit(context.user_input.board_id, candidate)
+    return candidate
 
 
 def _setup_safety_research_phase(context: SetupPhaseContext) -> SetupPhaseOutcome:
     try:
         artifacts = _safety_repository.load_current(context.user_input.board_id)
         require_reconciled_authority(artifacts)
-    except (SafetyArtifactError, ValueError) as exc:
+    except (SafetyMapError, ValueError) as exc:
         try:
             artifacts = _build_automatic_catalog_safety(context)
         except (
             BoardCatalogError,
             ProfileError,
-            SafetyArtifactError,
+            SafetyMapError,
             OSError,
             ValueError,
         ) as build_exc:
@@ -2745,12 +2732,10 @@ def _setup_safety_research_phase(context: SetupPhaseContext) -> SetupPhaseOutcom
                 "reported evidence issue before continuing setup.",
                 details={"reason": str(build_exc), "prior_reason": str(exc)},
             )
-    sources = artifacts.source_manifest.get("sources")
-    source_groups = sorted(str(source) for source in sources) if isinstance(sources, dict) else []
     return SetupPhaseOutcome.success(
         "setup/safety-sources-verified",
-        aggregate_fingerprint=artifacts.fingerprints.aggregate,
-        source_groups=source_groups,
+        map_digest=artifacts.canonical_digest,
+        source_groups=list(artifacts.source_digests.to_document()),
     )
 
 
@@ -2759,11 +2744,11 @@ def _setup_safety_map_phase(context: SetupPhaseContext) -> SetupPhaseOutcome:
         artifacts = _safety_repository.load_current(context.user_input.board_id)
         require_reconciled_authority(artifacts)
         conflicts = region_conflicts(artifacts.regions)
-    except (SafetyArtifactError, ValueError) as exc:
+    except (SafetyMapError, ValueError) as exc:
         return SetupPhaseOutcome.stop(
             "setup_safety_incomplete",
             "setup/safety-map-incomplete",
-            "The safety map is incomplete. Run board_safety_setup before validation.",
+            "The safety map is incomplete. Run board_safety_refresh before validation.",
             details={"reason": str(exc)},
         )
     if conflicts:
@@ -2771,7 +2756,7 @@ def _setup_safety_map_phase(context: SetupPhaseContext) -> SetupPhaseOutcome:
             "setup_safety_incomplete",
             "setup/safety-map-conflict",
             "The safety map has a region conflict. Resolve the reported safety sources and "
-            "rerun board_safety_setup.",
+            "rerun board_safety_refresh.",
             details={"conflicts": conflicts},
         )
     missing_kinds = _missing_base_safety_kinds(artifacts.regions)
@@ -2780,12 +2765,12 @@ def _setup_safety_map_phase(context: SetupPhaseContext) -> SetupPhaseOutcome:
             "setup_safety_incomplete",
             "setup/safety-map-kinds-missing",
             "The safety map lacks required prohibited, CPU/system, peripheral, flash, or RAM "
-            "classifications. Resolve the authoritative evidence and rerun board_safety_setup.",
+            "classifications. Resolve the authoritative evidence and rerun board_safety_refresh.",
             details={"missing_kinds": list(missing_kinds)},
         )
     return SetupPhaseOutcome.success(
         "setup/safety-map-consistent",
-        aggregate_fingerprint=artifacts.fingerprints.aggregate,
+        map_digest=artifacts.canonical_digest,
         region_count=len(artifacts.regions),
     )
 
@@ -2802,12 +2787,10 @@ def _setup_commit_phase(context: SetupPhaseContext) -> SetupPhaseOutcome:
                 _profile_repository.stage_safety_ref(board_id, expected_ref)
             )
         probe = context.preflight.selected_probe
-        serial = context.preflight.selected_serial
         result = _board_validator.validate(
             ValidationRequest(
                 board_id,
                 probe.probe_id if probe is not None else None,
-                serial.serial_id if serial is not None else None,
             )
         )
     except Exception as exc:  # noqa: BLE001 - setup records the terminal report
@@ -2816,10 +2799,7 @@ def _setup_commit_phase(context: SetupPhaseContext) -> SetupPhaseOutcome:
             "setup/safety-reference-commit-failed",
             f"Safety reference or final validation failed: {exc}",
         )
-    if result.status not in {
-        "validation_passed",
-        "validation_passed_uart_not_configured",
-    }:
+    if result.status != "validation_passed":
         return SetupPhaseOutcome.stop(
             "setup_validation_failed",
             "setup/final-validation-failed",
@@ -2871,7 +2851,7 @@ def _get_setup_status(board_id: str) -> Mapping[str, object]:
             aggregate = _safety_policy.current_aggregate(board_id)
             configuration_ready = True
             configuration_reason = "profile and safety evidence are current"
-    except (ProfileError, SafetyArtifactError, SafetyPolicyError, ValueError) as exc:
+    except (ProfileError, SafetyMapError, SafetyPolicyError, ValueError) as exc:
         configuration_reason = str(exc)
 
     connection = connection_manager.maybe_connection(board_id)
@@ -2882,7 +2862,7 @@ def _get_setup_status(board_id: str) -> Mapping[str, object]:
         and connection is not None
         and stamp is not None
         and stamp.connection_id == connection.connection_id
-        and stamp.aggregate_fingerprint == aggregate
+        and stamp.map_digest == aggregate
     )
     uart_attachment_ready = False
     uart_reason = "UART attachment has not been resolved for this live board connection"
@@ -2940,7 +2920,7 @@ def _get_setup_status(board_id: str) -> Mapping[str, object]:
         except Exception as exc:  # noqa: BLE001 - readiness is diagnostic, never authority
             uart_reason = f"UART attachment could not be resolved: {exc}"
     if not configuration_ready:
-        remedy = "Complete board_setup and authoritative safety setup."
+        remedy = "Complete board_setup if no profile exists, then run board_safety_refresh."
     elif connection is None:
         remedy = "Connect this board and run board_validate in the current Server Run."
     elif not live_session_ready:
@@ -2972,8 +2952,9 @@ def _get_setup_status(board_id: str) -> Mapping[str, object]:
                 ),
             },
             "safety_boundary": (
-                "Build guidance is not safety authority; board_safety_refresh must inspect "
-                "the resulting ELF and map before flash_application."
+                "Build guidance is not safety authority. Collect the selected output, submit "
+                "the matching flash plan, then rely on flash-time containment. Use "
+                "board_safety_refresh only for a stable-map problem."
             ),
             "toolchain_fallback": None,
         }
@@ -3077,9 +3058,9 @@ def _setup_overview(board_names: list[str] | None) -> Mapping[str, object]:
                 reason = (
                     "profile and safety map are present; validate this run"
                     if complete
-                    else "safety map has conflicts; repair or full safety setup is required"
+                    else "safety map has conflicts; board_safety_refresh is required"
                 )
-            except (SafetyArtifactError, ValueError) as exc:
+            except (SafetyMapError, ValueError) as exc:
                 reason = f"safety evidence is incomplete: {exc}"
         profile_rows.append(
             {
@@ -3232,6 +3213,33 @@ def _setup_overview(board_names: list[str] | None) -> Mapping[str, object]:
                 )
                 continue
             profile, _complete, reason = match
+            connection = connection_manager.maybe_connection(profile.board_id)
+            mismatch = None
+            if connection is not None:
+                mismatch = gate_manager.current_mismatch(
+                    profile.board_id,
+                    connection.connection_id,
+                    connection.handle.probe_uid or connection.connection_id,
+                )
+            if mismatch is not None:
+                routes.append(
+                    {
+                        "display_name": name,
+                        "board_id": profile.board_id,
+                        "route": "mismatch",
+                        "next_tool": None,
+                        "expected_mcu": mismatch.expected_mcu,
+                        "observed_mcu": mismatch.observed_mcu,
+                        "reason": (
+                            "The attached hardware does not match this established profile. "
+                            "Tell the user the expected and observed MCU identities and ask what "
+                            "they want to do. If they keep the different hardware, call "
+                            "setup_overview with a new familiar name to create a new logical "
+                            "board; never rewrite this profile in place."
+                        ),
+                    }
+                )
+                continue
             routes.append(
                 {
                     "display_name": name,
@@ -3566,6 +3574,44 @@ def _clear_setup_continuation(board_id: str) -> None:
             _setup_pack_pipelines.pop(key, None)
 
 
+def _setup_plan_eligibility(board_id: str) -> tuple[bool, str]:
+    """Expose populated setup only for first setup or an exact live mismatch route."""
+
+    try:
+        _profile_repository.load(board_id, include_legacy=False)
+    except ProfileError as exc:
+        existing_profile_paths = tuple(
+            _profile_repository.store.layout.board_profile(board_id, suffix=suffix)
+            for suffix in (".yaml", ".yml", ".json")
+        )
+        if any(path.exists() for path in existing_profile_paths):
+            return (
+                False,
+                f"An existing profile is malformed or incomplete: {exc}. Route through "
+                "board_validate and its exact remedy; setup remains locked against rewrite.",
+            )
+        return True, "No established profile exists; first-time setup is eligible."
+    connection = connection_manager.maybe_connection(board_id)
+    if connection is not None:
+        mismatch = gate_manager.current_mismatch(
+            board_id,
+            connection.connection_id,
+            connection.handle.probe_uid or connection.connection_id,
+        )
+        if mismatch is not None:
+            return (
+                True,
+                "Validation recorded a live identity mismatch. Ask what the user wants; if they "
+                "keep the different hardware, use setup_overview with a new familiar name and "
+                "new logical board ID. The established profile remains locked against rewrite.",
+            )
+    return (
+        False,
+        "This established profile has no exact live mismatch allowance. Use board_validate or "
+        "board_safety_refresh only when its reported remedy requires it; setup remains locked.",
+    )
+
+
 _setup_workflow = SetupWorkflow(
     _report_writer,
     _setup_inventory,
@@ -3588,7 +3634,7 @@ setup_tool_handlers = build_setup_handlers(
         plan_engine=plan_engine,
         workflow=_setup_workflow,
         validator=_board_validator,
-        safety_setup=_run_board_safety_setup,
+        safety_setup=_run_board_safety_refresh,
         safety_refresh=_run_board_safety_refresh,
         setup_status=_get_setup_status,
         setup_overview=_setup_overview,
@@ -3597,6 +3643,7 @@ setup_tool_handlers = build_setup_handlers(
             board_id, PreflightSelections()
         ),
         clear_setup_continuation=_clear_setup_continuation,
+        setup_plan_eligible=_setup_plan_eligibility,
     )
 )
 
@@ -3656,7 +3703,7 @@ _unlock_coordinator = UnlockCoordinator(
         handle_for=_handle,
         connection_id_for=lambda board_id: _connection(board_id).connection_id,
         session_id_for=_active_session_id,
-        current_fingerprint=_safety_policy.current_aggregate,
+        current_map_digest=_safety_policy.current_aggregate,
         supports_recovery=target_control.supports_recovery,
         recover_target=lambda handle, mechanism: target_control.recover_target(
             handle, recover_mode=mechanism

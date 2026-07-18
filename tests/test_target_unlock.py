@@ -29,12 +29,15 @@ from pyocd_debug_mcp.guardrails.plan_defs import PLAN_DEFINITIONS
 from pyocd_debug_mcp.guardrails.plan_engine import PlanEngine, PlanRefusal
 from pyocd_debug_mcp.kernel.registry import ToolRegistry
 from pyocd_debug_mcp.kernel.run_state import ServerRun
-from pyocd_debug_mcp.safety.fingerprints import FingerprintInputs, FingerprintSource
 from pyocd_debug_mcp.safety.map_build import (
+    MapGeometry,
+    MapIdentity,
+    MapPartitions,
     RegionContribution,
-    SafetyArtifactRepository,
+    RegionSource,
+    SafetyMapBuildRequest,
     SafetyMapBuilder,
-    SafetySetupRequest,
+    SafetyMapRepository,
 )
 from pyocd_debug_mcp.safety.regions import (
     AddressRange,
@@ -58,35 +61,17 @@ def _contribution(
     kind: RegionKind,
     start: int,
     end: int,
-    *groups: FingerprintSource,
+    *groups: RegionSource,
 ) -> RegionContribution:
-    authority = (
-        SourceAuthority.BUILD
-        if kind in {RegionKind.APPLICATION_FLASH, RegionKind.BOOTLOADER_FLASH}
-        else SourceAuthority.RECONCILED
-    )
     return RegionContribution(
         SafetyRegion(
             name,
             kind,
             AddressRange(start, end),
-            (Provenance(authority, f"test:{name}", "Task 15 fixture"),),
+            (Provenance(SourceAuthority.RECONCILED, f"test:{name}", "Task 15 fixture"),),
             kind in {RegionKind.APPLICATION_FLASH, RegionKind.BOOTLOADER_FLASH},
         ),
         groups,
-    )
-
-
-def _safety_inputs(profile: object, *, geometry: object | None = None) -> FingerprintInputs:
-    return FingerprintInputs(
-        profile,
-        {"mcu_part_number": "nRF52833-QIAA", "target": "nrf52833"},
-        {"id": "Nordic.nRF_DeviceFamilyPack", "version": "8.58.0"},
-        {"datasheet": "nRF52833 PS"},
-        {"elf": "app.elf"},
-        {"elf": "boot.elf"},
-        geometry if geometry is not None else {"erase_origin": 0, "erase_size": 0x1000},
-        {"memory_map": 1},
     )
 
 
@@ -161,43 +146,60 @@ def _fixture(
             RegionKind.PHYSICAL_FLASH,
             0,
             0x10000,
-            FingerprintSource.PACK,
-            FingerprintSource.EVIDENCE,
-            FingerprintSource.GEOMETRY,
+            RegionSource.REVIEWED_DEVICE_SUPPORT,
+            RegionSource.REVIEWED_OFFICIAL_EVIDENCE,
+            RegionSource.GEOMETRY,
         ),
         _contribution(
-            "bootloader",
-            RegionKind.BOOTLOADER_FLASH,
-            0,
-            0x2000,
-            FingerprintSource.BOOTLOADER_ARTIFACTS,
+            "physical RAM",
+            RegionKind.PHYSICAL_RAM,
+            0x20000000,
+            0x20010000,
+            RegionSource.REVIEWED_DEVICE_SUPPORT,
+            RegionSource.GEOMETRY,
         ),
         _contribution(
-            "application",
-            RegionKind.APPLICATION_FLASH,
-            0x2000,
-            0x10000,
-            FingerprintSource.APPLICATION_ARTIFACTS,
+            "RAM",
+            RegionKind.RAM,
+            0x20000000,
+            0x20010000,
+            RegionSource.REVIEWED_DEVICE_SUPPORT,
         ),
         _contribution(
             "UICR and protection configuration",
             RegionKind.PROHIBITED,
             0x10001000,
             0x10001400,
-            FingerprintSource.PACK,
-            FingerprintSource.EVIDENCE,
+            RegionSource.REVIEWED_DEVICE_SUPPORT,
+            RegionSource.REVIEWED_OFFICIAL_EVIDENCE,
         ),
     )
+    erase_size = (
+        int(geometry["erase_size"])
+        if isinstance(geometry, dict) and "erase_size" in geometry
+        else 0x1000
+    )
     result = SafetyMapBuilder(store).build(
-        SafetySetupRequest(
+        SafetyMapBuildRequest(
             BOARD_ID,
-            "safety-task-15",
-            _safety_inputs(profile.to_document(), geometry=geometry),
+            MapIdentity("nRF52833-QIAA", "nrf52833", "nrf_test"),
+            profile.to_document(),
+            {"target": "nrf52833", "pack": "Nordic.nRF_DeviceFamilyPack@8.58.0"},
+            {"datasheet": "nRF52833 PS", "partition_policy": "reviewed-test"},
+            MapGeometry(
+                AddressRange(0, 0x10000),
+                AddressRange(0x20000000, 0x20010000),
+                erase_origin=0,
+                erase_size=erase_size,
+            ),
+            MapPartitions(
+                application=AddressRange(0x2000, 0x10000),
+                bootloader=AddressRange(0, 0x2000),
+            ),
             regions,
-            (),
         )
     )
-    assert result.aggregate_fingerprint is not None
+    map_digest = result.canonical_digest
 
     run = ServerRun(run_id="run-task-15")
     registry = ToolRegistry()
@@ -211,9 +213,10 @@ def _fixture(
     gate.stamp_validation(
         board_id=BOARD_ID,
         connection_id="connection-1",
-        hardware_result="validation_passed",
         probe_identity="probe-1",
-        aggregate_fingerprint=result.aggregate_fingerprint,
+        observed_mcu="nRF52833-QIAA",
+        validation_run="validation-task-15",
+        map_digest=map_digest,
     )
     target = SimpleNamespace(part_number="nRF52833-QIAA")
     handle = TargetSessionHandle(
@@ -226,7 +229,7 @@ def _fixture(
     state = {
         "connection_id": "connection-1",
         "session_id": SESSION_ID,
-        "fingerprint": result.aggregate_fingerprint,
+        "fingerprint": map_digest,
     }
     backend_calls: list[str] = []
 
@@ -245,7 +248,7 @@ def _fixture(
             run,
             engine,
             profiles,
-            SafetyArtifactRepository(store),
+            SafetyMapRepository(store),
             ReportWriter(store),
             gate,
             lambda board_id: handle,
@@ -312,7 +315,7 @@ def test_ac_15_2_and_15_3_permission_payload_is_complete_and_relayable(
         "pyocd_target": "nrf52833",
         "probe_identity": "probe-1",
         "connection_id": "connection-1",
-        "safety_map_fingerprint": fixture.state["fingerprint"],
+        "map_digest": fixture.state["fingerprint"],
     }
     assert payload["mechanism"]["vendor"] == "connected target backend"
     assert payload["mechanism"]["mass_erase"] is True
@@ -424,15 +427,18 @@ def test_ac_5_7_and_15_5_full_session_never_authorizes_or_carries_forward(
         fixture.coordinator.plan(_complete_fields(user_permission="one-time", strategy="changed"))
 
 
-def test_incomplete_erase_disclosure_fails_closed_before_permission(tmp_path: Path) -> None:
-    fixture = _fixture(tmp_path, geometry={"erase_size": 0x1000})
+def test_invalid_map_fails_closed_before_permission(tmp_path: Path) -> None:
+    fixture = _fixture(tmp_path)
+    SafetyMapRepository(fixture.store).path(BOARD_ID).write_text(
+        "schema_version: 1\n", encoding="utf-8"
+    )
     _initialize(fixture)
 
     with pytest.raises(PlanRefusal) as caught:
         fixture.coordinator.plan(_complete_fields())
 
-    assert caught.value.code == "unlock/erase-disclosure-incomplete"
-    assert "board_safety_setup" in str(caught.value)
+    assert caught.value.code == "unlock/safety-map-invalid"
+    assert "board_safety_refresh" in str(caught.value)
     assert fixture.backend_calls == []
     assert fixture.permissions.active_grant("target_unlock", BOARD_ID) is None
     assert list(fixture.store.layout.validation.glob("target-unlock-*/report.json")) == []
@@ -543,7 +549,7 @@ def test_expired_and_restarted_runs_restore_no_unlock_authority(tmp_path: Path) 
             old.handle_for,
             old.connection_id_for,
             old.session_id_for,
-            old.current_fingerprint,
+            old.current_map_digest,
             old.supports_recovery,
             old.recover_target,
             old.mark_recover_completed,
@@ -592,9 +598,10 @@ def test_ac_15_7_execution_closes_gate_writes_report_and_consumes_once(
     fixture.gate.stamp_validation(
         board_id=BOARD_ID,
         connection_id="connection-1",
-        hardware_result="validation_passed",
         probe_identity="probe-1",
-        aggregate_fingerprint=fixture.state["fingerprint"],
+        observed_mcu="nRF52833-QIAA",
+        validation_run="validation-task-15-repeat",
+        map_digest=fixture.state["fingerprint"],
     )
     assert (
         fixture.gate.require_write(BOARD_ID, "connection-1", fixture.state["fingerprint"])
@@ -729,7 +736,7 @@ def test_unlock_reports_preserve_exact_disclosure_without_persisted_authority(
             "sectors": list(range(16)),
         }
     ]
-    assert permission_report["details"]["live_identity"]["safety_map_fingerprint"]
+    assert permission_report["details"]["live_identity"]["map_digest"]
     for path, report in zip(report_paths, reports, strict=True):
         assert PERSISTED_AUTHORITY_KEYS.isdisjoint(_artifact_keys(report)), path
         assert "user_permission" not in path.read_text(encoding="utf-8")

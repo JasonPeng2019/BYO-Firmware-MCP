@@ -50,6 +50,10 @@ def _imported_baseline(contract: dict[str, Any]) -> tuple[Path, dict[str, Any]]:
     baseline["implementation_module_sha256"].update(
         contract.get("implementation_module_sha256_overrides", {})
     )
+    for tool_name in contract.get("removed_tools", []):
+        baseline["tool_contract_sha256"].pop(tool_name, None)
+    for module_path in contract.get("removed_implementation_modules", []):
+        baseline["implementation_module_sha256"].pop(module_path, None)
     return path, baseline
 
 

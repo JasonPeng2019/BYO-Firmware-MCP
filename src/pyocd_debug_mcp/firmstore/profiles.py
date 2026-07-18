@@ -55,13 +55,21 @@ _OPTIONAL_FIELDS = frozenset(
         "silicon_id_mask",
         "silicon_id_width_bits",
         "silicon_id_label",
+        "datasheet_sha256",
         "expected_uart_substring",
         "debug_connect_mode",
         "debug_clock_hz",
     }
 )
 _PROFILE_METADATA_FIELDS = frozenset(
-    {"schema_version", "mcu_part_number", "created_at", "updated_at", "safety_ref"}
+    {
+        "schema_version",
+        "mcu_part_number",
+        "created_at",
+        "updated_at",
+        "safety_ref",
+        "datasheet_sha256",
+    }
 )
 _V2_FIELDS = (
     _CORE_INPUT_FIELDS
@@ -238,6 +246,12 @@ class ProfileRepository:
         part_number = document["mcu_part_number"]
         if not isinstance(part_number, str) or not part_number.strip():
             raise ProfileError("mcu_part_number must be the exact non-empty user-supplied string")
+        datasheet_sha256 = document.get("datasheet_sha256")
+        if datasheet_sha256 is not None and (
+            not isinstance(datasheet_sha256, str)
+            or re.fullmatch(r"[0-9a-f]{64}", datasheet_sha256) is None
+        ):
+            raise ProfileError("datasheet_sha256 must be a lowercase SHA-256 digest")
         created_at = _validate_absolute_timestamp(document.get("created_at"), "created_at")
         updated_at = _validate_absolute_timestamp(document.get("updated_at"), "updated_at")
 

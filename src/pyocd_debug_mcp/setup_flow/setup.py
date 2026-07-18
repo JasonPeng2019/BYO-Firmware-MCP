@@ -666,7 +666,6 @@ class SetupWorkflow:
             "candidate_validation_results": [],
             "connection_results": self._phase_details(state, SetupPhase.CONNECTION),
             "safety_sources": self._phase_details(state, SetupPhase.SAFETY_RESEARCH),
-            "fingerprints": {},
             "phase_records": [
                 {
                     "phase": record.phase.value,

@@ -72,9 +72,10 @@ change security state, or write target memory.
 - Planned-action runtime bounds come from the same immutable plan definition
   that renders the NULL guidance. `board_setup` and `board_fix_setup` therefore
   enforce the documented 300-second finite bound; helper steps remain smaller.
-- `board_safety_setup`, `board_safety_refresh`, and `board_validate` receive
-  explicit bounded classes rather than falling through to the generic 30-second
-  timeout.
+- `board_safety_refresh` and `board_validate` receive explicit bounded classes
+  rather than falling through to the generic 30-second timeout. Public
+  `board_safety_setup` is retired; refresh creates the first map and repairs an
+  invalid one.
 - Timeout/cancellation leaves no profile half-commit, no open probe/UART, no
   assignment, and no authority state. Reports remain immutable.
 - Setup checks cancellation between every phase and before every commit. It does
@@ -121,8 +122,9 @@ change security state, or write target memory.
   flashing unavailable until a later build is inspected and proven contained by
   the unchanged deployment policy. User build symbols may narrow but never widen
   the trusted envelope.
-- Safety artifacts are committed atomically through `FirmStore` and contain
-  provenance/fingerprints but no gate, permission, plan, or assignment state.
+- The sole safety authority is atomically committed `memory_map.yaml`, containing
+  reviewed identity, semantic source digests, geometry, partitions, and regions,
+  but no gate, permission, plan, or assignment state.
 
 ### F7. Setup-completion barrier
 
@@ -131,7 +133,7 @@ change security state, or write target memory.
   `configuration_ready` and `live_session_ready` facts.
 - `configuration_ready` requires the schema-v2 profile and current safety map.
 - `live_session_ready` requires an assigned persistent connection, exact probe,
-  current-run validation stamp, and current fingerprint. Pseudo-connection gate
+  current-run live identity proof, and current map digest. Pseudo-connection gate
   stamps are forbidden.
 - `ready_for_code` is true only when both facts are true.
 - The readiness result is evidence, not persisted authority. Restart resets the

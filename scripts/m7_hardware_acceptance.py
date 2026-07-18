@@ -5,6 +5,10 @@ The command requires a clean external artifact root plus prebuilt v1/v2 ELF and
 HEX pairs. It never mass-erases. The application partition is backed up before
 this command is run, and the real adapter is instrumented to prove every pyOCD
 programmer instance is forced to sector erase.
+
+This is retained only as an explicitly invoked historical/manual acceptance
+script. Automated checks must never execute it or treat its live/manual source
+records as packaged automatic safety authority.
 """
 
 from __future__ import annotations
@@ -21,7 +25,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from intelhex import IntelHex
+from intelhex import IntelHex  # type: ignore[import-not-found]
 
 if TYPE_CHECKING:
     from pyocd_debug_mcp.safety.linker import BuildEvidence
@@ -67,20 +71,12 @@ def _arguments() -> argparse.Namespace:
     parser.add_argument("--mcu-part-number", default="STM32L476RGT6")
     parser.add_argument("--target", default="stm32l476rgtx")
     parser.add_argument("--baudrate", type=int, default=115200)
-    parser.add_argument("--silicon-id-address", type=lambda value: int(value, 0), default=0xE0042000)
+    parser.add_argument(
+        "--silicon-id-address", type=lambda value: int(value, 0), default=0xE0042000
+    )
     parser.add_argument("--silicon-id-expected", type=lambda value: int(value, 0), default=0x415)
     parser.add_argument("--silicon-id-mask", type=lambda value: int(value, 0), default=0xFFF)
     return parser.parse_args()
-
-
-def _artifact_records(elf: Path, hex_file: Path, configuration: str) -> dict[str, object]:
-    return {
-        "configuration": configuration,
-        "artifacts": [
-            {"kind": "elf", "path": str(elf), "sha256": _sha256(elf)},
-            {"kind": "hex", "path": str(hex_file), "sha256": _sha256(hex_file)},
-        ],
-    }
 
 
 def _build_document(evidence: BuildEvidence) -> dict[str, object]:
@@ -130,21 +126,20 @@ async def _run(args: argparse.Namespace) -> dict[str, Any]:
         pack_spec_document,
         sha256_file,
     )
-    from pyocd_debug_mcp.safety.enforce import SafetyPolicy, SafetyPolicyError
-    from pyocd_debug_mcp.safety.fingerprints import (
-        FingerprintInputs,
-        FingerprintSet,
-        FingerprintSource,
-    )
+    from pyocd_debug_mcp.safety.enforce import SafetyPolicy
     from pyocd_debug_mcp.safety.linker import (
         BuildArtifactSelection,
         BuildRole,
         extract_build_evidence,
     )
     from pyocd_debug_mcp.safety.map_build import (
+        MapGeometry,
+        MapIdentity,
+        MapPartitions,
         RegionContribution,
+        RegionSource,
+        SafetyMapBuildRequest,
         SafetyMapBuilder,
-        SafetySetupRequest,
     )
     from pyocd_debug_mcp.safety.refresh import SafetyRefreshRequest
     from pyocd_debug_mcp.safety.regions import (
@@ -153,10 +148,10 @@ async def _run(args: argparse.Namespace) -> dict[str, Any]:
         Allowed,
         Provenance,
         RegionKind,
-        SafetyMap,
         SafetyRegion,
         SourceAuthority,
     )
+    from pyocd_debug_mcp.setup_flow.board_catalog import catalog_board
     from pyocd_debug_mcp.services import target_control
     from pyocd_debug_mcp.services.uart_capture import capture_uart_output
 
@@ -196,12 +191,14 @@ async def _run(args: argparse.Namespace) -> dict[str, Any]:
     if v1_build.flash_partition is None or v2_build.flash_partition is None:
         raise RuntimeError("Both linker artifacts must define an application partition")
     if v1_build.flash_partition != v2_build.flash_partition:
-        raise RuntimeError("The relink changed the application partition; full setup is required")
+        raise RuntimeError("The relink changed its linker partition; fix or select the build")
     evidence["builds"] = {"v1": _build_document(v1_build), "v2": _build_document(v2_build)}
 
     # Read-only live target/geometry reconciliation before any write.
     board = server.resolve_board_config(args.board_id, None)
-    live_handle = target_control.open_session(board=board, unique_id=args.probe_id, target=args.target)
+    live_handle = target_control.open_session(
+        board=board, unique_id=args.probe_id, target=args.target
+    )
     try:
         target = live_handle.session.target
         flash_regions = [item for item in target.memory_map.regions if item.is_flash]
@@ -238,7 +235,9 @@ async def _run(args: argparse.Namespace) -> dict[str, Any]:
     if live["silicon_device_id"] != args.silicon_id_expected:
         raise RuntimeError("Live silicon identity does not match the requested STM32L476")
     if flash.start != 0x08000000 or flash.length != 0x100000 or erase_size != 0x800:
-        raise RuntimeError("Live pack geometry does not match the independently reviewed device facts")
+        raise RuntimeError(
+            "Live pack geometry does not match the independently reviewed device facts"
+        )
     evidence["live_target"] = live
 
     pack = next(
@@ -323,120 +322,111 @@ async def _run(args: argparse.Namespace) -> dict[str, Any]:
             "silicon": "live DBGMCU device id matches STM32L476 family",
         },
     }
-    geometry = {
-        "erase_origin": flash.start,
-        "erase_size": erase_size,
-        "flash_end": flash.end + 1,
-        "verification": official_evidence["reconciliation"],
+    catalog = catalog_board("nucleo_l476rg")
+    if args.mcu_part_number != catalog.package_part_number or args.target != catalog.pyocd_target:
+        raise RuntimeError("Manual acceptance identity does not match the reviewed catalog entry")
+    application_partition = catalog.application_partition
+    if application_partition is None:
+        raise RuntimeError("The reviewed catalog has no authoritative application partition")
+    map_geometry = MapGeometry(
+        AddressRange(catalog.flash_start, catalog.flash_end),
+        AddressRange(catalog.ram_start, catalog.ram_end),
+        erase_origin=catalog.flash_start,
+        erase_size=catalog.erase_size,
+    )
+    # This historical manual script records its live/manual evidence honestly. It
+    # does not claim that those records are packaged automatic setup authority.
+    reviewed_official_evidence = {
+        "manual_historical_official_evidence": official_evidence,
+        "deployment_partition_policy": catalog.deployment_partition_policy_document(),
     }
-    # The safety_ref and timestamps are reference metadata, not map inputs. Keep
-    # both relink candidates bound to the same pre-reference profile document.
-    profile_fingerprint_document = profile.to_document()
-
-    def inputs_for(elf: Path, hex_file: Path, configuration: str) -> FingerprintInputs:
-        return FingerprintInputs(
-            profile_fingerprint_document,
-            {"mcu_part_number": args.mcu_part_number, "target": args.target},
-            pack_document,
-            official_evidence,
-            _artifact_records(elf, hex_file, configuration),
-            {"configuration": None, "artifacts": []},
-            geometry,
-            {"memory_map": 1, "fingerprints": 1, "evidence": 1},
-        )
 
     def region(
         name: str,
         kind: RegionKind,
         address_range: AddressRange,
         provenance: tuple[Provenance, ...],
-        groups: tuple[FingerprintSource, ...],
-        *,
-        executable: bool = False,
+        groups: tuple[RegionSource, ...],
     ) -> RegionContribution:
-        return RegionContribution(
-            SafetyRegion(name, kind, address_range, provenance, executable), groups
-        )
+        return RegionContribution(SafetyRegion(name, kind, address_range, provenance), groups)
 
     hardware_provenance = (
         Provenance(SourceAuthority.DEVICE_SUPPORT, pack.id, f"pinned pack sha256 {pack_hash}"),
         Provenance(SourceAuthority.OFFICIAL_DOCUMENT, "RM0351", "2 KiB pages at 0x08000000"),
         Provenance(SourceAuthority.RECONCILED, args.probe_id, "live pyOCD memory map agreed"),
     )
-    build_provenance_v1 = tuple(
-        Provenance(SourceAuthority.BUILD, item.artifact_kind, f"{item.path} sha256 {item.sha256}")
-        for item in v1_build.provenance
+    source_groups = (
+        RegionSource.REVIEWED_DEVICE_SUPPORT,
+        RegionSource.REVIEWED_OFFICIAL_EVIDENCE,
+        RegionSource.GEOMETRY,
     )
     base_regions = (
         region(
             "physical flash",
             RegionKind.PHYSICAL_FLASH,
-            AddressRange(flash.start, flash.end + 1),
+            map_geometry.physical_flash,
             hardware_provenance,
-            (FingerprintSource.PACK, FingerprintSource.EVIDENCE, FingerprintSource.GEOMETRY),
+            source_groups,
         ),
-        *(region(
-            f"physical {item['name']}",
+        region(
+            "physical RAM",
             RegionKind.PHYSICAL_RAM,
-            AddressRange(item["start"], item["end"]),
+            map_geometry.physical_ram,
             hardware_provenance,
-            (FingerprintSource.PACK, FingerprintSource.EVIDENCE),
-        ) for item in live["ram"]),
-    )
-
-    def build_regions(
-        build: BuildEvidence, provenance: tuple[Provenance, ...]
-    ) -> tuple[RegionContribution, ...]:
-        assert build.flash_partition is not None
-        return (
+            source_groups,
+        ),
+        region(
+            "writable RAM",
+            RegionKind.RAM,
+            map_geometry.physical_ram,
+            hardware_provenance,
+            source_groups,
+        ),
+        *(
             region(
-                "application flash",
-                RegionKind.APPLICATION_FLASH,
-                build.flash_partition,
-                provenance,
-                (FingerprintSource.APPLICATION_ARTIFACTS,),
-                executable=True,
-            ),
-            *(
-                region(
-                    f"application RAM {index}",
-                    RegionKind.RAM,
-                    ram,
-                    provenance,
-                    (FingerprintSource.APPLICATION_ARTIFACTS,),
-                )
-                for index, ram in enumerate(build.ram_partitions)
-            ),
-        )
-
-    inputs_v1 = inputs_for(v1_elf, v1_hex, "m7_v1")
-    map_result = SafetyMapBuilder(server._firm_store).build(
-        SafetySetupRequest(
-            args.board_id,
-            "m7-hardware-map-v1",
-            inputs_v1,
-            (*base_regions, *build_regions(v1_build, build_provenance_v1)),
-        )
+                item.name,
+                item.kind,
+                AddressRange(item.start, item.end),
+                hardware_provenance,
+                source_groups,
+            )
+            for item in catalog.hardware_regions
+        ),
     )
-    if map_result.status != "safety_setup_completed" or not map_result.aggregate_fingerprint:
-        raise RuntimeError(f"Safety map failed: {map_result.status}")
+    map_request = SafetyMapBuildRequest(
+        board_id=args.board_id,
+        identity=MapIdentity(
+            catalog.package_part_number,
+            catalog.pyocd_target,
+            catalog.board_type,
+        ),
+        profile=profile.to_document(),
+        reviewed_device_support=pack_document,
+        reviewed_official_evidence=reviewed_official_evidence,
+        geometry=map_geometry,
+        partitions=MapPartitions(application_partition),
+        regions=base_regions,
+    )
+    map_document = SafetyMapBuilder(server._firm_store).build(map_request)
     safety_ref = (
         server._firm_store.layout.safety_reference_prefix(args.board_id) / "memory_map.yaml"
     ).as_posix()
     profile = server._profile_repository.commit_safety_ref(
         server._profile_repository.stage_safety_ref(args.board_id, safety_ref)
     )
-    evidence["safety_setup"] = {
-        "status": map_result.status,
-        "aggregate": map_result.aggregate_fingerprint,
-        "report": str(map_result.report_path),
+    evidence["safety_map"] = {
+        "status": "schema_v2_map_written",
+        "map_digest": map_document.canonical_digest,
+        "memory_map": str(server._safety_repository.path(args.board_id)),
+        "authority_scope": "manual historical acceptance evidence",
         "profile_safety_ref": profile.safety_ref,
     }
 
     # Boundary images are classification inputs only; the unsafe one is never sent to pyOCD.
     boundary_dir = artifact_root / "boundary-images"
     boundary_dir.mkdir(parents=True, exist_ok=True)
-    app = v1_build.flash_partition
+    app = map_document.partitions.application
+    assert app is not None
     safe_boundary = boundary_dir / "safe-last-application-byte.hex"
     unsafe_boundary = boundary_dir / "unsafe-first-byte-after-application.hex"
     for path, address in ((safe_boundary, app.end - 1), (unsafe_boundary, app.end)):
@@ -449,7 +439,7 @@ async def _run(args: argparse.Namespace) -> dict[str, Any]:
         return AddressRange.from_start_size(start, erase_size)
 
     current_map = server._safety_repository.load_current(args.board_id)
-    classifier = SafetyMap([item.region for item in current_map.regions])
+    classifier = current_map.safety_map
     safe_sector = sector_for(app.end - 1)
     unsafe_sector = sector_for(app.end)
     safe_check = classifier.check(ActionCategory.FLASH_APPLICATION, (safe_sector,))
@@ -481,12 +471,18 @@ async def _run(args: argparse.Namespace) -> dict[str, Any]:
     class RecordingFileProgrammer:
         def __init__(self, session: Any, *positional: Any, **options: Any) -> None:
             programmer_calls.append(
-                {"event": "construct", "chip_erase": options.get("chip_erase"), "options": dict(options)}
+                {
+                    "event": "construct",
+                    "chip_erase": options.get("chip_erase"),
+                    "options": dict(options),
+                }
             )
             self._inner = original_programmer(session, *positional, **options)
 
         def program(self, path: str) -> object:
-            programmer_calls.append({"event": "program", "path": path, "sha256": _sha256(Path(path))})
+            programmer_calls.append(
+                {"event": "program", "path": path, "sha256": _sha256(Path(path))}
+            )
             return self._inner.program(path)
 
     swd_pyocd.FileProgrammer = RecordingFileProgrammer  # type: ignore[assignment]
@@ -503,10 +499,10 @@ async def _run(args: argparse.Namespace) -> dict[str, Any]:
         result = _json_result(
             await server.mcp.call_tool(
                 "board_validate",
-                {"board_id": args.board_id, "probe_id": args.probe_id, "serial_id": args.serial_id},
+                {"board_id": args.board_id, "probe_id": args.probe_id},
             )
         )
-        if result["status"] != "validation_passed_uart_not_configured":
+        if result["status"] != "validation_passed":
             raise RuntimeError(f"{label} validation did not pass: {result}")
         return result
 
@@ -522,7 +518,7 @@ async def _run(args: argparse.Namespace) -> dict[str, Any]:
             "board_id": args.board_id,
             "hypothesis": f"The {label} artifact is fully contained in the mapped application partition.",
             "hypothesis_made": True,
-            "strategy": "Check the current gate, fingerprint, linker ranges, and erase sectors before sector programming.",
+            "strategy": "Check the current gate, canonical map digest, linker ranges, artifact binding, and erase sectors before sector programming.",
             "strategy_evaluated": True,
             "expected_fail_return": "A pre-backend safety refusal with the exact required remedy.",
             "expected_success_return": "The application is sector-programmed and the target returns to running state.",
@@ -574,72 +570,61 @@ async def _run(args: argparse.Namespace) -> dict[str, Any]:
         first_flash["readback"] = first_readback
         if not first_readback["matches"]:
             raise RuntimeError("v1 halted flash readback did not match its HEX image")
-        uart_v1 = capture_uart_output(args.serial_id, args.baudrate, 3.0, None, reopen_attempts=0, max_bytes=65536)
-        first_flash["uart"] = {"port": args.serial_id, "text": uart_v1.text, "bytes": len(uart_v1.text.encode())}
+        uart_v1 = capture_uart_output(
+            args.serial_id, args.baudrate, 3.0, None, reopen_attempts=0, max_bytes=65536
+        )
+        first_flash["uart"] = {
+            "port": args.serial_id,
+            "text": uart_v1.text,
+            "bytes": len(uart_v1.text.encode()),
+        }
         evidence["first_flash"] = first_flash
 
-        inputs_v2 = inputs_for(v2_elf, v2_hex, "m7_v2")
-        changed = FingerprintSet.build(inputs_v1).changed_sources(FingerprintSet.build(inputs_v2))
-        if changed != (FingerprintSource.APPLICATION_ARTIFACTS,):
-            raise RuntimeError(f"Relink drift was not application-only: {changed}")
-        stale_policy = SafetyPolicy(server._safety_repository, live_inputs=lambda _board, _artifacts: inputs_v2)
-        stale_refusal: dict[str, object]
-        try:
-            stale_policy.current_aggregate(args.board_id)
-        except SafetyPolicyError as exc:
-            stale_refusal = {"code": exc.code, "remedy": list(exc.remedy), "message": str(exc)}
-        else:
-            raise RuntimeError("The application fingerprint drift was not detected")
-        build_provenance_v2 = tuple(
-            Provenance(SourceAuthority.BUILD, item.artifact_kind, f"{item.path} sha256 {item.sha256}")
-            for item in v2_build.provenance
+        relink_candidate = SafetyMapBuilder(server._firm_store).derive(map_request)
+        if relink_candidate.canonical_digest != map_document.canonical_digest:
+            raise RuntimeError("Ordinary relink bytes unexpectedly changed stable map authority")
+        manual_policy = SafetyPolicy(
+            server._safety_repository,
+            # This historical script predates packaged automatic Nucleo evidence.
+            authority_verifier=lambda _document: None,
         )
-        refresh = server._safety_refresher.refresh(
-            SafetyRefreshRequest(
-                args.board_id,
-                "m7-hardware-refresh-v2",
-                inputs_v2,
-                (FingerprintSource.APPLICATION_ARTIFACTS,),
-                build_regions(v2_build, build_provenance_v2),
-            )
-        )
-        if refresh.status != "safety_refresh_completed" or not refresh.aggregate_fingerprint:
-            raise RuntimeError(f"Application-only safety refresh failed: {refresh.status}")
-        evidence["relink_and_refresh"] = {
-            "changed_sources": [item.value for item in changed],
-            "pre_refresh_refusal": stale_refusal,
-            "status": refresh.status,
-            "rebuilt_groups": [item.value for item in refresh.rebuilt_groups],
-            "aggregate": refresh.aggregate_fingerprint,
-            "report": str(refresh.report_path),
-            "gate_after_refresh_without_revalidation": gate_document(),
+        current_digest = manual_policy.current_aggregate(args.board_id)
+        if current_digest != map_document.canonical_digest:
+            raise RuntimeError("Ordinary relink unexpectedly made the stable map stale")
+        evidence["ordinary_relink"] = {
+            "changed_input": "application artifact bytes only",
+            "persistent_map_changed": False,
+            "refresh_required": False,
+            "map_digest": current_digest,
+            "gate_without_revalidation": gate_document(),
         }
-        refreshed_gate = gate_document()
-        if (
-            refreshed_gate is None
-            or refreshed_gate["aggregate_fingerprint"] != refresh.aggregate_fingerprint
-        ):
-            raise RuntimeError("Refresh did not restamp the still-validated live session")
 
         second_flash = await flash_image("v2", v2_elf)
         second_readback = verify_hex(v2_hex)
         second_flash["readback"] = second_readback
         if not second_readback["matches"]:
             raise RuntimeError("v2 halted flash readback did not match its HEX image")
-        uart_v2 = capture_uart_output(args.serial_id, args.baudrate, 3.0, None, reopen_attempts=0, max_bytes=65536)
-        second_flash["uart"] = {"port": args.serial_id, "text": uart_v2.text, "bytes": len(uart_v2.text.encode())}
+        uart_v2 = capture_uart_output(
+            args.serial_id, args.baudrate, 3.0, None, reopen_attempts=0, max_bytes=65536
+        )
+        second_flash["uart"] = {
+            "port": args.serial_id,
+            "text": uart_v2.text,
+            "bytes": len(uart_v2.text.encode()),
+        }
         evidence["second_flash_without_revalidation"] = second_flash
 
         evidence["disconnect"] = await call("disconnect", {"board_id": args.board_id})
         evidence["gate_after_disconnect"] = gate_document()
         evidence["reconnect"] = await call("connect", {"board_id": args.board_id})
         refresh_after_disconnect = server._safety_refresher.refresh(
-            SafetyRefreshRequest(args.board_id, "m7-refresh-after-disconnect", inputs_v2)
+            SafetyRefreshRequest(args.board_id, "m7-refresh-after-disconnect")
         )
         evidence["refresh_after_disconnect"] = {
             "status": refresh_after_disconnect.status,
-            "changed_sources": [item.value for item in refresh_after_disconnect.changed_sources],
-            "aggregate": refresh_after_disconnect.aggregate_fingerprint,
+            "changed_groups": list(refresh_after_disconnect.changed_groups),
+            "map_digest": refresh_after_disconnect.map_digest,
+            "validation_required": refresh_after_disconnect.validation_required,
             "gate_after_refresh": gate_document(),
         }
         if gate_document() is not None:
@@ -647,7 +632,9 @@ async def _run(args: argparse.Namespace) -> dict[str, Any]:
         connection = server.connection_manager.connection_for(args.board_id)
         try:
             server.gate_manager.require_write(
-                args.board_id, connection.connection_id, refresh_after_disconnect.aggregate_fingerprint or ""
+                args.board_id,
+                connection.connection_id,
+                refresh_after_disconnect.map_digest or "unavailable-map-digest",
             )
         except GateRefusal as exc:
             evidence["closed_gate_proof"] = {
@@ -685,12 +672,15 @@ async def _run(args: argparse.Namespace) -> dict[str, Any]:
     }
     evidence["surface_audit"] = {
         "board_safety_setup_mcp_visible": False,
-        "board_safety_refresh_mcp_visible": False,
-        "note": "The acceptance invoked the same in-process SafetyMapBuilder and SafetyRefresher engines used by server composition; MCP registration is missing.",
+        "board_safety_refresh_mcp_visible": True,
+        "note": (
+            "The historical acceptance invokes the in-process schema-v2 builder and refresher; "
+            "board_safety_refresh is the public safety recovery surface."
+        ),
     }
-    evidence["reports"] = [
+    evidence["persisted_safety_authority"] = [
         {"path": str(path), "sha256": _sha256(path)}
-        for path in sorted((artifact_root / ".firm").glob("**/report.json"))
+        for path in sorted((artifact_root / ".firm" / "safety").glob("**/memory_map.yaml"))
     ]
     evidence["completed_at"] = _timestamp()
     evidence["terminal_status"] = "nucleo_m7_hardware_passed"

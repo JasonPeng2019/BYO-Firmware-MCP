@@ -219,6 +219,7 @@ class SetupToolServices:
     setup_continue: Callable[[str, str, Mapping[str, object]], Mapping[str, Any]] | None = None
     setup_selections: Callable[[str], PreflightSelections] | None = None
     clear_setup_continuation: Callable[[str], None] | None = None
+    setup_plan_eligible: Callable[[str], tuple[bool, str]] | None = None
 
 
 def build_setup_handlers(services: SetupToolServices) -> dict[str, Callable[..., str]]:
@@ -232,6 +233,17 @@ def build_setup_handlers(services: SetupToolServices) -> dict[str, Callable[...,
         route before calling it. Never ask the user for board_id, connection IDs, or JSON.
         """
 
+        if tool_name == "board_setup-plan" and services.setup_plan_eligible is not None:
+            eligible, reason = services.setup_plan_eligible(board_id)
+            if not eligible:
+                return _json(
+                    {
+                        "status": "setup_plan_ineligible",
+                        "board_id": board_id,
+                        "tool_name": tool_name,
+                        "agent_prompt": reason,
+                    }
+                )
         return _json(services.loader.load(board_id, tool_name))
 
     def setup_overview(board_names: list[str] | None = None) -> str:

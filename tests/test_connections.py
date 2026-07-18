@@ -263,9 +263,10 @@ def test_ac_13_3_disconnect_clears_only_named_assignment_stamp_and_gate(
         gates.stamp_validation(
             board_id=connection.board_id,
             connection_id=connection.connection_id,
-            hardware_result="validation_passed",
             probe_identity=connection.handle.probe_uid or connection.connection_id,
-            aggregate_fingerprint=fingerprint,
+            observed_mcu=f"observed-{connection.board_id}",
+            validation_run=f"validation-{connection.board_id}",
+            map_digest=fingerprint,
         )
 
     assert server.disconnect("board-a") == "Disconnected board 'board-a'."

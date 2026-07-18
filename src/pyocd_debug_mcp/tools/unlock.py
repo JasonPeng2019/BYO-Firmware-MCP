@@ -26,11 +26,18 @@ from pyocd_debug_mcp.guardrails.plan_engine import (
 )
 from pyocd_debug_mcp.kernel.operations import wrap_layer2_response
 from pyocd_debug_mcp.kernel.run_state import ServerRun
-from pyocd_debug_mcp.safety.fingerprints import FingerprintSource
-from pyocd_debug_mcp.safety.map_build import SafetyArtifactRepository, SafetyArtifacts
+from pyocd_debug_mcp.safety.map_build import (
+    SafetyMapDocument,
+    SafetyMapError,
+    SafetyMapRepository,
+)
 from pyocd_debug_mcp.safety.regions import (
+    Provenance,
     RecoveryEraseDisclosure,
     RegionError,
+    RegionKind,
+    SafetyRegion,
+    SourceAuthority,
     build_recovery_erase_disclosure,
 )
 
@@ -68,7 +75,7 @@ class LiveUnlockIdentity:
     pyocd_target: str
     probe_identity: str
     connection_id: str
-    safety_map_fingerprint: str
+    map_digest: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -91,13 +98,13 @@ class UnlockToolServices:
     server_run: ServerRun
     plan_engine: PlanEngine
     profiles: ProfileRepository
-    safety_repository: SafetyArtifactRepository
+    safety_repository: SafetyMapRepository
     reports: ReportWriter
     gate_manager: GateManager
     handle_for: Callable[[str], TargetSessionHandle]
     connection_id_for: Callable[[str], str]
     session_id_for: Callable[[str], str | None]
-    current_fingerprint: Callable[[str], str]
+    current_map_digest: Callable[[str], str]
     supports_recovery: Callable[[TargetSessionHandle, str], bool]
     recover_target: Callable[[TargetSessionHandle, str], str]
     mark_recover_completed: Callable[[str], None]
@@ -108,20 +115,50 @@ def _json(document: Mapping[str, Any]) -> str:
     return json.dumps(document, ensure_ascii=False, sort_keys=True)
 
 
-def _geometry(artifacts: SafetyArtifacts) -> Mapping[str, object]:
-    sources = artifacts.source_manifest.get("sources")
-    if not isinstance(sources, Mapping):
-        raise PlanRefusal(
-            "unlock/safety-evidence-invalid",
-            "The current safety source manifest is missing; run board_safety_setup.",
+def _geometry(document: SafetyMapDocument) -> Mapping[str, object]:
+    geometry = document.geometry
+    if geometry.erase_sectors:
+        return {
+            "sectors": [sector.to_document() for sector in geometry.erase_sectors],
+        }
+    return {
+        "erase_origin": geometry.erase_origin,
+        "erase_size": geometry.erase_size,
+    }
+
+
+def _recovery_regions(document: SafetyMapDocument) -> list[SafetyRegion]:
+    """Combine persisted hazards with reviewed deployment partitions for disclosure."""
+
+    regions = list(document.regions)
+    provenance = (
+        Provenance(
+            SourceAuthority.RECONCILED,
+            "memory_map.partitions",
+            "reviewed deployment-partition authority",
+        ),
+    )
+    if document.partitions.application is not None:
+        regions.append(
+            SafetyRegion(
+                "application",
+                RegionKind.APPLICATION_FLASH,
+                document.partitions.application,
+                provenance,
+                True,
+            )
         )
-    row = sources.get(FingerprintSource.GEOMETRY.value)
-    if not isinstance(row, Mapping) or not isinstance(row.get("evidence"), Mapping):
-        raise PlanRefusal(
-            "unlock/geometry-missing",
-            "The safety map has no complete erase geometry; run board_safety_setup.",
+    if document.partitions.bootloader is not None:
+        regions.append(
+            SafetyRegion(
+                "bootloader",
+                RegionKind.BOOTLOADER_FLASH,
+                document.partitions.bootloader,
+                provenance,
+                True,
+            )
         )
-    return row["evidence"]  # type: ignore[return-value]
+    return regions
 
 
 class UnlockCoordinator:
@@ -134,7 +171,7 @@ class UnlockCoordinator:
         self._approved: dict[str, UnlockBinding] = {}
         self._guard = threading.RLock()
 
-    def _identity(self, board_id: str) -> tuple[LiveUnlockIdentity, SafetyArtifacts]:
+    def _identity(self, board_id: str) -> tuple[LiveUnlockIdentity, SafetyMapDocument]:
         profile = self.services.profiles.load(board_id, include_legacy=False)
         handle = self.services.handle_for(board_id)
         probe = (handle.probe_uid or "").strip()
@@ -153,12 +190,19 @@ class UnlockCoordinator:
         pyocd_target = (
             str(handle.target_override or "").strip() or profile.board.pyocd_target.strip()
         )
-        fingerprint = self.services.current_fingerprint(board_id)
-        artifacts = self.services.safety_repository.load_current(board_id)
-        if artifacts.fingerprints.aggregate != fingerprint:
+        map_digest = self.services.current_map_digest(board_id)
+        try:
+            artifacts = self.services.safety_repository.load_current(board_id)
+        except SafetyMapError as exc:
             raise PlanRefusal(
-                "unlock/safety-fingerprint-mismatch",
-                "The current safety map fingerprint changed; run board_safety_refresh first.",
+                "unlock/safety-map-invalid",
+                f"The current safety map is unavailable or invalid: {exc}. "
+                "Run board_safety_refresh first.",
+            ) from exc
+        if artifacts.canonical_digest != map_digest:
+            raise PlanRefusal(
+                "unlock/safety-map-digest-mismatch",
+                "The current safety map digest changed; run board_safety_refresh first.",
             )
         return (
             LiveUnlockIdentity(
@@ -170,7 +214,7 @@ class UnlockCoordinator:
                 pyocd_target,
                 probe,
                 self.services.connection_id_for(board_id),
-                fingerprint,
+                map_digest,
             ),
             artifacts,
         )
@@ -240,7 +284,7 @@ class UnlockCoordinator:
             return None, None, identity
         try:
             disclosure = build_recovery_erase_disclosure(
-                [item.region for item in artifacts.regions],
+                _recovery_regions(artifacts),
                 _geometry(artifacts),
                 mass_erase=mechanism.mass_erase,
             )
@@ -248,7 +292,7 @@ class UnlockCoordinator:
             raise PlanRefusal(
                 "unlock/erase-disclosure-incomplete",
                 f"The current safety map cannot prove the complete recovery erase disclosure: "
-                f"{exc}. Run board_safety_setup before requesting permission.",
+                f"{exc}. Run board_safety_refresh before requesting permission.",
             ) from exc
         return (
             UnlockBinding(

@@ -15,7 +15,7 @@ server.py composition root
         |
         +-- kernel: registry, managed dispatch, lifecycle, process ownership
         +-- guardrails: plans, permissions, validation gate
-        +-- safety: evidence, regions, fingerprints, containment
+        +-- safety: reviewed map authority, regions, runtime containment
         +-- setup_flow: inventory, research, setup, validation
         +-- tools: schemas and board-facing handlers
         +-- services/adapters: board routing, pyOCD, serial, symbols
@@ -112,57 +112,52 @@ empty after restart.
 
 ## Validation gate and safety
 
-The write gate is default closed. Only a successful `board_validate` can stamp
-it, using the logical board, live connection, hardware result, stable probe
-identity, and current aggregate safety fingerprint. A stamp is in memory only.
-Disk artifacts, safety refresh, setup, planning, permission, or tool discovery
-cannot create one.
+The write gate is default closed. Only successful `board_validate` creates
+live identity proof. The stamp records logical board, current connection, stable
+probe identity, observed MCU evidence, validation run, and canonical map digest.
+It is memory-only; disk artifacts, refresh, setup, plans, permissions, reports,
+and tool visibility cannot create it.
 
-Guarded dispatch applies the standard order before starting a handler:
+Guarded dispatch applies the standard order before backend mutation:
 
 1. require the registered handler to be unlocked;
-2. validate the exact plan, board, run, session, and permission;
-3. resolve the named live connection and board lock;
-4. require validation for guarded reads;
-5. for writes, recompute source freshness and require a matching gate stamp;
-6. apply the action-specific containment rule;
-7. decrement the plan/permission budget exactly once at execution start; and
-8. call the bounded backend operation.
+2. verify any plan-bound artifact digest before scope, permission, preconditions,
+   or budget consumption;
+3. validate exact plan, board, run, session, parameters, and permission;
+4. require live identity proof for guarded reads and a matching map digest for
+   writes;
+5. apply action-specific runtime containment;
+6. decrement the plan/permission budget exactly once at execution start; and
+7. call the bounded backend operation.
 
-Raw memory-read containment is part of step 6, so rejection occurs before a
-planned call burns budget. The memory handler repeats the same check as a
-defense at the backend boundary, and symbol reads check after resolving the
-symbol but before target I/O. Checks cover only bytes actually read: scalar
-width for scalar/symbol access and requested byte length for block access.
-Mapped region kinds are readable; UNKNOWN and PROHIBITED are fail-closed.
+Raw and symbol memory checks cover the exact bytes accessed. UNKNOWN and
+PROHIBITED spans fail closed. `safety/regions.py` uses authoritative non-empty
+half-open ranges with prohibited precedence. `safety/linker.py` parses selected
+ELF/HEX bytes for segments, entry, vector, executable evidence, and target/build
+metadata; it never accepts caller-provided ranges. HEX bytes must agree with a
+matching ELF companion. `safety/verify2.py` promotes only deterministically
+reconciled device-support and official-document facts.
 
-`safety/regions.py` uses typed non-empty half-open ranges. Classification is
-UNKNOWN unless authoritative regions fully contain the request, and any
-prohibited overlap wins. `safety/linker.py` extracts build partitions,
-loadable segments, entry point, vector table, and configuration. It never
-accepts caller-provided allowed ranges. `safety/verify2.py` promotes only
-deterministically reconciled device-support and official-document facts.
-
-`safety/fingerprints.py` creates canonical per-source and aggregate SHA-256
-fingerprints. Map setup and refresh re-evaluate conflicts and overlaps before
-atomic promotion. Anchor changes require setup plus validation. Refreshable
-artifact drift can update the fingerprint on an already-valid live stamp but
-cannot open a closed gate.
+The sole persisted authority is each board's schema-v2 `memory_map.yaml`. Its
+semantic source digests cover the profile, reviewed device support, reviewed
+official evidence/partition policy, and map-generator schema. Ordinary build
+artifacts are not stable-map currentness inputs. `board_safety_refresh`
+rederives the complete map from server-owned sources, can create the first map,
+and can update only the map association of an existing same-connection identity
+proof. It cannot create live identity authority.
 
 The resulting action policy is:
 
-- guarded address reads require a validated connection;
+- guarded address reads require a validated current connection;
 - memory writes are fully contained in RAM;
 - peripheral register writes exclude prohibited ranges;
-- breakpoints require build-derived executable space;
-- application and bootloader flash require the exact target and fingerprinted
-  artifact, with segment, entry/vector, partition, and erase-sector
-  containment; and
-- target recovery uses a typed vendor mechanism, a fixed one-call plan, exact
-  live disclosure, and fresh one-time permission. Recovery leaves the gate
-  closed until validation succeeds again.
+- breakpoints require executable segments from the current plan-bound ELF;
+- application and bootloader flash require explicit reviewed partition authority
+  plus target, segment, entry/vector, and erase-sector containment; and
+- target recovery uses a typed mechanism, complete disclosure, a fixed one-call
+  plan, and fresh one-time permission, then clears live proof.
 
-Every refusal is before the corresponding backend mutation and names the
+Every refusal occurs before the corresponding backend mutation and names the
 required remedy.
 
 Normal connection is structurally separate from manual override. The visible
@@ -196,33 +191,41 @@ target into the paired repair attempt. Pack candidates are staged under the
 project `.firm` root, checked, enumerated, live-connected, and only then added
 to the authoritative project manifest.
 
-`get_setup_status` is the explicit pre-code barrier. It always returns a
-provider-neutral native-build and visible artifact-collector handoff. Reviewed
-Zephyr profiles may additionally return an optional, labeled and parameterized
-Zephyr terminal fallback. This guidance is never safety authority; the
-resulting ELF/map must still pass `board_safety_refresh` before application
-flash.
+`get_setup_status` is the explicit pre-code barrier. It reports configuration,
+live identity/map readiness, and UART attachment readiness separately. Native
+build and artifact-collector guidance is advisory only. The normal deployment
+flow is build, optional collection, populated flash plan, then flash; routine
+build bytes do not enter stable-map currentness.
 
-Safety refresh compares canonical sub-fingerprints and returns a stable drift
-classification plus exact public remedies. Application and bootloader build
-inputs are symmetric, but authority is not: application builds must remain
-inside the reviewed deployment ceiling, while bootloader builds may replace
-only build-derived regions already contained by an authoritative bootloader
-partition. A missing bootloader envelope is an honest terminal maintainer
-blocker, never an invitation to supply ranges. Pack and official-evidence
-sources remain coupled. Their migration path reloads current pinned assets and
-runtime identity, reruns two-source verification, reproduces retained build
-regions from content-addressed artifacts, and then atomically promotes the
-coupled replacement. A failure writes a blocked report and leaves the old map
-closed. Part/target, geometry, and schema changes require
-full safety setup followed by validation; unclear profile scope requires full
-safety setup. Safety responses do not expose internal continuation IDs because
-no public safety tool consumes them; report records retain correlation IDs.
+Safety authority is one strict schema-v2 `memory_map.yaml` per board. It stores
+reviewed identity, semantic source digests, geometry, explicit deployment
+partitions, and reconciled regions. Application and bootloader partitions exist
+only when an explicit reviewed partition policy authorizes them; the historical
+full-flash ceiling is never reinterpreted as partition authority. Legacy source
+manifest and safety report siblings are deleted during map load/commit and are
+never read.
 
-If a profile's board type lacks complete pinned reviewed evidence,
-`board_safety_setup` returns `safety_setup_unsupported_board` with the reviewed
-automatic board list and the maintainer evidence requirements. It does not
-advertise a dead research continuation and never opens a gate.
+`board_safety_refresh` accepts only a board ID and rederives a complete candidate
+from the profile and server-owned reviewed catalog/evidence on every call. The
+missing, malformed, and old-schema paths use the same derivation. Refresh can
+replace the map association of existing live identity proof, but cannot create
+identity authority. An identity-anchor change closes the proof and requires
+`board_validate`; public `board_safety_setup` is retired.
+
+Validation connects through the selected probe, reads only reviewed silicon
+identity evidence, associates the current map digest, and stamps run-scoped gate
+state. It performs no UART capture or firmware behavior assertion. Identity
+proof is cleared by restart, disconnect, connection/probe change, identity
+repair, and recovery, but not by reset, flash, UART work, or refresh. Silicon
+mismatch guidance is neutral and an exact run-scoped allowance is required
+before setup may create a new logical board/profile.
+
+Flash and breakpoint plans bind selected artifact digests when populated plans
+are accepted. Digest drift is rejected before permission, budget, containment,
+or backend work. Flash containment then checks target, segments, entry, vector,
+reviewed partition, and erase sectors; HEX also requires its matching ELF.
+Breakpoint containment uses executable segments from the selected current ELF,
+not blanket partition executability.
 
 `scripts/run_fresh_workspace_e2e.py` is a narrow real-stdio adapter for a clean
 artifact root. Its input surface is fixed to board/probe/UART/datasheet
@@ -252,7 +255,7 @@ implementations.
   boards/       schema-v2 board profiles
   packs/        authoritative pack manifest and downloaded files
   setup/        immutable setup attempts and append-only logs
-  safety/       maps, source manifests, fingerprints, safety reports
+  safety/       one schema-v2 memory_map.yaml per board
   validation/   immutable validation and recovery attempts
   cache/        revocable host attachment hints
 ```
@@ -302,8 +305,8 @@ handoff for explicit ELF, HEX, BIN, and linker-map outputs. It performs no build
 search, subprocess, download, or hardware access. Collection stages a canonical
 `firmware.*` bundle and deterministic SHA-256 manifest outside `.firm`; the
 manifest contains provenance but no allowed ranges, plans, permissions, or gate
-state. Current safety refresh consumes the returned ELF/HEX/MAP paths explicitly
-and remains the sole route to build-derived containment evidence.
+state. Safety refresh never consumes build outputs. The flash plan binds the selected
+artifact and runtime containment parses it immediately before execution.
 
 The Zephyr helper is a separate terminal convenience, not an MCP hardware action.
 It reuses the same collector after selecting the declared sysbuild default domain,

@@ -21,12 +21,15 @@ from pyocd_debug_mcp.guardrails.plan_engine import PlanEngine
 from pyocd_debug_mcp.kernel.registry import ToolRegistry
 from pyocd_debug_mcp.kernel.run_state import create_server_run
 from pyocd_debug_mcp.safety.enforce import SafetyPolicy
-from pyocd_debug_mcp.safety.fingerprints import FingerprintInputs, FingerprintSource
 from pyocd_debug_mcp.safety.map_build import (
+    MapGeometry,
+    MapIdentity,
+    MapPartitions,
     RegionContribution,
-    SafetyArtifactRepository,
+    RegionSource,
+    SafetyMapBuildRequest,
     SafetyMapBuilder,
-    SafetySetupRequest,
+    SafetyMapRepository,
 )
 from pyocd_debug_mcp.safety.regions import (
     AddressRange,
@@ -67,65 +70,85 @@ def _measure(operation: Callable[[], None], samples: int) -> list[float]:
     return values
 
 
-def _fingerprint_inputs() -> FingerprintInputs:
-    return FingerprintInputs(
-        profile={"board_id": "performance_board"},
-        part_target={"mcu_part_number": "PERFORMANCE-PART", "target": "performance"},
-        pack={
+def _map_request() -> SafetyMapBuildRequest:
+    provenance = (
+        Provenance(
+            SourceAuthority.RECONCILED,
+            "m10-performance",
+            "Deterministic local performance fixture",
+        ),
+    )
+    sources = (
+        RegionSource.REVIEWED_DEVICE_SUPPORT,
+        RegionSource.REVIEWED_OFFICIAL_EVIDENCE,
+    )
+    regions = (
+        RegionContribution(
+            SafetyRegion(
+                "performance physical flash",
+                RegionKind.PHYSICAL_FLASH,
+                AddressRange(0x08000000, 0x08100000),
+                provenance,
+            ),
+            sources,
+        ),
+        RegionContribution(
+            SafetyRegion(
+                "performance physical RAM",
+                RegionKind.PHYSICAL_RAM,
+                AddressRange(0x20000000, 0x20001000),
+                provenance,
+            ),
+            sources,
+        ),
+        RegionContribution(
+            SafetyRegion(
+                "performance writable RAM",
+                RegionKind.RAM,
+                AddressRange(0x20000000, 0x20001000),
+                provenance,
+            ),
+            sources,
+        ),
+    )
+    return SafetyMapBuildRequest(
+        board_id="performance_board",
+        identity=MapIdentity("PERFORMANCE-PART", "performance", "performance_fixture"),
+        profile={
+            "schema_version": 2,
+            "board_id": "performance_board",
+            "mcu_part_number": "PERFORMANCE-PART",
+            "mcu_family": "performance",
+            "probe_family": "fixture",
+            "probe_type": "fixture",
+            "pyocd_target": "performance",
+        },
+        reviewed_device_support={
             "id": "Performance.Pack",
             "version": "1",
             "document": {"schema_version": 2},
         },
-        evidence={
+        reviewed_official_evidence={
             "source": "M10 deterministic fixture",
-            "official_document": {"document": {"schema_version": 2}},
-            "reconciliation": {
-                "status": "agreement",
-                "erase_geometry": {
-                    "erase_origin": 0x08000000,
-                    "erase_size": 0x800,
-                },
-            },
+            "document": {"schema_version": 2},
         },
-        application_artifacts={"configuration": "none"},
-        bootloader_artifacts={"configuration": "none"},
-        geometry={"erase_origin": 0x08000000, "erase_size": 0x800},
-        schema={"memory_map": 1, "evidence": 2, "catalog": 2},
+        geometry=MapGeometry(
+            AddressRange(0x08000000, 0x08100000),
+            AddressRange(0x20000000, 0x20001000),
+            erase_origin=0x08000000,
+            erase_size=0x800,
+        ),
+        partitions=MapPartitions(None),
+        regions=regions,
     )
 
 
 def _gate_operation(project_root: Path) -> Callable[[], None]:
     store = FirmStore(project_root)
-    inputs = _fingerprint_inputs()
-    region = RegionContribution(
-        SafetyRegion(
-            "performance RAM",
-            RegionKind.RAM,
-            AddressRange(0x20000000, 0x20001000),
-            (
-                Provenance(
-                    SourceAuthority.RECONCILED,
-                    "m10-performance",
-                    "Deterministic local performance fixture",
-                ),
-            ),
-        ),
-        (FingerprintSource.EVIDENCE,),
-    )
-    result = SafetyMapBuilder(store).build(
-        SafetySetupRequest(
-            "performance_board",
-            "m10-performance",
-            inputs,
-            (region,),
-        )
-    )
-    if result.aggregate_fingerprint is None:
-        raise RuntimeError("performance safety fixture did not produce a fingerprint")
+    document = SafetyMapBuilder(store).build(_map_request())
     policy = SafetyPolicy(
-        SafetyArtifactRepository(store),
-        live_inputs=lambda _board_id, _artifacts: inputs,
-        # This benchmark measures the local gate/fingerprint hot path with a
+        SafetyMapRepository(store),
+        # This benchmark measures the local gate/map-digest hot path with a
         # synthetic fixture. Reviewed-evidence replay is independently tested
         # and would turn this host-speed measurement into an environment probe.
         authority_verifier=lambda _artifacts: None,
@@ -134,9 +157,10 @@ def _gate_operation(project_root: Path) -> Callable[[], None]:
     gate.stamp_validation(
         board_id="performance_board",
         connection_id="probe:performance",
-        hardware_result="validation_passed_uart_not_configured",
         probe_identity="PERFORMANCE-PROBE",
-        aggregate_fingerprint=result.aggregate_fingerprint,
+        observed_mcu="PERFORMANCE-PART",
+        validation_run="m10-performance",
+        map_digest=document.canonical_digest,
     )
 
     def operation() -> None:
@@ -247,9 +271,7 @@ def collect_performance(*, samples: int = 7) -> dict[str, Any]:
         "recorded_at_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         "host": host_context(),
         "metrics": {
-            "gate_and_freshness": _distribution(
-                gate, TARGETS_SECONDS["gate_and_freshness"]
-            ),
+            "gate_and_freshness": _distribution(gate, TARGETS_SECONDS["gate_and_freshness"]),
             "enumerate_eight_devices": _distribution(
                 enumeration, TARGETS_SECONDS["enumerate_eight_devices"]
             ),

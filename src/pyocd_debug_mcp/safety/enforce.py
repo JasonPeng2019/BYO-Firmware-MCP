@@ -269,11 +269,14 @@ class SafetyPolicy:
     ) -> tuple[AddressRange, ...]:
         geometry = document.geometry
         if geometry.erase_sectors:
-            sectors = tuple(item.address_range for item in geometry.erase_sectors)
+            explicit_sectors = tuple(item.address_range for item in geometry.erase_sectors)
             required = {
-                sector for sector in sectors for requested in ranges if sector.overlaps(requested)
+                sector
+                for sector in explicit_sectors
+                for requested in ranges
+                if sector.overlaps(requested)
             }
-            if any(not _fully_covered(requested, sectors) for requested in ranges):
+            if any(not _fully_covered(requested, explicit_sectors) for requested in ranges):
                 raise SafetyPolicyError(
                     "safety/geometry-incomplete",
                     "Reviewed erase geometry does not cover every flash range.",

@@ -68,9 +68,10 @@ fallback; it is not the generic route or an MCP hardware action. After any nativ
 are scattered or vendor-named, use the always-visible collect_build_artifacts MCP tool with the
 explicit paths the build actually produced. For guarded application or bootloader work, normally
 collect a coherent ELF and linker map and set expected_roles to ["elf", "map"]. Do not ask the
-collector to search or build. It only creates canonical, hashed provenance: pass its returned
-ELF/HEX/MAP paths explicitly to board_safety_refresh, and never treat collection as validation,
-flash permission, memory authority, or an open hardware gate.
+collector to search or build. It only creates canonical, hashed provenance. Continue with the
+matching flash plan and selected canonical ELF or HEX; use board_safety_refresh only for an actual
+stable-map problem. Never treat collection as validation, flash permission, memory authority, or
+an open hardware gate.
 
 Dynamic clients should call the newly exposed action directly. Some MCP clients keep static callable
 bindings even after notifications/tools/list_changed. If the accepted plan's action is absent
@@ -104,6 +105,13 @@ language and pass approval only through the exact structured parameter named by 
 Keep every board isolated. Never reuse another board's validation, approval, plan, parameters,
 or result. After a disconnect or the end of this Server Run, repeat validation before guarded
 actions.
+
+Validation has exactly three trigger categories: no live proof after initial setup or server
+restart; connection identity change after disconnect, reconnect, probe change, or target override;
+and possible hardware identity change after identity repair, mismatch, or destructive recovery.
+Do not validate merely because of an ordinary build or relink, flash, reset or halt, UART work,
+safety refresh or full map reconstruction, artifact collection, report, cache, or bookkeeping
+change.
 
 If no board is connected, do not begin setup, validation, or hardware actions."""
 

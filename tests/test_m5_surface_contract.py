@@ -29,7 +29,6 @@ ALWAYS_VISIBLE = {
     "load_setup_tool",
     "board_setup-plan",
     "board_safety_refresh",
-    "board_safety_setup",
     "board_validate",
     "read_cpu_register",
     "read_execution_state",
@@ -119,6 +118,7 @@ def _locked_arguments(name: str) -> dict[str, object]:
         "set_breakpoint": {
             "board_id": "m5-lock-board",
             "symbol_or_address": "main",
+            "elf_artifact": "firmware.elf",
         },
         "flash_application": {
             "board_id": "m5-lock-board",
@@ -251,7 +251,7 @@ def test_m5_every_revised_runtime_and_plan_schema_is_exact() -> None:
             "ready_probe_delay_seconds",
             "clear_input",
         },
-        "set_breakpoint": {"board_id", "symbol_or_address"},
+        "set_breakpoint": {"board_id", "symbol_or_address", "elf_artifact"},
         "remove_breakpoint": {"board_id", "address"},
         "wait": {"board_id", "ms"},
         "target_unlock": {"board_id", "recovery_mechanism"},
@@ -282,17 +282,8 @@ def test_m5_every_revised_runtime_and_plan_schema_is_exact() -> None:
             "datasheet_path",
             "datasheet_sha256",
         },
-        "board_validate": {"board_id", "probe_id", "serial_id"},
-        "board_safety_setup": {"board_id"},
-        "board_safety_refresh": {
-            "board_id",
-            "application_elf",
-            "application_hex",
-            "application_map",
-            "bootloader_elf",
-            "bootloader_hex",
-            "bootloader_map",
-        },
+        "board_validate": {"board_id", "probe_id"},
+        "board_safety_refresh": {"board_id"},
         "action_batch": {"board_id", "actions"},
     }
     tools = {tool.name: tool for tool in server.mcp._tool_manager.list_tools()}

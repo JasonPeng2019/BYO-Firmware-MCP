@@ -44,5 +44,6 @@ For automatic catalog setup, the profile must already preserve the user's exact 
 part number (for example `nRF52840-QIAA`); a family-only value is rejected before profile commit
 and is never silently expanded. The loader also verifies the official PDF bytes, evidence-asset
 hashes, installed pyOCD version, target-module hash, and SVD-bundle hash before reconciliation.
-Only `reconciled` provenance is promoted to `memory_map.yaml`; the two distinct source documents,
-hashes, and runtime identities remain visible in `source_manifest.json`.
+Only `reconciled` provenance is promoted to the schema-v2 `memory_map.yaml`. That single file
+records semantic digests for reviewed device support and official evidence; source manifests and
+safety reports are not persisted authority.

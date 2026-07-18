@@ -60,13 +60,14 @@ The server provides a guarded board-development surface:
   control breakpoints, stepping, reset/run, and other bounded diagnostic actions.
 - **Serial evidence:** capture UART output and run controlled serial exchanges for declared tests
   or diagnosis.
-- **Firmware deployment:** refresh artifact safety information and flash the approved application.
-  A successful flash is deployment evidence, not proof of behavior.
+- **Firmware deployment:** bind the selected build output in a flash plan, verify it against the
+  reviewed stable map at execution time, and flash the approved application. A successful flash
+  is deployment evidence, not proof of behavior.
 - **Guarded mutation and recovery:** writes, execution changes, bootloader work, and recovery
   require the current board gate, the exact `*-plan` action, and any required human permission.
 - **Per-board safety:** validation, plans, permissions, budgets, and results never transfer between
-  connections. Disconnects, stale artifacts, and new server runs require the server's stated
-  refresh or validation path.
+  connections. Disconnects and new server runs require validation; stable-map problems use the
+  server's refresh path.
 
 Always follow live MCP guidance. Visibility is not authorization: guarded actions use an all-null
 `*-plan` guidance call, the returned populated plan submission, then the paired action.
@@ -85,13 +86,13 @@ uv run --locked python -m pyocd_debug_mcp.artifact_collector \
 
 The collector copies explicitly typed ELF, HEX, BIN, and linker-map files byte-for-byte into
 canonical `firmware.*` names and records portable SHA-256 provenance in `build-manifest.json`. It
-does not run a build, discover memory permissions, access hardware, or authorize flashing. Pass
-the canonical ELF/HEX/MAP paths explicitly to safety refresh; the current safety flow does not
-automatically consume the manifest, and a raw BIN has no trusted load address.
+does not run a build, discover memory permissions, access hardware, or authorize flashing. Use the
+canonical output in the matching flash plan; safety refresh accepts no build artifacts, and a raw
+BIN has no trusted load address.
 
 Agents connected through MCP can use the same behavior through the always-visible
 `collect_build_artifacts` tool. Its indexed description gives the exact call contract and its
-response returns canonical paths plus the next safety handoff. For guarded firmware, normally
+response returns canonical paths plus the flash-plan handoff. For guarded firmware, normally
 supply the coherent ELF and linker map with `expected_roles=["elf", "map"]`. The standalone CLI
 remains useful to developers and terminal-driven agents outside an MCP session.
 
