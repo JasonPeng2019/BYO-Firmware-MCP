@@ -502,10 +502,12 @@ def build_setup_handlers(services: SetupToolServices) -> dict[str, Callable[...,
         a connection or gate and never treats persisted reports as authority. UART readiness is
         reported separately so a project that does not need a console is not blocked, while a
         console-dependent workflow can require ready_for_uart_work before it starts. For a known
-        MCU, build_guidance first returns the provider-neutral native-build and
-        collect_build_artifacts workflow. Reviewed Zephyr profiles may also include a labeled,
-        parameterized Zephyr terminal fallback. All build guidance is advisory only: inspect the
-        resulting ELF/HEX through the flash plan; refresh is only for stable-map problems.
+        MCU, build_guidance returns the exact parameterized general native-build helper and
+        collect_build_artifacts workflow. The helper detects the project provider and uses only a
+        complete local environment; it never provisions dependencies itself and applies standard
+        offline guards. All build guidance is
+        advisory only: inspect the resulting ELF/HEX through the flash plan; refresh is only for
+        stable-map problems.
         """
 
         if services.setup_status is None:

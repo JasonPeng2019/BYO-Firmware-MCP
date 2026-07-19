@@ -285,3 +285,58 @@ The open R1 findings and R3 review, fresh macOS bootstrap, exact
 `nrf52833dk`, official-board reference flash and Stage 1, live Codex/R11, installed-wheel
 operational support (not claimed), and licensing/layout/drift decisions remain
 pending.
+
+
+## P4-10 dual-client generalized-build hardware acceptance (2026-07-18)
+
+The current nRF52840 acceptance leg is green for both required client families. Evidence index:
+[`evidence/from-scratch-dual-agent-hardware-acceptance-2026-07-18.md`](evidence/from-scratch-dual-agent-hardware-acceptance-2026-07-18.md).
+
+| Client | Exact model | Effort | CLI | Empty-root general-helper build | Guarded app flash | Independent UART |
+| --- | --- | --- | --- | --- | --- | --- |
+| Codex | `gpt-5.6-terra` | medium | `0.144.5` | pass | pass | pass |
+| Claude Code | `claude-sonnet-5` | medium | `2.1.76` | pass | pass | pass |
+
+Each successful run began in its own new Git repository with only the nRF52840 PDF, used the exact
+`get_setup_status.build_guidance` command through `pyocd_debug_mcp.native_build`, resolved local
+NCS v3.3.1 / Zephyr SDK 0.17.0, and reported no download/update step. Neither used the legacy
+Zephyr-specific helper or a Zephyr-specific backup; orchestrator tool/log review observed no
+download command, network provisioning action, or successful download. The helper's offline guards
+are not described as an OS network sandbox for arbitrary project scripts. Each application used separate Zephyr blink and
+console threads with mutex-protected shared state and printed every LED toggle.
+
+Both application flashes used accepted application-only plans and artifact-bound execution. No
+unlock, mass erase, manual erase, bootloader flash, or STM32 action occurred. Each agent passed its
+own UART conversation. Top-level Codex then independently kept COM11 open while exercising status,
+off, on, and 120/300 ms rates. Both transcripts prove correct responses, off-state suppression,
+on-state resumption, materially different measured rates, and blink prints interleaved with console
+traffic.
+
+The required failure loops were closed rather than waived: GPT polling input was changed to Zephyr
+line-console input; Claude R1 exposed missing resolved-NCS guidance (GAP-22); Claude R2 exposed
+semantically equivalent JSON-number binding rejection (GAP-24); and Claude R3's polling RX loss was
+diagnosed with temporary traces and changed to interrupt-driven FIFO/message-queue input. Each
+server gap was independently reviewed and software-verified before a fresh-agent retry. Claude's
+one final readiness miss waited on a boot-only banner and sent zero bytes; a replacement plan used a
+recurring LED marker and passed.
+
+Current server gate after the server fixes:
+
+- affected focused suites: pass;
+- `uv run --locked ruff check .`: pass;
+- `uv run --locked pyright`: 0 errors;
+- `uv run --locked pytest`: **1010 passed, 3 skipped, 79 warnings**;
+- hostile diff review: zero valid major or critical findings.
+
+Final distribution/surface checks on the acceptance tree also passed:
+
+- `uv build` created a wheel (SHA-256
+  `b082ed33419b68d815f3c4f3acca376d93bd82ce44b185079cef4ef82349d71f`) and sdist (SHA-256
+  `a3fc0ca6c7174bc132561c97bb450bf62ac663ad735d2ce36f738433fbd30bae`) in a fresh temporary root;
+- a fresh virtual environment installed that wheel with 55 dependencies and imported
+  `pyocd_debug_mcp`, `pyocd_debug_mcp.native_build`, and `pyocd_debug_mcp.server`;
+- a bounded real stdio MCP client used a fresh artifact root, initialized protocol `2025-11-25`,
+  listed 39 tools including `initialization_handshake` and `get_setup_status`, made zero hardware
+  calls, closed normally, and left no server/native-build process.
+
+The Claude usage carve-out was not invoked.

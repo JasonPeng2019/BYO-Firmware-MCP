@@ -6,20 +6,27 @@ import sys
 import threading
 import time
 from pathlib import Path
+from types import SimpleNamespace
+from typing import Any, cast
 
 import pytest
 
+from pyocd_debug_mcp.kernel import operations as operation_module
 from pyocd_debug_mcp.kernel.operations import (
     BoardBusyError,
     OperationCancelledError,
+    OperationCleanupError,
     OperationManager,
+    OperationResources,
     OperationTimeoutError,
+    _OwnedSubprocess,
     cancellation_checkpoint,
     current_operation,
     dispatch,
     operation_resources,
     start_owned_subprocess,
 )
+from pyocd_debug_mcp.kernel.processes import ProcessMarkerStore
 
 
 def _wait_until(predicate, timeout: float = 1.0) -> None:  # type: ignore[no-untyped-def]
@@ -29,6 +36,101 @@ def _wait_until(predicate, timeout: float = 1.0) -> None:  # type: ignore[no-unt
             return
         time.sleep(0.01)
     raise AssertionError("condition did not become true before its deadline")
+
+
+def test_failed_owned_subprocess_cleanup_retains_recovery_marker(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    store = ProcessMarkerStore(tmp_path / "markers")
+    marker = store.root / "owned.json"
+    marker.parent.mkdir(parents=True)
+    marker.write_text("owned", encoding="utf-8")
+    process = cast(subprocess.Popen[Any], SimpleNamespace())
+    resources = OperationResources(
+        subprocesses=[_OwnedSubprocess(process, store, marker)]
+    )
+    monkeypatch.setattr(operation_module, "terminate_process_group", lambda _process: False)
+
+    resources.cleanup(preserve_halt=False)
+
+    assert marker.exists()
+    assert resources.cleanup_errors == [
+        "RuntimeError: owned subprocess cleanup was not confirmed; recovery marker retained"
+    ]
+
+
+async def test_dispatch_surfaces_unconfirmed_owned_subprocess_cleanup(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    store = ProcessMarkerStore(tmp_path / "dispatch-markers")
+    marker = store.root / "owned.json"
+    marker.parent.mkdir(parents=True)
+    marker.write_text("owned", encoding="utf-8")
+    process = cast(subprocess.Popen[Any], SimpleNamespace())
+    monkeypatch.setattr(operation_module, "terminate_process_group", lambda _process: False)
+
+    def successful_handler() -> str:
+        operation_resources().subprocesses.append(_OwnedSubprocess(process, store, marker))
+        return "success"
+
+    with pytest.raises(OperationCleanupError, match="recovery marker retained"):
+        await dispatch("get_state", "board_a", successful_handler, 1.0)
+
+    assert marker.exists()
+
+
+async def test_timeout_chains_unconfirmed_subprocess_cleanup(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    store = ProcessMarkerStore(tmp_path / "timeout-markers")
+    marker = store.root / "owned.json"
+    marker.parent.mkdir(parents=True)
+    marker.write_text("owned", encoding="utf-8")
+    process = cast(subprocess.Popen[Any], SimpleNamespace())
+    monkeypatch.setattr(operation_module, "terminate_process_group", lambda _process: False)
+
+    def timed_handler() -> str:
+        operation_resources().subprocesses.append(_OwnedSubprocess(process, store, marker))
+        while True:
+            cancellation_checkpoint()
+            time.sleep(0.005)
+
+    with pytest.raises(OperationCleanupError, match="OperationTimeoutError") as caught:
+        await dispatch("get_state", "board_a", timed_handler, 0.05)
+
+    assert isinstance(caught.value.__cause__, OperationTimeoutError)
+    assert marker.exists()
+
+
+async def test_cancellation_chains_unconfirmed_subprocess_cleanup(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    store = ProcessMarkerStore(tmp_path / "cancel-markers")
+    marker = store.root / "owned.json"
+    marker.parent.mkdir(parents=True)
+    marker.write_text("owned", encoding="utf-8")
+    process = cast(subprocess.Popen[Any], SimpleNamespace())
+    started = threading.Event()
+    monkeypatch.setattr(operation_module, "terminate_process_group", lambda _process: False)
+
+    def cancelled_handler() -> str:
+        operation_resources().subprocesses.append(_OwnedSubprocess(process, store, marker))
+        started.set()
+        while True:
+            cancellation_checkpoint()
+            time.sleep(0.005)
+
+    task = asyncio.create_task(
+        dispatch("get_state", "board_a", cancelled_handler, 1.0)
+    )
+    await asyncio.to_thread(started.wait, 1.0)
+    task.cancel()
+
+    with pytest.raises(OperationCleanupError, match="CancelledError") as caught:
+        await task
+
+    assert isinstance(caught.value.__cause__, asyncio.CancelledError)
+    assert marker.exists()
 
 
 async def test_managed_operation_tracks_request_and_cooperatively_cancels() -> None:

@@ -96,11 +96,19 @@ response returns canonical paths plus the flash-plan handoff. For guarded firmwa
 supply the coherent ELF and linker map with `expected_roles=["elf", "map"]`. The standalone CLI
 remains useful to developers and terminal-driven agents outside an MCP session.
 
+For a server-directed local build, use the exact `pyocd_debug_mcp.native_build` argv template from
+`get_setup_status.build_guidance`. The general helper detects the native provider from project
+files, selects an already-installed complete environment, executes one native command, and emits
+JSON evidence with the selected environment, argv, result, and artifact paths. It never downloads,
+installs, or upgrades an SDK/toolchain itself, applies standard offline guards to the native child,
+and never accesses hardware or grants safety authority. Because project-owned build scripts are
+arbitrary code, acceptance still inspects live logs for attempted downloads rather than claiming an
+OS-level network sandbox.
+
 `pyocd_debug_mcp.zephyr_build` remains an optional Zephyr convenience. It uses generated sysbuild
 domain metadata to keep the application ELF and linker map together instead of guessing by path,
 and it exports the same canonical bundle without deleting the incremental native build tree.
-`get_setup_status` presents that command only as a labeled toolchain fallback; the native project
-build plus the visible collector is the default for every MCU and build system.
+It is not the normal generalized build path returned by `get_setup_status`.
 
 Reviewed board geometry and attach facts are packaged data, not Python board-name branches. Missing
 facts stay missing and setup/validation names the repair. Serial resolution uses generic USB

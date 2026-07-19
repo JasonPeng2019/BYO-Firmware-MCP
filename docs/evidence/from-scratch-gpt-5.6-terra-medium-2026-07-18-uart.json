@@ -1,0 +1,393 @@
+{
+  "status": "passed",
+  "provider": "GPT 5.6 terra",
+  "effort": "medium",
+  "port": "COM11",
+  "baudrate": 115200,
+  "checks": {
+    "initial_toggle_seen": true,
+    "off_suppressed_toggles": true,
+    "fast_rate_ms_command": 120,
+    "fast_toggle_count": 9,
+    "fast_median_interval_s": 0.14,
+    "slow_rate_ms_command": 300,
+    "slow_toggle_count": 5,
+    "slow_median_interval_s": 0.3045,
+    "concurrent_status_and_toggle_lines": 7,
+    "every_required_command_responded": true
+  },
+  "events": [
+    {
+      "t_s": 0.078,
+      "at": "2026-07-18T22:35:54.582080+00:00",
+      "direction": "rx",
+      "text": "TOGGLE uptime_ms=154426 led=1"
+    },
+    {
+      "t_s": 0.297,
+      "at": "2026-07-18T22:35:54.806078+00:00",
+      "direction": "rx",
+      "text": "TOGGLE uptime_ms=154629 led=0"
+    },
+    {
+      "t_s": 0.453,
+      "at": "2026-07-18T22:35:54.962728+00:00",
+      "direction": "rx",
+      "text": "TOGGLE uptime_ms=154831 led=1"
+    },
+    {
+      "t_s": 0.609,
+      "at": "2026-07-18T22:35:55.110700+00:00",
+      "direction": "tx",
+      "text": "blink status"
+    },
+    {
+      "t_s": 0.672,
+      "at": "2026-07-18T22:35:55.183699+00:00",
+      "direction": "rx",
+      "text": "blink status"
+    },
+    {
+      "t_s": 0.672,
+      "at": "2026-07-18T22:35:55.183699+00:00",
+      "direction": "rx",
+      "text": "STATUS blink=on rate_ms=200"
+    },
+    {
+      "t_s": 0.672,
+      "at": "2026-07-18T22:35:55.183699+00:00",
+      "direction": "rx",
+      "text": "TOGGLE uptime_ms=155034 led=0"
+    },
+    {
+      "t_s": 0.906,
+      "at": "2026-07-18T22:35:55.405727+00:00",
+      "direction": "rx",
+      "text": "TOGGLE uptime_ms=155237 led=1"
+    },
+    {
+      "t_s": 1.125,
+      "at": "2026-07-18T22:35:55.629727+00:00",
+      "direction": "rx",
+      "text": "TOGGLE uptime_ms=155440 led=0"
+    },
+    {
+      "t_s": 1.265,
+      "at": "2026-07-18T22:35:55.771698+00:00",
+      "direction": "rx",
+      "text": "TOGGLE uptime_ms=155642 led=1"
+    },
+    {
+      "t_s": 1.343,
+      "at": "2026-07-18T22:35:55.840697+00:00",
+      "direction": "tx",
+      "text": "blink off"
+    },
+    {
+      "t_s": 1.406,
+      "at": "2026-07-18T22:35:55.913697+00:00",
+      "direction": "rx",
+      "text": "blink off"
+    },
+    {
+      "t_s": 1.406,
+      "at": "2026-07-18T22:35:55.913697+00:00",
+      "direction": "rx",
+      "text": "OK blink off"
+    },
+    {
+      "t_s": 3.218,
+      "at": "2026-07-18T22:35:57.730950+00:00",
+      "direction": "tx",
+      "text": "blink status"
+    },
+    {
+      "t_s": 3.297,
+      "at": "2026-07-18T22:35:57.803945+00:00",
+      "direction": "rx",
+      "text": "blink status"
+    },
+    {
+      "t_s": 3.297,
+      "at": "2026-07-18T22:35:57.803945+00:00",
+      "direction": "rx",
+      "text": "STATUS blink=off rate_ms=200"
+    },
+    {
+      "t_s": 3.922,
+      "at": "2026-07-18T22:35:58.426803+00:00",
+      "direction": "tx",
+      "text": "blink rate 120"
+    },
+    {
+      "t_s": 4.0,
+      "at": "2026-07-18T22:35:58.500806+00:00",
+      "direction": "rx",
+      "text": "blink rate 120"
+    },
+    {
+      "t_s": 4.0,
+      "at": "2026-07-18T22:35:58.500806+00:00",
+      "direction": "rx",
+      "text": "OK blink rate_ms=120"
+    },
+    {
+      "t_s": 4.625,
+      "at": "2026-07-18T22:35:59.125479+00:00",
+      "direction": "tx",
+      "text": "blink status"
+    },
+    {
+      "t_s": 4.687,
+      "at": "2026-07-18T22:35:59.198479+00:00",
+      "direction": "rx",
+      "text": "blink status"
+    },
+    {
+      "t_s": 4.687,
+      "at": "2026-07-18T22:35:59.198479+00:00",
+      "direction": "rx",
+      "text": "STATUS blink=off rate_ms=120"
+    },
+    {
+      "t_s": 5.406,
+      "at": "2026-07-18T22:35:59.904197+00:00",
+      "direction": "tx",
+      "text": "blink on"
+    },
+    {
+      "t_s": 5.468,
+      "at": "2026-07-18T22:35:59.978229+00:00",
+      "direction": "rx",
+      "text": "blink on"
+    },
+    {
+      "t_s": 5.468,
+      "at": "2026-07-18T22:35:59.978229+00:00",
+      "direction": "rx",
+      "text": "OK blink on"
+    },
+    {
+      "t_s": 5.531,
+      "at": "2026-07-18T22:36:00.042198+00:00",
+      "direction": "rx",
+      "text": "TOGGLE uptime_ms=159887 led=0"
+    },
+    {
+      "t_s": 5.687,
+      "at": "2026-07-18T22:36:00.184705+00:00",
+      "direction": "rx",
+      "text": "TOGGLE uptime_ms=160010 led=1"
+    },
+    {
+      "t_s": 5.828,
+      "at": "2026-07-18T22:36:00.327706+00:00",
+      "direction": "rx",
+      "text": "TOGGLE uptime_ms=160132 led=0"
+    },
+    {
+      "t_s": 5.89,
+      "at": "2026-07-18T22:36:00.391706+00:00",
+      "direction": "rx",
+      "text": "TOGGLE uptime_ms=160255 led=1"
+    },
+    {
+      "t_s": 6.031,
+      "at": "2026-07-18T22:36:00.533705+00:00",
+      "direction": "rx",
+      "text": "TOGGLE uptime_ms=160378 led=0"
+    },
+    {
+      "t_s": 6.172,
+      "at": "2026-07-18T22:36:00.676705+00:00",
+      "direction": "rx",
+      "text": "TOGGLE uptime_ms=160500 led=1"
+    },
+    {
+      "t_s": 6.312,
+      "at": "2026-07-18T22:36:00.819734+00:00",
+      "direction": "rx",
+      "text": "TOGGLE uptime_ms=160623 led=0"
+    },
+    {
+      "t_s": 6.375,
+      "at": "2026-07-18T22:36:00.883736+00:00",
+      "direction": "rx",
+      "text": "TOGGLE uptime_ms=160746 led=1"
+    },
+    {
+      "t_s": 6.515,
+      "at": "2026-07-18T22:36:01.026706+00:00",
+      "direction": "rx",
+      "text": "TOGGLE uptime_ms=160869 led=0"
+    },
+    {
+      "t_s": 6.672,
+      "at": "2026-07-18T22:36:01.170706+00:00",
+      "direction": "rx",
+      "text": "TOGGLE uptime_ms=160991 led=1"
+    },
+    {
+      "t_s": 6.812,
+      "at": "2026-07-18T22:36:01.313705+00:00",
+      "direction": "rx",
+      "text": "TOGGLE uptime_ms=161114 led=0"
+    },
+    {
+      "t_s": 6.875,
+      "at": "2026-07-18T22:36:01.377705+00:00",
+      "direction": "rx",
+      "text": "TOGGLE uptime_ms=161237 led=1"
+    },
+    {
+      "t_s": 6.937,
+      "at": "2026-07-18T22:36:01.446705+00:00",
+      "direction": "tx",
+      "text": "blink status"
+    },
+    {
+      "t_s": 7.015,
+      "at": "2026-07-18T22:36:01.519705+00:00",
+      "direction": "rx",
+      "text": "blink status"
+    },
+    {
+      "t_s": 7.015,
+      "at": "2026-07-18T22:36:01.519705+00:00",
+      "direction": "rx",
+      "text": "STATUS blink=on rate_ms=120"
+    },
+    {
+      "t_s": 7.015,
+      "at": "2026-07-18T22:36:01.519705+00:00",
+      "direction": "rx",
+      "text": "TOGGLE uptime_ms=161359 led=0"
+    },
+    {
+      "t_s": 7.156,
+      "at": "2026-07-18T22:36:01.660706+00:00",
+      "direction": "rx",
+      "text": "TOGGLE uptime_ms=161482 led=1"
+    },
+    {
+      "t_s": 7.234,
+      "at": "2026-07-18T22:36:01.737709+00:00",
+      "direction": "rx",
+      "text": "TOGGLE uptime_ms=161605 led=0"
+    },
+    {
+      "t_s": 7.375,
+      "at": "2026-07-18T22:36:01.881779+00:00",
+      "direction": "rx",
+      "text": "TOGGLE uptime_ms=161728 led=1"
+    },
+    {
+      "t_s": 7.515,
+      "at": "2026-07-18T22:36:02.025804+00:00",
+      "direction": "rx",
+      "text": "TOGGLE uptime_ms=161850 led=0"
+    },
+    {
+      "t_s": 7.672,
+      "at": "2026-07-18T22:36:02.169794+00:00",
+      "direction": "rx",
+      "text": "TOGGLE uptime_ms=161973 led=1"
+    },
+    {
+      "t_s": 7.734,
+      "at": "2026-07-18T22:36:02.233799+00:00",
+      "direction": "rx",
+      "text": "TOGGLE uptime_ms=162096 led=0"
+    },
+    {
+      "t_s": 7.734,
+      "at": "2026-07-18T22:36:02.233799+00:00",
+      "direction": "tx",
+      "text": "blink rate 300"
+    },
+    {
+      "t_s": 7.812,
+      "at": "2026-07-18T22:36:02.310823+00:00",
+      "direction": "rx",
+      "text": "blink rate 300"
+    },
+    {
+      "t_s": 7.812,
+      "at": "2026-07-18T22:36:02.310823+00:00",
+      "direction": "rx",
+      "text": "OK blink rate_ms=300"
+    },
+    {
+      "t_s": 7.89,
+      "at": "2026-07-18T22:36:02.387817+00:00",
+      "direction": "rx",
+      "text": "TOGGLE uptime_ms=162218 led=1"
+    },
+    {
+      "t_s": 8.187,
+      "at": "2026-07-18T22:36:02.690007+00:00",
+      "direction": "rx",
+      "text": "TOGGLE uptime_ms=162521 led=0"
+    },
+    {
+      "t_s": 8.484,
+      "at": "2026-07-18T22:36:02.993038+00:00",
+      "direction": "rx",
+      "text": "TOGGLE uptime_ms=162824 led=1"
+    },
+    {
+      "t_s": 8.781,
+      "at": "2026-07-18T22:36:03.293631+00:00",
+      "direction": "rx",
+      "text": "TOGGLE uptime_ms=163127 led=0"
+    },
+    {
+      "t_s": 9.093,
+      "at": "2026-07-18T22:36:03.596632+00:00",
+      "direction": "rx",
+      "text": "TOGGLE uptime_ms=163429 led=1"
+    },
+    {
+      "t_s": 9.39,
+      "at": "2026-07-18T22:36:03.899631+00:00",
+      "direction": "rx",
+      "text": "TOGGLE uptime_ms=163732 led=0"
+    },
+    {
+      "t_s": 9.703,
+      "at": "2026-07-18T22:36:04.200632+00:00",
+      "direction": "rx",
+      "text": "TOGGLE uptime_ms=164035 led=1"
+    },
+    {
+      "t_s": 9.703,
+      "at": "2026-07-18T22:36:04.200632+00:00",
+      "direction": "tx",
+      "text": "blink status"
+    },
+    {
+      "t_s": 9.765,
+      "at": "2026-07-18T22:36:04.263632+00:00",
+      "direction": "rx",
+      "text": "blink status"
+    },
+    {
+      "t_s": 9.765,
+      "at": "2026-07-18T22:36:04.263632+00:00",
+      "direction": "rx",
+      "text": "STATUS blink=on rate_ms=300"
+    },
+    {
+      "t_s": 9.984,
+      "at": "2026-07-18T22:36:04.485631+00:00",
+      "direction": "rx",
+      "text": "TOGGLE uptime_ms=164337 led=0"
+    },
+    {
+      "t_s": 10.281,
+      "at": "2026-07-18T22:36:04.789634+00:00",
+      "direction": "rx",
+      "text": "TOGGLE uptime_ms=164640 led=1"
+    }
+  ]
+}

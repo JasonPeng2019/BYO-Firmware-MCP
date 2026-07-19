@@ -1,0 +1,18 @@
+{
+    "mcpServers":  {
+                       "pyocd-debug":  {
+                                           "type":  "stdio",
+                                           "command":  "C:\\Users\\Jason\\Documents\\Jason\\FirmCLI\\BYO-Server\\.venv\\Scripts\\python.exe",
+                                           "args":  [
+                                                        "-m",
+                                                        "pyocd_debug_mcp.server"
+                                                    ],
+                                           "env":  {
+                                                       "PYTHONUTF8":  "1",
+                                                       "PYTHONPATH":  "C:\\Users\\Jason\\Documents\\Jason\\FirmCLI\\BYO-Server\\src",
+                                                       "BYO_MCP_ARTIFACT_ROOT":  "C:\\Users\\Jason\\Documents\\Jason\\FirmCLI\\acceptance-claude-sonnet-5-20260718-r2",
+                                                       "PYOCD_MCP_RUNS_ROOT":  "C:\\Users\\Jason\\Documents\\Jason\\FirmCLI\\acceptance-claude-sonnet-5-20260718-r2\\runs"
+                                                   }
+                                       }
+                   }
+}

@@ -183,7 +183,8 @@ identity mismatch, repair, or recovery. Ordinary build/relink, flash, reset,
 UART work, safety refresh, artifact collection, and report/bookkeeping changes
 do not themselves trigger validation.
 
-For firmware, use the project's normal build, optionally call
+For firmware, use the exact general native-build helper argv template returned by
+`get_setup_status.build_guidance`, optionally call
 `collect_build_artifacts`, submit the matching flash plan, then call the flash
 action. Do not refresh merely because build bytes changed. Plan acceptance
 binds the selected artifact digest. Before backend mutation, execution verifies

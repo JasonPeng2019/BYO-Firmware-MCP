@@ -58,7 +58,7 @@ from pyocd_debug_mcp.kernel.operations import (
     run_if_not_cancelled,
 )
 from pyocd_debug_mcp.kernel.finalizers import build_finalizer
-from pyocd_debug_mcp.kernel.hygiene import cleanup_stale_owned_processes
+from pyocd_debug_mcp.kernel.hygiene import require_clean_startup
 from pyocd_debug_mcp.kernel.processes import run_owned
 from pyocd_debug_mcp.kernel.run_state import create_server_run
 from pyocd_debug_mcp.pack_provision import load_manifest
@@ -3068,13 +3068,19 @@ def _get_setup_status(board_id: str) -> Mapping[str, object]:
         remedy = "Setup is ready; normal guarded plans may now be used."
     build_guidance: dict[str, object] | None = None
     if profile is not None and profile.mcu_part_number:
+        from pyocd_debug_mcp.native_build import command_template
+
         build_guidance = {
             "authority": "advisory_only",
-            "primary_workflow": "native_project_build",
+            "primary_workflow": "general_native_build_helper",
             "guidance": (
-                "Reuse the project's validated local IDE or CLI build and its existing SDK. "
-                "Do not download or change toolchains merely to match this server."
+                "Use the exact general-helper argv template below after replacing its three "
+                "angle-bracket values. The helper detects the native provider from project files, "
+                "uses a complete local environment, never provisions toolchains, and applies "
+                "standard offline guards to the native child build. Inspect only the returned "
+                "resolved local environment; do not scan for or download another SDK."
             ),
+            "general_build_helper": command_template(),
             "artifact_collection": {
                 "tool": "collect_build_artifacts",
                 "arguments_template": {
@@ -4175,7 +4181,7 @@ initialization_handshake = register_initialization_handshake(mcp, tool_registry,
 
 def main() -> None:
     """Console entry point. Runs the server over stdio transport by default."""
-    cleanup_stale_owned_processes()
+    require_clean_startup()
     try:
         mcp.run()
     finally:

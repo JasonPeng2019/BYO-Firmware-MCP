@@ -298,8 +298,9 @@ interruptible. Stdio EOF and normal shutdown use the same cleanup ownership.
 
 ## Build artifact intake
 
-Firmware builds remain native-project work: the agent or developer uses the
-validated local IDE/CLI and existing SDK. The always-visible
+Firmware builds remain native-project work. The server returns an exact parameterized invocation of
+the provider-neutral `pyocd_debug_mcp.native_build` helper, which detects the provider, uses only a
+complete local SDK/toolchain, and executes one native command without provisioning. The always-visible
 `collect_build_artifacts` MCP tool then provides an optional build-system-neutral
 handoff for explicit ELF, HEX, BIN, and linker-map outputs. It performs no build,
 search, subprocess, download, or hardware access. Collection stages a canonical

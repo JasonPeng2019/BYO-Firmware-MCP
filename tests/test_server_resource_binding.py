@@ -128,7 +128,12 @@ def test_setup_status_exposes_uart_readiness_as_a_separate_barrier(monkeypatch) 
     }
     guidance = cast(dict[str, object], status["build_guidance"])
     assert guidance["authority"] == "advisory_only"
-    assert guidance["primary_workflow"] == "native_project_build"
+    assert guidance["primary_workflow"] == "general_native_build_helper"
+    helper = cast(dict[str, object], guidance["general_build_helper"])
+    argv = cast(list[str], helper["argv_template"])
+    assert argv[1:3] == ["-m", "pyocd_debug_mcp.native_build"]
+    assert helper["offline_guards"] is True
+    assert helper["helper_provisioning"] is False
     collector = cast(dict[str, object], guidance["artifact_collection"])
     assert collector["tool"] == "collect_build_artifacts"
     assert guidance["toolchain_fallback"] is None
@@ -250,7 +255,8 @@ def test_build_guidance_does_not_infer_board_target_from_mcu(monkeypatch) -> Non
 
     status = server._get_setup_status("board_a")
     guidance = cast(dict[str, object], status["build_guidance"])
-    assert guidance["primary_workflow"] == "native_project_build"
+    assert guidance["primary_workflow"] == "general_native_build_helper"
+    assert "nrf52840dk" not in str(guidance["general_build_helper"])
     assert guidance["toolchain_fallback"] is None
 
 

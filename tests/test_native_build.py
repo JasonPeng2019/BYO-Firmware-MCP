@@ -1,0 +1,258 @@
+from __future__ import annotations
+
+import json
+from argparse import Namespace
+from pathlib import Path
+
+import pytest
+
+from pyocd_debug_mcp import native_build
+
+
+def _write_toolchain_environment(root: Path) -> Path:
+    metadata = root / "toolchains" / "toolchain-a" / "environment.json"
+    metadata.parent.mkdir(parents=True)
+    (metadata.parent / "bin").mkdir()
+    metadata.write_text(
+        json.dumps(
+            {
+                "env_vars": [
+                    {
+                        "type": "relative_paths",
+                        "key": "PATH",
+                        "values": ["bin"],
+                        "existing_value_treatment": "prepend_to",
+                    },
+                    {
+                        "type": "string",
+                        "key": "ZEPHYR_TOOLCHAIN_VARIANT",
+                        "value": "zephyr",
+                    },
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+    return metadata
+
+
+def test_local_environment_discovery_never_provisions(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    workspace = tmp_path / "ncs" / "v3.3.1"
+    (workspace / ".west").mkdir(parents=True)
+    (workspace / ".west" / "config").write_text("[manifest]", encoding="utf-8")
+    (workspace / "zephyr").mkdir()
+    metadata = _write_toolchain_environment(tmp_path / "ncs")
+    west = metadata.parent / "bin" / ("west.exe" if native_build.os.name == "nt" else "west")
+    west.write_text("", encoding="utf-8")
+    monkeypatch.setattr(
+        native_build, "_candidate_install_roots", lambda _env=None: (tmp_path / "ncs",)
+    )
+    monkeypatch.setattr(native_build.shutil, "which", lambda *_args, **_kwargs: str(west))
+
+    selected = native_build.discover_local_environment(environ={"PATH": "original"})
+
+    assert selected.workspace_dir == workspace
+    assert selected.toolchain_env == metadata
+    assert selected.provider == "zephyr-west"
+    assert selected.environment["ZEPHYR_TOOLCHAIN_VARIANT"] == "zephyr"
+
+
+def test_run_build_executes_one_native_command_and_reports_artifacts(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    project = tmp_path / "app"
+    project.mkdir()
+    (project / "prj.conf").write_text("CONFIG_GPIO=y\n", encoding="utf-8")
+    (project / "CMakeLists.txt").write_text("find_package(Zephyr REQUIRED)\n", encoding="utf-8")
+    build = tmp_path / "build"
+    environment = native_build.LocalBuildEnvironment(
+        provider="zephyr-west",
+        workspace_dir=tmp_path / "ncs",
+        toolchain_env=tmp_path / "environment.json",
+        executable=tmp_path / "west",
+        environment={"PATH": "local-only"},
+    )
+    monkeypatch.setattr(native_build, "discover_local_environment", lambda: environment)
+    calls: list[tuple[list[str], Path, dict[str, str]]] = []
+
+    def fake_run(
+        argv: list[str],
+        *,
+        cwd: Path,
+        env: dict[str, str],
+        check: bool,
+        timeout: float,
+    ) -> object:
+        calls.append((argv, cwd, env))
+        assert timeout == native_build.BUILD_TIMEOUT_SECONDS
+        (build / "zephyr").mkdir(parents=True)
+        (build / "zephyr" / "zephyr.elf").write_bytes(b"elf")
+        (build / "zephyr" / "zephyr.map").write_text("map", encoding="utf-8")
+        return Namespace(returncode=0)
+
+    monkeypatch.setattr(native_build, "run_owned", fake_run)
+
+    result = native_build.run_build(
+        Namespace(project_dir=str(project), build_dir=str(build), target="board/soc")
+    )
+
+    evidence = json.loads(capsys.readouterr().out)
+    assert result == 0
+    assert len(calls) == 1
+    assert calls[0][0][1:4] == ["build", "--board", "board/soc"]
+    assert evidence["offline_guards"] is True
+    assert evidence["helper_provisioning"] is False
+    assert evidence["artifacts"]["elf"].endswith("zephyr.elf")
+
+
+def test_build_rejects_nonempty_output_before_environment_discovery(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    project = tmp_path / "app"
+    project.mkdir()
+    build = tmp_path / "build"
+    build.mkdir()
+    (build / "keep.txt").write_text("preserve", encoding="utf-8")
+    called = False
+
+    def discover() -> native_build.LocalBuildEnvironment:
+        nonlocal called
+        called = True
+        raise AssertionError
+
+    monkeypatch.setattr(native_build, "discover_local_environment", discover)
+
+    with pytest.raises(RuntimeError, match="new or empty"):
+        native_build.run_build(
+            Namespace(project_dir=str(project), build_dir=str(build), target="board")
+        )
+    assert called is False
+    assert (build / "keep.txt").read_text(encoding="utf-8") == "preserve"
+
+
+def test_command_template_is_general_and_parameterized(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    selected = native_build.LocalBuildEnvironment(
+        provider="zephyr-west",
+        workspace_dir=tmp_path / "ncs" / "v3.3.1",
+        toolchain_env=tmp_path / "ncs" / "toolchains" / "one" / "environment.json",
+        executable=tmp_path / "ncs" / "toolchains" / "one" / "bin" / "west",
+        environment={},
+    )
+    monkeypatch.setattr(native_build, "discover_local_environment", lambda: selected)
+    template = native_build.command_template()
+    argv = template["argv_template"]
+    assert isinstance(argv, list)
+    assert argv[1:3] == ["-m", "pyocd_debug_mcp.native_build"]
+    assert "zephyr_build" not in " ".join(argv)
+    assert template["offline_guards"] is True
+    assert template["helper_provisioning"] is False
+    assert template["resolved_local_environment"] == {
+        "status": "ready",
+        "provider": "zephyr-west",
+        "workspace_dir": str(selected.workspace_dir),
+        "toolchain_env": str(selected.toolchain_env),
+        "build_executable": str(selected.executable),
+    }
+
+
+def test_command_template_reports_missing_local_environment(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def unavailable() -> native_build.LocalBuildEnvironment:
+        raise RuntimeError("no complete local install")
+
+    monkeypatch.setattr(native_build, "discover_local_environment", unavailable)
+
+    template = native_build.command_template()
+
+    assert template["resolved_local_environment"] == {
+        "status": "unavailable",
+        "error": "no complete local install",
+    }
+
+
+def test_global_west_fallback_is_rejected(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    workspace = tmp_path / "ncs" / "v3.3.1"
+    (workspace / ".west").mkdir(parents=True)
+    (workspace / ".west" / "config").write_text("[manifest]", encoding="utf-8")
+    (workspace / "zephyr").mkdir()
+    _write_toolchain_environment(tmp_path / "ncs")
+    global_west = tmp_path / "global" / "west"
+    global_west.parent.mkdir()
+    global_west.write_text("", encoding="utf-8")
+    monkeypatch.setattr(
+        native_build, "_candidate_install_roots", lambda _env=None: (tmp_path / "ncs",)
+    )
+    monkeypatch.setattr(native_build.shutil, "which", lambda *_args, **_kwargs: str(global_west))
+
+    with pytest.raises(RuntimeError, match="global PATH fallback"):
+        native_build.discover_local_environment(environ={"PATH": "global"})
+
+
+def test_sysbuild_artifacts_follow_default_domain(tmp_path: Path) -> None:
+    build = tmp_path / "build"
+    app = build / "application" / "zephyr"
+    app.mkdir(parents=True)
+    (app / "zephyr.elf").write_bytes(b"elf")
+    (app / "zephyr.hex").write_text("hex", encoding="utf-8")
+    (app / "zephyr.map").write_text("map", encoding="utf-8")
+    (build / "domains.yaml").write_text(
+        "default: app\ndomains:\n  - name: app\n    build_dir: application\n",
+        encoding="utf-8",
+    )
+
+    artifacts = native_build._artifact_paths(build)
+
+    assert artifacts["elf"] == str((app / "zephyr.elf").resolve())
+    assert artifacts["hex"] == str((app / "zephyr.hex").resolve())
+    assert artifacts["map"] == str((app / "zephyr.map").resolve())
+
+
+def test_offline_environment_overrides_common_network_clients() -> None:
+    environment = native_build._offline_environment(
+        {"HTTP_PROXY": "http://real-proxy", "PIP_NO_INDEX": "0"}
+    )
+
+    assert environment["PIP_NO_INDEX"] == "1"
+    assert environment["UV_OFFLINE"] == "1"
+    assert environment["CARGO_NET_OFFLINE"] == "true"
+    assert environment["HTTP_PROXY"] == "http://127.0.0.1:9"
+    assert environment["http_proxy"] == "http://127.0.0.1:9"
+    assert environment["GIT_CONFIG_KEY_0"] == "http.proxy"
+
+
+def test_explicit_install_root_excludes_default_candidates(tmp_path: Path) -> None:
+    selected = tmp_path / "selected-ncs"
+
+    assert native_build._candidate_install_roots(
+        {"NCS_INSTALL_ROOT": str(selected)}
+    ) == (selected.resolve(),)
+
+
+def test_posix_defaults_never_reinterpret_windows_path() -> None:
+    defaults = native_build._default_install_root_values("posix")
+
+    assert defaults == ("~/ncs", "/opt/ncs")
+    assert "C:/ncs" not in defaults
+
+
+def test_command_template_contains_filesystem_discovery_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def inaccessible() -> native_build.LocalBuildEnvironment:
+        raise PermissionError("blocked install root")
+
+    monkeypatch.setattr(native_build, "discover_local_environment", inaccessible)
+
+    template = native_build.command_template()
+
+    assert template["resolved_local_environment"] == {
+        "status": "unavailable",
+        "error": "blocked install root",
+    }

@@ -61,11 +61,13 @@ before reuse; never trust a folder name alone and never recursively crawl the wh
 network download only when no compatible local copy exists, and tell the user what was missing
 before fetching a large dependency. Do not copy or persist unrelated files found during discovery.
 
-Build firmware with the project's native validated CLI or IDE. Treat the provider-neutral native
-workflow and collect_build_artifacts template returned by get_setup_status.build_guidance as the
-default. A reviewed profile may additionally return a clearly labeled optional Zephyr terminal
-fallback; it is not the generic route or an MCP hardware action. After any native build whose outputs
-are scattered or vendor-named, use the always-visible collect_build_artifacts MCP tool with the
+Build firmware with the exact provider-neutral general helper argv template returned by
+get_setup_status.build_guidance. It detects the project provider, reuses only a complete local
+environment, never provisions dependencies itself, and applies standard offline guards to the
+native child build. Project-owned build scripts remain arbitrary code, so inspect the run for any
+attempted download. The legacy Zephyr-specific helper is not the generic route. After any native
+build whose outputs are scattered or vendor-named, use the
+always-visible collect_build_artifacts MCP tool with the
 explicit paths the build actually produced. For guarded application or bootloader work, normally
 collect a coherent ELF and linker map and set expected_roles to ["elf", "map"]. Do not ask the
 collector to search or build. It only creates canonical, hashed provenance. Continue with the

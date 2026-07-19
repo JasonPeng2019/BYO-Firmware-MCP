@@ -376,6 +376,19 @@ def test_ac_4_6_parameter_drift_is_exact_and_consumes_no_budget() -> None:
     assert active is not None and active.remaining_calls == 2
 
 
+def test_ac_4_6_number_fields_accept_equivalent_integral_json_forms() -> None:
+    engine, _ = engine_for()
+    initialize(engine)
+    engine.submit("read_serial-plan", read_serial_fields(), session_id=SESSION)
+
+    parameters = read_serial_parameters()
+    parameters["read_seconds"] = 3
+    permit = engine.enforce("read_serial", "board_a", parameters, session_id=SESSION)
+
+    assert permit.remaining_calls == 1
+    assert permit.action_parameters["read_seconds"] == 3
+
+
 def test_ac_4_6_canonical_binding_preserves_types_and_copies_nested_values() -> None:
     engine, _ = engine_for("write_memory")
     initialize(engine, "write_memory-plan")

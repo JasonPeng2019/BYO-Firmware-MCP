@@ -370,6 +370,30 @@ def canonical_json(value: object) -> str:
     )
 
 
+def _canonical_action_parameters(
+    definition: PlanDefinition,
+    parameters: Mapping[str, object],
+) -> str:
+    """Bind action fields while treating JSON's single number type consistently.
+
+    MCP clients and schema adapters may serialize an integral JSON number as either ``3`` or
+    ``3.0``.  Those forms are equivalent for fields explicitly declared as ``number``.  Other
+    fields remain type-preserving so, for example, an integer payload cannot silently become a
+    floating-point write value.
+    """
+
+    normalized = dict(parameters)
+    for field in definition.action_fields:
+        value = normalized.get(field.name)
+        if (
+            field.field_type is FieldType.NUMBER
+            and isinstance(value, float)
+            and value.is_integer()
+        ):
+            normalized[field.name] = int(value)
+    return canonical_json(normalized)
+
+
 def _field_error(field: FieldDefinition, value: object) -> str | None:
     if value is None:
         return None if field.nullable else "must not be NULL"
@@ -526,7 +550,7 @@ class PlanEngine:
             fields["action_parameters"],
             session_id=session_id,
         )
-        canonical_parameters = canonical_json(action_parameters)
+        canonical_parameters = _canonical_action_parameters(definition, action_parameters)
         canonical_plan_fields = canonical_json(dict(fields))
         artifact_binding = self._bind_artifact(
             definition,
@@ -835,7 +859,7 @@ class PlanEngine:
                 f"Action parameters are invalid: {errors}",
                 session_id=session_id,
             )
-        canonical_parameters = canonical_json(dict(parameters))
+        canonical_parameters = _canonical_action_parameters(definition, parameters)
         key = (definition.action_name, normalized_board)
         with self._guard:
             state = self._precheck_locked(

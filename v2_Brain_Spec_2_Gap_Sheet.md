@@ -16,14 +16,109 @@ software correctness and is never fabricated when unavailable.
 
 ## Remaining evidence gap
 
-### GAP-20 - Optional live-agent interaction evidence (hardware half only)
+### GAP-23 - Native-build cancellation ownership (closed in current working tree)
+
+Hostile review found that the shared owned-process runner removed its recovery marker after
+`KeyboardInterrupt` or another abnormal exit without first terminating the child process group. A
+cancelled general native build could therefore leave `west` or compiler descendants running with no
+marker for restart cleanup. A second hostile pass correctly found that ordering alone was
+insufficient when cleanup was not confirmed and Windows escalation killed only the group leader.
+`run_owned` now verifies group/tree cleanup, uses native Windows tree termination, retains the marker
+on an unconfirmed cleanup, and has cancellation-order, marker-retention, and real-descendant timeout
+regressions. Further hostile review found that leader-only restart cleanup and unconditional marker
+removal on normal leader exit still admitted detached descendants. Owned Windows children are now
+assigned to a kill-on-close Job Object before resume; POSIX groups are verified even after leader
+exit; normal completion clears background descendants; recovery is tree/group aware; and marker
+roots are stable across working directories. A Windows liveness bug exposed by these tests was also
+fixed so exited-but-not-yet-released process handles are not treated as live identities.
+The final portability pass found that POSIX marker identity still assumed Linux `/proc`, leaving
+macOS without recovery markers. POSIX identities now use a directly declared cross-platform
+`psutil` process-birth token, with no-`/proc` and stale-PID regressions.
+The next pass found that inaccessible identities were still collapsed into absent processes.
+Identity access denial is now an explicit indeterminate state: launch fails with owned cleanup,
+hygiene retains the marker, and failed group signaling cannot be reported as successful cleanup.
+The following review closed two identity races: POSIX cleanup now uses the stored session-leader PID
+as its PGID instead of querying a reaped, reusable PID, and Windows identity uses the native
+`GetLastError` result, treating only confirmed nonexistent-process codes as absence and every other
+API failure as indeterminate.
+Managed-operation cleanup was also deleting its process marker through `close_debug` before group
+termination and ignoring an unconfirmed result. Operation resources now bind process and marker,
+remove the marker only after confirmed cleanup, and retain it with an explicit cleanup error
+otherwise.
+The POSIX launcher still had a start-before-marker race when a fast leader became a zombie after
+spawning a background child. Zombie leaders now retain their process-birth token until reaped, so a
+marker is always created for that deterministic process group; a real POSIX fast-exit recovery test
+covers the case.
+Review then identified that a leaderless numeric PGID can later be reused and cannot safely authorize
+restart signaling. POSIX hygiene now fails closed by retaining/refusing a marker once its leader
+identity is gone; it never kills an identity-less group. Ordinary and cancellation cleanup still
+verify the live owned group before removing the marker, while Windows crash cleanup remains enforced
+by the kernel Job Object.
+Because the stable marker root is shared per user, another live server could previously terminate a
+first server/helper's owned process. Marker schema v2 now carries the owner PID and birth token;
+hygiene refuses live/inaccessible owners and recovers only demonstrably orphaned markers. A bounded
+stdio concurrency regression proves a second server leaves the first live helper untouched.
+Leaderless POSIX markers were safely retained but initially surfaced only through a generic counter.
+Hygiene now distinguishes benign live-owner skips from unresolved or truncated recovery, and MCP
+startup aborts with an actionable marker-root error whenever an orphan cannot be cleaned safely.
+Managed dispatch still returned a successful handler result while only recording an unconfirmed
+subprocess cleanup internally. Successful sync/async dispatch now raises `OperationCleanupError`
+for that fatal cleanup condition. A subsequent pass found abnormal handler, timeout, and cancellation
+paths still hid it; they now surface the cleanup failure while chaining the original error as cause.
+Dispatch, timeout, and cancellation regressions verify both errors and the retained marker.
+
+### GAP-22 - Resolved local build environment in agent guidance (closed in current working tree)
+
+The first Claude Sonnet 5 live attempt received the general helper but repeatedly searched `~/ncs`
+and began a recursive home-directory glob because setup status did not expose the local environment
+the helper had already resolved. The leg was terminated before any build, download, or flash.
+`get_setup_status.build_guidance` now returns the resolved workspace, toolchain metadata, and build
+executable (or a fail-closed discovery error) beside the exact general-helper argv, eliminating the
+need to guess or scan. Focused and complete software checks plus hostile review passed. A fresh
+Claude Sonnet 5 R3 repository then consumed the resolved `C:\ncs\v3.3.1` environment directly,
+used the general helper, reported no download/update step, completed no observed download, and
+finished the guarded hardware journey.
+
+### GAP-24 - Equivalent JSON-number plan bindings (closed in current working tree)
+
+The second Claude Sonnet 5 live attempt accepted a `serial_exchange` plan whose bounded duration
+fields were represented as `3.0` and `0.0`, then twice received `plan/parameter-mismatch` when the
+client emitted the server-generated fallback as the equivalent JSON numbers `3` and `0`. The
+failure occurred before UART I/O or budget consumption, but made the advertised stable-client
+fallback unusable for a normal MCP client.
+
+Diagnosis: the plan engine compared lexical Python JSON encodings even for fields declared as the
+schema's single `number` type. Plan: normalize only explicitly numeric action fields when their
+floating-point value is integral, while retaining type-preserving binding for integer, JSON, and
+other fields. Change: the action-parameter canonicalizer now applies that schema-aware
+normalization at both acceptance and execution; a focused regression proves `3.0` and `3` bind
+equally while the existing arbitrary-JSON `1` versus `1.0` authority check remains exact. Focused
+checks, the complete locked suite, and hostile review passed. Fresh Claude R3 then executed the
+server-generated `serial_exchange` fallback successfully, closing the live regression.
+
+### GAP-21 - General native build helper (closed in current working tree)
+
+Live dual-client acceptance exposed that setup status described native builds but did not return an
+executable provider-neutral helper command. `pyocd_debug_mcp.native_build` now detects the project
+provider, uses only a complete local SDK/toolchain, performs no provisioning, applies offline
+guards to the child build, runs one
+ordinary native command, and reports machine-readable artifact evidence. The helper grants no MCP
+hardware or safety authority. Fresh GPT 5.6 terra and Claude Sonnet 5 runs both consumed the helper,
+used local NCS with no observed or successful download, guarded-flashed their applications, and
+passed independent UART
+acceptance; the evidence is indexed in
+`docs/evidence/from-scratch-dual-agent-hardware-acceptance-2026-07-18.md`.
+
+### GAP-20 - Optional live-agent interaction evidence (closed for current nRF52840 scope)
 
 The board-free half is now closed by current real-agent evidence: Claude Sonnet 4.5 and Codex 5.4
 each followed the handshake, stopped the hardware path on the literal `no board` answer, and read
 one exact all-NULL `board_setup-plan` without submitting a plan or exposing internal values. This
-does not permission hard-coded providers in the product. The remaining hardware half stays
-separately authorized and non-duplicative; unavailable hardware, credentials, context, or user
-authorization must still be recorded as blocked rather than converted into a pass.
+does not permission hard-coded providers in the product. The separately authorized hardware
+half is now closed for the current nRF52840 scope by fresh GPT 5.6 terra and Claude Sonnet 5 builds,
+guarded application flashes, agent UART conversations, and independent top-level UART transcripts.
+Unavailable hardware, credentials, context, or user authorization in any future scope must still be
+recorded as blocked rather than converted into a pass.
 
 ## Already implemented - execution verified
 

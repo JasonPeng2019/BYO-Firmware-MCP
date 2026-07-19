@@ -839,6 +839,7 @@ source = { editable = "." }
 dependencies = [
     { name = "httpx" },
     { name = "mcp" },
+    { name = "psutil" },
     { name = "pyelftools" },
     { name = "pyocd" },
     { name = "pyserial" },
@@ -858,6 +859,7 @@ dev = [
 requires-dist = [
     { name = "httpx", specifier = ">=0.27" },
     { name = "mcp", specifier = ">=1.2.0" },
+    { name = "psutil", specifier = ">=5.9" },
     { name = "pyelftools", specifier = ">=0.33" },
     { name = "pyocd", specifier = ">=0.44.0" },
     { name = "pyserial", specifier = ">=3.5" },

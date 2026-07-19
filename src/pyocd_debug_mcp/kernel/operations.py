@@ -11,6 +11,7 @@ from __future__ import annotations
 import inspect
 import math
 import subprocess
+import sys
 import threading
 import time
 from collections.abc import Awaitable, Callable, Mapping
@@ -19,6 +20,7 @@ from contextvars import ContextVar, copy_context
 from dataclasses import dataclass, field
 from enum import Enum
 from itertools import count
+from pathlib import Path
 from typing import Any, ContextManager, TypeVar, cast
 
 import anyio
@@ -72,6 +74,19 @@ class OperationCancelledError(RuntimeError):
     """Cooperative worker cancellation was observed at a safe checkpoint."""
 
 
+class OperationCleanupError(RuntimeError):
+    """A successful operation could not prove owned-process cleanup."""
+
+
+def _operation_cleanup_error(
+    operation: ManagedOperation, original: BaseException | None = None
+) -> OperationCleanupError:
+    detail = "; ".join(operation.resources.fatal_cleanup_errors)
+    if original is not None:
+        detail = f"{type(original).__name__}: {original}; cleanup failure: {detail}"
+    return OperationCleanupError(detail)
+
+
 class OperationTimeoutError(TimeoutError):
     """A bounded MCP operation did not return before its configured deadline."""
 
@@ -113,16 +128,24 @@ def _run_cleanup(callbacks: list[Cleanup], errors: list[str]) -> None:
 
 
 @dataclass(slots=True)
+class _OwnedSubprocess:
+    process: subprocess.Popen[Any]
+    marker_store: ProcessMarkerStore
+    marker: Path | None
+
+
+@dataclass(slots=True)
 class OperationResources:
     """Resources owned by one operation, closed once in deterministic order."""
 
     stop_io: list[Cleanup] = field(default_factory=list)
     close_uart: list[Cleanup] = field(default_factory=list)
     close_debug: list[Cleanup] = field(default_factory=list)
-    subprocesses: list[subprocess.Popen[Any]] = field(default_factory=list)
+    subprocesses: list[_OwnedSubprocess] = field(default_factory=list)
     release_reset: list[Cleanup] = field(default_factory=list)
     restore_final_state: list[Cleanup] = field(default_factory=list)
     cleanup_errors: list[str] = field(default_factory=list)
+    fatal_cleanup_errors: list[str] = field(default_factory=list)
     _cleaned: bool = False
     _guard: threading.Lock = field(default_factory=threading.Lock)
 
@@ -149,11 +172,21 @@ class OperationResources:
         _run_cleanup(self.stop_io, self.cleanup_errors)
         _run_cleanup(self.close_uart, self.cleanup_errors)
         _run_cleanup(self.close_debug, self.cleanup_errors)
-        for process in tuple(self.subprocesses):
+        for owned in tuple(self.subprocesses):
             try:
-                terminate_process_group(process)
+                if terminate_process_group(owned.process):
+                    owned.marker_store.remove(owned.marker)
+                else:
+                    message = (
+                        "RuntimeError: owned subprocess cleanup was not confirmed; "
+                        "recovery marker retained"
+                    )
+                    self.cleanup_errors.append(message)
+                    self.fatal_cleanup_errors.append(message)
             except Exception as exc:  # noqa: BLE001 - retain cleanup progress
-                self.cleanup_errors.append(f"{type(exc).__name__}: {exc}")
+                message = f"{type(exc).__name__}: {exc}"
+                self.cleanup_errors.append(message)
+                self.fatal_cleanup_errors.append(message)
         _run_cleanup(self.release_reset, self.cleanup_errors)
         if not preserve_halt:
             _run_cleanup(self.restore_final_state, self.cleanup_errors)
@@ -392,8 +425,7 @@ def start_owned_subprocess(args: list[str], **kwargs: Any) -> subprocess.Popen[A
     store = ProcessMarkerStore()
     process, marker = popen_owned(args, marker_store=store, **kwargs)
     resources = operation_resources()
-    resources.subprocesses.append(process)
-    resources.close_debug.append(lambda: store.remove(marker))
+    resources.subprocesses.append(_OwnedSubprocess(process, store, marker))
     return process
 
 
@@ -573,7 +605,9 @@ async def dispatch(
             managed.finish(OperationState.FAILED)
             raise
         finally:
+            active_error = sys.exception()
             managed.run_finalizer(finalizer)
+            was_completed = managed.state is OperationState.COMPLETED
             managed.cleanup()
             managed.done.set()
             manager.finish(managed)
@@ -582,6 +616,10 @@ async def dispatch(
             if acquired_reservation:
                 cast(Any, reservation).release()
             _current_operation.reset(token)
+            if managed.resources.fatal_cleanup_errors and (
+                was_completed or active_error is not None
+            ):
+                raise _operation_cleanup_error(managed, active_error) from active_error
 
     sync_operation = cast(Callable[[], T], operation)
     worker_lock = manager.worker_lock(board_id) if serialize_board else nullcontext()
@@ -617,7 +655,15 @@ async def dispatch(
                 finally:
                     managed.run_finalizer(finalizer)
                     # Resource cleanup remains inside the one-board worker boundary.
+                    was_completed = managed.state is OperationState.COMPLETED
                     managed.cleanup()
+                    if (
+                        managed.error is None
+                        and was_completed
+                        and managed.resources.fatal_cleanup_errors
+                    ):
+                        managed.error = _operation_cleanup_error(managed)
+                        managed.finish(OperationState.FAILED)
         except OperationCancelledError as exc:
             # Cancellation can occur while still queued, before the lock context enters.
             managed.error = exc
@@ -653,13 +699,18 @@ async def dispatch(
         )
         await _wait_for_cleanup(managed, cleanup_wait)
         if managed.done.is_set() and managed.completion_committed and managed.error is None:
+            if managed.resources.fatal_cleanup_errors:
+                raise _operation_cleanup_error(managed)
             return cast(T, managed.result)
+        timeout_error = OperationTimeoutError(tool_name, timeout, board_id=board_id)
+        if managed.resources.fatal_cleanup_errors:
+            raise _operation_cleanup_error(managed, timeout_error) from timeout_error
         if was_queued:
             if board_id is None:  # pragma: no cover - no board lock means it cannot be queued
-                raise OperationTimeoutError(tool_name, timeout) from exc
+                raise timeout_error from exc
             raise BoardBusyError(tool_name, board_id, timeout) from exc
-        raise OperationTimeoutError(tool_name, timeout, board_id=board_id) from exc
-    except anyio.get_cancelled_exc_class():
+        raise timeout_error from exc
+    except anyio.get_cancelled_exc_class() as exc:
         managed.request_cancel("MCP request cancelled or client disconnected")
         cleanup_wait = (
             timeout
@@ -668,11 +719,20 @@ async def dispatch(
         )
         await _wait_for_cleanup(managed, cleanup_wait)
         if managed.done.is_set() and managed.completion_committed and managed.error is None:
+            if managed.resources.fatal_cleanup_errors:
+                raise _operation_cleanup_error(managed, exc) from exc
             return cast(T, managed.result)
+        if managed.resources.fatal_cleanup_errors:
+            raise _operation_cleanup_error(managed, exc) from exc
         raise
     finally:
         _current_operation.reset(token)
 
     if managed.error is not None:
+        if (
+            managed.resources.fatal_cleanup_errors
+            and not isinstance(managed.error, OperationCleanupError)
+        ):
+            raise _operation_cleanup_error(managed, managed.error) from managed.error
         raise managed.error
     return cast(T, managed.result)
