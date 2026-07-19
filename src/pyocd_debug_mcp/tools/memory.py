@@ -8,9 +8,12 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from elftools.common.exceptions import ELFError
+
 from pyocd_debug_mcp.kernel.operations import wrap_layer2_response
 from pyocd_debug_mcp.services.session_runtime import PolicyRefusal, SessionRecord, ToolOutcome
 from pyocd_debug_mcp.services.symbols import ResolvedSymbol
+from pyocd_debug_mcp.target_errors import ReferenceArtifactError, SymbolLookupError
 
 MAX_ADDRESS_READ_BYTES = 64 * 1024
 
@@ -95,6 +98,55 @@ def _valid_width(width: int) -> bool:
     return not isinstance(width, bool) and width in {8, 16, 32}
 
 
+def _symbol_artifact_or_refusal(
+    services: MemoryToolServices,
+    handle: Any,
+) -> tuple[Path | None, PolicyRefusal | None]:
+    try:
+        return services.symbol_artifact_for(handle), None
+    except (OSError, RuntimeError, ReferenceArtifactError) as exc:
+        return None, PolicyRefusal(
+            "memory/symbol-artifact-unavailable",
+            f"The current firmware ELF is unavailable or changed: {exc}",
+        )
+
+
+def _reverify_symbol_artifact(
+    services: MemoryToolServices,
+    handle: Any,
+    artifact: Path,
+) -> PolicyRefusal | None:
+    current, refusal = _symbol_artifact_or_refusal(services, handle)
+    if refusal is not None:
+        return refusal
+    if current != artifact:
+        return PolicyRefusal(
+            "memory/symbol-artifact-unavailable",
+            "The current firmware ELF association changed during symbol resolution.",
+        )
+    return None
+
+
+def _symbol_parse_refusal(exc: Exception) -> PolicyRefusal:
+    return PolicyRefusal(
+        "memory/symbol-artifact-unavailable",
+        f"The current firmware ELF could not be parsed safely: {exc}",
+    )
+
+
+def _symbol_lookup_refusal(exc: SymbolLookupError) -> PolicyRefusal:
+    return PolicyRefusal("memory/symbol-not-found", str(exc))
+
+
+def _lookup_or_artifact_refusal(
+    services: MemoryToolServices,
+    handle: Any,
+    artifact: Path,
+    exc: SymbolLookupError,
+) -> PolicyRefusal:
+    return _reverify_symbol_artifact(services, handle, artifact) or _symbol_lookup_refusal(exc)
+
+
 def build_memory_handlers(
     services: MemoryToolServices,
 ) -> dict[str, Callable[..., str]]:
@@ -117,8 +169,39 @@ def build_memory_handlers(
                 runtime,
             )
         handle = services.handle_for(board_id)
-        artifact = services.symbol_artifact_for(handle)
-        matches = services.find_symbols(artifact, query)
+        artifact, refusal = _symbol_artifact_or_refusal(services, handle)
+        if artifact is None:
+            assert refusal is not None
+            return _record_refusal(
+                services, "find_symbol", board_id, args, refusal, started, runtime
+            )
+        try:
+            matches = services.find_symbols(artifact, query)
+        except SymbolLookupError as exc:
+            return _record_refusal(
+                services,
+                "find_symbol",
+                board_id,
+                args,
+                _lookup_or_artifact_refusal(services, handle, artifact, exc),
+                started,
+                runtime,
+            )
+        except (ELFError, OSError, RuntimeError, ValueError) as exc:
+            return _record_refusal(
+                services,
+                "find_symbol",
+                board_id,
+                args,
+                _symbol_parse_refusal(exc),
+                started,
+                runtime,
+            )
+        refusal = _reverify_symbol_artifact(services, handle, artifact)
+        if refusal is not None:
+            return _record_refusal(
+                services, "find_symbol", board_id, args, refusal, started, runtime
+            )
         if not matches:
             result = f"No symbols matching '{query}' were found in {artifact}."
         else:
@@ -156,8 +239,39 @@ def build_memory_handlers(
                 runtime,
             )
         handle = services.handle_for(board_id)
-        artifact = services.symbol_artifact_for(handle)
-        resolved = services.resolve_symbol(artifact, symbol)
+        artifact, refusal = _symbol_artifact_or_refusal(services, handle)
+        if artifact is None:
+            assert refusal is not None
+            return _record_refusal(
+                services, "read_memory_symbol", board_id, args, refusal, started, runtime
+            )
+        try:
+            resolved = services.resolve_symbol(artifact, symbol)
+        except SymbolLookupError as exc:
+            return _record_refusal(
+                services,
+                "read_memory_symbol",
+                board_id,
+                args,
+                _lookup_or_artifact_refusal(services, handle, artifact, exc),
+                started,
+                runtime,
+            )
+        except (ELFError, OSError, RuntimeError, ValueError) as exc:
+            return _record_refusal(
+                services,
+                "read_memory_symbol",
+                board_id,
+                args,
+                _symbol_parse_refusal(exc),
+                started,
+                runtime,
+            )
+        refusal = _reverify_symbol_artifact(services, handle, artifact)
+        if refusal is not None:
+            return _record_refusal(
+                services, "read_memory_symbol", board_id, args, refusal, started, runtime
+            )
         requested_bytes = width // 8
         if resolved.size <= 0:
             return _record_refusal(
@@ -319,8 +433,39 @@ def build_memory_handlers(
                     started,
                     runtime,
                 )
-            artifact = services.symbol_artifact_for(handle)
-            resolved = services.resolve_symbol(artifact, symbol_or_address)
+            artifact, refusal = _symbol_artifact_or_refusal(services, handle)
+            if artifact is None:
+                assert refusal is not None
+                return _record_refusal(
+                    services, "write_memory", board_id, args, refusal, started, runtime
+                )
+            try:
+                resolved = services.resolve_symbol(artifact, symbol_or_address)
+            except SymbolLookupError as exc:
+                return _record_refusal(
+                    services,
+                    "write_memory",
+                    board_id,
+                    args,
+                    _lookup_or_artifact_refusal(services, handle, artifact, exc),
+                    started,
+                    runtime,
+                )
+            except (ELFError, OSError, RuntimeError, ValueError) as exc:
+                return _record_refusal(
+                    services,
+                    "write_memory",
+                    board_id,
+                    args,
+                    _symbol_parse_refusal(exc),
+                    started,
+                    runtime,
+                )
+            refusal = _reverify_symbol_artifact(services, handle, artifact)
+            if refusal is not None:
+                return _record_refusal(
+                    services, "write_memory", board_id, args, refusal, started, runtime
+                )
             address = resolved.address
         if is_address and not allow_address_fallback:
             return _record_refusal(

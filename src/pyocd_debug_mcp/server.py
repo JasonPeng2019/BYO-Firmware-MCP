@@ -245,6 +245,7 @@ assignment_store = RunAssignmentStore(server_run.assignments)
 connection_manager = ConnectionManager()
 gate_manager = GateManager(server_run.gates)
 permission_store = PermissionStore(server_run)
+_current_symbol_artifacts: dict[str, tuple[Path, str]] = {}
 _session_store = InMemorySessionStore()
 _watcher = ConvergenceWatcher()
 _staged_server_timeouts = default_server_timeout_config()
@@ -1563,7 +1564,45 @@ def _symbol_artifact_for_handle(handle: TargetSessionHandle) -> Path:
         raise ReferenceArtifactError(
             "Symbol access requires a connected board with canonical firmware metadata."
         )
+    binding = _current_symbol_artifacts.get(handle.board.board_id)
+    if binding is not None:
+        artifact, expected_digest = binding
+        try:
+            actual_digest = hashlib.sha256(artifact.read_bytes()).hexdigest()
+        except OSError as exc:
+            raise ReferenceArtifactError(
+                f"Current symbol artifact is unreadable: {artifact}"
+            ) from exc
+        if actual_digest != expected_digest:
+            raise ReferenceArtifactError(
+                f"Current symbol artifact changed after flash: {artifact}"
+            )
+        return artifact
     return resolve_reference_artifacts(handle.board).symbol_artifact
+
+
+def _prepare_flashed_symbol_artifact(
+    tool_name: str, board_id: str, artifact: Path
+) -> tuple[Path, str]:
+    del tool_name, board_id
+    elf_artifact = artifact if artifact.suffix.casefold() == ".elf" else artifact.with_suffix(".elf")
+    try:
+        resolved = elf_artifact.expanduser().resolve(strict=True)
+        digest = hashlib.sha256(resolved.read_bytes()).hexdigest()
+    except OSError as exc:
+        raise ReferenceArtifactError(
+            f"Cannot prepare the current application ELF before flash: {elf_artifact}"
+        ) from exc
+    return resolved, digest
+
+
+def _bind_flashed_symbol_artifact(board_id: str, binding: object) -> None:
+    if not isinstance(binding, tuple) or len(binding) != 2:
+        raise TypeError("Invalid prepared symbol artifact binding.")
+    artifact, digest = binding
+    if not isinstance(artifact, Path) or not isinstance(digest, str):
+        raise TypeError("Invalid prepared symbol artifact binding.")
+    _current_symbol_artifacts[board_id] = (artifact, digest)
 
 
 @mcp.tool()
@@ -1872,6 +1911,8 @@ flash_services = FlashToolServices(
     ),
     error_code=_error_code,
     validate_flash=_check_flash_safety,
+    prepare_symbol_artifact=_prepare_flashed_symbol_artifact,
+    bind_symbol_artifact=_bind_flashed_symbol_artifact,
 )
 flash_tool_handlers = build_flash_handlers(flash_services)
 
@@ -3989,6 +4030,7 @@ setup_tool_handlers = build_setup_handlers(
         require_assignment=lambda board_id, connection_id: assignment_store.require(
             connection_id, board_id
         ),
+        assigned_connection=assignment_store.connection_for,
     )
 )
 

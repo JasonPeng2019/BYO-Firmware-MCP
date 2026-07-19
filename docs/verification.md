@@ -340,3 +340,35 @@ Final distribution/surface checks on the acceptance tree also passed:
   calls, closed normally, and left no server/native-build process.
 
 The Claude usage carve-out was not invoked.
+
+## Wide dual-client generalized-build acceptance (2026-07-18)
+
+Evidence index:
+[`evidence/wide-acceptance-dual-client-hardware-2026-07-18.md`](evidence/wide-acceptance-dual-client-hardware-2026-07-18.md).
+
+| Requested/provider leg | Model evidence | Fresh setup/build/flash | Independent UART | Debug |
+| --- | --- | --- | --- | --- |
+| GPT Luna | configured/reported `gpt-5.6-luna`, medium | pass | pass | pass |
+| Claude Code | `claude-sonnet-5`, medium | pass | pass | pass via root periodic-breakpoint proof |
+
+The requested exact `gpt-4.6-luna` identifier was rejected by Codex CLI before a model turn; it is
+not available to this authenticated client and remains unproven. `gpt-5.6-luna` is an explicitly
+reported substitute, not a relabeling. Both successful applications used the generic
+`pyocd_debug_mcp.native_build` helper exactly once, local NCS v3.3.1 with no provisioning/download,
+guarded application-only flash plans, and separate concurrent telemetry/worker/console designs.
+Root UART verification proved state-changing commands, measurable rate changes, quiet/off behavior,
+observable event/worker prints, and concurrent command/output handling.
+
+Claude's full R4 setup/build/flash/UART journey completed. Its UART-triggered breakpoint subtest did
+not establish command delivery while SWD was attached; the raw agent report's reconnect explanation
+is explicitly superseded in the evidence index. Root re-tested the same current-ELF breakpoint path
+on a periodic function and observed a real halt, then removed the breakpoint, resumed, and
+disconnected. A requested fresh Claude minimum-phase retry was skipped under the Claude Usage
+Carve-Out because the provider returned its five-hour usage limit before any task or MCP action; no retry
+success is claimed.
+
+GAP-25 (complete run-scoped validation probe guidance) and GAP-26 (successful guarded flash binds a
+run-scoped current ELF) were specified, implemented, tested, and hostile-reviewed. The product suite
+after GAP-26 was **1022 passed, 3 skipped, 79 warnings**, with affected Ruff and Pyright clean and
+zero valid hostile-review findings. No STM32 action, unlock, mass erase, manual erase, bootloader
+flash, or security mutation occurred.

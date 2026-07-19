@@ -460,6 +460,8 @@ def test_run_assignments_are_one_to_one_and_mismatch_only_clears_memory() -> Non
     assert run.assignments == {}
 
     assignments.replace({"probe:1": "board_a", "probe:2": "board_b"})
+    assert assignments.connection_for("board_a") == "probe:1"
+    assert assignments.connection_for("missing") is None
     assignments.require("probe:1", "board_a")
     with pytest.raises(SetupWorkflowError, match="setup_overview assignment"):
         assignments.require("probe:2", "board_a")

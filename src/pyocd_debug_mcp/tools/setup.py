@@ -32,7 +32,12 @@ def _json(document: Mapping[str, Any]) -> str:
     return json.dumps(document, ensure_ascii=False, sort_keys=True)
 
 
-def _load_guidance(board_id: str, tool_name: str) -> dict[str, Any]:
+def _load_guidance(
+    board_id: str,
+    tool_name: str,
+    *,
+    validation_probe_id: str | None = None,
+) -> dict[str, Any]:
     """Return one bounded, tool-specific route rather than the whole setup manual."""
 
     relay_rule = (
@@ -83,8 +88,11 @@ def _load_guidance(board_id: str, tool_name: str) -> dict[str, Any]:
             },
         }
     if tool_name == "board_validate":
+        arguments = {"board_id": board_id}
+        if validation_probe_id is not None:
+            arguments["probe_id"] = validation_probe_id
         return {
-            "next_call": {"tool": tool_name, "arguments": {"board_id": board_id}},
+            "next_call": {"tool": tool_name, "arguments": arguments},
             "guidance": {
                 "purpose": "Non-destructively prove live MCU identity and bind the current safety map.",
                 "when_to_use": (
@@ -155,7 +163,13 @@ class SetupToolLoadState:
         self._allowance_by_board: dict[str, str] = {}
         self._guard = threading.RLock()
 
-    def load(self, board_id: str, tool_name: str) -> dict[str, Any]:
+    def load(
+        self,
+        board_id: str,
+        tool_name: str,
+        *,
+        validation_probe_id: str | None = None,
+    ) -> dict[str, Any]:
         board = board_id.strip()
         if not board:
             raise ValueError("board_id must be non-empty")
@@ -168,7 +182,7 @@ class SetupToolLoadState:
             "board_id": board,
             "tool_name": tool_name,
             "redirect": f"Continue by calling {tool_name} for board '{board}'.",
-        } | _load_guidance(board, tool_name)
+        } | _load_guidance(board, tool_name, validation_probe_id=validation_probe_id)
 
     def is_loaded(self, board_id: str, tool_name: str) -> bool:
         with self._guard:
@@ -221,6 +235,7 @@ class SetupToolServices:
     clear_setup_continuation: Callable[[str], None] | None = None
     setup_plan_eligible: Callable[[str], tuple[bool, str]] | None = None
     require_assignment: Callable[[str, str], None] | None = None
+    assigned_connection: Callable[[str], str | None] | None = None
 
 
 def build_setup_handlers(services: SetupToolServices) -> dict[str, Callable[..., str]]:
@@ -245,7 +260,34 @@ def build_setup_handlers(services: SetupToolServices) -> dict[str, Callable[...,
                         "agent_prompt": reason,
                     }
                 )
-        return _json(services.loader.load(board_id, tool_name))
+        validation_probe_id: str | None = None
+        if tool_name == "board_validate":
+            connection_id = (
+                services.assigned_connection(board_id)
+                if services.assigned_connection is not None
+                else None
+            )
+            if connection_id is None or not connection_id.startswith("probe:"):
+                return _json(
+                    {
+                        "status": "setup_assignment_required",
+                        "board_id": board_id,
+                        "tool_name": tool_name,
+                        "agent_prompt": (
+                            "Call setup_overview again for the user's familiar board names and "
+                            "copy its exact load_call and next_call. Validation cannot proceed "
+                            "without this run's board-to-probe assignment."
+                        ),
+                    }
+                )
+            validation_probe_id = connection_id.removeprefix("probe:")
+        return _json(
+            services.loader.load(
+                board_id,
+                tool_name,
+                validation_probe_id=validation_probe_id,
+            )
+        )
 
     def setup_overview(
         board_names: list[str] | None = None,

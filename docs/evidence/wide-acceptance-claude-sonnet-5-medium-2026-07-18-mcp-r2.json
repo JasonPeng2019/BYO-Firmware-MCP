@@ -1,0 +1,14 @@
+﻿{
+  "mcpServers": {
+    "pyocd-debug": {
+      "command": "C:\\Users\\Jason\\Documents\\Jason\\FirmCLI\\BYO-Server\\.venv\\Scripts\\python.exe",
+      "args": ["-m", "pyocd_debug_mcp.server"],
+      "env": {
+        "BYO_MCP_ARTIFACT_ROOT": "C:\\cs5r2",
+        "PYOCD_MCP_RUNS_ROOT": "C:\\cs5r2\\runs",
+        "PYTHONPATH": "C:\\Users\\Jason\\Documents\\Jason\\FirmCLI\\BYO-Server\\src",
+        "PYTHONUTF8": "1"
+      }
+    }
+  }
+}

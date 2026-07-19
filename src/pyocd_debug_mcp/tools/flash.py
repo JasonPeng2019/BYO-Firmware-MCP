@@ -35,6 +35,8 @@ class FlashToolServices:
     handle_mutation_event: Callable[[str, object], None]
     error_code: Callable[[Exception], str]
     validate_flash: Callable[[str, str, Path], None] | None = None
+    prepare_symbol_artifact: Callable[[str, str, Path], object] | None = None
+    bind_symbol_artifact: Callable[[str, object], None] | None = None
 
 
 def build_flash_handlers(
@@ -69,17 +71,24 @@ def build_flash_handlers(
                     services.format_block(blocked, session_id=runtime.session_id)
                 )
         pending = services.maybe_handle_for(board_id)
+        symbol_binding: object | None = None
         try:
             context = services.action_context(tool_name, board_id)
             request = services.resolve_request(pending, artifact, context)
             args.update(request.identity.as_log_fields())
             if services.validate_flash is not None:
                 services.validate_flash(tool_name, board_id, request.artifact_path)
+            if tool_name == "flash_application" and services.prepare_symbol_artifact is not None:
+                symbol_binding = services.prepare_symbol_artifact(
+                    tool_name, board_id, request.artifact_path
+                )
             handle = services.handle_for(board_id)
             operation = current_operation()
             if operation is not None:
                 operation.begin_non_interruptible()
             flashed = services.flash_target(handle, request.artifact_path)
+            if symbol_binding is not None and services.bind_symbol_artifact is not None:
+                services.bind_symbol_artifact(board_id, symbol_binding)
         except PolicyRefusal as refusal:
             event = services.record_event(
                 tool_name,

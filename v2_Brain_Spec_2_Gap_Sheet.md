@@ -231,3 +231,26 @@ two distinct run IDs.
   discovers an installed NCS environment without download or toolchain mutation.
 - **Closure:** tracked by `docs/general-native-build-helper-spec.md` and
   `docs/general-native-build-helper-plan.md`.
+
+# GAP-25: loaded validation guidance omitted the assigned probe (2026-07-18)
+
+- **Observed:** after a fresh setup, `setup_overview` returned a complete validation route, but
+  `load_setup_tool(board_validate)` replaced it with a `next_call` containing only `board_id`.
+  `board_validate` correctly rejected that call because the current run's assigned `probe_id` is
+  mandatory.
+- **Required:** loaded validation guidance must copy the probe identity from the run-scoped
+  assignment and return an exact executable call. Without an assignment it must route back to
+  `setup_overview`, not advertise an incomplete call.
+- **Closure:** tracked by `docs/validation-probe-guidance-spec.md` and
+  `docs/validation-probe-guidance-plan.md`.
+
+# GAP-26: fresh flashed ELF was unavailable to symbol tools (2026-07-18)
+
+- **Observed:** a fresh generalized build was collected, safely flashed, and verified over UART,
+  but `find_symbol` still searched only the checkout's repository reference path. That path does
+  not exist for a fresh logical board, and the uncaught lookup error also closed the debug session.
+- **Required:** bind the successfully flashed application ELF for this server run, verify its digest
+  before symbol use, retain the reference artifact only as a compatibility fallback, and return a
+  bounded refusal rather than disconnecting when symbol metadata is unavailable.
+- **Closure:** tracked by `docs/run-scoped-symbol-artifact-spec.md` and
+  `docs/run-scoped-symbol-artifact-plan.md`.

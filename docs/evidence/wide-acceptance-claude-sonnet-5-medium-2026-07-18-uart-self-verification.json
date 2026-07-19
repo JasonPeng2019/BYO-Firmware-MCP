@@ -1,0 +1,441 @@
+{
+  "provider": "claude-sonnet-5-medium",
+  "port": "COM11",
+  "baud": 115200,
+  "checks": {
+    "status": true,
+    "off_ack": true,
+    "stopped_window_no_samples": true,
+    "interval_ack": true,
+    "on_ack": true,
+    "sample_prints": true,
+    "sample_intervals": true,
+    "work_done": true,
+    "selftest": true,
+    "concurrent_interleaving": true
+  },
+  "sample_intervals_seconds": [
+    0.203,
+    0.219,
+    0.203,
+    0.203,
+    0.203,
+    0.219,
+    0.203,
+    0.203,
+    0.204,
+    0.203,
+    0.218,
+    0.204,
+    0.203,
+    0.203,
+    0.219,
+    0.203,
+    0.203
+  ],
+  "stopped_window_samples": 0,
+  "transcript": [
+    {
+      "t": 0.515,
+      "kind": "TX",
+      "text": "stream_off",
+      "clean": "stream_off"
+    },
+    {
+      "t": 0.515,
+      "kind": "RX",
+      "text": "\u001b[8D\u001b[JSAMPLE seq=246 uptime=1440438 led=0 interval=200 streaming=1",
+      "clean": "SAMPLE seq=246 uptime=1440438 led=0 interval=200 streaming=1"
+    },
+    {
+      "t": 0.515,
+      "kind": "RX",
+      "text": "\u001b[1;32muart:~$ \u001b[m\u001b[8D\u001b[JSAMPLE seq=247 uptime=1440645 led=1 interval=200 streaming=1",
+      "clean": "uart:~$ SAMPLE seq=247 uptime=1440645 led=1 interval=200 streaming=1"
+    },
+    {
+      "t": 0.515,
+      "kind": "RX",
+      "text": "\u001b[1;32muart:~$ \u001b[mstream_off",
+      "clean": "uart:~$ stream_off"
+    },
+    {
+      "t": 0.515,
+      "kind": "RX",
+      "text": "OK stream_off",
+      "clean": "OK stream_off"
+    },
+    {
+      "t": 0.578,
+      "kind": "RX",
+      "text": "\u001b[1;32muart:~$ \u001b[m",
+      "clean": "uart:~$ "
+    },
+    {
+      "t": 1.922,
+      "kind": "TX",
+      "text": "status",
+      "clean": "status"
+    },
+    {
+      "t": 1.922,
+      "kind": "RX",
+      "text": "status",
+      "clean": "status"
+    },
+    {
+      "t": 1.937,
+      "kind": "RX",
+      "text": "STATUS streaming=0 interval=200 seq=247 worker_done=3 enqueued=3 queued=0 uptime=1442252",
+      "clean": "STATUS streaming=0 interval=200 seq=247 worker_done=3 enqueued=3 queued=0 uptime=1442252"
+    },
+    {
+      "t": 2.0,
+      "kind": "RX",
+      "text": "\u001b[1;32muart:~$ \u001b[m",
+      "clean": "uart:~$ "
+    },
+    {
+      "t": 2.453,
+      "kind": "TX",
+      "text": "interval 200",
+      "clean": "interval 200"
+    },
+    {
+      "t": 2.453,
+      "kind": "RX",
+      "text": "interval 200",
+      "clean": "interval 200"
+    },
+    {
+      "t": 2.453,
+      "kind": "RX",
+      "text": "OK interval=200",
+      "clean": "OK interval=200"
+    },
+    {
+      "t": 2.531,
+      "kind": "RX",
+      "text": "\u001b[1;32muart:~$ \u001b[m",
+      "clean": "uart:~$ "
+    },
+    {
+      "t": 2.906,
+      "kind": "TX",
+      "text": "stream_on",
+      "clean": "stream_on"
+    },
+    {
+      "t": 2.906,
+      "kind": "RX",
+      "text": "stream_on",
+      "clean": "stream_on"
+    },
+    {
+      "t": 2.922,
+      "kind": "RX",
+      "text": "OK stream_on",
+      "clean": "OK stream_on"
+    },
+    {
+      "t": 2.937,
+      "kind": "RX",
+      "text": "\u001b[1;32muart:~$ \u001b[m\u001b[8D\u001b[JSAMPLE seq=248 uptime=1443255 led=0 interval=200 streaming=1",
+      "clean": "uart:~$ SAMPLE seq=248 uptime=1443255 led=0 interval=200 streaming=1"
+    },
+    {
+      "t": 3.0,
+      "kind": "RX",
+      "text": "\u001b[1;32muart:~$ \u001b[m",
+      "clean": "uart:~$ "
+    },
+    {
+      "t": 3.14,
+      "kind": "RX",
+      "text": "\u001b[8D\u001b[JSAMPLE seq=249 uptime=1443462 led=1 interval=200 streaming=1",
+      "clean": "SAMPLE seq=249 uptime=1443462 led=1 interval=200 streaming=1"
+    },
+    {
+      "t": 3.218,
+      "kind": "RX",
+      "text": "\u001b[1;32muart:~$ \u001b[m",
+      "clean": "uart:~$ "
+    },
+    {
+      "t": 3.359,
+      "kind": "RX",
+      "text": "\u001b[8D\u001b[JSAMPLE seq=250 uptime=1443669 led=0 interval=200 streaming=1",
+      "clean": "SAMPLE seq=250 uptime=1443669 led=0 interval=200 streaming=1"
+    },
+    {
+      "t": 3.422,
+      "kind": "RX",
+      "text": "\u001b[1;32muart:~$ \u001b[m",
+      "clean": "uart:~$ "
+    },
+    {
+      "t": 3.562,
+      "kind": "RX",
+      "text": "\u001b[8D\u001b[JSAMPLE seq=251 uptime=1443876 led=1 interval=200 streaming=1",
+      "clean": "SAMPLE seq=251 uptime=1443876 led=1 interval=200 streaming=1"
+    },
+    {
+      "t": 3.625,
+      "kind": "RX",
+      "text": "\u001b[1;32muart:~$ \u001b[m",
+      "clean": "uart:~$ "
+    },
+    {
+      "t": 3.765,
+      "kind": "RX",
+      "text": "\u001b[8D\u001b[JSAMPLE seq=252 uptime=1444083 led=0 interval=200 streaming=1",
+      "clean": "SAMPLE seq=252 uptime=1444083 led=0 interval=200 streaming=1"
+    },
+    {
+      "t": 3.828,
+      "kind": "RX",
+      "text": "\u001b[1;32muart:~$ \u001b[m",
+      "clean": "uart:~$ "
+    },
+    {
+      "t": 3.968,
+      "kind": "RX",
+      "text": "\u001b[8D\u001b[JSAMPLE seq=253 uptime=1444290 led=1 interval=200 streaming=1",
+      "clean": "SAMPLE seq=253 uptime=1444290 led=1 interval=200 streaming=1"
+    },
+    {
+      "t": 4.031,
+      "kind": "RX",
+      "text": "\u001b[1;32muart:~$ \u001b[m",
+      "clean": "uart:~$ "
+    },
+    {
+      "t": 4.187,
+      "kind": "RX",
+      "text": "\u001b[8D\u001b[JSAMPLE seq=254 uptime=1444497 led=0 interval=200 streaming=1",
+      "clean": "SAMPLE seq=254 uptime=1444497 led=0 interval=200 streaming=1"
+    },
+    {
+      "t": 4.25,
+      "kind": "RX",
+      "text": "\u001b[1;32muart:~$ \u001b[m",
+      "clean": "uart:~$ "
+    },
+    {
+      "t": 4.25,
+      "kind": "TX",
+      "text": "enqueue 777",
+      "clean": "enqueue 777"
+    },
+    {
+      "t": 4.25,
+      "kind": "RX",
+      "text": "enqueue 777",
+      "clean": "enqueue 777"
+    },
+    {
+      "t": 4.25,
+      "kind": "RX",
+      "text": "WORK_DONE id=4 input=777 result=0x5e0a2ecf",
+      "clean": "WORK_DONE id=4 input=777 result=0x5e0a2ecf"
+    },
+    {
+      "t": 4.25,
+      "kind": "RX",
+      "text": "OK enqueued id=4 input=777",
+      "clean": "OK enqueued id=4 input=777"
+    },
+    {
+      "t": 4.328,
+      "kind": "RX",
+      "text": "\u001b[1;32muart:~$ \u001b[m",
+      "clean": "uart:~$ "
+    },
+    {
+      "t": 4.39,
+      "kind": "RX",
+      "text": "\u001b[8D\u001b[JSAMPLE seq=255 uptime=1444704 led=1 interval=200 streaming=1",
+      "clean": "SAMPLE seq=255 uptime=1444704 led=1 interval=200 streaming=1"
+    },
+    {
+      "t": 4.468,
+      "kind": "RX",
+      "text": "\u001b[1;32muart:~$ \u001b[m",
+      "clean": "uart:~$ "
+    },
+    {
+      "t": 4.593,
+      "kind": "RX",
+      "text": "\u001b[8D\u001b[JSAMPLE seq=256 uptime=1444911 led=0 interval=200 streaming=1",
+      "clean": "SAMPLE seq=256 uptime=1444911 led=0 interval=200 streaming=1"
+    },
+    {
+      "t": 4.672,
+      "kind": "RX",
+      "text": "\u001b[1;32muart:~$ \u001b[m",
+      "clean": "uart:~$ "
+    },
+    {
+      "t": 4.797,
+      "kind": "RX",
+      "text": "\u001b[8D\u001b[JSAMPLE seq=257 uptime=1445118 led=1 interval=200 streaming=1",
+      "clean": "SAMPLE seq=257 uptime=1445118 led=1 interval=200 streaming=1"
+    },
+    {
+      "t": 4.875,
+      "kind": "RX",
+      "text": "\u001b[1;32muart:~$ \u001b[m",
+      "clean": "uart:~$ "
+    },
+    {
+      "t": 5.0,
+      "kind": "RX",
+      "text": "\u001b[8D\u001b[JSAMPLE seq=258 uptime=1445324 led=0 interval=200 streaming=1",
+      "clean": "SAMPLE seq=258 uptime=1445324 led=0 interval=200 streaming=1"
+    },
+    {
+      "t": 5.078,
+      "kind": "RX",
+      "text": "\u001b[1;32muart:~$ \u001b[m",
+      "clean": "uart:~$ "
+    },
+    {
+      "t": 5.078,
+      "kind": "TX",
+      "text": "selftest",
+      "clean": "selftest"
+    },
+    {
+      "t": 5.078,
+      "kind": "RX",
+      "text": "selftest",
+      "clean": "selftest"
+    },
+    {
+      "t": 5.093,
+      "kind": "RX",
+      "text": "SELFTEST PASS checksum1234=0xaa1006d2 checksum1234_repeat=0xaa1006d2 checksum_neg1=0xffffffff",
+      "clean": "SELFTEST PASS checksum1234=0xaa1006d2 checksum1234_repeat=0xaa1006d2 checksum_neg1=0xffffffff"
+    },
+    {
+      "t": 5.156,
+      "kind": "RX",
+      "text": "\u001b[1;32muart:~$ \u001b[m",
+      "clean": "uart:~$ "
+    },
+    {
+      "t": 5.218,
+      "kind": "RX",
+      "text": "\u001b[8D\u001b[JSAMPLE seq=259 uptime=1445531 led=1 interval=200 streaming=1",
+      "clean": "SAMPLE seq=259 uptime=1445531 led=1 interval=200 streaming=1"
+    },
+    {
+      "t": 5.297,
+      "kind": "RX",
+      "text": "\u001b[1;32muart:~$ \u001b[m",
+      "clean": "uart:~$ "
+    },
+    {
+      "t": 5.422,
+      "kind": "RX",
+      "text": "\u001b[8D\u001b[JSAMPLE seq=260 uptime=1445738 led=0 interval=200 streaming=1",
+      "clean": "SAMPLE seq=260 uptime=1445738 led=0 interval=200 streaming=1"
+    },
+    {
+      "t": 5.5,
+      "kind": "RX",
+      "text": "\u001b[1;32muart:~$ \u001b[m",
+      "clean": "uart:~$ "
+    },
+    {
+      "t": 5.625,
+      "kind": "RX",
+      "text": "\u001b[8D\u001b[JSAMPLE seq=261 uptime=1445945 led=1 interval=200 streaming=1",
+      "clean": "SAMPLE seq=261 uptime=1445945 led=1 interval=200 streaming=1"
+    },
+    {
+      "t": 5.703,
+      "kind": "RX",
+      "text": "\u001b[1;32muart:~$ \u001b[m",
+      "clean": "uart:~$ "
+    },
+    {
+      "t": 5.828,
+      "kind": "RX",
+      "text": "\u001b[8D\u001b[JSAMPLE seq=262 uptime=1446152 led=0 interval=200 streaming=1",
+      "clean": "SAMPLE seq=262 uptime=1446152 led=0 interval=200 streaming=1"
+    },
+    {
+      "t": 5.828,
+      "kind": "TX",
+      "text": "status",
+      "clean": "status"
+    },
+    {
+      "t": 5.843,
+      "kind": "RX",
+      "text": "\u001b[1;32muart:~$ \u001b[mstatus",
+      "clean": "uart:~$ status"
+    },
+    {
+      "t": 5.843,
+      "kind": "RX",
+      "text": "STATUS streaming=1 interval=200 seq=262 worker_done=4 enqueued=4 queued=0 uptime=1446160",
+      "clean": "STATUS streaming=1 interval=200 seq=262 worker_done=4 enqueued=4 queued=0 uptime=1446160"
+    },
+    {
+      "t": 5.906,
+      "kind": "RX",
+      "text": "\u001b[1;32muart:~$ \u001b[m",
+      "clean": "uart:~$ "
+    },
+    {
+      "t": 6.047,
+      "kind": "RX",
+      "text": "\u001b[8D\u001b[JSAMPLE seq=263 uptime=1446359 led=1 interval=200 streaming=1",
+      "clean": "SAMPLE seq=263 uptime=1446359 led=1 interval=200 streaming=1"
+    },
+    {
+      "t": 6.109,
+      "kind": "RX",
+      "text": "\u001b[1;32muart:~$ \u001b[m",
+      "clean": "uart:~$ "
+    },
+    {
+      "t": 6.25,
+      "kind": "RX",
+      "text": "\u001b[8D\u001b[JSAMPLE seq=264 uptime=1446566 led=0 interval=200 streaming=1",
+      "clean": "SAMPLE seq=264 uptime=1446566 led=0 interval=200 streaming=1"
+    },
+    {
+      "t": 6.312,
+      "kind": "RX",
+      "text": "\u001b[1;32muart:~$ \u001b[m",
+      "clean": "uart:~$ "
+    },
+    {
+      "t": 6.39,
+      "kind": "TX",
+      "text": "clear",
+      "clean": "clear"
+    },
+    {
+      "t": 6.406,
+      "kind": "RX",
+      "text": "clear",
+      "clean": "clear"
+    },
+    {
+      "t": 6.453,
+      "kind": "RX",
+      "text": "\u001b[H\u001b[2J\u001b[1;32muart:~$ \u001b[m\u001b[8D\u001b[JSAMPLE seq=265 uptime=1446773 led=1 interval=200 streaming=1",
+      "clean": "uart:~$ SAMPLE seq=265 uptime=1446773 led=1 interval=200 streaming=1"
+    },
+    {
+      "t": 6.531,
+      "kind": "RX",
+      "text": "\u001b[1;32muart:~$ \u001b[m",
+      "clean": "uart:~$ "
+    }
+  ]
+}

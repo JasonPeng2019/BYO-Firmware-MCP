@@ -2,11 +2,13 @@ from __future__ import annotations
 
 from pathlib import Path
 from types import SimpleNamespace
+from typing import cast
 
 import pytest
 from mcp.server.fastmcp.exceptions import ToolError
 
 from pyocd_debug_mcp import server
+from pyocd_debug_mcp.adapters.swd_interface import TargetSessionHandle
 from pyocd_debug_mcp.guardrails.flash_gate import (
     FlashArtifactIdentity,
     ResolvedFlashRequest,
@@ -21,7 +23,8 @@ from pyocd_debug_mcp.services.session_runtime import (
     ToolOutcome,
     utc_now_text,
 )
-from pyocd_debug_mcp.services.symbols import ResolvedSymbol
+from pyocd_debug_mcp.services.symbols import ResolvedSymbol, find_symbols, resolve_symbol
+from pyocd_debug_mcp.target_errors import SymbolLookupError
 from pyocd_debug_mcp.tools.breakpoints import (
     BreakpointToolServices,
     build_breakpoint_handlers,
@@ -41,7 +44,12 @@ def _format_refusal(refusal, **kwargs) -> str:
     return f"Refused [{refusal.code}]: {refusal.message}"
 
 
-def _memory_handlers(tmp_path: Path, *, check_memory_read=None):
+def _memory_handlers(
+    tmp_path: Path,
+    *,
+    check_memory_read=None,
+    symbol_artifact_for=None,
+):
     artifact = tmp_path / "firmware.elf"
     artifact.write_bytes(b"elf")
     calls: list[tuple[str, object]] = []
@@ -54,7 +62,7 @@ def _memory_handlers(tmp_path: Path, *, check_memory_read=None):
         record_event=lambda *args, **kwargs: None,
         format_refusal=_format_refusal,
         handle_for=lambda board: handle,
-        symbol_artifact_for=lambda selected: artifact,
+        symbol_artifact_for=symbol_artifact_for or (lambda selected: artifact),
         find_symbols=lambda selected, query: (resolved,),
         resolve_symbol=lambda selected, name: resolved,
         read_target_memory=lambda selected, address, width: (
@@ -149,6 +157,165 @@ def test_memory_reads_check_scalar_block_and_symbol_bytes_before_backend(
     assert [call[0] for call in calls] == ["read", "read", "block"]
 
 
+def test_missing_current_symbol_artifact_refuses_before_backend(tmp_path: Path) -> None:
+    def missing(_handle):
+        raise RuntimeError("current ELF missing")
+
+    handlers, calls = _memory_handlers(tmp_path, symbol_artifact_for=missing)
+
+    assert "memory/symbol-artifact-unavailable" in handlers["find_symbol"]("board_b", "counter")
+    assert "memory/symbol-artifact-unavailable" in handlers["read_memory_symbol"](
+        "board_b", "counter", 32
+    )
+    assert "memory/symbol-artifact-unavailable" in handlers["write_memory"](
+        "board_b", "counter", 1, 32, False, None
+    )
+    assert calls == []
+
+
+def test_real_symbol_parser_failure_is_refused_before_backend(tmp_path: Path) -> None:
+    artifact = tmp_path / "bad.elf"
+    artifact.write_bytes(b"not-an-elf")
+    handle = object()
+    failing = build_memory_handlers(
+        MemoryToolServices(
+            runtime_for=lambda board: None,
+            active_session_id=lambda board: None,
+            duration_ms=lambda started: 1,
+            record_event=lambda *args, **kwargs: None,
+            format_refusal=_format_refusal,
+            handle_for=lambda board: handle,
+            symbol_artifact_for=lambda selected: artifact,
+            find_symbols=find_symbols,
+            resolve_symbol=resolve_symbol,
+            read_target_memory=lambda *args: pytest.fail("backend read reached"),
+            read_target_block=lambda *args: pytest.fail("backend block read reached"),
+            write_target_memory=lambda *args: pytest.fail("backend write reached"),
+            check_memory_read=lambda *args: None,
+        )
+    )
+
+    assert "memory/symbol-artifact-unavailable" in failing["find_symbol"](
+        "board_b", "counter"
+    )
+    assert "memory/symbol-artifact-unavailable" in failing["read_memory_symbol"](
+        "board_b", "counter", 32
+    )
+
+
+def test_missing_symbol_has_distinct_refusal(tmp_path: Path) -> None:
+    artifact = tmp_path / "firmware.elf"
+    artifact.write_bytes(b"fixture")
+    handlers = build_memory_handlers(
+        MemoryToolServices(
+            runtime_for=lambda board: None,
+            active_session_id=lambda board: None,
+            duration_ms=lambda started: 1,
+            record_event=lambda *args, **kwargs: None,
+            format_refusal=_format_refusal,
+            handle_for=lambda board: object(),
+            symbol_artifact_for=lambda selected: artifact,
+            find_symbols=lambda selected, query: (),
+            resolve_symbol=lambda selected, name: (_ for _ in ()).throw(
+                SymbolLookupError(f"Symbol '{name}' was not found")
+            ),
+            read_target_memory=lambda *args: pytest.fail("backend read reached"),
+            read_target_block=lambda *args: pytest.fail("backend block read reached"),
+            write_target_memory=lambda *args: pytest.fail("backend write reached"),
+            check_memory_read=lambda *args: None,
+        )
+    )
+
+    assert "memory/symbol-not-found" in handlers["read_memory_symbol"](
+        "board_b", "absent", 32
+    )
+
+
+def test_disappearing_symbol_artifact_is_not_reported_as_missing_symbol(
+    tmp_path: Path,
+) -> None:
+    artifact = tmp_path / "firmware.elf"
+    artifact.write_bytes(b"fixture")
+
+    def selected_artifact(_handle):
+        if not artifact.is_file():
+            raise RuntimeError("artifact disappeared")
+        return artifact
+
+    def disappearing_lookup(_artifact, name):
+        artifact.unlink()
+        raise SymbolLookupError(f"ELF artifact does not exist while resolving {name}")
+
+    handlers = build_memory_handlers(
+        MemoryToolServices(
+            runtime_for=lambda board: None,
+            active_session_id=lambda board: None,
+            duration_ms=lambda started: 1,
+            record_event=lambda *args, **kwargs: None,
+            format_refusal=_format_refusal,
+            handle_for=lambda board: object(),
+            symbol_artifact_for=selected_artifact,
+            find_symbols=lambda selected, query: (),
+            resolve_symbol=disappearing_lookup,
+            read_target_memory=lambda *args: pytest.fail("backend read reached"),
+            read_target_block=lambda *args: pytest.fail("backend block read reached"),
+            write_target_memory=lambda *args: pytest.fail("backend write reached"),
+            check_memory_read=lambda *args: None,
+        )
+    )
+
+    result = handlers["read_memory_symbol"]("board_b", "counter", 32)
+    assert "memory/symbol-artifact-unavailable" in result
+    assert "memory/symbol-not-found" not in result
+
+
+@pytest.mark.parametrize("operation", ["read", "write"])
+def test_symbol_change_during_resolution_blocks_backend(
+    tmp_path: Path,
+    operation: str,
+) -> None:
+    artifact = tmp_path / "firmware.elf"
+    stable = b"stable"
+    artifact.write_bytes(stable)
+    backend_calls: list[str] = []
+
+    def selected_artifact(_handle):
+        if artifact.read_bytes() != stable:
+            raise RuntimeError("artifact changed")
+        return artifact
+
+    def changing_resolver(_artifact, name):
+        artifact.write_bytes(b"changed")
+        return ResolvedSymbol(name, 0x20000010, 4, "STT_OBJECT")
+
+    handlers = build_memory_handlers(
+        MemoryToolServices(
+            runtime_for=lambda board: None,
+            active_session_id=lambda board: None,
+            duration_ms=lambda started: 1,
+            record_event=lambda *args, **kwargs: None,
+            format_refusal=_format_refusal,
+            handle_for=lambda board: object(),
+            symbol_artifact_for=selected_artifact,
+            find_symbols=lambda selected, query: (),
+            resolve_symbol=changing_resolver,
+            read_target_memory=lambda *args: backend_calls.append("read") or 0,
+            read_target_block=lambda *args: [],
+            write_target_memory=lambda *args: backend_calls.append("write"),
+            check_memory_read=lambda *args: backend_calls.append("check-read"),
+            check_memory_write=lambda *args: backend_calls.append("check-write"),
+        )
+    )
+
+    if operation == "read":
+        result = handlers["read_memory_symbol"]("board_b", "counter", 32)
+    else:
+        result = handlers["write_memory"]("board_b", "counter", 1, 32, False, None)
+
+    assert "memory/symbol-artifact-unavailable" in result
+    assert backend_calls == []
+
+
 def test_raw_memory_read_containment_is_a_central_pre_execution_check(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -199,7 +366,13 @@ def test_write_memory_is_symbol_first_and_reports_ram_containment(tmp_path: Path
     assert calls[-1][1][1:] == (0x20000010, 1, 32)  # type: ignore[index]
 
 
-def _flash_handlers(tmp_path: Path):
+def _flash_handlers(
+    tmp_path: Path,
+    *,
+    prepare_symbol_artifact=None,
+    bind_symbol_artifact=None,
+    flash_target=None,
+):
     artifact = tmp_path / "firmware.hex"
     artifact.write_text(":00000001FF\n", encoding="ascii")
     identity = FlashArtifactIdentity(
@@ -224,11 +397,12 @@ def _flash_handlers(tmp_path: Path):
         maybe_handle_for=lambda board: object(),
         handle_for=lambda board: object(),
         resolve_request=lambda handle, selected, context: request,
-        flash_target=lambda handle, selected: (
-            calls.append(("flash", (handle, selected))) or selected
-        ),
+        flash_target=flash_target
+        or (lambda handle, selected: (calls.append(("flash", (handle, selected))) or selected)),
         handle_mutation_event=lambda board, event: None,
         error_code=lambda exc: "runtime/error",
+        prepare_symbol_artifact=prepare_symbol_artifact,
+        bind_symbol_artifact=bind_symbol_artifact,
     )
     return build_flash_handlers(services), calls, artifact
 
@@ -241,6 +415,71 @@ def test_split_flash_actions_report_safety_map_validation(tmp_path: Path) -> Non
         assert "mapped partition" in result
         assert SAFE_EXIT_REMINDER in result
     assert len(calls) == 2
+
+
+def test_successful_application_flash_binds_symbols_but_bootloader_does_not(
+    tmp_path: Path,
+) -> None:
+    order: list[tuple[str, object]] = []
+    prepared = object()
+    handlers, _calls, artifact = _flash_handlers(
+        tmp_path,
+        prepare_symbol_artifact=lambda tool, board, selected: (
+            order.append(("prepare", (tool, board, selected))) or prepared
+        ),
+        bind_symbol_artifact=lambda board, binding: order.append(
+            ("bind", (board, binding))
+        ),
+        flash_target=lambda handle, selected: (
+            order.append(("flash", selected)) or selected
+        ),
+    )
+
+    handlers["flash_bootloader"]("board_b", str(artifact))
+    assert order == [("flash", artifact)]
+    order.clear()
+    handlers["flash_application"]("board_b", str(artifact))
+
+    assert order == [
+        ("prepare", ("flash_application", "board_b", artifact)),
+        ("flash", artifact),
+        ("bind", ("board_b", prepared)),
+    ]
+
+
+def test_run_scoped_symbol_binding_verifies_current_elf_digest(tmp_path: Path) -> None:
+    elf = tmp_path / "firmware.elf"
+    elf.write_bytes(b"current-elf")
+    handle = cast(
+        TargetSessionHandle,
+        SimpleNamespace(board=SimpleNamespace(board_id="board_b")),
+    )
+    server._current_symbol_artifacts.clear()
+    try:
+        binding = server._prepare_flashed_symbol_artifact(
+            "flash_application", "board_b", elf
+        )
+        server._bind_flashed_symbol_artifact("board_b", binding)
+        assert server._symbol_artifact_for_handle(handle) == elf.resolve()
+
+        elf.write_bytes(b"changed")
+        with pytest.raises(RuntimeError, match="changed after flash"):
+            server._symbol_artifact_for_handle(handle)
+    finally:
+        server._current_symbol_artifacts.clear()
+
+
+def test_hex_symbol_binding_is_prepared_from_same_stem_elf(tmp_path: Path) -> None:
+    selected = tmp_path / "firmware.hex"
+    companion = tmp_path / "firmware.elf"
+    selected.write_text(":00000001FF\n", encoding="ascii")
+    companion.write_bytes(b"companion")
+
+    artifact, _digest = server._prepare_flashed_symbol_artifact(
+        "flash_application", "board_b", selected
+    )
+
+    assert artifact == companion.resolve()
 
 
 def test_convergence_watcher_tracks_renamed_bootloader_flash(tmp_path: Path) -> None:

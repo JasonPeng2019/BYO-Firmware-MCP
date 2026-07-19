@@ -980,6 +980,16 @@ class RunAssignmentStore:
                 and isinstance(value, str)
             }
 
+    def connection_for(self, board_id: str) -> str | None:
+        """Return the current run-scoped connection assigned to one board, if any."""
+
+        board = board_id.strip()
+        if not board:
+            return None
+        with self._guard:
+            connection = self._assignments.get(("board", board))
+            return connection if isinstance(connection, str) else None
+
     def run_if_current(
         self,
         connection_id: str,

@@ -403,6 +403,24 @@ def test_public_setup_continuation_accepts_only_a_returned_friendly_choice(monke
     assert server._setup_selections_by_board.pop("nf_board").probe_id == "probe-a"
 
 
+def test_production_loaded_validation_guidance_uses_current_assignment() -> None:
+    previous = server.assignment_store.bindings()
+    board_id = "probe_guidance_integration_board"
+    try:
+        server.assignment_store.replace({"probe:PROBE-GUIDANCE": board_id})
+
+        payload = json.loads(
+            server.setup_tool_handlers["load_setup_tool"](board_id, "board_validate")
+        )
+
+        assert payload["next_call"] == {
+            "tool": "board_validate",
+            "arguments": {"board_id": board_id, "probe_id": "PROBE-GUIDANCE"},
+        }
+    finally:
+        server.assignment_store.replace(previous)
+
+
 def test_public_setup_continuation_accepts_real_external_adapter_confirmation_code(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

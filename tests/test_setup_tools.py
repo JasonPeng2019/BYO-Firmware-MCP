@@ -4,6 +4,7 @@ import inspect
 import json
 from pathlib import Path
 from types import SimpleNamespace
+from collections.abc import Callable
 from typing import Any, cast
 
 import pytest
@@ -67,7 +68,12 @@ def populated_plan() -> dict[str, object]:
     }
 
 
-def services(tmp_path: Path):
+def services(
+    tmp_path: Path,
+    *,
+    assigned_connection: Callable[[str], str | None] | None = None,
+    require_assignment: Callable[[str, str], None] | None = None,
+):
     run = ServerRun(run_id="setup-tools-run")
     registry = ToolRegistry()
     for name in ("board_setup", "board_fix_setup"):
@@ -140,6 +146,9 @@ def services(tmp_path: Path):
                 "continuation_id": continuation_id,
                 "response": dict(response),
             },
+            require_assignment=require_assignment,
+            assigned_connection=assigned_connection
+            or (lambda board_id: "probe:probe-a" if board_id == "bench_board" else None),
         )
     )
     return run, registry, engine, loader, built
@@ -228,7 +237,7 @@ def test_load_setup_tool_returns_distinct_bounded_next_step_guidance(tmp_path: P
     assert set(setup_call["arguments"].values()) == {None}
     assert payloads["board_validate"]["next_call"] == {
         "tool": "board_validate",
-        "arguments": {"board_id": "bench_board"},
+        "arguments": {"board_id": "bench_board", "probe_id": "probe-a"},
     }
     assert payloads["board_safety_refresh"]["next_call"] == {
         "tool": "board_safety_refresh",
@@ -254,6 +263,43 @@ def test_load_setup_tool_returns_distinct_bounded_next_step_guidance(tmp_path: P
     refresh_guidance = payloads["board_safety_refresh"]["guidance"]
     assert "missing, malformed, old, or inconsistent map" in refresh_guidance["when_to_use"]
     assert "no build artifacts or caller ranges" in refresh_guidance["when_not_to_use"]
+
+
+def test_loaded_validation_call_copies_run_scoped_probe_and_executes(tmp_path: Path) -> None:
+    assignment_checks: list[tuple[str, str]] = []
+    _, _, _, _, handlers = services(
+        tmp_path,
+        assigned_connection=lambda board_id: (
+            "probe:probe-a" if board_id == "bench_board" else None
+        ),
+        require_assignment=lambda board_id, connection_id: assignment_checks.append(
+            (board_id, connection_id)
+        ),
+    )
+
+    loaded = json.loads(handlers["load_setup_tool"]("bench_board", "board_validate"))
+
+    assert loaded["next_call"] == {
+        "tool": "board_validate",
+        "arguments": {"board_id": "bench_board", "probe_id": "probe-a"},
+    }
+    result = json.loads(handlers["board_validate"](**loaded["next_call"]["arguments"]))
+    assert result["status"] == "validation_incomplete"
+    assert assignment_checks == [("bench_board", "probe:probe-a")]
+
+
+def test_loading_validation_without_run_assignment_fails_closed(tmp_path: Path) -> None:
+    _, _, _, loader, handlers = services(
+        tmp_path,
+        assigned_connection=lambda _board_id: None,
+    )
+
+    loaded = json.loads(handlers["load_setup_tool"]("bench_board", "board_validate"))
+
+    assert loaded["status"] == "setup_assignment_required"
+    assert "next_call" not in loaded
+    assert "setup_overview" in loaded["agent_prompt"]
+    assert not loader.is_loaded("bench_board", "board_validate")
 
 
 def test_removed_safety_setup_cannot_be_loaded_or_called(tmp_path: Path) -> None:

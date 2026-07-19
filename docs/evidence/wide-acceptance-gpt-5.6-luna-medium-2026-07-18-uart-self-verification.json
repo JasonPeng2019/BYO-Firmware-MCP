@@ -1,0 +1,293 @@
+{
+  "provider": "gpt-5.6-luna-medium-substitute-for-unsupported-gpt-4.6-luna",
+  "port": "COM11",
+  "baud": 115200,
+  "checks": {
+    "stats_response": true,
+    "pause_ack": true,
+    "pause_quiet": true,
+    "period_ack": true,
+    "run_ack": true,
+    "period_events_at_200": true,
+    "period_intervals_reasonable": true,
+    "job_result": true,
+    "selftest_pass": true,
+    "observable_event_prints": true,
+    "concurrent_interleaving": true
+  },
+  "period_event_intervals_seconds": [
+    0.203,
+    0.203,
+    0.203,
+    0.203,
+    0.203,
+    0.204,
+    2.218,
+    0.203,
+    0.204,
+    0.203,
+    0.203,
+    0.203,
+    0.203,
+    0.203,
+    0.203,
+    0.422,
+    0.203,
+    0.203,
+    0.204,
+    0.203
+  ],
+  "quiet_event_count": 0,
+  "transcript": [
+    {
+      "t": 0.11,
+      "kind": "RX",
+      "text": "EVENT seq=664 uptime=213325 state=1 period=200"
+    },
+    {
+      "t": 0.313,
+      "kind": "RX",
+      "text": "EVENT seq=665 uptime=213529 state=0 period=200"
+    },
+    {
+      "t": 0.516,
+      "kind": "RX",
+      "text": "EVENT seq=666 uptime=213733 state=1 period=200"
+    },
+    {
+      "t": 0.719,
+      "kind": "RX",
+      "text": "EVENT seq=667 uptime=213937 state=0 period=200"
+    },
+    {
+      "t": 0.719,
+      "kind": "TX",
+      "text": "stats"
+    },
+    {
+      "t": 0.719,
+      "kind": "RX",
+      "text": "stats"
+    },
+    {
+      "t": 0.735,
+      "kind": "RX",
+      "text": "STATUS cmd=stats events=667 jobs=0 period=200 running=1 last=0"
+    },
+    {
+      "t": 0.813,
+      "kind": "RX",
+      "text": "\u001b[1;32mluna> \u001b[m"
+    },
+    {
+      "t": 0.922,
+      "kind": "RX",
+      "text": "EVENT seq=668 uptime=214141 state=1 period=200"
+    },
+    {
+      "t": 1.125,
+      "kind": "RX",
+      "text": "EVENT seq=669 uptime=214346 state=0 period=200"
+    },
+    {
+      "t": 1.329,
+      "kind": "RX",
+      "text": "EVENT seq=670 uptime=214550 state=1 period=200"
+    },
+    {
+      "t": 1.422,
+      "kind": "TX",
+      "text": "pause"
+    },
+    {
+      "t": 1.422,
+      "kind": "RX",
+      "text": "pause"
+    },
+    {
+      "t": 1.422,
+      "kind": "RX",
+      "text": "ACK cmd=pause running=0"
+    },
+    {
+      "t": 1.516,
+      "kind": "RX",
+      "text": "\u001b[1;32mluna> \u001b[m"
+    },
+    {
+      "t": 2.875,
+      "kind": "TX",
+      "text": "period 200"
+    },
+    {
+      "t": 2.891,
+      "kind": "RX",
+      "text": "period 200"
+    },
+    {
+      "t": 2.891,
+      "kind": "RX",
+      "text": "ACK cmd=period ms=200"
+    },
+    {
+      "t": 2.985,
+      "kind": "RX",
+      "text": "\u001b[1;32mluna> \u001b[m"
+    },
+    {
+      "t": 3.297,
+      "kind": "TX",
+      "text": "run"
+    },
+    {
+      "t": 3.297,
+      "kind": "RX",
+      "text": "run"
+    },
+    {
+      "t": 3.297,
+      "kind": "RX",
+      "text": "ACK cmd=run running=1"
+    },
+    {
+      "t": 3.344,
+      "kind": "RX",
+      "text": "\u001b[1;32mluna> \u001b[mEVENT seq=671 uptime=216555 state=0 period=200"
+    },
+    {
+      "t": 3.547,
+      "kind": "RX",
+      "text": "EVENT seq=672 uptime=216759 state=1 period=200"
+    },
+    {
+      "t": 3.75,
+      "kind": "RX",
+      "text": "EVENT seq=673 uptime=216963 state=0 period=200"
+    },
+    {
+      "t": 3.954,
+      "kind": "RX",
+      "text": "EVENT seq=674 uptime=217168 state=1 period=200"
+    },
+    {
+      "t": 4.157,
+      "kind": "RX",
+      "text": "EVENT seq=675 uptime=217372 state=0 period=200"
+    },
+    {
+      "t": 4.36,
+      "kind": "RX",
+      "text": "EVENT seq=676 uptime=217576 state=1 period=200"
+    },
+    {
+      "t": 4.563,
+      "kind": "RX",
+      "text": "EVENT seq=677 uptime=217780 state=0 period=200"
+    },
+    {
+      "t": 4.657,
+      "kind": "TX",
+      "text": "job 10"
+    },
+    {
+      "t": 4.657,
+      "kind": "RX",
+      "text": "job 10"
+    },
+    {
+      "t": 4.672,
+      "kind": "RX",
+      "text": "JOB_DONE id=2 input=10 result=55"
+    },
+    {
+      "t": 4.672,
+      "kind": "RX",
+      "text": "ACK cmd=job id=2 input=10"
+    },
+    {
+      "t": 4.75,
+      "kind": "RX",
+      "text": "\u001b[1;32mluna> \u001b[m"
+    },
+    {
+      "t": 4.766,
+      "kind": "RX",
+      "text": "EVENT seq=678 uptime=217985 state=1 period=200"
+    },
+    {
+      "t": 4.969,
+      "kind": "RX",
+      "text": "EVENT seq=679 uptime=218189 state=0 period=200"
+    },
+    {
+      "t": 5.172,
+      "kind": "RX",
+      "text": "EVENT seq=680 uptime=218393 state=1 period=200"
+    },
+    {
+      "t": 5.36,
+      "kind": "TX",
+      "text": "selftest"
+    },
+    {
+      "t": 5.36,
+      "kind": "RX",
+      "text": "selftest"
+    },
+    {
+      "t": 5.36,
+      "kind": "RX",
+      "text": "SELFTEST result=PASS fib10=55"
+    },
+    {
+      "t": 5.391,
+      "kind": "RX",
+      "text": "\u001b[1;32mluna> \u001b[mEVENT seq=681 uptime=218597 state=0 period=200"
+    },
+    {
+      "t": 5.594,
+      "kind": "RX",
+      "text": "EVENT seq=682 uptime=218801 state=1 period=200"
+    },
+    {
+      "t": 5.797,
+      "kind": "RX",
+      "text": "EVENT seq=683 uptime=219006 state=0 period=200"
+    },
+    {
+      "t": 6.0,
+      "kind": "RX",
+      "text": "EVENT seq=684 uptime=219210 state=1 period=200"
+    },
+    {
+      "t": 6.079,
+      "kind": "TX",
+      "text": "stats"
+    },
+    {
+      "t": 6.094,
+      "kind": "RX",
+      "text": "stats"
+    },
+    {
+      "t": 6.094,
+      "kind": "RX",
+      "text": "STATUS cmd=stats events=684 jobs=1 period=200 running=1 last=55"
+    },
+    {
+      "t": 6.188,
+      "kind": "RX",
+      "text": "\u001b[1;32mluna> \u001b[m"
+    },
+    {
+      "t": 6.204,
+      "kind": "RX",
+      "text": "EVENT seq=685 uptime=219414 state=0 period=200"
+    },
+    {
+      "t": 6.407,
+      "kind": "RX",
+      "text": "EVENT seq=686 uptime=219618 state=1 period=200"
+    }
+  ]
+}

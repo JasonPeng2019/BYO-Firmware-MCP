@@ -1,0 +1,44 @@
+{
+  "codex": {
+    "cli_version": "0.144.5",
+    "configured_model_argument": "gpt-5.6-luna",
+    "configured_effort_argument": "medium",
+    "exit_code": 0,
+    "provider_stream_model_metadata_available": false,
+    "claim_scope": "launch configuration and agent report; not an independently echoed provider model identifier"
+  },
+  "claude_full_run": {
+    "provider_stream_init": {
+      "type": "system",
+      "subtype": "init",
+      "model": "claude-sonnet-5",
+      "claude_code_version": "2.1.76",
+      "permission_mode": "bypassPermissions",
+      "cwd": "C:\\cs5r4"
+    },
+    "provider_stream_model_usage_key": "claude-sonnet-5",
+    "substantive_turns_completed": true
+  },
+  "claude_debug_retry": {
+    "provider_stream_init": {
+      "type": "system",
+      "subtype": "init",
+      "model": "claude-sonnet-5",
+      "claude_code_version": "2.1.76",
+      "permission_mode": "bypassPermissions",
+      "cwd": "C:\\cs5r4"
+    },
+    "rate_limit": {
+      "status": "rejected",
+      "rate_limit_type": "five_hour",
+      "overage_status": "rejected",
+      "is_using_overage": false
+    },
+    "result": {
+      "is_error": true,
+      "model_usage": {},
+      "task_or_mcp_action_occurred": false
+    }
+  },
+  "redaction": "Session identifiers, billing/token totals, credential source, full prompts, and raw streams are omitted; this file contains only model/CLI/rate-limit claim support."
+}
