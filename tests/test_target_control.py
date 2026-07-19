@@ -337,7 +337,7 @@ def test_adapter_closes_if_global_target_came_from_different_pack(
 
     chosen: list[dict[str, object] | None] = []
 
-    def choose(**kwargs: object) -> FakeSession:
+    def choose(**kwargs: object) -> object:
         options = kwargs.get("options")
         chosen.append(options if isinstance(options, dict) else None)
         return FakeSession()
@@ -354,8 +354,10 @@ def test_adapter_closes_if_global_target_came_from_different_pack(
         )
 
     assert chosen[0] is not None
-    assert len(chosen[0]["pack"]) == 1
-    assert isinstance(chosen[0]["pack"][0], PackObject)
+    selected = chosen[0]["pack"]
+    assert isinstance(selected, list)
+    assert len(selected) == 1
+    assert isinstance(selected[0], PackObject)
     assert calls == ["close"]
 
 

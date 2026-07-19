@@ -15,7 +15,11 @@ from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
 from typing import Any, Mapping
 
-from pyocd_debug_mcp.pack_provision import PackProvisionError, verified_pack_for_target
+from pyocd_debug_mcp.pack_provision import (
+    PackProvisionError,
+    VerifiedPack,
+    verified_pack_for_target,
+)
 from pyocd_debug_mcp.safety.verify2 import (
     EvidenceError,
     HardwareEvidence,
@@ -80,6 +84,17 @@ class ReviewedEvidenceBundle:
                 ],
             },
         }
+
+
+def pack_matches_reviewed_catalog(selected: VerifiedPack, catalog: CatalogBoard) -> bool:
+    """Return whether one verified pack is the exact authority pinned by the catalog."""
+
+    return (
+        selected.spec.filename == catalog.pyocd_pack_filename
+        and selected.spec.sha256 == catalog.pyocd_pack_sha256
+        and catalog.pyocd_target in selected.spec.provides_targets
+        and catalog.board_type in selected.spec.needed_by_boards
+    )
 
 
 def _sha256_file(path: Path) -> str:
@@ -173,12 +188,7 @@ def _runtime_pyocd_identity(catalog: CatalogBoard) -> tuple[str, str, str]:
             raise BoardCatalogError(
                 "reviewed pyOCD CMSIS-Pack target is absent from the pinned pack manifest"
             )
-        if (
-            selected.spec.filename != catalog.pyocd_pack_filename
-            or selected.spec.sha256 != catalog.pyocd_pack_sha256
-            or catalog.pyocd_target not in selected.spec.provides_targets
-            or catalog.board_type not in selected.spec.needed_by_boards
-        ):
+        if not pack_matches_reviewed_catalog(selected, catalog):
             raise BoardCatalogError(
                 "reviewed board catalog and pinned pack manifest do not describe the same authority"
             )

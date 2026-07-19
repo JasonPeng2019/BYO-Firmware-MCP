@@ -29,4 +29,3 @@ FLASH/VERIFY:
 - Debug successfully through MCP: connect/halt, inspect PC/SP and the exported counter by symbol, set a breakpoint on the current application function through its plan, observe it hit, remove it, resume, and disconnect while leaving firmware running. If reconnect requires validation, perform it exactly as instructed.
 
 Record a concise `journey.md` in this fresh repository containing model (`gpt-5.6-luna`), effort (`medium`), CLI version if observable, run ID, setup/validation result, exact general build commands/results, artifact paths/hashes, plan IDs, flash results, UART transcript, debug observations, and every failure/diagnosis/retest. Finish only when all required checks are green. In your final response summarize the evidence and exact files created.
-

@@ -21,4 +21,3 @@ $args = @(
 $prompt | & codex @args 1> "$root\codex-run.jsonl" 2> "$root\codex-stderr.log"
 $LASTEXITCODE | Set-Content -LiteralPath "$root\codex-exit-code.txt"
 exit $LASTEXITCODE
-

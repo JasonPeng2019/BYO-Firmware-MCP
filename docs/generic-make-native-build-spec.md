@@ -33,4 +33,3 @@ general helper even when a complete local compiler and GNU Make are already inst
 This build helper grants no hardware authority. Normal Make firmware uses one ordinary command and
 needs no extra MCP step. Explicit environment variables resolve unusual installations without
 hardcoded host paths.
-

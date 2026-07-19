@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+from dataclasses import replace
+from pathlib import Path
 from types import SimpleNamespace
 
 import mcp.types as types
@@ -9,7 +11,7 @@ from mcp.shared.memory import create_connected_server_and_client_session
 
 from pyocd_debug_mcp import probe_inventory, server
 from pyocd_debug_mcp.firmstore.cache import CacheResolution
-from pyocd_debug_mcp.pack_provision import PackProvisionError, PackSpec
+from pyocd_debug_mcp.pack_provision import PackProvisionError, PackSpec, VerifiedPack
 from pyocd_debug_mcp.setup_flow.board_catalog import (
     ReviewedSupportNotFoundError,
     catalog_board,
@@ -307,12 +309,15 @@ def test_fresh_reviewed_catalog_uses_verified_repository_pack_target(
 ) -> None:
     monkeypatch.setattr(server, "_validation_inventory", lambda: ValidationInventory())
     monkeypatch.setattr(server, "_target_names", lambda: ())
+    catalog = catalog_board("nucleo_l476rg")
+    assert catalog.pyocd_pack_filename is not None
+    assert catalog.pyocd_pack_sha256 is not None
     spec = PackSpec(
         id="Keil.STM32L4xx_DFP",
         version="3.1.0",
-        filename="stm32.pack",
+        filename=catalog.pyocd_pack_filename,
         url="https://example.invalid/stm32.pack",
-        sha256="1" * 64,
+        sha256=catalog.pyocd_pack_sha256,
         provides_targets=("stm32l476rgtx",),
         needed_by_boards=("nucleo_l476rg",),
     )
@@ -321,7 +326,8 @@ def test_fresh_reviewed_catalog_uses_verified_repository_pack_target(
         "load_manifest",
         lambda path=None: (spec,) if path is None else (),
     )
-    monkeypatch.setattr(server, "verified_pack_for_target", lambda _target: object())
+    selected = VerifiedPack(path=Path("stm32.pack"), spec=spec, payload=b"pack")
+    monkeypatch.setattr(server, "verified_pack_for_target", lambda _target: selected)
 
     result = server._setup_inventory(
         SetupUserInput(
@@ -352,6 +358,57 @@ def test_fresh_reviewed_catalog_uses_verified_repository_pack_target(
     assert refused.exact_detected_targets == ()
     assert refused.blocking_error is not None
     assert refused.blocking_error.code == "setup/reviewed-pack-unavailable"
+
+
+@pytest.mark.parametrize(
+    ("field", "replacement"),
+    [
+        ("filename", "wrong.pack"),
+        ("sha256", "2" * 64),
+        ("provides_targets", ("other-target",)),
+        ("needed_by_boards", ("other-board",)),
+    ],
+)
+def test_fresh_reviewed_catalog_rejects_pack_not_pinned_for_board(
+    monkeypatch: pytest.MonkeyPatch,
+    field: str,
+    replacement: object,
+) -> None:
+    monkeypatch.setattr(server, "_validation_inventory", lambda: ValidationInventory())
+    monkeypatch.setattr(server, "_target_names", lambda: ())
+    catalog = catalog_board("nucleo_l476rg")
+    assert catalog.pyocd_pack_filename is not None
+    assert catalog.pyocd_pack_sha256 is not None
+    expected = PackSpec(
+        id="Keil.STM32L4xx_DFP",
+        version="3.1.0",
+        filename=catalog.pyocd_pack_filename,
+        url="https://example.invalid/stm32.pack",
+        sha256=catalog.pyocd_pack_sha256,
+        provides_targets=("stm32l476rgtx",),
+        needed_by_boards=("nucleo_l476rg",),
+    )
+    actual = replace(expected, **{field: replacement})
+    monkeypatch.setattr(server, "load_manifest", lambda path=None: (expected,) if path is None else ())
+    monkeypatch.setattr(
+        server,
+        "verified_pack_for_target",
+        lambda _target: VerifiedPack(path=Path("selected.pack"), spec=actual, payload=b"pack"),
+    )
+
+    result = server._setup_inventory(
+        SetupUserInput(
+            "stm32_board",
+            "probe:missing",
+            "STM32 Board",
+            "STM32L476RGT6",
+            115200,
+        )
+    )
+
+    assert result.exact_detected_targets == ()
+    assert result.blocking_error is not None
+    assert result.blocking_error.code == "setup/reviewed-pack-unavailable"
 
 
 def test_validation_target_support_uses_verified_pack_not_manifest_registration(

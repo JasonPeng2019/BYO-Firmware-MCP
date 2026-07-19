@@ -1,5 +1,5 @@
 {
-  "contract_version": 48,
+  "contract_version": 49,
   "status": "active",
   "milestone": "post-M10-debiased-runtime-round-6",
   "supersedes": "adversarial-usability-server-tools.json",
@@ -32,7 +32,7 @@
     "src/pyocd_debug_mcp/safety/refresh.py": "1e977cee73446570e45ce8054e06e2068f103f493ed19c3bb96fb16b3d6736a8",
     "src/pyocd_debug_mcp/safety/regions.py": "c94e5d36c74d593cd8a6900eaa4795a48154d68cacf16d8afa62f25778e76cc8",
     "src/pyocd_debug_mcp/safety/verify2.py": "937f5a86a9461d7dfe681c6e656a2b3285ffab8983991495dcb6f6a944daaca3",
-    "src/pyocd_debug_mcp/server.py": "4dd5fafa97986b1677a0643b137c806b1d43027bc14f2750991d23f1c2ea7190",
+    "src/pyocd_debug_mcp/server.py": "0c00b2907d3fac0c69239bd8f1ff85cfd4de1ee166849a45a9f38f558aa18f41",
     "src/pyocd_debug_mcp/services/convergence_watcher.py": "5090b2fb7204dd8de772d75d60e783d18c8941e05456d28afab9b68dbf2ca7ce",
     "src/pyocd_debug_mcp/services/target_control.py": "d18b0dd02d0eb94b1c1bbf19d48653e4f95bbdecf89b834b837c5d36ceab8392",
     "src/pyocd_debug_mcp/services/uart_capture.py": "270a66d831212faec875080c2fb721eb5d2a04b73275ecfa39eea1fef8155f1f",
@@ -41,7 +41,7 @@
     "src/pyocd_debug_mcp/setup_flow/packs.py": "a60948e61f5ecc733023247f3d4885b0f0c48e3f18d6081fa402c62c4e0ea717",
     "src/pyocd_debug_mcp/setup_flow/preflight.py": "8ae031e5fa4a2cced063cca246340b16712fe50fdd5d02b3afbef10a38f156b2",
     "src/pyocd_debug_mcp/setup_flow/research.py": "c28cdee4a0a6411e87d80323226db2fbf3e634a02025c2d9716d733140a67858",
-    "src/pyocd_debug_mcp/setup_flow/reviewed_evidence.py": "08f5c646bba1baed97d540c8b7815c53de64d61d6a61ee12b213070b131c154a",
+    "src/pyocd_debug_mcp/setup_flow/reviewed_evidence.py": "a938d5ba15f045acbbce1805fea18e4012f75e820a8f0f828d5691f274093674",
     "src/pyocd_debug_mcp/setup_flow/setup.py": "3b689a6712f6dad7b6cd1feba0ec398d28353ca94830e1f63e8f9fe217163a30",
     "src/pyocd_debug_mcp/setup_flow/targets.py": "26cccc22316a17b5dcfe8739153ed477a13d633d7fc85bcd6eb5d48df1411a31",
     "src/pyocd_debug_mcp/setup_flow/validate.py": "802286967ff292d5f60692f047964c38eabcfe64ba4e6f958b1b3ef5db12d636",
@@ -180,7 +180,8 @@
     "Version 44 adds local-only generic Make builds and exact reviewed STM32L476 pack-backed setup while binding pyOCD target registration to one snapshotted manifest-selected pack.",
     "Version 45 lets fresh reviewed pack-backed boards use the server and active-project pinned manifests during exact target preflight without inference or downloads.",
     "Version 46 preserves reviewed pre-commit connect mode, clock, and identity policy through the shared backend without forcing a reference-board probe.",
-    "Version 47 preserves immutable selected-probe identity before any J-Link UID-normalization retry opens a backend session."
+    "Version 47 preserves immutable selected-probe identity before any J-Link UID-normalization retry opens a backend session.",
+    "Version 48 lets validation recognize non-built-in targets only through a verified manifest-selected pack while keeping built-in targets independent of pack registration.",
+    "Version 49 requires fresh setup preflight to bind a verified pack's filename, digest, target, and board scope to the reviewed catalog before hardware connection."
   ]
 }
-

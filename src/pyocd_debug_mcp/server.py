@@ -134,6 +134,7 @@ from pyocd_debug_mcp.setup_flow.board_catalog import (
 )
 from pyocd_debug_mcp.setup_flow.reviewed_evidence import (
     load_pinned_reviewed_evidence,
+    pack_matches_reviewed_catalog,
 )
 from pyocd_debug_mcp.setup_flow.setup import (
     RunAssignmentStore,
@@ -2652,7 +2653,10 @@ def _setup_inventory(user_input: SetupUserInput) -> PreflightInventory:
     support_present = reviewed_target in targets if not pack_backed else False
     if pack_backed:
         try:
-            support_present = verified_pack_for_target(reviewed_target) is not None
+            selected_pack = verified_pack_for_target(reviewed_target)
+            support_present = selected_pack is not None and pack_matches_reviewed_catalog(
+                selected_pack, catalog
+            )
         except PackProvisionError as exc:
             return PreflightInventory(
                 probes=probes,

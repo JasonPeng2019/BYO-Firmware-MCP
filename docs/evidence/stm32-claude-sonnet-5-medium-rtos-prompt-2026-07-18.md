@@ -4,7 +4,7 @@ You are an external acceptance subagent running in a brand-new repository. At la
 
 Use the `pyocd-debug` MCP server from start to finish. Begin with `initialization_handshake`, follow server routing, perform fresh setup from the PDF, validate, and use the build guidance returned by `get_setup_status`.
 
-For setup naming, use the new unique familiar name `STM32 Claude RTOS Acceptance R1` for the ST-Link board. Inventory may also show the already-known Nordic/J-Link companion; name it `Nordic companion inventory only` solely to satisfy one-to-one startup routing, but never load or execute its route. Obtain current connection IDs from `setup_overview` and copy them exactly.
+For setup naming, use the new unique familiar name `STM32 Claude RTOS Acceptance R3` for the ST-Link board. Inventory may also show the already-known Nordic/J-Link companion; name it `Nordic companion inventory only` solely to satisfy one-to-one startup routing, but never load or execute its route. Obtain current connection IDs from `setup_overview` and copy them exactly.
 
 HARD RULES:
 - Use the GENERAL local-only build helper `python -m pyocd_debug_mcp.native_build` and generalized MCP mechanisms. Never use `pyocd_debug_mcp.zephyr_build`, west, Zephyr/NCS, OpenOCD, STM32CubeProgrammer, direct pyOCD CLI, direct serial libraries, or backup routes.
@@ -16,6 +16,7 @@ HARD RULES:
 ENGINEERING TEST:
 Build a non-Zephyr, freestanding custom real-time bare-metal OS/application for Cortex-M4F, linked at `0x08008000`. It must include:
 - correct vector/startup code and linker ASSERTs keeping every load segment at/above `0x08008000` and inside STM32L476RG flash/RAM;
+- use only reviewed SRAM1 0x20000000..0x20017FFF, place the initial MSP strictly below 0x20018000, and explicitly establish the application's own clock before deriving USART/SysTick divisors: the resident bootloader selects HSI16 and branches without a core reset, so reset-clock assumptions are invalid;
 - a 1 ms SysTick timebase and an explicit scheduler with multiple independently scheduled tasks;
 - a bounded, interrupt-safe command queue: USART2 RX on PA2/PA3 at 115200 assembles console lines and queues parsed/validated command messages; scheduled task context dequeues and applies them (do not execute substantive commands in the ISR);
 - a PA5 LED task and periodic UART publisher task that continue concurrently;

@@ -1,0 +1,87 @@
+{
+  "records": [
+    {
+      "label": "baseline",
+      "text": "[97000] LED OFF period=500\n[97500] LED ON period=500\n[98000] LED OFF period=500\n[98002] PRINT seq=49 period=2000\n[98500] LED ON period=500\n"
+    },
+    {
+      "label": "status",
+      "text": "[98585] STATUS tick=98586 paused=0 led_ms=500 print_ms=2000 led_events=197 print_events=49 jobs_q=0 jobs_done=0 cmd_count=1 cmd_overflow=0 sched_cycles=15341375\n[99000] LED OFF period=500\n[99500] LED ON period=500\n"
+    },
+    {
+      "label": "led 100",
+      "text": "[99598] ACK led period=100\n[99698] LED OFF period=100\n[99798] LED ON period=100\n[99898] LED OFF period=100\n[99998] LED ON period=100\n[100000] PRINT seq=50 period=2000\n[100098] LED OFF period=100\n[100198] LED ON period=100\n[100298] LED OFF period=100\n[100398] LED ON period=100\n[100498] LED OFF period=100\n[100598] LED ON period=100\n[100698] LED OFF period=100\n[100798] LED ON period=100\n[100898] LED OFF period=100\n[100998] LED ON period=100\n[101098] LED OFF period=100\n[101198] LED ON period=100\n[101298] LED OFF period=100\n[101398] LED ON period=100\n[101498] LED OFF period=100\n[101598] LED ON period=100\n"
+    },
+    {
+      "label": "print 300",
+      "text": "[101628] ACK print period=300\n[101698] LED OFF period=100\n[101798] LED ON period=100\n[101898] LED OFF period=100\n[101928] PRINT seq=51 period=300\n[101998] LED ON period=100\n[102098] LED OFF period=100\n[102198] LED ON period=100\n[102228] PRINT seq=52 period=300\n[102298] LED OFF period=100\n[102398] LED ON period=100\n[102498] LED OFF period=100\n[102528] PRINT seq=53 period=300\n[102598] LED ON period=100\n[102698] LED OFF period=100\n[102798] LED ON period=100\n[102828] PRINT seq=54 period=300\n[102898] LED OFF period=100\n[102998] LED ON period=100\n[103098] LED OFF period=100\n[103128] PRINT seq=55 period=300\n[103198] LED ON period=100\n[103298] LED OFF period=100\n[103398] LED ON period=100\n[103428] PRINT seq=56 period=300\n[103498] LED OFF period=100\n[103598] LED ON period=100\n"
+    },
+    {
+      "label": "pause",
+      "text": "[103658] ACK paused\n"
+    },
+    {
+      "label": "status",
+      "text": "[104868] STATUS tick=104869 paused=1 led_ms=100 print_ms=300 led_events=239 print_events=56 jobs_q=0 jobs_done=0 cmd_count=5 cmd_overflow=0 sched_cycles=16319699\n"
+    },
+    {
+      "label": "enqueue alpha42",
+      "text": "[105632] ACK enqueue id=0\n[105650] JOB 0 DONE text=alpha42\n"
+    },
+    {
+      "label": "resume",
+      "text": "[106652] ACK resumed\n[106752] LED OFF period=100\n[106852] LED ON period=100\n[106952] LED OFF period=100\n[106954] PRINT seq=57 period=300\n[107052] LED ON period=100\n[107152] LED OFF period=100\n[107252] LED ON period=100\n[107254] PRINT seq=58 period=300\n[107352] LED OFF period=100\n[107452] LED ON period=100\n[107552] LED OFF period=100\n[107554] PRINT seq=59 period=300\n[107652] LED ON period=100\n[107752] LED OFF period=100\n[107852] LED ON period=100\n[107854] PRINT seq=60 period=300\n[107952] LED OFF period=100\n[108052] LED ON period=100\n[108152] LED OFF period=100\n[108154] PRINT seq=61 period=300\n"
+    }
+  ],
+  "led_ticks": [
+    99698,
+    99798,
+    99898,
+    99998,
+    100098,
+    100198,
+    100298,
+    100398,
+    100498,
+    100598,
+    100698,
+    100798,
+    100898,
+    100998,
+    101098,
+    101198,
+    101298,
+    101398,
+    101498,
+    101598,
+    101698,
+    101798,
+    101898,
+    101998,
+    102098,
+    102198,
+    102298,
+    102398,
+    102498,
+    102598,
+    102698,
+    102798,
+    102898,
+    102998,
+    103098,
+    103198,
+    103298,
+    103398,
+    103498,
+    103598
+  ],
+  "print_ticks": [
+    101928,
+    102228,
+    102528,
+    102828,
+    103128,
+    103428
+  ],
+  "status": "pass"
+}

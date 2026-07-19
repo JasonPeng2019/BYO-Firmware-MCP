@@ -305,3 +305,19 @@ empty manifest, losing the repository-pinned authority already used by setup.
 **Required closure:** Validation must accept built-in targets or the exact target returned by the
 existing verified single-pack selector. Manifest declarations, stale global registration, missing
 or changed bytes, and ambiguous providers remain insufficient. Retry from a new subagent repository.
+
+## GAP-32 - Setup preflight accepted a catalog-mismatched verified pack
+
+**Observed:** Final hostile review found that fresh pack-backed setup treated any pack returned by
+the verified target selector as sufficient preflight support. A differently named, hashed, or
+board-scoped pack could therefore open a pre-commit hardware connection before reviewed-evidence
+construction rejected the catalog mismatch.
+
+**Diagnosis:** Pack integrity and unique target-provider checks were correct, but the exact catalog
+binding predicate was applied only during safety-evidence construction, after the setup connection.
+
+**Plan and closure:** Share the exact filename, digest, target, and board binding predicate between
+preflight and reviewed-evidence construction. Refuse mismatches before connection, add independent
+tests for all four mismatches, and rerun focused checks followed by the complete suite. This narrows
+only an unintended authority mismatch; ordinary built-in targets and correctly pinned packs keep
+the same workflow.

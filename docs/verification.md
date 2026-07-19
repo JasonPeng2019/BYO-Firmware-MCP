@@ -372,3 +372,35 @@ run-scoped current ELF) were specified, implemented, tested, and hostile-reviewe
 after GAP-26 was **1022 passed, 3 skipped, 79 warnings**, with affected Ruff and Pyright clean and
 zero valid hostile-review findings. No STM32 action, unlock, mass erase, manual erase, bootloader
 flash, or security mutation occurred.
+
+## STM32L476 dual-client generalized-build acceptance (2026-07-19)
+
+Evidence index:
+[`evidence/stm32-dual-client-hardware-acceptance-2026-07-19.md`](evidence/stm32-dual-client-hardware-acceptance-2026-07-19.md).
+
+| Client leg | Model/effort | Fresh setup/build/guarded flash | Root UART | MCP debug |
+| --- | --- | --- | --- | --- |
+| Custom bootloader + offset app | `gpt-5.6-luna`, medium | pass | pass: repeated ordered `GOOD` | pass |
+| Queued bare-metal RTOS | `claude-sonnet-5`, medium | pass | pass: all commands/timing/concurrency | pass by root on exact ELF |
+
+Both fresh repositories began with only the STM32L476xx PDF and used the exact general
+`pyocd_debug_mcp.native_build` guidance with local STM32CubeIDE Make/Arm GCC. The GPT leg produced
+a 32 KiB custom bootloader plus offset application. The Claude leg produced a SysTick scheduler,
+interrupt-safe command queue, independently scheduled LED/publisher/console/job tasks, and
+state-changing UART commands. All programming used accepted artifact-bound `flash_application`
+plans; no unlock, mass erase, manual erase, option/security write, alternate programmer, or Nordic
+route ran.
+
+Root closed application-level failure loops for an RCC address typo, a valid top-of-SRAM boundary
+comparison, and an inherited-clock assumption, then verified final behavior. Claude R3 completed
+fresh setup, build, and guarded flash but hit the provider five-hour usage limit immediately after
+reset-and-run. The Claude Usage Carve-Out is therefore recorded for provider-side UART/debug; root
+completed both checks on the exact R3 ELF and does not claim additional Claude actions.
+
+GAP-29 through GAP-32 were recorded, patched, focused-tested, and hostile-reviewed. GAP-32 moved the
+exact reviewed catalog-to-pack filename, digest, target, and board binding ahead of the first setup
+connection. The final locked suite was **1054 passed, 3 skipped, 79 warnings**; repository-wide Ruff
+and Pyright were clean. A fresh package build/import passed (wheel SHA-256
+`706a4fb26ea42c66588d95034c6c2c5dec7807798f912b5022ff27f037097508`, sdist SHA-256
+`a915d07c6a77f1dbd77c1c3c542e64815340b79c6c91dcd64f095be3c022ae5f`), and a fresh-root bounded
+stdio client initialized MCP protocol `2025-11-25`, listed 39 tools, and completed the handshake.
