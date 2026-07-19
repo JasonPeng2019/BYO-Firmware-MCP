@@ -23,7 +23,6 @@ import sys
 import time
 import unicodedata
 from collections.abc import Callable, Mapping
-from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, cast
 
@@ -2674,11 +2673,20 @@ _setup_selections_by_board: dict[str, PreflightSelections] = {}
 _setup_pack_pipelines: dict[tuple[str, str], PackCandidatePipeline] = {}
 
 
-@dataclass(frozen=True, slots=True)
 class _ResolvedGenericSetupSupport:
-    candidate: DeviceSupportCandidate
-    datasheet_path: Path
-    datasheet_sha256: str
+    """Ephemeral generic setup result; intentionally has no persisted authority state."""
+
+    __slots__ = ("candidate", "datasheet_path", "datasheet_sha256")
+
+    def __init__(
+        self,
+        candidate: DeviceSupportCandidate,
+        datasheet_path: Path,
+        datasheet_sha256: str,
+    ) -> None:
+        self.candidate = candidate
+        self.datasheet_path = datasheet_path
+        self.datasheet_sha256 = datasheet_sha256
 
 
 def _is_generic_support(value: object) -> bool:
@@ -2697,9 +2705,9 @@ def _resolve_setup_support(user_input: SetupUserInput):
             # proof no longer verify is an authority failure, not a reason to
             # inherit a reference-board catalog policy.
             raise
-        # Compatibility profiles and devices not yet provisioned into the
-        # generic registry retain the legacy reviewed path.  This fallback is
-        # never used to attach a generic deployment policy.
+        # Existing catalog-backed devices remain available as a compatibility
+        # route. A registered generic binding always wins and never inherits a
+        # catalog partition or transport policy.
         return resolve_reviewed_support_from_datasheet(
             user_input.mcu_part_number,
             path,

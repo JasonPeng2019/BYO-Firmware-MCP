@@ -27,6 +27,7 @@ from pyocd_debug_mcp.guardrails.plan_engine import (
 from pyocd_debug_mcp.kernel.operations import wrap_layer2_response
 from pyocd_debug_mcp.kernel.run_state import ServerRun
 from pyocd_debug_mcp.safety.map_build import (
+    GenericSafetyMapDocument,
     SafetyMapDocument,
     SafetyMapError,
     SafetyMapRepository,
@@ -203,6 +204,14 @@ class UnlockCoordinator:
             raise PlanRefusal(
                 "unlock/safety-map-digest-mismatch",
                 "The current safety map digest changed; run board_safety_refresh first.",
+            )
+        if isinstance(artifacts, GenericSafetyMapDocument):
+            # A resolved device support record proves neither board ownership
+            # nor a safe recovery mechanism. Do not turn generic physical-map
+            # knowledge into a whole-device destructive capability.
+            raise PlanRefusal(
+                "unlock/generic-device-policy-unavailable",
+                "Generic device support has no reviewed recovery policy; target recovery is unavailable.",
             )
         return (
             LiveUnlockIdentity(
