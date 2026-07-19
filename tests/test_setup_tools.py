@@ -447,9 +447,62 @@ def test_real_unknown_setup_route_maps_ambiguous_friendly_hardware_choices(
     )
 
     payload = cast(dict[str, Any], server._setup_overview(["Brand New Board"]))
-    assert payload["status"] == "setup_assignment_clarification_required"
+    assert payload["status"] == "setup_assignment_required"
     assert payload["routes"] == []
     assert assignments.bindings() == {}
+
+    selected = cast(
+        dict[str, Any],
+        server._setup_overview(
+            ["Brand New Board"],
+            {"Brand New Board": "probe:PROBE-B"},
+        ),
+    )
+    assert selected["status"] == "setup_routes_ready"
+    assert selected["routes"][0]["plan_action_parameters_template"]["connection_id"] == (
+        "probe:PROBE-B"
+    )
+    assert assignments.bindings() == {"probe:PROBE-B": selected["routes"][0]["board_id"]}
+
+
+def test_setup_overview_rejects_more_named_boards_than_visible_connections(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(server._profile_repository, "load_all", lambda **_kwargs: ())
+    monkeypatch.setattr(
+        server,
+        "_validation_inventory",
+        lambda: ValidationInventory(
+            probes=(ValidationProbe("probe-a", "Only", "cmsis-dap", "PROBE-A"),),
+        ),
+    )
+
+    payload = cast(dict[str, Any], server._setup_overview(["First", "Second"]))
+
+    assert payload["status"] == "setup_assignment_clarification_required"
+    assert payload["routes"] == []
+
+
+def test_setup_overview_deduplicates_case_equivalent_probe_identities(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(server._profile_repository, "load_all", lambda **_kwargs: ())
+    monkeypatch.setattr(
+        server,
+        "_validation_inventory",
+        lambda: ValidationInventory(
+            probes=(
+                ValidationProbe("PROBE-A", "First source", "cmsis-dap", "PROBE-A"),
+                ValidationProbe("probe-a", "Second source", "cmsis-dap", "probe-a"),
+            ),
+        ),
+    )
+
+    payload = cast(dict[str, Any], server._setup_overview(["First", "Second"]))
+
+    assert len(payload["connections"]) == 1
+    assert payload["status"] == "setup_assignment_clarification_required"
+    assert payload["routes"] == []
 
 
 def test_setup_continuation_accepts_one_exact_response_object(tmp_path: Path) -> None:
@@ -606,6 +659,72 @@ def test_real_setup_overview_routes_recorded_mismatch_neutrally_to_new_logical_b
     eligible, reason = server._setup_plan_eligibility("malformed_board")
     assert eligible is False
     assert "malformed or incomplete" in reason
+
+
+def test_setup_overview_does_not_apply_stale_mismatch_from_unselected_probe(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    profiles = ProfileRepository(FirmStore(tmp_path), legacy_board_dir=tmp_path / "legacy")
+    profiles.commit_core(
+        profiles.stage_core(
+            {
+                "board_id": "bench_board",
+                "display_name": "Bench Board",
+                "mcu_part_number": "STM32L476RGT6",
+                "mcu_family": "stm32l4",
+                "probe_family": "stlink",
+                "pyocd_target": "stm32l476rgtx",
+            }
+        )
+    )
+    stale_connection = SimpleNamespace(
+        connection_id="probe:PROBE-A",
+        handle=SimpleNamespace(probe_uid="PROBE-A"),
+    )
+    gates = GateManager()
+    gates.record_mismatch(
+        board_id="bench_board",
+        connection_id="probe:PROBE-A",
+        probe_identity="PROBE-A",
+        expected_mcu="STM32L476RGT6",
+        observed_mcu="STM32F407VGT6",
+        validation_run="validation-mismatch",
+    )
+    replacements: list[dict[str, str]] = []
+    monkeypatch.setattr(server, "_profile_repository", profiles)
+    monkeypatch.setattr(
+        server.connection_manager,
+        "maybe_connection",
+        lambda _board: stale_connection,
+    )
+    monkeypatch.setattr(server, "gate_manager", gates)
+    monkeypatch.setattr(
+        server,
+        "_replace_setup_assignments",
+        lambda bindings, _reason: replacements.append(dict(bindings)),
+    )
+    monkeypatch.setattr(
+        server,
+        "_validation_inventory",
+        lambda: ValidationInventory(
+            probes=(
+                ValidationProbe("probe-a", "First", "stlink", "PROBE-A"),
+                ValidationProbe("probe-b", "Second", "stlink", "PROBE-B"),
+            ),
+        ),
+    )
+
+    payload = cast(
+        dict[str, Any],
+        server._setup_overview(["Bench Board"], {"Bench Board": "probe:PROBE-B"}),
+    )
+
+    assert payload["routes"][0]["route"] == "repair"
+    assert payload["routes"][0]["plan_action_parameters_template"]["connection_id"] == (
+        "probe:PROBE-B"
+    )
+    assert replacements == [{"probe:PROBE-B": "bench_board"}]
 
 
 def test_real_setup_overview_routes_parseable_incomplete_profile_to_repair(

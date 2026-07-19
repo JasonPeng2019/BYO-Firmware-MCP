@@ -30,7 +30,8 @@ def assert_required_guidance(guidance: str) -> None:
     assert "initialization_handshake" in guidance
     assert "*-plan" in prose
     assert "every parameter set to NULL" in prose
-    assert "one unique, familiar name for each connected board" in prose
+    assert "one unique, familiar name for each board" in prose
+    assert "Other visible debug probes may remain unassigned" in prose
     assert 'or "no board"' in prose
     assert '"no board" is a literal sentinel' in prose
     assert "pass it by itself" in prose

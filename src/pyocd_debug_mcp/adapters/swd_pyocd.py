@@ -8,6 +8,7 @@ import os
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 from collections.abc import Iterator
 from pathlib import Path
@@ -20,10 +21,21 @@ from pyocd.core.helpers import ConnectHelper  # type: ignore[import-untyped]
 from pyocd.flash.eraser import FlashEraser  # type: ignore[import-untyped]
 from pyocd.flash.file_programmer import FileProgrammer  # type: ignore[import-untyped]
 from pyocd.target.pack.cmsis_pack import CmsisPack  # type: ignore[import-untyped]
+from pyocd.target.pack.pack_target import (  # type: ignore[import-untyped]
+    TARGET,
+    PackTargets,
+    normalise_target_type_name,
+)
 
 from pyocd_debug_mcp.adapters.swd_interface import SWDInterface, TargetSessionHandle
 from pyocd_debug_mcp.board_config import BoardConfig
-from pyocd_debug_mcp.pack_provision import VerifiedPack, verified_pack_for_target
+from pyocd_debug_mcp.pack_provision import (
+    PackProvisionError,
+    VerifiedPack,
+    read_bounded_pack_bytes,
+    sha256_bytes,
+    verified_pack_for_target,
+)
 from pyocd_debug_mcp.probe_inventory import list_connected_probes
 from pyocd_debug_mcp.target_errors import (
     LockedTargetError,
@@ -42,6 +54,8 @@ from pyocd_debug_mcp.timeouts import (
 ROUTE_PYOCD_NATIVE = "pyocd-native"
 SUPPORTED_FLASH_SUFFIXES = frozenset({".elf", ".hex"})
 _PACK_OBJECTS: dict[str, tuple[bytes, CmsisPack]] = {}
+_PACK_TARGET_LOCK = threading.RLock()
+_MISSING_TARGET = object()
 
 
 def _cmsis_pack_for(selected: VerifiedPack) -> CmsisPack:
@@ -57,6 +71,74 @@ def _cmsis_pack_for(selected: VerifiedPack) -> CmsisPack:
     pack = CmsisPack(io.BytesIO(selected.payload))
     _PACK_OBJECTS[digest] = (selected.payload, pack)
     return pack
+
+
+def _quarantined_cmsis_pack(path: Path, expected_sha256: str) -> CmsisPack:
+    """Load one setup candidate without retaining unpromoted bytes globally."""
+
+    try:
+        payload = read_bounded_pack_bytes(path)
+    except PackProvisionError as exc:
+        raise TargetConnectionError(f"Quarantined CMSIS-Pack cannot be read: {exc}") from exc
+    if sha256_bytes(payload) != expected_sha256:
+        raise TargetConnectionError(
+            "Quarantined CMSIS-Pack changed before the live attach."
+        )
+    try:
+        return CmsisPack(io.BytesIO(payload))
+    except Exception as exc:  # noqa: BLE001 - normalize third-party parser failures
+        raise TargetConnectionError(f"Quarantined CMSIS-Pack could not be loaded: {exc}") from exc
+
+
+@contextlib.contextmanager
+def _pack_target_scope(
+    pack: CmsisPack | None,
+    target: str | None,
+    pdsc_device: str | None = None,
+) -> Iterator[None]:
+    """Temporarily bind one normalized pyOCD target name to the selected pack leaf."""
+
+    if pack is None or target is None:
+        yield
+        return
+    normalized = normalise_target_type_name(target)
+    matches = tuple(
+        device
+        for device in pack.devices
+        if (
+            device.part_number.casefold() == pdsc_device.casefold()
+            if pdsc_device is not None
+            else normalise_target_type_name(device.part_number) == normalized
+        )
+    )
+    if len(matches) != 1:
+        raise TargetConnectionError(
+            "Selected CMSIS-Pack must expose exactly one matching PDSC device."
+        )
+    if normalise_target_type_name(matches[0].part_number) != normalized:
+        raise TargetConnectionError("Selected PDSC device does not match the canonical target.")
+    pack_target_names = {
+        normalise_target_type_name(device.part_number) for device in pack.devices
+    }
+    with _PACK_TARGET_LOCK:
+        previous = {
+            name: TARGET.get(name, _MISSING_TARGET) for name in pack_target_names
+        }
+        for name in pack_target_names:
+            TARGET.pop(name, None)
+        try:
+            PackTargets.populate_device(matches[0])
+            if normalized not in TARGET:
+                raise TargetConnectionError(
+                    f"pyOCD could not instantiate selected pack target {target!r}."
+                )
+            yield
+        finally:
+            for name, prior in previous.items():
+                if prior is _MISSING_TARGET:
+                    TARGET.pop(name, None)
+                else:
+                    TARGET[name] = prior
 
 
 def _run_cmd(
@@ -231,7 +313,10 @@ class PyOCDSWDInterface(SWDInterface):
 
     @staticmethod
     def _verify_session_pack_source(
-        session: object, target: str | None, pack: CmsisPack | None
+        session: object,
+        target: str | None,
+        pack: CmsisPack | None,
+        pdsc_device: str | None = None,
     ) -> None:
         """Prove the instantiated target came from the selected pack object."""
 
@@ -244,6 +329,10 @@ class PyOCDSWDInterface(SWDInterface):
                 f"pyOCD target {target!r} was already registered by a different device pack; "
                 "restart with one unambiguous pinned provider."
             )
+        if pdsc_device is not None and source.part_number.casefold() != pdsc_device.casefold():
+            raise TargetConnectionError(
+                f"pyOCD target {target!r} did not instantiate the persisted PDSC device."
+            )
 
     def open(
         self,
@@ -253,6 +342,10 @@ class PyOCDSWDInterface(SWDInterface):
         target: str | None,
         server_timeouts: ServerTimeoutConfig | None = None,
         connect_mode: str | None = None,
+        pack_path: Path | None = None,
+        pack_sha256: str | None = None,
+        pdsc_device: str | None = None,
+        frequency_hz: int | None = None,
     ) -> TargetSessionHandle:
         probe_uid = unique_id or os.environ.get("PYOCD_PROBE_UID") or None
         target_override = (
@@ -267,28 +360,48 @@ class PyOCDSWDInterface(SWDInterface):
                 raise ValueError(f"Unsupported pyOCD connect mode: {connect_mode}")
             options = dict(options or {})
             options["connect_mode"] = connect_mode
+        if frequency_hz is not None:
+            if isinstance(frequency_hz, bool) or frequency_hz <= 0:
+                raise ValueError("frequency_hz must be a positive integer")
+            options = dict(options or {})
+            options["frequency"] = frequency_hz
         # Give pyOCD only the manifest-selected pack for this exact target. Passing
         # every local pack lets an unrelated provider win target resolution.
-        selected_pack = (
-            verified_pack_for_target(target_override) if target_override is not None else None
-        )
-        pack_object = _cmsis_pack_for(selected_pack) if selected_pack is not None else None
-        if selected_pack is not None:
+        if pack_path is not None:
+            if pack_sha256 is None:
+                raise ValueError("pack_sha256 is required with a quarantined pack_path")
+            pack_object = _quarantined_cmsis_pack(
+                pack_path.expanduser().resolve(), pack_sha256
+            )
+        elif pack_sha256 is not None:
+            raise ValueError("pack_sha256 is valid only with a quarantined pack_path")
+        else:
+            selected_pack = (
+                verified_pack_for_target(target_override) if target_override is not None else None
+            )
+            pack_object = _cmsis_pack_for(selected_pack) if selected_pack is not None else None
+        if pack_object is not None:
             options = dict(options or {})
             options["pack"] = [pack_object]
-        session = self._choose_session(probe_uid=probe_uid, options=options)
+        with _pack_target_scope(pack_object, target_override, pdsc_device):
+            session = self._choose_session(probe_uid=probe_uid, options=options)
         if session is None:
             raise ProbeNotFoundError("No matching debug probe found.")
 
         try:
-            self._verify_session_pack_source(session, target_override, pack_object)
+            self._verify_session_pack_source(
+                session, target_override, pack_object, pdsc_device
+            )
             with _quiet_backend_streams():
                 session.open()
-            self._verify_session_pack_source(session, target_override, pack_object)
+            self._verify_session_pack_source(
+                session, target_override, pack_object, pdsc_device
+            )
         except Exception as exc:  # noqa: BLE001 - preserve backend context
             self._close_quietly(session)
             if _should_retry_without_uid(board, probe_uid, exc):
-                retry_session = self._choose_session(probe_uid=None, options=options)
+                with _pack_target_scope(pack_object, target_override, pdsc_device):
+                    retry_session = self._choose_session(probe_uid=None, options=options)
                 if retry_session is None:
                     raise ProbeNotFoundError("No matching debug probe found.") from exc
                 retry_uid = getattr(getattr(retry_session, "probe", None), "unique_id", None)
@@ -300,12 +413,12 @@ class PyOCDSWDInterface(SWDInterface):
                     ) from exc
                 try:
                     self._verify_session_pack_source(
-                        retry_session, target_override, pack_object
+                        retry_session, target_override, pack_object, pdsc_device
                     )
                     with _quiet_backend_streams():
                         retry_session.open()
                     self._verify_session_pack_source(
-                        retry_session, target_override, pack_object
+                        retry_session, target_override, pack_object, pdsc_device
                     )
                 except Exception as retry_exc:  # noqa: BLE001 - preserve backend context
                     self._close_quietly(retry_session)
@@ -332,6 +445,9 @@ class PyOCDSWDInterface(SWDInterface):
         unique_id: str | None,
         target: str | None,
         server_timeouts: ServerTimeoutConfig | None = None,
+        pack_path: Path | None = None,
+        pack_sha256: str | None = None,
+        pdsc_device: str | None = None,
     ) -> TargetSessionHandle:
         probe_uid = unique_id or os.environ.get("PYOCD_PROBE_UID") or None
         target_override = (
@@ -342,13 +458,23 @@ class PyOCDSWDInterface(SWDInterface):
         )
         options = dict(build_session_options(board, target_override, server_timeouts) or {})
         options["connect_mode"] = "under-reset"
-        selected_pack = (
-            verified_pack_for_target(target_override) if target_override is not None else None
-        )
-        pack_object = _cmsis_pack_for(selected_pack) if selected_pack is not None else None
-        if selected_pack is not None:
+        if pack_path is not None:
+            if pack_sha256 is None:
+                raise ValueError("pack_sha256 is required with a quarantined pack_path")
+            pack_object = _quarantined_cmsis_pack(
+                pack_path.expanduser().resolve(), pack_sha256
+            )
+        elif pack_sha256 is not None:
+            raise ValueError("pack_sha256 is valid only with a quarantined pack_path")
+        else:
+            selected_pack = (
+                verified_pack_for_target(target_override) if target_override is not None else None
+            )
+            pack_object = _cmsis_pack_for(selected_pack) if selected_pack is not None else None
+        if pack_object is not None:
             options["pack"] = [pack_object]
-        session = self._choose_session(probe_uid=probe_uid, options=options)
+        with _pack_target_scope(pack_object, target_override, pdsc_device):
+            session = self._choose_session(probe_uid=probe_uid, options=options)
         if session is None:
             raise ProbeNotFoundError("No matching debug probe found.")
         assert_reset = getattr(session.probe, "assert_reset", None)
@@ -359,7 +485,9 @@ class PyOCDSWDInterface(SWDInterface):
                 "connect_under_reset cannot degrade to an ordinary attach."
             )
         try:
-            self._verify_session_pack_source(session, target_override, pack_object)
+            self._verify_session_pack_source(
+                session, target_override, pack_object, pdsc_device
+            )
             with _quiet_backend_streams():
                 # pyOCD's under-reset init sequence owns assertion, reset catch,
                 # halt, and release. Calling assert_reset() before Session.open()
@@ -370,7 +498,9 @@ class PyOCDSWDInterface(SWDInterface):
                 # returning. The bounded retry covers probes where the first halt
                 # command races reset release.
                 session.open()
-                self._verify_session_pack_source(session, target_override, pack_object)
+                self._verify_session_pack_source(
+                    session, target_override, pack_object, pdsc_device
+                )
                 halt_deadline = time.monotonic() + 0.5
                 while True:
                     session.target.halt()

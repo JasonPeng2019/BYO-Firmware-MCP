@@ -105,7 +105,14 @@ class SafetyRefresher:
         changed = _changed_groups(previous, candidate, prior_invalid=prior_invalid)
         identity_changed = previous is not None and previous.identity != candidate.identity
         self.repository.commit(board_id, candidate)
-        self.on_commit(board_id, candidate.canonical_digest, identity_changed)
+        try:
+            self.on_commit(board_id, candidate.canonical_digest, identity_changed)
+        except Exception as exc:  # noqa: BLE001 - keep the two-file repair path explicit/retryable
+            return self.blocked(
+                request,
+                "the map was rebuilt but its profile association could not be completed: "
+                f"{exc}; rerun board_safety_refresh",
+            )
         live = self.has_live_identity(board_id)
         validation_required = not live
         message = (

@@ -1,8 +1,13 @@
 # Datasheet-and-Pack Universal Device Support Specification
 
-**Status:** Proposed  
-**Decision required before implementation:** an authority-model ADR  
+**Status:** Superseded by [`universal-device-onboarding-spec.md`](universal-device-onboarding-spec.md)
+**Decision:** [ADR-0003](../decisions/ADR-0003-quarantined-runtime-device-support-onboarding.md)
 **Direction:** reviewed board records become optional overrides, not a prerequisite for a new device.
+
+This file preserves the pre-ADR design survey. Its admin-only/local-registry and semantic-PDF
+proposals are historical, not current product behavior. ADR-0003 permits bounded quarantined pack
+onboarding during setup; the active specification deliberately treats captured PDF bytes as a
+research-source binding rather than claiming a universal semantic PDF parser.
 
 ## Goal
 

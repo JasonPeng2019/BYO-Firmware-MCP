@@ -45,7 +45,7 @@ py .agent-workspace\bin\claude-mode firmware
 Then explicitly tell the agent to register and connect to the local server by running:
 
 ```powershell
-uv run --project C:\path\to\BYO-Server byo-mcp-register server
+codex mcp add pyocd-debug -- uv run --project C:\path\to\BYO-Server pyocd-debug-mcp
 ```
 
 Replace the path with this checkout. The workflow never silently connects an agent to hardware.
@@ -110,8 +110,19 @@ domain metadata to keep the application ELF and linker map together instead of g
 and it exports the same canonical bundle without deleting the incremental native build tree.
 It is not the normal generalized build path returned by `get_setup_status`.
 
-Reviewed board geometry and attach facts are packaged data, not Python board-name branches. Missing
-facts stay missing and setup/validation names the repair. Serial resolution uses generic USB
+Fresh boards do not need a checked-in board YAML. Given an exact MCU ordering code and local PDF,
+setup first replays verified local support and otherwise asks the agent for one official CMSIS-Pack.
+The server—not the agent—bounds and hashes the archive, proves the exact PDSC leaf, derives the
+pyOCD target, tests a non-destructive live attach, and only then records the project-local support
+binding. It captures the exact datasheet bytes as immutable source evidence and creates a
+schema-v3 map from separate pack flash/RAM/ROM ranges and optional SVD peripheral blocks. Unknown
+identity, erase, peripheral, deployment, or recovery facts disable only the dependent capability;
+they are never guessed from a part name. Core-compatibility identity permits bounded read/debug and
+guarded artifact-contained application programming; bootloader and recovery authority remain
+separate, and setup status reports that distinction before deployment planning.
+
+Reviewed board geometry and attach facts remain packaged compatibility data, not Python board-name
+branches. Missing facts stay missing and setup/validation names the repair. Serial resolution uses generic USB
 identity first, with configured vendor helpers only as ambiguity fallbacks. Destructive recovery
 uses the target-neutral `backend_mass_erase` capability after live-backend support, complete erase
 disclosure, and fresh one-time permission checks; `manual_only` remains fail-closed.

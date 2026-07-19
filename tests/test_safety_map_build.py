@@ -9,8 +9,10 @@ import yaml
 from pyocd_debug_mcp.firmstore.store import FirmStore, PERSISTED_AUTHORITY_KEYS
 from pyocd_debug_mcp.safety.map_build import (
     GenericMapIdentity,
+    GenericMapGeometry,
     GenericSafetyMapDocument,
     GenericSourceDigests,
+    EraseSector,
     MapGeometry,
     MapIdentity,
     MapPartitions,
@@ -23,6 +25,8 @@ from pyocd_debug_mcp.safety.map_build import (
     SafetyMapRepository,
     SourceDigests,
     canonical_map_digest,
+    build_artifact_application_allocation,
+    generic_map_with_allocation,
     semantic_profile_digest,
 )
 from pyocd_debug_mcp.safety.regions import (
@@ -201,9 +205,15 @@ def test_generic_schema_v3_map_preserves_physical_authority_without_deployment(t
     """Generic device support must not turn physical flash into application ownership."""
 
     repository = SafetyMapRepository(FirmStore(tmp_path))
-    geometry = MapGeometry(
-        AddressRange(0x08000000, 0x08100000),
-        AddressRange(0x20000000, 0x20018000),
+    geometry = GenericMapGeometry(
+        (
+            AddressRange(0x08000000, 0x08100000),
+            AddressRange(0x90000000, 0x90010000),
+        ),
+        (
+            AddressRange(0x20000000, 0x20018000),
+            AddressRange(0x30000000, 0x30004000),
+        ),
         erase_available=False,
     )
     document = GenericSafetyMapDocument(
@@ -212,6 +222,8 @@ def test_generic_schema_v3_map_preserves_physical_authority_without_deployment(t
         {
             "kind": "resolved_pack",
             "support_id": "a" * 64,
+            "pack_id": "Vendor.Device",
+            "pack_filename": "Vendor.Device.pack",
             "pack_sha256": "b" * 64,
             "pdsc_device": "STM32L476RGTx",
             "pyocd_target": "stm32l476rgtx",
@@ -229,19 +241,37 @@ def test_generic_schema_v3_map_preserves_physical_authority_without_deployment(t
             SafetyRegion(
                 "physical flash",
                 RegionKind.PHYSICAL_FLASH,
-                geometry.physical_flash,
+                geometry.physical_flash[0],
+                (Provenance(SourceAuthority.DEVICE_SUPPORT, "pack", "PDSC memory map"),),
+            ),
+            SafetyRegion(
+                "secondary physical flash",
+                RegionKind.PHYSICAL_FLASH,
+                geometry.physical_flash[1],
                 (Provenance(SourceAuthority.DEVICE_SUPPORT, "pack", "PDSC memory map"),),
             ),
             SafetyRegion(
                 "physical RAM",
                 RegionKind.PHYSICAL_RAM,
-                geometry.physical_ram,
+                geometry.physical_ram[0],
+                (Provenance(SourceAuthority.DEVICE_SUPPORT, "pack", "PDSC memory map"),),
+            ),
+            SafetyRegion(
+                "secondary physical RAM",
+                RegionKind.PHYSICAL_RAM,
+                geometry.physical_ram[1],
                 (Provenance(SourceAuthority.DEVICE_SUPPORT, "pack", "PDSC memory map"),),
             ),
             SafetyRegion(
                 "writable RAM",
                 RegionKind.RAM,
-                geometry.physical_ram,
+                geometry.physical_ram[0],
+                (Provenance(SourceAuthority.DEVICE_SUPPORT, "pack", "PDSC memory map"),),
+            ),
+            SafetyRegion(
+                "secondary writable RAM",
+                RegionKind.RAM,
+                geometry.physical_ram[1],
                 (Provenance(SourceAuthority.DEVICE_SUPPORT, "pack", "PDSC memory map"),),
             ),
         ),
@@ -398,3 +428,83 @@ def test_build_derived_region_authority_cannot_be_persisted() -> None:
         SafetyMapBuilder(FirmStore(Path.cwd())).derive(
             request(regions=request().regions + (build_region,))
         )
+
+
+def test_artifact_application_allocation_is_digest_bound_and_compare_and_swapped(
+    tmp_path: Path,
+) -> None:
+    geometry = GenericMapGeometry(
+        (AddressRange(0x08000000, 0x08002000),),
+        (AddressRange(0x20000000, 0x20001000),),
+        erase_sectors=(
+            EraseSector(AddressRange(0x08000000, 0x08001000), "internal"),
+            EraseSector(AddressRange(0x08001000, 0x08002000), "internal"),
+        ),
+    )
+    base = GenericSafetyMapDocument(
+        "generic_board",
+        GenericMapIdentity("PART123", "part123", "a" * 64),
+        {
+            "kind": "resolved_pack",
+            "support_id": "a" * 64,
+            "pack_id": "Vendor.Device",
+            "pack_filename": "Vendor.Device.pack",
+            "pack_sha256": "b" * 64,
+            "pdsc_device": "PART123",
+            "pyocd_target": "part123",
+        },
+        GenericSourceDigests.build(
+            profile={"board_id": "generic_board"},
+            device_support={"pack": "b" * 64},
+            datasheet_evidence={"sha256": "c" * 64},
+            deployment_policy={"kind": "none"},
+        ),
+        geometry,
+        MapPartitions(None),
+        {"kind": "none"},
+        (
+            SafetyRegion(
+                "physical flash",
+                RegionKind.PHYSICAL_FLASH,
+                geometry.physical_flash[0],
+                PROVENANCE,
+            ),
+            SafetyRegion(
+                "physical RAM", RegionKind.PHYSICAL_RAM, geometry.physical_ram[0], PROVENANCE
+            ),
+            SafetyRegion("RAM", RegionKind.RAM, geometry.physical_ram[0], PROVENANCE),
+        ),
+    )
+    policy = build_artifact_application_allocation(
+        (geometry.erase_sectors[0].address_range,),
+        driver_proof_digest="e" * 64,
+        creation_map_digest=base.canonical_digest,
+        creation_artifact_digest="f" * 64,
+    )
+    allocated = generic_map_with_allocation(base, policy)
+    repository = SafetyMapRepository(FirmStore(tmp_path))
+    repository.commit("generic_board", base)
+    repository.commit_if_current("generic_board", base.canonical_digest, allocated)
+
+    loaded = repository.load_current("generic_board")
+    assert loaded == allocated
+    assert loaded.partitions.application == geometry.erase_sectors[0].address_range
+    assert loaded.safety_map.classify(geometry.erase_sectors[0].address_range) is RegionKind.APPLICATION_FLASH
+    with pytest.raises(SafetyMapError, match="changed"):
+        repository.commit_if_current("generic_board", base.canonical_digest, allocated)
+    tampered = allocated.to_document()
+    tampered["deployment_policy"]["allocation_digest"] = "0" * 64  # type: ignore[index]
+    with pytest.raises(SafetyMapError, match="digest mismatch"):
+        GenericSafetyMapDocument.from_document(tampered)
+
+    expanded_policy = build_artifact_application_allocation(
+        tuple(item.address_range for item in geometry.erase_sectors),
+        driver_proof_digest="e" * 64,
+        creation_map_digest=allocated.canonical_digest,
+        creation_artifact_digest="1" * 64,
+        parent_allocation_digest=str(policy["allocation_digest"]),
+    )
+    expanded = generic_map_with_allocation(allocated, expanded_policy)
+    assert expanded.partitions.application == geometry.physical_flash[0]
+    with pytest.raises(SafetyMapError, match="parent"):
+        generic_map_with_allocation(base, expanded_policy)

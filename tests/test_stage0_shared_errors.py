@@ -278,9 +278,9 @@ def test_stage0_safe_validation_calls_shared_board_validator(
         board, probe, True, artifact_root=tmp_path
     )
 
-    assert connection_ok is False
+    assert connection_ok is True
     assert identity_ok is None
-    assert calls == []
+    assert calls == [("connect", board.pyocd_target), ("close", handle.probe_uid)]
     assert list((tmp_path / ".firm" / "validation").glob("*/report.json"))
 
 

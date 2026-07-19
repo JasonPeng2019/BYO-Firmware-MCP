@@ -322,12 +322,17 @@ def test_preflight_terminal_transitions_also_produce_immutable_attempt_reports(
             "response": {"choice_id": "one exact choice_id returned above"},
         }
     elif status == "setup_research_required":
-        assert payload["accepted_response"]["tool"] == "continue_setup"
-        assert set(payload["accepted_response"]["response"]) == {
-            "pyocd_target",
-            "evidence",
-            "reasoning_summary",
-        }
+            assert payload["accepted_response"]["tool"] == "continue_setup"
+            assert set(payload["accepted_response"]["response"]) == {
+                "pack_id",
+                "version",
+                "filename",
+                "url",
+                "source_path",
+                "official_sha256",
+                "evidence",
+                "reasoning_summary",
+            }
     report = json.loads(result.report_paths.report.read_text(encoding="utf-8"))
     assert report["terminal_status"] == status
     assert NO_INTERNALS_RELAY_INSTRUCTION in result.agent_prompt

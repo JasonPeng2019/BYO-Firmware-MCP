@@ -27,6 +27,7 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 PACKS_DIR = REPO_ROOT / "packs"
 MANIFEST_PATH = PACKS_DIR / "manifest.yaml"
 _CHUNK = 1 << 16
+MAX_CMSIS_PACK_ARCHIVE_BYTES = 128 * 1024 * 1024
 
 
 class PackProvisionError(RuntimeError):
@@ -93,7 +94,7 @@ class LiveIdentityProof:
             or not isinstance(self.expected, int)
             or not isinstance(self.mask, int)
             or not 0 <= self.expected <= limit
-            or not 0 <= self.mask <= limit
+            or not 0 < self.mask <= limit
             or not isinstance(self.label, str)
             or not self.label.strip()
         ):
@@ -228,6 +229,19 @@ def load_manifest(manifest_path: Path = MANIFEST_PATH) -> list[PackSpec]:
             needed_by_boards=_text_tuple(raw.get("needed_by_boards"), "needed_by_boards"),
             device_bindings=_device_bindings(raw.get("device_bindings")),
         )
+        if (
+            Path(spec.filename).name != spec.filename
+            or Path(spec.filename).suffix.casefold() != ".pack"
+        ):
+            raise PackProvisionError(
+                f"Pack manifest filename must be one plain .pack name in {manifest_path}"
+            )
+        if len(spec.sha256) != 64 or any(
+            character not in "0123456789abcdef" for character in spec.sha256
+        ):
+            raise PackProvisionError(
+                f"Pack manifest sha256 must be 64 hexadecimal digits in {manifest_path}"
+            )
         targets = {target.casefold() for target in spec.provides_targets}
         for binding in spec.device_bindings:
             if binding.pyocd_target.casefold() not in targets:
@@ -283,6 +297,57 @@ def sha256_file(path: Path) -> str:
         for chunk in iter(lambda: fh.read(_CHUNK), b""):
             h.update(chunk)
     return h.hexdigest()
+
+
+def read_bounded_pack_bytes(path: Path) -> bytes:
+    """Read one pack while bounding agent-controlled archive memory use."""
+
+    try:
+        size = path.stat().st_size
+        if size <= 0 or size > MAX_CMSIS_PACK_ARCHIVE_BYTES:
+            raise PackProvisionError(
+                "CMSIS-Pack archive size is outside the supported limit"
+            )
+        payload = path.read_bytes()
+    except PackProvisionError:
+        raise
+    except OSError as exc:
+        raise PackProvisionError(f"CMSIS-Pack archive cannot be read: {exc}") from exc
+    if len(payload) != size:
+        raise PackProvisionError("CMSIS-Pack archive changed while it was being read")
+    return payload
+
+
+def verified_pack_for_spec(
+    spec: PackSpec, *, packs_dir: Path = PACKS_DIR
+) -> VerifiedPack:
+    """Load one exact manifest-selected package without target-wide provider lookup."""
+
+    roots = [packs_dir]
+    if packs_dir.resolve() == PACKS_DIR.resolve():
+        roots.append(FirmStore(REPO_ROOT).layout.pack_files)
+    candidates: list[Path] = []
+    for root in roots:
+        candidate = root / spec.filename
+        if candidate.is_file():
+            resolved = candidate.resolve()
+            if resolved not in candidates:
+                candidates.append(resolved)
+    if not candidates:
+        raise PackProvisionError(
+            f"Pinned pack is absent: expected exact package {spec.id} / {spec.filename}."
+        )
+    selected: VerifiedPack | None = None
+    for candidate in candidates:
+        payload = read_bounded_pack_bytes(candidate)
+        if sha256_bytes(payload) != spec.sha256:
+            raise PackProvisionError(
+                f"Pinned pack checksum mismatch for {candidate}: expected {spec.sha256}."
+            )
+        if selected is None:
+            selected = VerifiedPack(candidate, spec, payload)
+    assert selected is not None
+    return selected
 
 
 def _verify(path: Path, expected_sha256: str) -> bool:
@@ -346,8 +411,8 @@ def discover_local_packs(packs_dir: Path = PACKS_DIR) -> list[Path]:
         pack.resolve()
         for root in roots
         if root.is_dir()
-        for pack in root.glob("*.pack")
-        if pack.is_file()
+        for pack in root.iterdir()
+        if pack.is_file() and pack.suffix.casefold() == ".pack"
     }
     return sorted(discovered)
 
@@ -386,11 +451,25 @@ def verified_pack_for_target(
         for spec in load_manifest(source_manifest)
         if normalized in {item.casefold() for item in spec.provides_targets}
     ]
-    # Identical repo/project declarations are one authority, not an ambiguity.
-    unique: dict[PackSpec, list[Path]] = {}
+    # Repository and project manifests may index different exact MCU leaves or
+    # board consumers from the same immutable package. Those bookkeeping
+    # differences do not create two target providers; package identity does.
+    unique: dict[
+        tuple[str, str, str, str, str, tuple[str, ...]],
+        tuple[PackSpec, list[Path]],
+    ] = {}
     for spec, source_packs in matching_sources:
-        unique.setdefault(spec, []).append(source_packs)
-    matches = list(unique)
+        provider_key = (
+            spec.id,
+            spec.version,
+            spec.filename,
+            spec.url,
+            spec.sha256,
+            spec.provides_targets,
+        )
+        row = unique.setdefault(provider_key, (spec, []))
+        row[1].append(source_packs)
+    matches = list(unique.values())
     if not matches:
         return None
     if len(matches) != 1:
@@ -398,12 +477,12 @@ def verified_pack_for_target(
             f"Target {target!r} has {len(matches)} providers in the pinned pack manifest; "
             "exactly one is required."
         )
-    spec = matches[0]
+    spec, provider_roots = matches[0]
 
     # Preserve deployment flexibility: a packaged server may hold packs beside
     # the source tree, in the shared FirmStore, or in an invocation-scoped
     # artifact root. Only the exact manifest filename and digest are eligible.
-    roots = list(unique[spec])
+    roots = list(provider_roots)
     if manifest_path == MANIFEST_PATH and packs_dir == PACKS_DIR:
         roots.append(FirmStore(REPO_ROOT).layout.pack_files)
     candidates: list[Path] = []
@@ -420,7 +499,7 @@ def verified_pack_for_target(
         )
     payloads: list[tuple[Path, bytes]] = []
     for candidate in candidates:
-        payload = candidate.read_bytes()
+        payload = read_bounded_pack_bytes(candidate)
         if sha256_bytes(payload) != spec.sha256:
             raise PackProvisionError(
                 f"Pinned pack checksum mismatch for {candidate}: expected {spec.sha256}."

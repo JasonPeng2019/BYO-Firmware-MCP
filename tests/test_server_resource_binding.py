@@ -28,8 +28,13 @@ from pyocd_debug_mcp.setup_flow.preflight import (
 )
 from pyocd_debug_mcp.setup_flow.setup import SetupPhase, SetupPhaseContext, SetupPhaseOutcome
 from pyocd_debug_mcp.setup_flow.device_support import resolve_registered_pack_support
-from pyocd_debug_mcp.setup_flow.validate import ValidationInventory, ValidationSerial
+from pyocd_debug_mcp.setup_flow.validate import (
+    ValidationInventory,
+    ValidationProbe,
+    ValidationSerial,
+)
 from pyocd_debug_mcp.safety.map_build import SafetyMapError
+from pyocd_debug_mcp.safety.regions import RegionKind
 from pyocd_debug_mcp.services.connections import ConnectionManager
 
 
@@ -87,7 +92,11 @@ def test_setup_status_exposes_uart_readiness_as_a_separate_barrier(monkeypatch) 
         connection_id="connection-a",
         handle=SimpleNamespace(probe_uid="683377322"),
     )
-    stamp = SimpleNamespace(connection_id="connection-a", map_digest="fingerprint-a")
+    stamp = SimpleNamespace(
+        connection_id="connection-a",
+        map_digest="fingerprint-a",
+        identity_capability="exact",
+    )
     monkeypatch.setattr(server._profile_repository, "load", lambda *_args, **_kwargs: profile)
     monkeypatch.setattr(server._safety_repository, "load_current", lambda _board_id: artifacts)
     monkeypatch.setattr(server, "region_conflicts", lambda _regions: ())
@@ -113,6 +122,8 @@ def test_setup_status_exposes_uart_readiness_as_a_separate_barrier(monkeypatch) 
     status = server._get_setup_status("board_a")
 
     assert status["ready_for_code"] is True
+    assert status["identity_capability"] == "exact"
+    assert status["ready_for_flash_planning"] is True
     assert status["uart_attachment_ready"] is True
     assert status["ready_for_uart_work"] is True
     assert status["resolved_uart"] == {
@@ -166,6 +177,34 @@ def test_stale_validation_cannot_clear_new_assignment_or_record_mismatch(
     assert recorded is False
     assert assignments.bindings() == {"probe:NEW-PROBE": "board_a"}
     assert gates.current_mismatch("board_a", "probe:NEW-PROBE", "NEW-PROBE") is None
+
+
+def test_compatible_core_identity_authorizes_only_application_flash(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    gates = GateManager()
+    gates.stamp_validation(
+        board_id="board_a",
+        connection_id="connection-a",
+        probe_identity="probe-a",
+        observed_mcu="Cortex-M4 compatibility identity",
+        validation_run="validation-a",
+        map_digest="map-a",
+        identity_capability="compatible",
+    )
+    monkeypatch.setattr(server, "gate_manager", gates)
+    monkeypatch.setattr(
+        server.connection_manager,
+        "connection_for",
+        lambda _board: SimpleNamespace(connection_id="connection-a"),
+    )
+    monkeypatch.setattr(server._safety_policy, "current_aggregate", lambda _board: "map-a")
+
+    server._require_layer0("flash_application", "board_a")
+
+    with pytest.raises(PlanRefusal) as refused:
+        server._require_layer0("flash_bootloader", "board_a")
+    assert refused.value.code == "gate/exact-identity-required"
 
 
 def test_assignment_replacement_retires_conflicting_live_physical_session(
@@ -298,7 +337,10 @@ def test_generic_pack_profile_derives_schema_v3_without_reference_partitions(
     monkeypatch.setattr(server, "_profile_repository", profiles)
     datasheet = tmp_path / "device.pdf"
     datasheet.write_bytes(b"%PDF-generic-device")
+    datasheet_evidence = server.capture_datasheet_evidence(profiles.store, datasheet)
     candidate = resolve_registered_pack_support("STM32L476RGT6")
+    proof = candidate.identity_proof
+    assert proof is not None
     profiles.commit_core(
         profiles.stage_core(
             {
@@ -315,14 +357,15 @@ def test_generic_pack_profile_derives_schema_v3_without_reference_partitions(
         profiles.stage_optional(
             "custom_l476",
             {
-                "datasheet_sha256": hashlib.sha256(datasheet.read_bytes()).hexdigest(),
+                    "datasheet_sha256": hashlib.sha256(datasheet.read_bytes()).hexdigest(),
+                    "datasheet_ref": datasheet_evidence.reference,
                 "device_support": candidate.to_authority_document(),
                 "test_read_address": 0x08000000,
-                "silicon_id_address": 0xE0042000,
-                "silicon_id_expected": 0x415,
-                "silicon_id_mask": 0xFFF,
-                "silicon_id_width_bits": 32,
-                "silicon_id_label": "compatible device identity",
+                "silicon_id_address": proof.address,
+                "silicon_id_expected": proof.expected,
+                "silicon_id_mask": proof.mask,
+                "silicon_id_width_bits": proof.width_bits,
+                "silicon_id_label": proof.label,
             },
         )
     )
@@ -333,6 +376,9 @@ def test_generic_pack_profile_derives_schema_v3_without_reference_partitions(
     assert document.partitions.application is None
     assert document.partitions.bootloader is None
     assert document.deployment_policy == {"kind": "none"}
+    assert len([item for item in document.regions if item.kind is RegionKind.PHYSICAL_RAM]) == 2
+    assert any(item.kind is RegionKind.PERIPHERAL for item in document.regions)
+    assert any(item.kind is RegionKind.CPU_SYSTEM for item in document.regions)
 
 
 def test_automatic_setup_rejects_family_name_without_rewriting_profile(monkeypatch) -> None:
@@ -469,12 +515,12 @@ def test_fresh_setup_rejects_unknown_probe_provider_before_connect_or_profile_co
         "open_session",
         lambda **_kwargs: pytest.fail("unknown provider must be rejected before connect"),
     )
-    datasheet = Path("Nano_BLE_MCU-nRF52840_PS_v1.1.pdf").resolve()
+    datasheet = Path("stm32l476je (2).pdf").resolve()
     user_input = SetupUserInput(
         "unknown_probe_board",
         "probe:future-probe",
         "Unknown Probe Board",
-        "nRF52840-QIAA",
+        "STM32L476RGT6",
         115200,
         datasheet_path=str(datasheet),
         requires_uart=False,
@@ -486,7 +532,7 @@ def test_fresh_setup_rejects_unknown_probe_provider_before_connect_or_profile_co
         selected_probe=ProbeCandidate(
             "future-probe", "Future Universal Probe", "unknown", "future-probe"
         ),
-        selected_target="nrf52840",
+        selected_target="stm32l476rgtx",
     )
     context = cast(
         SetupPhaseContext,
@@ -501,7 +547,29 @@ def test_fresh_setup_rejects_unknown_probe_provider_before_connect_or_profile_co
     assert not profiles.store.layout.board_profile("unknown_probe_board").exists()
 
 
-def test_reviewed_opaque_target_reaches_live_connect_before_profile_commit(
+def test_fresh_board_never_inherits_matching_reference_board_authority(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    profiles = ProfileRepository(FirmStore(tmp_path), legacy_board_dir=tmp_path / "legacy")
+    monkeypatch.setattr(server, "_profile_repository", profiles)
+    datasheet = Path("Nano_BLE_MCU-nRF52840_PS_v1.1.pdf").resolve()
+    user_input = SetupUserInput(
+        "custom_nrf_board",
+        "probe:probe-1",
+        "Custom nRF Board",
+        "nRF52840-QIAA",
+        None,
+        datasheet_path=str(datasheet),
+        requires_uart=False,
+    )
+
+    with pytest.raises(server.ReviewedSupportNotFoundError, match="generic device-support"):
+        server._resolve_setup_support(user_input)
+
+    assert not profiles.store.layout.board_profile("custom_nrf_board").exists()
+
+
+def test_generic_opaque_target_reaches_live_connect_before_profile_commit(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     profiles = ProfileRepository(FirmStore(tmp_path), legacy_board_dir=tmp_path / "legacy")
@@ -510,23 +578,23 @@ def test_reviewed_opaque_target_reaches_live_connect_before_profile_commit(
     handle = SimpleNamespace(probe_uid="opaque-probe")
 
     def open_session(**kwargs: object) -> object:
-        assert kwargs["target"] == "nrf52840"
+        assert kwargs["target"] == "stm32l476rgtx"
         events.append("connect")
         assert not profiles.store.layout.board_profile("reviewed_board").exists()
         return handle
 
     def read_memory(_handle: object, address: int, _width: int) -> int:
-        return 0x00052840 if address == 0x10000100 else 0x12345678
+        return 0x00000415 if address == 0xE0042000 else 0x12345678
 
     monkeypatch.setattr(server.target_control, "open_session", open_session)
     monkeypatch.setattr(server.target_control, "read_memory", read_memory)
     monkeypatch.setattr(server.target_control, "close_session", lambda _handle: None)
-    datasheet = Path("Nano_BLE_MCU-nRF52840_PS_v1.1.pdf").resolve()
+    datasheet = Path("stm32l476je (2).pdf").resolve()
     user_input = SetupUserInput(
         "reviewed_board",
         "probe:opaque-probe",
         "Reviewed Board",
-        "nRF52840-QIAA",
+        "STM32L476RGT6",
         115200,
         datasheet_path=str(datasheet),
         requires_uart=False,
@@ -538,7 +606,7 @@ def test_reviewed_opaque_target_reaches_live_connect_before_profile_commit(
         selected_probe=ProbeCandidate(
             "opaque-probe", "CMSIS-DAP Probe", "cmsisdap", "opaque-probe"
         ),
-        selected_target="nrf52840",
+        selected_target="stm32l476rgtx",
     )
     context = cast(
         SetupPhaseContext,
@@ -550,13 +618,14 @@ def test_reviewed_opaque_target_reaches_live_connect_before_profile_commit(
     assert result.verified is True
     assert events == ["connect"]
     committed = profiles.load("reviewed_board", include_legacy=False)
-    assert committed.mcu_part_number == "nRF52840-QIAA"
-    assert committed.board.pyocd_target == "nrf52840"
+    assert committed.mcu_part_number == "STM32L476RGT6"
+    assert committed.board.pyocd_target == "stm32l476rgtx"
     assert committed.board.probe_family == "cmsisdap"
-    assert committed.board.silicon_id_label == "FICR INFO.PART exact part identifier"
-    assert committed.board.silicon_id_addr == 0x10000100
-    assert committed.board.silicon_id_expected == 0x00052840
-    assert committed.board.silicon_id_mask == 0xFFFFFFFF
+    assert committed.board.silicon_id_label == "STM32L476 compatible DBGMCU_IDCODE"
+    assert committed.board.silicon_id_addr == 0xE0042000
+    assert committed.board.silicon_id_expected == 0x00000415
+    assert committed.board.silicon_id_mask == 0x00000FFF
+    assert "serial_baudrate" not in committed.to_document()
 
 
 def test_generic_stm32_fresh_setup_does_not_inherit_reference_board_connect_policy(
@@ -566,8 +635,12 @@ def test_generic_stm32_fresh_setup_does_not_inherit_reference_board_connect_poli
     monkeypatch.setattr(server, "_profile_repository", profiles)
     handle = SimpleNamespace(probe_uid="stlink-probe")
     seen: dict[str, object] = {}
+    attempts: list[dict[str, object]] = []
 
     def open_session(**kwargs: object) -> object:
+        attempts.append(dict(kwargs))
+        if len(attempts) == 1:
+            raise server.TargetConnectionError("default speed rejected")
         seen.update(kwargs)
         assert not profiles.store.layout.board_profile("stm32_fresh").exists()
         return handle
@@ -611,6 +684,58 @@ def test_generic_stm32_fresh_setup_does_not_inherit_reference_board_connect_poli
     assert setup_board.debug_connect_mode is None  # type: ignore[union-attr]
     assert setup_board.debug_clock_hz is None  # type: ignore[union-attr]
     assert seen["target"] == "stm32l476rgtx"
+    assert attempts[0]["frequency_hz"] is None
+    assert attempts[1]["frequency_hz"] == 1_000_000
+    committed = profiles.load("stm32_fresh", include_legacy=False)
+    assert committed.board.debug_connect_mode == "attach"
+    assert committed.board.debug_clock_hz == 1_000_000
+
+
+def test_validation_replays_the_discovered_attach_frequency(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    profile = SimpleNamespace(
+        board_id="generic_board",
+        board=SimpleNamespace(
+            debug_connect_mode="attach",
+            debug_clock_hz=1_000_000,
+            pyocd_target="generic_target",
+        ),
+        device_support={"pdsc_device": "GenericTarget"},
+    )
+    attempts: list[dict[str, object]] = []
+    handle = SimpleNamespace(probe_uid="probe-1", route_used="pyocd-native")
+    selected_pack = SimpleNamespace(
+        path=Path("exact-profile.pack"), spec=SimpleNamespace(sha256="a" * 64)
+    )
+
+    def open_session(**kwargs: object) -> object:
+        attempts.append(dict(kwargs))
+        if len(attempts) == 1:
+            raise server.TargetConnectionError("default frequency rejected")
+        return handle
+
+    monkeypatch.setattr(server.target_control, "open_session", open_session)
+    monkeypatch.setattr(server, "_verified_pack_for_profile", lambda _profile: selected_pack)
+    monkeypatch.setattr(server.connection_manager, "maybe_connection", lambda _board: None)
+    monkeypatch.setattr(server.connection_manager, "assign", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(server, "stable_connection_identity", lambda _handle: "connection-1")
+    monkeypatch.setattr(server._session_store, "start_session", lambda **_kwargs: object())
+    monkeypatch.setattr(server.gate_manager, "clear", lambda *_args: None)
+
+    server._validation_connect(
+        profile,
+        ValidationProbe("probe-1", "Generic Probe", "cmsisdap", "probe-1"),
+        5.0,
+    )
+
+    assert [(item["connect_mode"], item["frequency_hz"]) for item in attempts] == [
+        ("attach", None),
+        ("attach", 1_000_000),
+    ]
+    assert all(item["pack_path"] == selected_pack.path for item in attempts)
+    assert all(item["pack_sha256"] == selected_pack.spec.sha256 for item in attempts)
+    assert all(item["pdsc_device"] == "GenericTarget" for item in attempts)
 
 
 @pytest.mark.parametrize(
@@ -633,11 +758,11 @@ def test_fresh_setup_preserves_selected_probe_identity_across_backend_retry(
 
     def read_memory(_handle: object, address: int, _width: int) -> int:
         reads.append(address)
-        return 0x00052840 if address == 0x10000100 else 0
+        return 0x00000415 if address == 0xE0042000 else 0
 
     monkeypatch.setattr(server.target_control, "read_memory", read_memory)
     monkeypatch.setattr(server.target_control, "close_session", lambda _handle: None)
-    datasheet = Path("Nano_BLE_MCU-nRF52840_PS_v1.1.pdf").resolve()
+    datasheet = Path("stm32l476je (2).pdf").resolve()
     context = cast(
         SetupPhaseContext,
         SimpleNamespace(
@@ -645,7 +770,7 @@ def test_fresh_setup_preserves_selected_probe_identity_across_backend_retry(
                 "probe_identity_board",
                 "probe:000123",
                 "Probe Identity Board",
-                "nRF52840-QIAA",
+                "STM32L476RGT6",
                 None,
                 datasheet_path=str(datasheet),
                 requires_uart=False,
@@ -655,7 +780,7 @@ def test_fresh_setup_preserves_selected_probe_identity_across_backend_retry(
                 "setup/preflight-ready",
                 "ready",
                 selected_probe=ProbeCandidate("000123", "J-Link", "jlink", "000123"),
-                selected_target="nrf52840",
+                selected_target="stm32l476rgtx",
             ),
         ),
     )
@@ -863,12 +988,12 @@ async def test_live_mcp_board_setup_commits_target_neutral_silicon_identity_labe
     profiles = ProfileRepository(store, legacy_board_dir=tmp_path / "legacy")
     reports = ReportWriter(store)
     inventory = PreflightInventory(
-        probes=(ProbeCandidate("probe-a", "Reviewed J-Link", "jlink", "PROBE-001"),),
+        probes=(ProbeCandidate("probe-a", "Generic ST-Link", "stlink", "PROBE-001"),),
         serial_ports=(
             SerialCandidate("UART-001", "COM-test", "Reviewed UART", "UART-001", 1, 2),
         ),
-        built_in_targets=("nrf52840",),
-        exact_detected_targets=("nrf52840",),
+        manifest_targets=("stm32l476rgtx",),
+        exact_detected_targets=("stm32l476rgtx",),
     )
     phase_handlers = {
         SetupPhase.TARGET_SUPPORT: lambda _context: SetupPhaseOutcome.success(
@@ -899,15 +1024,15 @@ async def test_live_mcp_board_setup_commits_target_neutral_silicon_identity_labe
     monkeypatch.setattr(
         server.target_control,
         "read_memory",
-        lambda _handle, address, _width: 0x00052840 if address == 0x10000100 else 0,
+        lambda _handle, address, _width: 0x00000415 if address == 0xE0042000 else 0,
     )
     monkeypatch.setattr(server.target_control, "close_session", lambda _handle: None)
-    datasheet = str(Path("Nano_BLE_MCU-nRF52840_PS_v1.1.pdf").resolve())
+    datasheet = str(Path("stm32l476je (2).pdf").resolve())
     action_parameters = {
         "mode": "setup",
         "connection_id": "probe:PROBE-001",
         "display_name": "De-bias MCP Board",
-        "mcu_part_number": "nRF52840-QIAA",
+        "mcu_part_number": "STM32L476RGT6",
         "requires_uart": True,
         "serial_baudrate": 115200,
         "serial_id": "UART-001",
@@ -949,7 +1074,7 @@ async def test_live_mcp_board_setup_commits_target_neutral_silicon_identity_labe
     assert committed.to_document()["datasheet_sha256"] == hashlib.sha256(
         Path(datasheet).read_bytes()
     ).hexdigest()
-    assert committed.board.silicon_id_label == "FICR INFO.PART exact part identifier"
-    assert committed.board.silicon_id_addr == 0x10000100
-    assert committed.board.silicon_id_expected == 0x00052840
-    assert committed.board.silicon_id_mask == 0xFFFFFFFF
+    assert committed.board.silicon_id_label == "STM32L476 compatible DBGMCU_IDCODE"
+    assert committed.board.silicon_id_addr == 0xE0042000
+    assert committed.board.silicon_id_expected == 0x00000415
+    assert committed.board.silicon_id_mask == 0x00000FFF

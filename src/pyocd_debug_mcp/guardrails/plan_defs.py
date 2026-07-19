@@ -643,8 +643,9 @@ _GUIDANCE: Final = MappingProxyType(
             "to setup_overview so the server—not the model or user—matches profiles, proposes new "
             "board IDs, and enumerates friendly physical choices. For an unknown route, then ask for "
             "the exact package-level MCU part number (the full package marking, not only the chip "
-            "family) and authoritative local datasheet PDF. Never ask for a board type or digest; "
-            "the server resolves reviewed support and hashes the PDF bytes. If "
+            "family) and authoritative local datasheet PDF. Never ask for a board type, pack, "
+            "target, or digest; the server hashes the PDF and either replays exact verified support "
+            "or asks the agent to locate one official CMSIS-Pack whose target it derives. If "
             "setup_overview finds a matching board-name YAML profile, do not populate this setup "
             "plan: load "
             "and call board_validate only. If validation passes, "
@@ -657,8 +658,9 @@ _GUIDANCE: Final = MappingProxyType(
             "plan is accepted only after load_setup_tool and the server verifies the one-to-one "
             "name-to-connection assignment. One plan uniquely permits one board_setup call and one "
             "paired board_fix_setup call; board_fix_setup has no separate plan prompt.",
-            "Setup touches live hardware but is bounded to non-destructive reads; it never flashes "
-            "or erases. Relay setup_needs_user_input and setup_research_required choices in plain "
+            "Setup touches live hardware but is bounded to non-destructive attach and reads; an "
+            "under-reset fallback may reset execution, but setup never flashes, erases, unlocks, "
+            "or changes security state. Relay setup_needs_user_input and setup_research_required choices in plain "
             "conversation without exposing JSON, continuation identifiers, or internal field names. "
             "Submit exactly the returned accepted_response through continue_setup, then use the "
             "paired board_fix_setup allowance; never retry by editing server artifacts or inventing a target. "
@@ -691,8 +693,8 @@ _GUIDANCE: Final = MappingProxyType(
             "replacement plan and, for one-time permission, a fresh user prompt.",
             example_hypothesis=(
                 "The board the user calls 'left controller' is a new nRF52840-QIAA build with no "
-                "existing profile; setup should resolve target and safety map from the attached "
-                "J-Link and this workspace's linker artifacts."
+                "existing profile; setup should resolve exact device support from the supplied "
+                "datasheet plus verified support and bind it to the attached J-Link."
             ),
             example_strategy=(
                 "Run board_setup once; if it reports a failed phase, use the paired "
@@ -823,7 +825,9 @@ _GUIDANCE: Final = MappingProxyType(
             "Use only to deploy a rebuilt application artifact. Never use it for a bootloader or "
             "arbitrary flash. The server checks every loadable segment, required erase sector, entry "
             "point, vector table, target identity, and artifact-defined load addresses against the "
-            "application partition. The request never supplies a target address.",
+            "application partition. The request never supplies a target address. For a new generic "
+            "board, exact or processor-compatible live identity plus a bounded sector driver lets "
+            "the server derive an artifact-defined allocation; the device need not be blank.",
             "A validated session and open gate are required. Collect the current build artifacts, "
             "then plan and flash them. An ordinary rebuild does not require safety refresh; use "
             "board_safety_refresh only when the stable map itself is missing, invalid, or stale.",
@@ -832,6 +836,7 @@ _GUIDANCE: Final = MappingProxyType(
             (
                 "Build the artifact freshly from the stated configuration.",
                 "Confirm the named board is the artifact's intended board.",
+                "Confirm setup reports exact or processor-compatible identity, not diagnostics-only state.",
                 "State the observable post-flash behavior and how UART or another read will verify it.",
                 "If runtime containment rejects the build, fix or select the artifact; refresh only "
                 "when the refusal identifies a stable-map problem.",
@@ -1127,7 +1132,8 @@ def _render_null_response(
         else "Before populating this plan, call initialization_handshake, ask for familiar "
         "connected-board names, and call setup_overview. Every matching YAML must pass "
         "board_validate first. An unknown name must complete setup using the exact package-level "
-        "MCU part and authoritative local datasheet; reviewed support is resolved internally. Do "
+        "MCU part and authoritative local datasheet; exact pack/target support is resolved by the "
+        "agent/server research handoff and verified internally. Do "
         "not populate this hardware plan until "
         "setup status reports ready_for_code=true."
     )

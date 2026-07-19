@@ -295,8 +295,9 @@ def build_setup_handlers(services: SetupToolServices) -> dict[str, Callable[...,
     ) -> str:
         """Inventory profiles/connections and route user-provided familiar board names.
 
-        Call after initialization_handshake and after asking which boards are connected. Pass the
-        ordinary familiar names here; pass NULL only to inspect inventory before the user answers.
+        Call after initialization_handshake and after asking which boards the user wants to work
+        with now. Pass those ordinary familiar names here; pass NULL only to inspect inventory
+        before the user answers. Other visible debug probes may remain unassigned.
         The normalized literal sentinel "no board" must be passed by itself and is never a board
         name candidate. If it is mixed with names, re-ask the user conversationally.
         A complete matching profile routes to validation, an incomplete same-identity profile to
@@ -527,9 +528,9 @@ def build_setup_handlers(services: SetupToolServices) -> dict[str, Callable[...,
         return _json(result.to_payload())
 
     def board_safety_refresh(board_id: str) -> str:
-        """Rebuild the complete stable safety map from current reviewed server-owned sources.
+        """Rebuild the complete stable safety map from current replayed verified sources.
 
-        Use this for any missing/corrupt/stale map or reviewed stable-authority change. Do not use it
+        Use this for any missing/corrupt/stale map or stable-authority change. Do not use it
         after ordinary firmware builds. It accepts no artifact, geometry, partition, or caller range.
         """
 

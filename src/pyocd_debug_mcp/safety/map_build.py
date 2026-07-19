@@ -1,4 +1,4 @@
-"""Schema-v2 single-file safety-map model, construction, and persistence.
+"""Single-file schema-v2/v3 safety-map models, construction, and persistence.
 
 ``memory_map.yaml`` is intentionally the only durable safety authority.  Build
 artifacts, live gates, plans, permissions, and aggregate fingerprints do not
@@ -9,12 +9,13 @@ from __future__ import annotations
 
 import json
 import re
-from collections.abc import Iterable, Mapping, Sequence
+import threading
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from enum import Enum
 from hashlib import sha256
 from pathlib import Path
-from typing import Final, cast
+from typing import Any, Final, cast
 
 import yaml  # type: ignore[import-untyped]
 
@@ -53,6 +54,14 @@ _GENERATOR_SCHEMA_DOCUMENT: Final[dict[str, object]] = {
     "range_semantics": "unsigned-64-bit-half-open",
     "partition_executable_authority": "per-operation-elf-only",
     "prohibited_precedence": True,
+}
+_GENERIC_GENERATOR_SCHEMA_DOCUMENT: Final[dict[str, object]] = {
+    **_GENERATOR_SCHEMA_DOCUMENT,
+    "schema_version": 3,
+    "map_schema_version": 3,
+    "authority_kind": "resolved_pack",
+    "nullable_partitions": True,
+    "artifact_application_allocation": 1,
 }
 
 
@@ -743,7 +752,7 @@ class GenericSourceDigests:
             _domain_digest("generic-device-support", device_support),
             _domain_digest("generic-datasheet-evidence", datasheet_evidence),
             _domain_digest("generic-deployment-policy", deployment_policy),
-            _domain_digest("map-generator-schema", _GENERATOR_SCHEMA_DOCUMENT),
+            _domain_digest("map-generator-schema", _GENERIC_GENERATOR_SCHEMA_DOCUMENT),
         )
 
     def to_document(self) -> dict[str, str]:
@@ -773,27 +782,254 @@ class GenericSourceDigests:
         )))
 
 
+def _covered_by_ranges(requested: AddressRange, ranges: Sequence[AddressRange]) -> bool:
+    cursor = requested.start
+    for item in sorted(set(ranges)):
+        if item.end <= cursor:
+            continue
+        if item.start > cursor:
+            return False
+        cursor = max(cursor, item.end)
+        if cursor >= requested.end:
+            return True
+    return False
+
+
+@dataclass(frozen=True, slots=True)
+class GenericMapGeometry:
+    """Schema-v3 physical geometry without fabricated gap-spanning envelopes."""
+
+    physical_flash: tuple[AddressRange, ...]
+    physical_ram: tuple[AddressRange, ...]
+    erase_sectors: tuple[EraseSector, ...] = ()
+    erase_available: bool = True
+
+    def __post_init__(self) -> None:
+        flash = tuple(sorted(set(self.physical_flash)))
+        ram = tuple(sorted(set(self.physical_ram)))
+        if not flash or not ram:
+            raise SafetyMapError("generic geometry requires physical flash and RAM regions")
+        for rows, label in ((flash, "flash"), (ram, "RAM")):
+            if any(left.overlaps(right) for left, right in zip(rows, rows[1:])):
+                raise SafetyMapError(f"generic physical {label} regions must not overlap")
+        if any(left.overlaps(right) for left in flash for right in ram):
+            raise SafetyMapError("generic physical flash and RAM must not overlap")
+        sectors = tuple(sorted(set(self.erase_sectors)))
+        if not self.erase_available and sectors:
+            raise SafetyMapError("unavailable generic erase geometry must have no sectors")
+        if self.erase_available and not sectors:
+            raise SafetyMapError("available generic erase geometry requires explicit sectors")
+        if any(
+            not _covered_by_ranges(sector.address_range, flash) for sector in sectors
+        ):
+            raise SafetyMapError("generic erase sectors must stay inside physical flash")
+        if any(
+            left.address_range.overlaps(right.address_range)
+            for left, right in zip(sectors, sectors[1:])
+        ):
+            raise SafetyMapError("generic erase sectors must not overlap")
+        object.__setattr__(self, "physical_flash", flash)
+        object.__setattr__(self, "physical_ram", ram)
+        object.__setattr__(self, "erase_sectors", sectors)
+
+    def contains_flash(self, requested: AddressRange) -> bool:
+        return _covered_by_ranges(requested, self.physical_flash)
+
+    def contains_ram(self, requested: AddressRange) -> bool:
+        return _covered_by_ranges(requested, self.physical_ram)
+
+    def to_document(self) -> dict[str, object]:
+        erase: dict[str, object] = (
+            {
+                "kind": "explicit",
+                "sectors": [sector.to_document() for sector in self.erase_sectors],
+            }
+            if self.erase_available
+            else {"kind": "unavailable"}
+        )
+        return {
+            "physical_flash": [item.to_document() for item in self.physical_flash],
+            "physical_ram": [item.to_document() for item in self.physical_ram],
+            "erase": erase,
+        }
+
+    @classmethod
+    def from_document(cls, value: object) -> "GenericMapGeometry":
+        raw = _exact_mapping(value, {"physical_flash", "physical_ram", "erase"}, "geometry")
+
+        def ranges(name: str) -> tuple[AddressRange, ...]:
+            rows = raw[name]
+            if not isinstance(rows, list) or not rows:
+                raise SafetyMapError(f"geometry.{name} must be a non-empty list")
+            return tuple(
+                _range_from_document(row, f"geometry.{name}[{index}]")
+                for index, row in enumerate(rows)
+            )
+
+        erase = raw["erase"]
+        if not isinstance(erase, Mapping):
+            raise SafetyMapError("geometry.erase must be an object")
+        if erase.get("kind") == "unavailable":
+            _exact_mapping(erase, {"kind"}, "geometry.erase")
+            return cls(ranges("physical_flash"), ranges("physical_ram"), erase_available=False)
+        explicit = _exact_mapping(erase, {"kind", "sectors"}, "geometry.erase")
+        if explicit["kind"] != "explicit":
+            raise SafetyMapError("generic geometry erase kind must be explicit or unavailable")
+        rows = explicit["sectors"]
+        if not isinstance(rows, list) or not rows:
+            raise SafetyMapError("geometry.erase.sectors must be a non-empty list")
+        sectors: list[EraseSector] = []
+        for index, row in enumerate(rows):
+            sector = _exact_mapping(
+                row, {"start", "end", "bank"}, f"geometry.erase.sectors[{index}]"
+            )
+            sectors.append(
+                EraseSector(
+                    AddressRange(
+                        _required_int(sector["start"], "erase sector start"),
+                        _required_int(sector["end"], "erase sector end"),
+                    ),
+                    _required_string(sector["bank"], "erase bank"),
+                )
+            )
+        return cls(ranges("physical_flash"), ranges("physical_ram"), tuple(sectors))
+
+
+def build_artifact_application_allocation(
+    sectors: Sequence[AddressRange],
+    *,
+    driver_proof_digest: str,
+    creation_map_digest: str,
+    creation_artifact_digest: str,
+    parent_allocation_digest: str | None = None,
+) -> dict[str, object]:
+    """Build a server-derived application allocation for one approved artifact."""
+
+    ordered = tuple(sorted(set(sectors)))
+    if not ordered or any(
+        _DIGEST.fullmatch(value) is None
+        for value in (
+            driver_proof_digest,
+            creation_map_digest,
+            creation_artifact_digest,
+        )
+    ):
+        raise SafetyMapError("artifact allocation requires sectors and three SHA-256 proofs")
+    if parent_allocation_digest is not None and _DIGEST.fullmatch(parent_allocation_digest) is None:
+        raise SafetyMapError("parent allocation digest must be null or a lowercase SHA-256")
+    for left, right in zip(ordered, ordered[1:]):
+        if left.end != right.start:
+            raise SafetyMapError("artifact allocation sectors must be contiguous")
+    material: dict[str, object] = {
+        "kind": "artifact_application_allocation",
+        "sectors": [item.to_document() for item in ordered],
+        "driver_proof_digest": driver_proof_digest,
+        "creation_map_digest": creation_map_digest,
+        "creation_artifact_digest": creation_artifact_digest,
+        "parent_allocation_digest": parent_allocation_digest,
+    }
+    return {
+        **material,
+        "allocation_digest": _domain_digest("artifact-application-allocation", material),
+    }
+
+
+def _validated_generic_deployment_policy(value: Mapping[str, object]) -> dict[str, object]:
+    policy = dict(value)
+    if policy == {"kind": "none"}:
+        return policy
+    raw = _exact_mapping(
+        policy,
+        {
+            "kind",
+            "sectors",
+            "driver_proof_digest",
+            "creation_map_digest",
+            "creation_artifact_digest",
+            "parent_allocation_digest",
+            "allocation_digest",
+        },
+        "generic deployment_policy",
+    )
+    if raw["kind"] != "artifact_application_allocation":
+        raise SafetyMapError("unsupported generic deployment policy kind")
+    rows = raw["sectors"]
+    if not isinstance(rows, list) or not rows:
+        raise SafetyMapError("artifact allocation requires a non-empty sector list")
+    sectors = tuple(
+        _range_from_document(row, f"deployment_policy.sectors[{index}]")
+        for index, row in enumerate(rows)
+    )
+    parent = raw["parent_allocation_digest"]
+    if parent is not None and not isinstance(parent, str):
+        raise SafetyMapError("deployment_policy.parent_allocation_digest must be null or text")
+    rebuilt = build_artifact_application_allocation(
+        sectors,
+        driver_proof_digest=_required_string(
+            raw["driver_proof_digest"], "deployment_policy.driver_proof_digest"
+        ),
+        creation_map_digest=_required_string(
+            raw["creation_map_digest"], "deployment_policy.creation_map_digest"
+        ),
+        creation_artifact_digest=_required_string(
+            raw["creation_artifact_digest"], "deployment_policy.creation_artifact_digest"
+        ),
+        parent_allocation_digest=parent,
+    )
+    if raw["allocation_digest"] != rebuilt["allocation_digest"]:
+        raise SafetyMapError("artifact allocation digest mismatch")
+    return rebuilt
+
+
 @dataclass(frozen=True, slots=True)
 class GenericSafetyMapDocument:
-    """A schema-v3 generic map with physical authority but no deployment ownership."""
+    """A schema-v3 generic map with physical and optional application ownership."""
 
     board_id: str
     identity: GenericMapIdentity
     authority_source: Mapping[str, str]
     source_digests: GenericSourceDigests
-    geometry: MapGeometry
+    geometry: GenericMapGeometry
     partitions: MapPartitions
     deployment_policy: Mapping[str, object]
     regions: tuple[SafetyRegion, ...]
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "board_id", _require_board_id(self.board_id))
-        if self.partitions.application is not None or self.partitions.bootloader is not None:
-            raise SafetyMapError("generic map cannot claim a deployment partition without allocation")
-        if dict(self.deployment_policy) != {"kind": "none"}:
-            raise SafetyMapError("generic map deployment_policy must be exactly kind none")
+        policy = _validated_generic_deployment_policy(self.deployment_policy)
+        object.__setattr__(self, "deployment_policy", policy)
+        if self.partitions.bootloader is not None:
+            raise SafetyMapError("generic application policy cannot create a bootloader partition")
+        if policy["kind"] == "none":
+            if self.partitions.application is not None:
+                raise SafetyMapError(
+                    "generic map cannot claim a deployment partition without allocation"
+                )
+        else:
+            sectors = tuple(
+                _range_from_document(item, "deployment_policy.sectors")
+                for item in cast(list[object], policy["sectors"])
+            )
+            allocation = AddressRange(sectors[0].start, sectors[-1].end)
+            if self.partitions.application != allocation:
+                raise SafetyMapError("application partition must equal the allocated sector envelope")
+            geometry_sectors = (
+                tuple(item.address_range for item in self.geometry.erase_sectors)
+                if self.geometry.erase_sectors
+                else ()
+            )
+            if not geometry_sectors or any(item not in geometry_sectors for item in sectors):
+                raise SafetyMapError("allocated sectors must be exact verified erase sectors")
         source = dict(self.authority_source)
-        required = {"kind", "support_id", "pack_sha256", "pdsc_device", "pyocd_target"}
+        required = {
+            "kind",
+            "support_id",
+            "pack_id",
+            "pack_filename",
+            "pack_sha256",
+            "pdsc_device",
+            "pyocd_target",
+        }
         if set(source) != required or source.get("kind") != "resolved_pack":
             raise SafetyMapError("generic authority_source is incomplete")
         if any(not isinstance(value, str) or not value for value in source.values()):
@@ -805,14 +1041,33 @@ class GenericSafetyMapDocument:
         if _DIGEST.fullmatch(source["pack_sha256"]) is None:
             raise SafetyMapError("generic authority_source pack_sha256 must be a lowercase SHA-256")
         canonical_regions = tuple(sorted(set(self.regions), key=_region_sort_key))
-        if any(region.kind in {RegionKind.APPLICATION_FLASH, RegionKind.BOOTLOADER_FLASH} for region in canonical_regions):
-            raise SafetyMapError("generic map must not persist deployment partition regions")
+        deployment_regions = tuple(
+            region for region in canonical_regions if region.kind is RegionKind.APPLICATION_FLASH
+        )
+        if any(region.kind is RegionKind.BOOTLOADER_FLASH for region in canonical_regions):
+            raise SafetyMapError("generic application policy cannot persist a bootloader region")
+        if policy["kind"] == "none" and deployment_regions:
+            raise SafetyMapError("generic map without allocation cannot persist application regions")
+        if policy["kind"] != "none" and tuple(
+            region.address_range for region in deployment_regions
+        ) != (self.partitions.application,):
+            raise SafetyMapError("generic allocation requires exactly its application region")
         if not canonical_regions:
             raise SafetyMapError("a generic map requires physical regions")
-        if tuple(region.address_range for region in canonical_regions if region.kind is RegionKind.PHYSICAL_FLASH) != (self.geometry.physical_flash,):
-            raise SafetyMapError("generic map must contain exactly its physical flash geometry")
-        if tuple(region.address_range for region in canonical_regions if region.kind is RegionKind.PHYSICAL_RAM) != (self.geometry.physical_ram,):
-            raise SafetyMapError("generic map must contain exactly its physical RAM geometry")
+        flash_ranges = tuple(
+            region.address_range
+            for region in canonical_regions
+            if region.kind is RegionKind.PHYSICAL_FLASH
+        )
+        ram_ranges = tuple(
+            region.address_range
+            for region in canonical_regions
+            if region.kind is RegionKind.PHYSICAL_RAM
+        )
+        if tuple(sorted(flash_ranges)) != self.geometry.physical_flash:
+            raise SafetyMapError("generic map physical flash regions must match geometry exactly")
+        if tuple(sorted(ram_ranges)) != self.geometry.physical_ram:
+            raise SafetyMapError("generic map physical RAM regions must match geometry exactly")
         object.__setattr__(self, "authority_source", source)
         object.__setattr__(self, "regions", canonical_regions)
 
@@ -825,7 +1080,7 @@ class GenericSafetyMapDocument:
             "source_digests": self.source_digests.to_document(),
             "geometry": self.geometry.to_document(),
             "partitions": self.partitions.to_document(),
-            "deployment_policy": {"kind": "none"},
+            "deployment_policy": dict(self.deployment_policy),
             "regions": [region.to_document() for region in self.regions],
         }
 
@@ -861,7 +1116,15 @@ class GenericSafetyMapDocument:
             raise SafetyMapError("generic memory map regions must be a non-empty list")
         authority_source = _exact_mapping(
             raw["authority_source"],
-            {"kind", "support_id", "pack_sha256", "pdsc_device", "pyocd_target"},
+            {
+                "kind",
+                "support_id",
+                "pack_id",
+                "pack_filename",
+                "pack_sha256",
+                "pdsc_device",
+                "pyocd_target",
+            },
             "generic authority_source",
         )
         if any(not isinstance(item, str) for item in authority_source.values()):
@@ -871,11 +1134,72 @@ class GenericSafetyMapDocument:
             GenericMapIdentity.from_document(raw["identity"]),
             cast(dict[str, str], authority_source),
             GenericSourceDigests.from_document(raw["source_digests"]),
-            MapGeometry.from_document(raw["geometry"]),
+            GenericMapGeometry.from_document(raw["geometry"]),
             MapPartitions.from_document(raw["partitions"]),
             dict(raw["deployment_policy"]),
             tuple(_region_from_document(row, f"regions[{index}]") for index, row in enumerate(rows)),
         )
+
+
+def generic_map_with_allocation(
+    document: GenericSafetyMapDocument,
+    deployment_policy: Mapping[str, object],
+) -> GenericSafetyMapDocument:
+    """Return a first or monotonically expanded artifact-derived allocation."""
+
+    policy = _validated_generic_deployment_policy(deployment_policy)
+    if policy["kind"] != "artifact_application_allocation":
+        raise SafetyMapError("allocation successor requires artifact_application_allocation policy")
+    prior_digest = (
+        None
+        if document.deployment_policy == {"kind": "none"}
+        else cast(str, document.deployment_policy["allocation_digest"])
+    )
+    if policy["parent_allocation_digest"] != prior_digest:
+        raise SafetyMapError("allocation parent does not match the current generic map")
+    sectors = tuple(
+        _range_from_document(item, "deployment_policy.sectors")
+        for item in cast(list[object], policy["sectors"])
+    )
+    application = AddressRange(sectors[0].start, sectors[-1].end)
+    if (
+        document.partitions.application is not None
+        and not application.contains(document.partitions.application)
+    ):
+        raise SafetyMapError("generic application allocation cannot shrink")
+    allocation_digest = cast(str, policy["allocation_digest"])
+    region = SafetyRegion(
+        "artifact-defined application allocation",
+        RegionKind.APPLICATION_FLASH,
+        application,
+        (
+            Provenance(
+                SourceAuthority.DERIVED,
+                allocation_digest,
+                "server-derived artifact erase-sector allocation",
+            ),
+        ),
+    )
+    digests = GenericSourceDigests(
+        document.source_digests.semantic_profile,
+        document.source_digests.device_support,
+        document.source_digests.datasheet_evidence,
+        _domain_digest("generic-deployment-policy", policy),
+        document.source_digests.map_generator_schema,
+    )
+    return GenericSafetyMapDocument(
+        document.board_id,
+        document.identity,
+        document.authority_source,
+        digests,
+        document.geometry,
+        MapPartitions(application),
+        policy,
+        (
+            *(item for item in document.regions if item.kind is not RegionKind.APPLICATION_FLASH),
+            region,
+        ),
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -895,6 +1219,7 @@ class SafetyMapRepository:
 
     def __init__(self, store: FirmStore) -> None:
         self.store = store
+        self._guard = threading.RLock()
 
     def path(self, board_id: str) -> Path:
         return self.store.layout.safety_board(_require_board_id(board_id)) / "memory_map.yaml"
@@ -919,9 +1244,24 @@ class SafetyMapRepository:
             default_flow_style=False,
             sort_keys=False,
         )
-        result = self.store.atomic_write_text(self.path(identity), text)
-        self._cleanup_legacy(identity)
-        return result
+        with self._guard:
+            result = self.store.atomic_write_text(self.path(identity), text)
+            self._cleanup_legacy(identity)
+            return result
+
+    def commit_if_current(
+        self,
+        board_id: str,
+        expected_digest: str,
+        document: SafetyMapDocument | GenericSafetyMapDocument,
+    ) -> Path:
+        """Compare-and-swap the sole map authority under the repository lock."""
+
+        with self._guard:
+            current = self.load_current(board_id)
+            if current.canonical_digest != expected_digest:
+                raise SafetyMapError("memory map changed before deployment allocation commit")
+            return self.commit(board_id, document)
 
     def load_current(self, board_id: str) -> SafetyMapDocument | GenericSafetyMapDocument:
         identity = _require_board_id(board_id)
@@ -1004,18 +1344,23 @@ def reviewed_map_source_documents(
     return device_support, official_and_policy
 
 
-def require_reconciled_authority(document: SafetyMapDocument | GenericSafetyMapDocument) -> None:
+def require_reconciled_authority(
+    document: SafetyMapDocument | GenericSafetyMapDocument,
+    *,
+    generic_support_resolver: Callable[[str], Any] | None = None,
+) -> None:
     """Fail closed unless the map identity and partitions match reviewed policy."""
 
     if isinstance(document, GenericSafetyMapDocument):
-        if document.partitions.application is not None or document.partitions.bootloader is not None:
-            raise SafetyMapError("generic map cannot authorize a deployment partition")
-        if document.deployment_policy != {"kind": "none"}:
-            raise SafetyMapError("generic map has an invalid deployment policy")
+        _validated_generic_deployment_policy(document.deployment_policy)
         try:
             from pyocd_debug_mcp.setup_flow.device_support import resolve_registered_pack_support
 
-            candidate = resolve_registered_pack_support(document.identity.mcu_part_number)
+            candidate = (
+                resolve_registered_pack_support(document.identity.mcu_part_number)
+                if generic_support_resolver is None
+                else generic_support_resolver(document.identity.mcu_part_number)
+            )
         except Exception as exc:  # noqa: BLE001 - authority resolution must fail closed
             raise SafetyMapError(f"generic map support authority is unavailable: {exc}") from exc
         expected = candidate.to_authority_document()

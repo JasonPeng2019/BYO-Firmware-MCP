@@ -21,6 +21,8 @@ class RegionKind(str, Enum):
     BOOTLOADER_FLASH = "bootloader_flash"
     RAM = "ram"
     PERIPHERAL = "peripheral"
+    PERIPHERAL_READ_ONLY = "peripheral_read_only"
+    PERIPHERAL_WRITE_ONLY = "peripheral_write_only"
     CPU_SYSTEM = "cpu_system"
     ROM_BOOTLOADER = "rom_bootloader"
     PHYSICAL_FLASH = "physical_flash"
@@ -173,6 +175,8 @@ _SPECIFICITY: Final[dict[RegionKind, int]] = {
     RegionKind.BOOTLOADER_FLASH: 50,
     RegionKind.RAM: 50,
     RegionKind.PERIPHERAL: 50,
+    RegionKind.PERIPHERAL_READ_ONLY: 50,
+    RegionKind.PERIPHERAL_WRITE_ONLY: 50,
     RegionKind.CPU_SYSTEM: 50,
     RegionKind.ROM_BOOTLOADER: 50,
     RegionKind.PHYSICAL_FLASH: 10,
@@ -186,9 +190,12 @@ _ALLOWED_KINDS: Final[dict[ActionCategory, frozenset[RegionKind]]] = {
     - {
         RegionKind.UNKNOWN,
         RegionKind.PROHIBITED,
+        RegionKind.PERIPHERAL_WRITE_ONLY,
     },
     ActionCategory.MEMORY_WRITE: frozenset({RegionKind.RAM}),
-    ActionCategory.REGISTER_WRITE: frozenset({RegionKind.PERIPHERAL}),
+    ActionCategory.REGISTER_WRITE: frozenset(
+        {RegionKind.PERIPHERAL, RegionKind.PERIPHERAL_WRITE_ONLY}
+    ),
     ActionCategory.FLASH_APPLICATION: frozenset({RegionKind.APPLICATION_FLASH}),
     ActionCategory.FLASH_BOOTLOADER: frozenset({RegionKind.BOOTLOADER_FLASH}),
     ActionCategory.BREAKPOINT: frozenset(

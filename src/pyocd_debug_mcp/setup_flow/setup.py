@@ -190,9 +190,14 @@ class SetupResponse:
             accepted_response = {
                 "tool": "continue_setup",
                 "response": {
-                    "pyocd_target": "one exact official target identifier",
-                    "evidence": [{"source": "official source", "claim": "target-to-part claim"}],
-                    "reasoning_summary": "why the target exactly matches the immutable MCU",
+                    "pack_id": "official vendor pack identifier",
+                    "version": "official pack version",
+                    "filename": "official.pack",
+                    "url": "official vendor source URL",
+                    "source_path": "local path to the acquired official .pack bytes",
+                    "official_sha256": None,
+                    "evidence": [{"source": "official source", "claim": "pack-to-part claim"}],
+                    "reasoning_summary": "why the pack contains the immutable exact MCU part",
                 },
             }
         return {
@@ -256,8 +261,9 @@ def _default_phase_handler(phase: SetupPhase) -> SetupPhaseHandler:
             return SetupPhaseOutcome.stop(
                 "setup_research_required",
                 f"setup/{phase.value}-interface-pending",
-                "Use continue_setup with exactly the official-source target or package response "
-                "schema returned here; do not invent or ask the user for a debug-target identifier.",
+                "Use continue_setup with exactly the official-source package response schema "
+                "returned here; the server derives the target. Do not invent or ask the user "
+                "for a package or debug-target identifier.",
             )
         return SetupPhaseOutcome.stop(
             "setup_unresolved",

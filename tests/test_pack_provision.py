@@ -10,6 +10,8 @@ import pytest
 from pyocd_debug_mcp import pack_provision
 from pyocd_debug_mcp.firmstore.store import FirmStore
 from pyocd_debug_mcp.pack_provision import (
+    MAX_CMSIS_PACK_ARCHIVE_BYTES,
+    LiveIdentityProof,
     PackProvisionError,
     PackSpec,
     discover_local_packs,
@@ -24,6 +26,11 @@ from pyocd_debug_mcp.pack_provision import (
 )
 
 
+def test_live_identity_proof_rejects_zero_mask() -> None:
+    with pytest.raises(PackProvisionError, match="invalid"):
+        LiveIdentityProof("exact", 0x1000, 0, 0, 32, "non-proof")
+
+
 def _write_pack(packs_dir: Path, name: str, content: bytes) -> tuple[Path, str]:
     packs_dir.mkdir(parents=True, exist_ok=True)
     path = packs_dir / name
@@ -34,9 +41,10 @@ def _write_pack(packs_dir: Path, name: str, content: bytes) -> tuple[Path, str]:
 def test_discover_local_packs_finds_only_pack_files(tmp_path: Path) -> None:
     (tmp_path / "a.pack").write_bytes(b"a")
     (tmp_path / "b.pack").write_bytes(b"b")
+    (tmp_path / "c.PACK").write_bytes(b"c")
     (tmp_path / "notes.txt").write_bytes(b"x")
     found = discover_local_packs(tmp_path)
-    assert [p.name for p in found] == ["a.pack", "b.pack"]
+    assert [p.name for p in found] == ["a.pack", "b.pack", "c.PACK"]
     assert all(p.is_absolute() for p in found)
 
 
@@ -112,13 +120,13 @@ def test_load_manifest_parses_entries(tmp_path: Path) -> None:
         "    version: '2.0.0'\n"
         "    filename: Keil.Test_DFP.2.0.0.pack\n"
         "    url: https://example.invalid/Keil.Test_DFP.2.0.0.pack\n"
-        "    sha256: ABC123\n",
+        f"    sha256: {'AB' * 32}\n",
         encoding="utf-8",
     )
     specs = load_manifest(manifest)
     assert len(specs) == 1
     assert specs[0].id == "Keil.Test_DFP"
-    assert specs[0].sha256 == "abc123"  # normalized to lowercase
+    assert specs[0].sha256 == "ab" * 32  # normalized to lowercase
     assert specs[0].is_pinned
 
 
@@ -225,6 +233,69 @@ def test_verified_pack_for_target_rejects_ambiguous_or_changed_bytes(tmp_path: P
     selected.path.write_bytes(b"changed")
     with pytest.raises(PackProvisionError, match="changed or disappeared"):
         selected.verify_unchanged()
+
+
+def test_verified_pack_for_target_bounds_project_pack_replay(tmp_path: Path) -> None:
+    packs = tmp_path / "packs"
+    packs.mkdir()
+    oversized = packs / "oversized.pack"
+    with oversized.open("wb") as handle:
+        handle.seek(MAX_CMSIS_PACK_ARCHIVE_BYTES)
+        handle.write(b"x")
+    manifest = tmp_path / "manifest.yaml"
+    manifest.write_text(
+        "packs:\n"
+        "  - id: Vendor.Oversized\n"
+        "    filename: oversized.pack\n"
+        "    url: https://example.invalid/oversized.pack\n"
+        f"    sha256: \"{'0' * 64}\"\n"
+        "    provides_targets: [target_a]\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(PackProvisionError, match="supported limit"):
+        verified_pack_for_target("target_a", manifest_path=manifest, packs_dir=packs)
+
+
+def test_same_pack_provider_with_different_board_and_leaf_indexes_is_not_ambiguous(
+    tmp_path: Path,
+) -> None:
+    packs = tmp_path / "packs"
+    _, digest = _write_pack(packs, "selected.pack", b"selected")
+    manifest = tmp_path / "manifest.yaml"
+    common = (
+        "    id: Vendor.Selected\n"
+        "    version: 1.0.0\n"
+        "    filename: selected.pack\n"
+        "    url: https://example.invalid/selected.pack\n"
+        f"    sha256: {digest}\n"
+        "    provides_targets: [target_a]\n"
+    )
+    manifest.write_text(
+        "packs:\n"
+        "  -\n"
+        + common
+        + "    needed_by_boards: [board_a]\n"
+        "    device_bindings:\n"
+        "      - part_number: PART-A\n"
+        "        pdsc_device: PartA\n"
+        "        pyocd_target: target_a\n"
+        "  -\n"
+        + common
+        + "    needed_by_boards: [board_b]\n"
+        "    device_bindings:\n"
+        "      - part_number: PART-B\n"
+        "        pdsc_device: PartB\n"
+        "        pyocd_target: target_a\n",
+        encoding="utf-8",
+    )
+
+    selected = verified_pack_for_target(
+        "target_a", manifest_path=manifest, packs_dir=packs
+    )
+
+    assert selected is not None
+    assert selected.spec.id == "Vendor.Selected"
 
 
 def test_registry_selector_never_uses_an_active_project_manifest(

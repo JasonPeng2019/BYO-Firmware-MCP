@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from pyocd_debug_mcp.board_config import LegacyPackNameWarning
+from pyocd_debug_mcp.board_config import BoardConfig, LegacyPackNameWarning
 from pyocd_debug_mcp.firmstore.profiles import (
     PROFILE_SCHEMA_VERSION,
     ProfileError,
@@ -15,8 +15,9 @@ from pyocd_debug_mcp.firmstore.profiles import (
     StaleProfileStageError,
 )
 from pyocd_debug_mcp.firmstore.store import FirmStore, PersistedAuthorityError
-from pyocd_debug_mcp.pack_provision import load_manifest
+from pyocd_debug_mcp.pack_provision import LiveIdentityProof, load_manifest
 from pyocd_debug_mcp.setup_flow import device_support
+from pyocd_debug_mcp.setup_flow.datasheet_evidence import capture_datasheet_evidence
 from pyocd_debug_mcp.setup_flow.device_support import DeviceSupportCandidate
 
 
@@ -47,7 +48,7 @@ def core_fields(
     }
 
 
-DeviceSupportVerifier = Callable[[str, str, Mapping[str, str]], None]
+DeviceSupportVerifier = Callable[[str, BoardConfig, Mapping[str, str]], None]
 
 
 def repository(
@@ -60,6 +61,16 @@ def repository(
         legacy_board_dir=legacy,
         device_support_verifier=device_support_verifier,
     )
+
+
+def captured_datasheet_fields(tmp_path: Path, profiles: ProfileRepository) -> dict[str, str]:
+    source = tmp_path / "device-datasheet.pdf"
+    source.write_bytes(b"%PDF-1.7\nminimal test datasheet\n%%EOF\n")
+    evidence = capture_datasheet_evidence(profiles.store, source)
+    return {
+        "datasheet_sha256": evidence.sha256,
+        "datasheet_ref": evidence.reference,
+    }
 
 
 def test_core_stage_and_commit_preserve_exact_part_and_absolute_timestamps(
@@ -128,8 +139,8 @@ def test_generic_device_support_source_is_closed_and_round_trips(tmp_path: Path)
 
     calls: list[tuple[str, str, dict[str, str]]] = []
 
-    def verify(part_number: str, target: str, source: Mapping[str, str]) -> None:
-        calls.append((part_number, target, dict(source)))
+    def verify(part_number: str, board: BoardConfig, source: Mapping[str, str]) -> None:
+        calls.append((part_number, board.pyocd_target, dict(source)))
 
     profiles = repository(tmp_path, device_support_verifier=verify)
     profiles.commit_core(profiles.stage_core(core_fields()))
@@ -144,7 +155,9 @@ def test_generic_device_support_source_is_closed_and_round_trips(tmp_path: Path)
     }
 
     committed = profiles.commit_optional(
-        profiles.stage_optional("bench_board", {"device_support": source})
+        profiles.stage_optional(
+            "bench_board", {"device_support": source} | captured_datasheet_fields(tmp_path, profiles)
+        )
     )
 
     assert committed.device_support == source
@@ -166,18 +179,87 @@ def test_default_device_support_verifier_replays_the_registry_binding(
         pack_filename="device.pack",
         pack_sha256="b" * 64,
     )
-    monkeypatch.setattr(device_support, "resolve_registered_pack_support", lambda _part: candidate)
+    monkeypatch.setattr(
+        device_support,
+        "resolve_persisted_pack_support",
+        lambda _store, _part, _source: candidate,
+    )
     profiles = repository(tmp_path)
     profiles.commit_core(profiles.stage_core(core_fields()))
 
     committed = profiles.commit_optional(
-        profiles.stage_optional("bench_board", {"device_support": candidate.to_authority_document()})
+        profiles.stage_optional(
+            "bench_board",
+            {"device_support": candidate.to_authority_document()}
+            | captured_datasheet_fields(tmp_path, profiles),
+        )
     )
 
     assert committed.device_support == candidate.to_authority_document()
     wrong_target = candidate.to_authority_document() | {"pyocd_target": "other-target"}
-    with pytest.raises(ProfileError, match="registry binding"):
+    with pytest.raises(ProfileError, match="verified binding"):
         profiles.stage_optional("bench_board", {"device_support": wrong_target})
+
+
+def test_generic_profile_identity_fields_must_replay_verified_support(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    proof = LiveIdentityProof(
+        "compatible", 0xE000ED00, 0xC240, 0xFFF0, 32, "Cortex-M4 identity"
+    )
+    candidate = DeviceSupportCandidate(
+        candidate_id="a" * 64,
+        part_number="STM32L476RGTx-Exact",
+        pdsc_device="STM32L476RGTx",
+        pyocd_target="stm32l476rgtx",
+        pack_id="Vendor.Device_DFP",
+        pack_filename="device.pack",
+        pack_sha256="b" * 64,
+        identity_proof=proof,
+    )
+    monkeypatch.setattr(
+        device_support,
+        "resolve_persisted_pack_support",
+        lambda _store, _part, _source: candidate,
+    )
+    profiles = repository(tmp_path)
+    profiles.commit_core(profiles.stage_core(core_fields()))
+    source = candidate.to_authority_document()
+    valid = {
+        "device_support": source,
+        "silicon_id_address": proof.address,
+        "silicon_id_expected": proof.expected,
+        "silicon_id_mask": proof.mask,
+        "silicon_id_width_bits": proof.width_bits,
+        "silicon_id_label": proof.label,
+    } | captured_datasheet_fields(tmp_path, profiles)
+    profiles.commit_optional(profiles.stage_optional("bench_board", valid))
+
+    tampered = profiles.load("bench_board", include_legacy=False).to_document()
+    tampered["silicon_id_expected"] = 0
+    profiles.store.atomic_write_yaml(
+        profiles.store.layout.board_profile("bench_board"), tampered
+    )
+
+    with pytest.raises(ProfileError, match="identity fields do not match"):
+        profiles.load("bench_board", include_legacy=False)
+
+
+def test_generic_device_support_requires_captured_datasheet_evidence(tmp_path: Path) -> None:
+    profiles = repository(tmp_path, device_support_verifier=lambda *_args: None)
+    profiles.commit_core(profiles.stage_core(core_fields()))
+    source = {
+        "kind": "resolved_pack",
+        "support_id": "a" * 64,
+        "pack_id": "Vendor.Device_DFP",
+        "pack_filename": "device.pack",
+        "pack_sha256": "b" * 64,
+        "pdsc_device": "STM32L476RGTx",
+        "pyocd_target": "stm32l476rgtx",
+    }
+
+    with pytest.raises(ProfileError, match="requires captured datasheet"):
+        profiles.stage_optional("bench_board", {"device_support": source})
 
 
 def test_stale_optional_stage_cannot_overwrite_newer_commit(tmp_path: Path) -> None:

@@ -8,6 +8,7 @@ import pytest
 
 from pyocd_debug_mcp import server
 from pyocd_debug_mcp.firmstore.store import FirmStore
+from pyocd_debug_mcp.firmstore.profiles import ProfileRepository
 from pyocd_debug_mcp.guardrails.gate import GateManager
 from pyocd_debug_mcp.safety.map_build import (
     MapGeometry,
@@ -101,6 +102,35 @@ def test_public_refresh_schema_accepts_only_board_id() -> None:
             "allowed_ranges",
         )
     )
+
+
+def test_post_refresh_hook_associates_profile_with_canonical_map(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store = FirmStore(tmp_path)
+    profiles = ProfileRepository(store, legacy_board_dir=tmp_path / "legacy")
+    profiles.commit_core(
+        profiles.stage_core(
+            {
+                "board_id": "generic_board",
+                "display_name": "Generic board",
+                "mcu_part_number": "GENERIC-123",
+                "mcu_family": "generic",
+                "probe_family": "cmsis-dap",
+                "pyocd_target": "generic_123",
+            }
+        )
+    )
+    monkeypatch.setattr(server, "_firm_store", store)
+    monkeypatch.setattr(server, "_profile_repository", profiles)
+
+    server._restamp_after_refresh("generic_board", "map-digest", False)
+
+    refreshed = profiles.load("generic_board", include_legacy=False)
+    assert refreshed.safety_ref == ".firm/safety/generic_board/memory_map.yaml"
+    assert refreshed.mcu_part_number == "GENERIC-123"
+    assert refreshed.board.pyocd_target == "generic_123"
 
 
 def test_public_refresh_creates_first_map_as_the_only_safety_file(

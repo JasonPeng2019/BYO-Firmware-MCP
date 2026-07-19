@@ -37,17 +37,18 @@ physical handler lock and receives the same prerequisite refusal.
 adapters. Business rules live in their owning modules rather than in the
 composition root.
 
-Schema-v2 profiles in the selected project `.firm/boards/` root are the primary
+Profiles in the selected project `.firm/boards/` root are the primary
 normal-connection source. The checkout `boards/` directory is a read-only
-compatibility fallback. Fresh automatic setup is advertised only for catalog
-entries with a pinned official datasheet, a distinct pinned device-support
-document, and exact installed pyOCD target/SVD identities. It recomputes every
-hash, parses both authorities through the strict evidence schema, and persists
-only regions accepted by deterministic two-source reconciliation. An empty or
-drifted pin fails closed. Live silicon reads and the user-supplied datasheet
-bytes are required before committing a profile or safety
-baseline. Validation promotes the exact live connection; no pseudo-connection
-stamp can satisfy the readiness barrier.
+compatibility fallback. Fresh setup accepts an exact MCU ordering code and local
+PDF without requiring a checked-in board record. It first replays verified
+repository/project support. If none exists, it issues a bounded research request
+for one official CMSIS-Pack; the server quarantines and hashes the bytes, bounds
+archive/XML parsing, proves the exact PDSC leaf, derives the pyOCD target, loads
+only that pack, and performs a non-destructive live attach before promotion.
+Agent strings and the project manifest are indices, not authority. Every later
+load re-hashes the pack and datasheet and replays the exact binding. Validation
+promotes only the exact live connection; no pseudo-connection stamp can satisfy
+the readiness barrier.
 
 The kernel provides the protocol and lifecycle boundary:
 
@@ -138,13 +139,15 @@ metadata; it never accepts caller-provided ranges. HEX bytes must agree with a
 matching ELF companion. `safety/verify2.py` promotes only deterministically
 reconciled device-support and official-document facts.
 
-The sole persisted authority is each board's schema-v2 `memory_map.yaml`. Its
-semantic source digests cover the profile, reviewed device support, reviewed
-official evidence/partition policy, and map-generator schema. Ordinary build
-artifacts are not stable-map currentness inputs. `board_safety_refresh`
-rederives the complete map from server-owned sources, can create the first map,
-and can update only the map association of an existing same-connection identity
-proof. It cannot create live identity authority.
+The sole persisted authority is each board's `memory_map.yaml`: schema v2 for
+reviewed compatibility profiles and schema v3 for dynamically resolved support.
+Semantic source digests cover the profile, replayed support bytes/binding,
+captured datasheet evidence, deployment policy, and map-generator schema.
+Ordinary build artifacts are not stable-map currentness inputs.
+`board_safety_refresh` rederives the complete map from those server-owned
+sources, can create the first map, and can update only the map association of an
+existing same-connection identity proof. It cannot create live identity
+authority.
 
 The resulting action policy is:
 
@@ -152,8 +155,11 @@ The resulting action policy is:
 - memory writes are fully contained in RAM;
 - peripheral register writes exclude prohibited ranges;
 - breakpoints require executable segments from the current plan-bound ELF;
-- application and bootloader flash require explicit reviewed partition authority
-  plus target, segment, entry/vector, and erase-sector containment; and
+- application and bootloader flash require explicit deployment authority plus
+  target, segment, entry/vector, and erase-sector containment. A generic board may acquire or
+  monotonically expand a server-derived application allocation under an approved artifact-bound
+  plan and bounded sector-driver proof; existing bytes inside that envelope may be replaced without
+  requiring a whole-device blank state; and
 - target recovery uses a typed mechanism, complete disclosure, a fixed one-call
   plan, and fresh one-time permission, then clears live proof.
 
@@ -171,10 +177,11 @@ reintroduce the removed public override channel.
 ## Setup and agent relay boundary
 
 Setup deterministically inventories probes, serial ports, cache matches,
-targets, and builds before requesting research. Unknown facts are returned as
-strict research requests; blocked physical conditions are not mislabeled as
-research. Candidate replies must contain exactly the requested fields and
-cannot alter the exact user-supplied MCU part number.
+targets, builds, and exact verified pack bindings before requesting research.
+Unknown facts are returned as strict research requests; blocked physical
+conditions are not mislabeled as research. Candidate replies contain only an
+official pack source record and cannot alter the exact user-supplied MCU part
+number or choose the target, geometry, identity evidence, or partitions.
 
 `setup_overview` is the entry adapter between ordinary familiar board names and
 internal profile/connection routing. The normalized `no board` sentinel is
@@ -188,8 +195,12 @@ selectors. `continue_setup` is the reverse adapter
 for one friendly choice or strict research response. It is scoped to the live
 board continuation, grants no authority, and feeds the accepted selection or
 target into the paired repair attempt. Pack candidates are staged under the
-project `.firm` root, checked, enumerated, live-connected, and only then added
-to the authoritative project manifest.
+project `.firm` root, archive-bounded, exact-leaf checked, enumerated,
+live-connected, and only then added through a serialized project-index update.
+The exact validated payload is rebound before publication, and the checkout
+pack registry is never a runtime write target. Successful attach
+mode/frequency is a board fact discovered by a bounded generic fallback and is
+reported and persisted rather than inherited from another board.
 
 `get_setup_status` is the explicit pre-code barrier. It reports configuration,
 live identity/map readiness, and UART attachment readiness separately. Native
@@ -197,24 +208,34 @@ build and artifact-collector guidance is advisory only. The normal deployment
 flow is build, optional collection, populated flash plan, then flash; routine
 build bytes do not enter stable-map currentness.
 
-Safety authority is one strict schema-v2 `memory_map.yaml` per board. It stores
-reviewed identity, semantic source digests, geometry, explicit deployment
-partitions, and reconciled regions. Application and bootloader partitions exist
-only when an explicit reviewed partition policy authorizes them; the historical
-full-flash ceiling is never reinterpreted as partition authority. Legacy source
+Safety authority is one strict `memory_map.yaml` per board. A schema-v3 generic
+map stores resolved-support identity, semantic evidence digests, conservative
+physical geometry, nullable partitions, and a closed deployment policy. Its
+initial policy is `none`; the mere existence of physical flash never grants
+deployment ownership. Separate pack RAM/ROM/flash ranges and optional SVD peripheral blocks are
+retained without joining gaps. Exact or compatible live identity permits artifact-contained
+application programming; bootloader/recovery authority remains separate. Status exposes both
+identity capability and flash-planning readiness. A new or expanded generic allocation is persisted
+before programming so a partial failure remains inside a durable owner. Schema-v2 reviewed application and bootloader partitions
+exist only when an explicit reviewed partition policy authorizes them; the
+historical full-flash ceiling is never reinterpreted as partition authority. Legacy source
 manifest and safety report siblings are deleted during map load/commit and are
 never read.
 
 `board_safety_refresh` accepts only a board ID and rederives a complete candidate
-from the profile and server-owned reviewed catalog/evidence on every call. The
-missing, malformed, and old-schema paths use the same derivation. Refresh can
+from the profile and replayed server-owned evidence on every call. The
+missing, malformed, and old-schema paths use the same derivation for compatibility maps. A
+present but unreadable generic map is not replaced because it may contain one-way deployment
+ownership that cannot be reconstructed safely. Refresh can
 replace the map association of existing live identity proof, but cannot create
 identity authority. An identity-anchor change closes the proof and requires
 `board_validate`; public `board_safety_setup` is retired.
 
-Validation connects through the selected probe, reads only reviewed silicon
-identity evidence, associates the current map digest, and stamps run-scoped gate
-state. It performs no UART capture or firmware behavior assertion. Identity
+Validation connects through the selected probe, reads only replayed exact or
+compatible identity evidence, associates the current map digest, and stamps
+run-scoped gate state. When a pack exposes no safe identity proof it may prove
+connection diagnostics, but cannot stamp the gate. It performs no UART capture
+or firmware behavior assertion. Identity
 proof is cleared by restart, disconnect, connection/probe change, identity
 repair, and recovery, but not by reset, flash, UART work, or refresh. Silicon
 mismatch guidance is neutral and an exact run-scoped allowance is required
@@ -253,17 +274,20 @@ implementations.
 ```text
 .firm/
   boards/       schema-v2 board profiles
-  packs/        authoritative pack manifest and downloaded files
+  packs/        promoted support index and exact quarantined pack bytes
+  evidence/     content-addressed captured datasheet bytes
   setup/        immutable setup attempts and append-only logs
-  safety/       one schema-v2 memory_map.yaml per board
+  safety/       one schema-v2 or schema-v3 memory_map.yaml per board
   validation/   immutable validation and recovery attempts
   cache/        revocable host attachment hints
 ```
 
 Writes are project-local, atomic, and checked for authority-bearing keys.
 Profiles preserve the exact user-supplied MCU part number and Unicode display
-name. Pack identity belongs to `packs/manifest.yaml`, not profiles. Cache
-records contain only stable attachment hints.
+name. The project pack manifest indexes exact immutable bytes and server-derived
+bindings; every load replays those bytes rather than trusting manifest claims.
+Profiles bind the resulting canonical support ID, not an agent path or target
+proposal. Cache records contain only stable attachment hints.
 
 The following are deliberately never persisted: live connections and
 assignments, active plans and remaining budgets, permissions, unlocked tools,
@@ -318,11 +342,13 @@ build output can enter through the same visible collector.
 ## Target and host de-biasing boundaries
 
 Reviewed board identities, parts, geometry, attach facts, and evidence hashes
-live in the packaged `setup_flow/reviewed_boards.json` data resource. Production
-setup code validates that schema and contains no branches for a particular board
-name or memory address. Missing read/attach/recovery facts remain missing; no MCU
-prefix invents them. Validation refuses missing safe-read evidence before a
-backend connection and names setup repair as the remedy.
+remain in packaged `setup_flow/reviewed_boards.json` only for compatibility.
+Generic onboarding instead derives exact target/core/physical memory/flash
+algorithm facts from the verified PDSC leaf and records actual probe/attach
+facts from the live setup transaction. Production setup code contains no
+branches for a particular board name or device address. Missing identity,
+peripheral, erase, deployment, or recovery facts remain missing; no MCU prefix
+invents them. Capability-specific operations then refuse before backend access.
 
 Serial association uses stable USB identity and generic metadata scoring first.
 Optional vendor helpers are selected from the packaged

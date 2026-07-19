@@ -9,7 +9,7 @@ import threading
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
-from typing import Any
+from typing import Any, Callable
 
 FIRMSTORE_DIRNAME = ".firm"
 
@@ -125,6 +125,19 @@ class FirmLayout:
     def cache_artifact(self, name: str) -> Path:
         return self.cache / _safe_component(name, "cache artifact name")
 
+    def datasheet_evidence(self, sha256: str) -> Path:
+        digest = _safe_component(sha256, "datasheet digest")
+        if len(digest) != 64 or any(character not in "0123456789abcdef" for character in digest):
+            raise FirmStoreError("datasheet digest must be a lowercase SHA-256")
+        return self.root / "evidence" / "datasheets" / f"{digest}.pdf"
+
+    def datasheet_reference(self, sha256: str) -> PurePosixPath:
+        """Return the canonical project-relative reference for captured PDF bytes."""
+
+        return PurePosixPath(
+            self.datasheet_evidence(sha256).relative_to(self.project_root).as_posix()
+        )
+
     @property
     def pack_files(self) -> Path:
         return self.packs / "files"
@@ -133,7 +146,7 @@ class FirmLayout:
     def pack_manifest(self) -> Path:
         """Return the sole project-owned device-support metadata manifest."""
 
-        return self.project_root / "packs" / "manifest.yaml"
+        return self.packs / "manifest.yaml"
 
 
 class FirmStore:
@@ -233,10 +246,11 @@ class FirmStore:
         return destination
 
     def atomic_write_pack_manifest(self, document: Mapping[str, Any]) -> Path:
-        """Atomically replace the one manifest allowed outside ``.firm``.
+        """Atomically replace the project-local promoted-support index.
 
-        Package bytes remain under ``.firm/packs/files``; their durable metadata
-        has one authoritative owner at ``packs/manifest.yaml``.
+        Package bytes and their index both remain below ``.firm/packs``. The
+        checkout registry at ``packs/manifest.yaml`` is never a FirmStore write
+        target.
         """
 
         ensure_no_persisted_authority(document, location="pack manifest")
@@ -254,6 +268,15 @@ class FirmStore:
             return self._atomic_write_bytes(
                 self.layout.pack_manifest.resolve(), text.encode("utf-8")
             )
+
+    def update_pack_manifest(
+        self, update: Callable[[Path], Mapping[str, Any]]
+    ) -> Path:
+        """Serialize one manifest read/merge/write transaction in this server."""
+
+        with self._write_lock:
+            document = update(self.layout.pack_manifest)
+            return self.atomic_write_pack_manifest(document)
 
     def atomic_create_bytes(self, target: Path, payload: bytes) -> Path:
         """Atomically create an immutable artifact without replacing an existing file."""

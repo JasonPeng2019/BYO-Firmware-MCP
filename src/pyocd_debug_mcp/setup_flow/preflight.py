@@ -417,8 +417,9 @@ class PreflightEngine:
                     else "setup/ambiguous-exact-target"
                 ),
                 self._prompt(
-                    f"{qualifier} exact debug target was detected. Continue through the "
-                    "target-research phase; do not ask the user for a target identifier."
+                    f"{qualifier} exact verified device-support binding was detected. Research "
+                    "one official CMSIS-Pack for the immutable MCU part; the server will derive "
+                    "the target. Do not ask the user for a pack or target identifier."
                 ),
                 selected_probe=selected_probe,
                 selected_serial=selected_serial,

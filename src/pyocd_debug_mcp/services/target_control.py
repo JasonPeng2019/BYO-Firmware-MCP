@@ -36,6 +36,10 @@ def open_session(
     target: str | None = None,
     server_timeouts: ServerTimeoutConfig | None = None,
     connect_mode: str | None = None,
+    pack_path: Path | None = None,
+    pack_sha256: str | None = None,
+    pdsc_device: str | None = None,
+    frequency_hz: int | None = None,
 ) -> TargetSessionHandle:
     return _BACKEND.open(
         board=board,
@@ -43,6 +47,10 @@ def open_session(
         target=target,
         server_timeouts=server_timeouts,
         connect_mode=connect_mode,
+        pack_path=pack_path,
+        pack_sha256=pack_sha256,
+        pdsc_device=pdsc_device,
+        frequency_hz=frequency_hz,
     )
 
 
@@ -56,12 +64,18 @@ def connect_under_reset(
     unique_id: str | None = None,
     target: str | None = None,
     server_timeouts: ServerTimeoutConfig | None = None,
+    pack_path: Path | None = None,
+    pack_sha256: str | None = None,
+    pdsc_device: str | None = None,
 ) -> TargetSessionHandle:
     return _BACKEND.connect_under_reset(
         board=board,
         unique_id=unique_id,
         target=target,
         server_timeouts=server_timeouts,
+        pack_path=pack_path,
+        pack_sha256=pack_sha256,
+        pdsc_device=pdsc_device,
     )
 
 

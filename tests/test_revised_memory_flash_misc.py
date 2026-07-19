@@ -24,6 +24,12 @@ from pyocd_debug_mcp.services.session_runtime import (
     utc_now_text,
 )
 from pyocd_debug_mcp.services.symbols import ResolvedSymbol, find_symbols, resolve_symbol
+from pyocd_debug_mcp.safety.regions import (
+    ActionCategory,
+    AddressRange,
+    Allowed,
+    RegionKind,
+)
 from pyocd_debug_mcp.target_errors import SymbolLookupError
 from pyocd_debug_mcp.tools.breakpoints import (
     BreakpointToolServices,
@@ -445,6 +451,52 @@ def test_successful_application_flash_binds_symbols_but_bootloader_does_not(
         ("flash", artifact),
         ("bind", ("board_b", prepared)),
     ]
+
+
+def test_write_only_register_requires_full_mask_and_never_reads(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    allowed = Allowed(
+        ActionCategory.REGISTER_WRITE,
+        (AddressRange(0x40000000, 0x40000004),),
+        (RegionKind.PERIPHERAL_WRITE_ONLY,),
+    )
+    monkeypatch.setattr(
+        server,
+        "_safety_policy",
+        SimpleNamespace(check_register_write=lambda _board, _address: allowed),
+    )
+    writes: list[tuple[int, int, int]] = []
+    monkeypatch.setattr(server, "_handle", lambda _board: object())
+    monkeypatch.setattr(
+        server.target_control,
+        "read_memory",
+        lambda *_args: pytest.fail("write-only register must not be read"),
+    )
+    monkeypatch.setattr(
+        server.target_control,
+        "write_memory",
+        lambda _handle, address, value, width: writes.append((address, value, width)),
+    )
+    monkeypatch.setattr(
+        server,
+        "_run_logged_tool",
+        lambda _board, _tool, _args, operation: operation(),
+    )
+
+    with pytest.raises(server.PlanRefusal, match="require a full 32-bit mask"):
+        server._enforce_action_containment(
+            "register_write",
+            "board_b",
+            {"address": 0x40000000, "mask": 0xFF, "value": 0x12},
+        )
+
+    result = server._masked_register_write(
+        "board_b", 0x40000000, 0xFFFFFFFF, 0x12345678
+    )
+
+    assert "no preceding read" in result
+    assert writes == [(0x40000000, 0x12345678, 32)]
 
 
 def test_run_scoped_symbol_binding_verifies_current_elf_digest(tmp_path: Path) -> None:

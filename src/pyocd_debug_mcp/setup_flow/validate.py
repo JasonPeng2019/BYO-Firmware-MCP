@@ -183,6 +183,20 @@ def _prompt(message: str) -> str:
     return f"{message.strip()} {NO_INTERNALS_RELAY_INSTRUCTION}"
 
 
+def _stable_probe_identity_equal(left: str | None, right: str | None) -> bool:
+    if not left or not right:
+        return False
+    left_normalized = left.strip().casefold()
+    right_normalized = right.strip().casefold()
+    if left_normalized == right_normalized:
+        return True
+    if left_normalized.isdecimal() and right_normalized.isdecimal():
+        return (left_normalized.lstrip("0") or "0") == (
+            right_normalized.lstrip("0") or "0"
+        )
+    return False
+
+
 class BoardValidator:
     """Prove live silicon identity and associate one parsed safety map."""
 
@@ -291,25 +305,27 @@ class BoardValidator:
                     "validation/target-unavailable",
                     "The profile target is unavailable from built-in or pinned support.",
                 )
-            steps.append(ValidationStep(4, "Confirm reviewed target support", "passed"))
-
-            identity_address = profile.board.silicon_id_addr
-            identity_expected = profile.board.silicon_id_expected
-            identity_mask = profile.board.silicon_id_mask
-            identity_width = profile.board.silicon_id_width_bits
-            if identity_address is None or identity_expected is None or identity_mask is None:
-                raise ValidationBackendError(
-                    "validation_blocked",
-                    "validation/live-identity-evidence-missing",
-                    "Reviewed live silicon-identity evidence is unavailable for this board. "
-                    "Validation cannot stamp a gate until maintainers add that evidence.",
-                )
+            steps.append(ValidationStep(4, "Confirm verified target support", "passed"))
 
             connection = self._backend.connect(
                 profile, selected_probe, self._step_timeout_seconds
             )
             self._cancellation_checkpoint()
             steps.append(ValidationStep(5, "Connect without target mutation", "passed"))
+
+            identity_address = profile.board.silicon_id_addr
+            identity_expected = profile.board.silicon_id_expected
+            identity_mask = profile.board.silicon_id_mask
+            identity_width = profile.board.silicon_id_width_bits
+            if identity_address is None or identity_expected is None or identity_mask is None:
+                observed["capability_level"] = "connected_diagnostics_only"
+                raise ValidationBackendError(
+                    "validation_blocked",
+                    "validation/live-identity-evidence-missing",
+                    "Live attach succeeded, but replayable silicon-identity evidence is "
+                    "unavailable. Setup may retain diagnostics-only configuration; validation "
+                    "cannot stamp a gate or enable mutation.",
+                )
 
             actual = self._backend.read_memory(
                 connection,
@@ -488,7 +504,15 @@ class BoardValidator:
                 "validation/no-probe",
                 "No compatible debug probe is currently visible.",
             )
-        selected = next((probe for probe in compatible if probe.probe_id == selected_id), None)
+        selected = next(
+            (
+                probe
+                for probe in compatible
+                if _stable_probe_identity_equal(probe.probe_id, selected_id)
+                or _stable_probe_identity_equal(probe.usb_serial, selected_id)
+            ),
+            None,
+        )
         if selected_id is not None and selected is None:
             return compatible[0], tuple(probe.choice() for probe in compatible)
         if selected is not None:

@@ -56,6 +56,7 @@ _OPTIONAL_FIELDS = frozenset(
         "silicon_id_width_bits",
         "silicon_id_label",
         "datasheet_sha256",
+        "datasheet_ref",
         "expected_uart_substring",
         "debug_connect_mode",
         "debug_clock_hz",
@@ -70,6 +71,7 @@ _PROFILE_METADATA_FIELDS = frozenset(
         "updated_at",
         "safety_ref",
         "datasheet_sha256",
+        "datasheet_ref",
         "device_support",
     }
 )
@@ -107,7 +109,7 @@ _DEVICE_SUPPORT_FIELDS = frozenset(
     }
 )
 
-DeviceSupportVerifier = Callable[[str, str, Mapping[str, str]], None]
+DeviceSupportVerifier = Callable[[str, BoardConfig, Mapping[str, str]], None]
 
 
 class ProfileError(ConfigError):
@@ -198,21 +200,51 @@ def _validate_device_support(value: object) -> dict[str, str] | None:
 
 def _verify_registered_device_support(
     mcu_part_number: str,
-    pyocd_target: str,
+    board: BoardConfig,
     source: Mapping[str, str],
+    *,
+    store: FirmStore | None = None,
 ) -> None:
     """Require a persisted generic source to replay to immutable registry bytes."""
 
     try:
-        from pyocd_debug_mcp.setup_flow.device_support import resolve_registered_pack_support
+        from pyocd_debug_mcp.setup_flow.device_support import (
+            resolve_persisted_pack_support,
+            resolve_registered_pack_support,
+        )
 
-        expected = resolve_registered_pack_support(mcu_part_number).to_authority_document()
+        candidate = (
+            resolve_registered_pack_support(mcu_part_number)
+            if store is None
+            else resolve_persisted_pack_support(store, mcu_part_number, source)
+        )
+        expected = candidate.to_authority_document()
     except Exception as exc:  # noqa: BLE001 - profile authority must fail closed
-        raise ProfileError(f"device_support cannot be resolved from the server registry: {exc}") from exc
-    if expected["pyocd_target"].casefold() != pyocd_target.casefold():
+        raise ProfileError(f"device_support cannot be replayed from verified support: {exc}") from exc
+    if expected["pyocd_target"].casefold() != board.pyocd_target.casefold():
         raise ProfileError("device_support target does not match the profile target")
     if dict(source) != expected:
-        raise ProfileError("device_support does not match the current server registry binding")
+        raise ProfileError("device_support does not match the current verified binding")
+    proof = candidate.identity_proof
+    actual_identity = (
+        board.silicon_id_addr,
+        board.silicon_id_expected,
+        board.silicon_id_mask,
+    )
+    if proof is None:
+        if actual_identity != (None, None, None):
+            raise ProfileError(
+                "profile identity fields exist without verified device-support evidence"
+            )
+    elif (
+        actual_identity
+        != (proof.address, proof.expected, proof.mask)
+        or board.silicon_id_width_bits != proof.width_bits
+        or board.silicon_id_label != proof.label
+    ):
+        raise ProfileError(
+            "profile identity fields do not match verified device-support evidence"
+        )
 
 
 def _validate_safety_ref(value: object, expected_prefix: PurePosixPath) -> str | None:
@@ -288,7 +320,11 @@ class ProfileRepository:
             if legacy_board_dir is not None
             else store.layout.project_root / "boards"
         )
-        self._device_support_verifier = device_support_verifier or _verify_registered_device_support
+        self._device_support_verifier = device_support_verifier or (
+            lambda part, board, source: _verify_registered_device_support(
+                part, board, source, store=self.store
+            )
+        )
         self._commit_lock = threading.RLock()
 
     def _v2_paths(self) -> list[Path]:
@@ -328,7 +364,28 @@ class ProfileRepository:
             or re.fullmatch(r"[0-9a-f]{64}", datasheet_sha256) is None
         ):
             raise ProfileError("datasheet_sha256 must be a lowercase SHA-256 digest")
+        datasheet_ref = document.get("datasheet_ref")
+        if datasheet_ref is not None:
+            if not isinstance(datasheet_ref, str) or datasheet_sha256 is None:
+                raise ProfileError("datasheet_ref requires text and datasheet_sha256")
+            expected = self.store.layout.datasheet_reference(datasheet_sha256)
+            if PurePosixPath(datasheet_ref) != expected:
+                raise ProfileError("datasheet_ref must be the canonical captured evidence path")
+            try:
+                from pyocd_debug_mcp.setup_flow.datasheet_evidence import (
+                    replay_datasheet_evidence,
+                )
+
+                replay_datasheet_evidence(self.store, datasheet_ref, datasheet_sha256)
+            except Exception as exc:  # noqa: BLE001 - evidence replay must fail closed
+                raise ProfileError(f"datasheet evidence replay failed: {exc}") from exc
         device_support = _validate_device_support(document.get("device_support"))
+        if device_support is not None and (
+            datasheet_sha256 is None or datasheet_ref is None
+        ):
+            raise ProfileError(
+                "generic device_support requires captured datasheet_sha256 and datasheet_ref"
+            )
         created_at = _validate_absolute_timestamp(document.get("created_at"), "created_at")
         updated_at = _validate_absolute_timestamp(document.get("updated_at"), "updated_at")
 
@@ -337,7 +394,7 @@ class ProfileRepository:
         }
         board = _make_profile_board(board_document, path)
         if device_support is not None:
-            self._device_support_verifier(part_number, board.pyocd_target, device_support)
+            self._device_support_verifier(part_number, board, device_support)
         safety_ref = _validate_safety_ref(
             document.get("safety_ref"),
             self.store.layout.safety_reference_prefix(board_id),
@@ -480,7 +537,6 @@ class ProfileRepository:
         document["created_at"] = now
         document["updated_at"] = now
         document.setdefault("probe_type", board.probe_type)
-        document.setdefault("serial_baudrate", board.default_baudrate)
         document.setdefault("probe_hint_terms", list(board.probe_hint_terms))
         document.setdefault("serial_hint_terms", list(board.serial_hint_terms))
         document.setdefault("requires_recover_validation", board.requires_recover_validation)

@@ -37,6 +37,9 @@ class FlashToolServices:
     validate_flash: Callable[[str, str, Path], None] | None = None
     prepare_symbol_artifact: Callable[[str, str, Path], object] | None = None
     bind_symbol_artifact: Callable[[str, object], None] | None = None
+    prepare_generic_allocation: Callable[[str, str, Path, Any], object | None] | None = None
+    commit_generic_allocation: Callable[[str, object], None] | None = None
+    clear_generic_allocation: Callable[[str], None] | None = None
 
 
 def build_flash_handlers(
@@ -72,17 +75,31 @@ def build_flash_handlers(
                 )
         pending = services.maybe_handle_for(board_id)
         symbol_binding: object | None = None
+        generic_allocation: object | None = None
         try:
             context = services.action_context(tool_name, board_id)
             request = services.resolve_request(pending, artifact, context)
             args.update(request.identity.as_log_fields())
             if services.validate_flash is not None:
                 services.validate_flash(tool_name, board_id, request.artifact_path)
+            if services.prepare_generic_allocation is not None:
+                generic_allocation = services.prepare_generic_allocation(
+                    tool_name, board_id, request.artifact_path, pending
+                )
             if tool_name == "flash_application" and services.prepare_symbol_artifact is not None:
                 symbol_binding = services.prepare_symbol_artifact(
                     tool_name, board_id, request.artifact_path
                 )
             handle = services.handle_for(board_id)
+            if (
+                generic_allocation is not None
+                and services.commit_generic_allocation is not None
+            ):
+                # Persist the one-way ownership boundary before hardware
+                # mutation. If programming then fails, keeping that narrow
+                # allocation is safer than leaving partially written flash
+                # with no durable owner and still permits an in-range retry.
+                services.commit_generic_allocation(board_id, generic_allocation)
             operation = current_operation()
             if operation is not None:
                 operation.begin_non_interruptible()
@@ -90,6 +107,8 @@ def build_flash_handlers(
             if symbol_binding is not None and services.bind_symbol_artifact is not None:
                 services.bind_symbol_artifact(board_id, symbol_binding)
         except PolicyRefusal as refusal:
+            if services.clear_generic_allocation is not None:
+                services.clear_generic_allocation(board_id)
             event = services.record_event(
                 tool_name,
                 args,
@@ -109,6 +128,8 @@ def build_flash_handlers(
                 )
             )
         except Exception as exc:
+            if services.clear_generic_allocation is not None:
+                services.clear_generic_allocation(board_id)
             event = services.record_event(
                 tool_name,
                 args,

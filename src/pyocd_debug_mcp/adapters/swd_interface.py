@@ -34,8 +34,12 @@ class SWDInterface(ABC):
         target: str | None,
         server_timeouts: ServerTimeoutConfig | None = None,
         connect_mode: str | None = None,
+        pack_path: Path | None = None,
+        pack_sha256: str | None = None,
+        pdsc_device: str | None = None,
+        frequency_hz: int | None = None,
     ) -> TargetSessionHandle:
-        """Open a live debug session for the requested board or raw target."""
+        """Open a live debug session, optionally with one quarantined pack candidate."""
 
     @abstractmethod
     def close(self, handle: TargetSessionHandle) -> None:
@@ -49,6 +53,9 @@ class SWDInterface(ABC):
         unique_id: str | None,
         target: str | None,
         server_timeouts: ServerTimeoutConfig | None = None,
+        pack_path: Path | None = None,
+        pack_sha256: str | None = None,
+        pdsc_device: str | None = None,
     ) -> TargetSessionHandle:
         """Assert physical reset, attach and halt, then release reset."""
 

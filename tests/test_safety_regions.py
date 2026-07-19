@@ -149,9 +149,13 @@ def test_build_partition_is_more_specific_than_physical_flash() -> None:
     [
         (ActionCategory.MEMORY_READ, RegionKind.RAM, True),
         (ActionCategory.MEMORY_READ, RegionKind.ROM_BOOTLOADER, True),
+        (ActionCategory.MEMORY_READ, RegionKind.PERIPHERAL_READ_ONLY, True),
+        (ActionCategory.MEMORY_READ, RegionKind.PERIPHERAL_WRITE_ONLY, False),
         (ActionCategory.MEMORY_WRITE, RegionKind.RAM, True),
         (ActionCategory.MEMORY_WRITE, RegionKind.PHYSICAL_RAM, False),
         (ActionCategory.REGISTER_WRITE, RegionKind.PERIPHERAL, True),
+        (ActionCategory.REGISTER_WRITE, RegionKind.PERIPHERAL_READ_ONLY, False),
+        (ActionCategory.REGISTER_WRITE, RegionKind.PERIPHERAL_WRITE_ONLY, True),
         (ActionCategory.REGISTER_WRITE, RegionKind.CPU_SYSTEM, False),
         (ActionCategory.FLASH_APPLICATION, RegionKind.APPLICATION_FLASH, True),
         (ActionCategory.FLASH_APPLICATION, RegionKind.BOOTLOADER_FLASH, False),

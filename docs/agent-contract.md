@@ -13,8 +13,9 @@ single-child `action_batch` fallback returned by an accepted plan, unchanged.
 That fallback is transport compatibility, not authority. Visibility is
 advisory; every action still has a physical handler lock.
 
-Ask the user in ordinary language for one familiar name per connected board,
-or “no board.” Do not ask for board IDs, connection IDs, continuation tokens,
+Ask the user in ordinary language for one familiar name per board they want to
+use in the current project, or “no board.” Other visible debug probes may remain
+unassigned. Do not ask for board IDs, connection IDs, continuation tokens,
 permission enum values, or structured payloads. Never silently select, rename,
 reassign, or rewrite a profile.
 
@@ -101,8 +102,12 @@ before loading it and before any other `*-plan` tool. Ask for the familiar
 board name and exact board/MCU identity. Every matching YAML routes first to
 `board_validate`; an absent profile or a specific validation remedy routes
 through `load_setup_tool` and setup/repair. Fresh setup also requires a local
-authoritative PDF datasheet. Supply its digest only as an optional cross-check;
-the server computes and records the authoritative SHA-256. Select UART by the
+official PDF datasheet and exact MCU ordering code. Supply its digest only as an
+optional cross-check; the server computes the authoritative SHA-256 and captures
+the exact bytes. Do not ask the user for a CMSIS-Pack filename or pyOCD target.
+If no exact local support exists, research one official pack and return only the
+exact response fields; the server derives and verifies the leaf and target.
+Select UART by the
 stable identity returned by inventory, not by a volatile COM/device path. The server
 inventories probes, serial ports, cache matches, targets, and builds before it
 requests research. Relay only the supplied `agent_prompt` and friendly
@@ -116,7 +121,8 @@ does not grant permission, open a gate, or persist a candidate.
 When setup returns `setup_needs_user_input` or `setup_research_required`, call
 `continue_setup` with the same board and continuation plus exactly the returned
 response object. For a friendly choice this is only one returned `choice_id`.
-For target/pack research it is the exact official-source schema. After an
+For pack research it is the exact official-source schema; never add a proposed
+target, address, mask, region, or partition. After an
 accepted continuation, call `board_fix_setup` under the still-active paired
 allowance. Never retry `board_setup` or bypass the continuation by editing
 `.firm`.
@@ -148,15 +154,19 @@ Validation has exactly six results:
 - `validation_incomplete`
 
 Only `validation_passed` can stamp the current in-memory gate. Validation proves
-the selected probe connection, reviewed live silicon identity, and association
-with the current map. It never captures UART or asserts firmware behavior; use
+the selected probe connection, replayed exact or explicitly compatible live
+identity evidence, and association with the current map. Support without a safe
+identity proof remains connected-diagnostics-only. It never captures UART or asserts firmware behavior; use
 `get_setup_status.ready_for_uart_work` for current attachment readiness. A
+compatible core proof permits bounded read/debug and artifact-contained application programming,
+but not bootloader or recovery authority; inspect `identity_capability` and
+`ready_for_flash_planning` before deployment. A
 silicon mismatch must not rewrite the profile. Setup, refresh, reports, cache
 hits, or a prior validation result do not open a gate.
 
 ## Safety and remedies
 
-Never supply allowed ranges. Stable authority comes from the one reviewed
+Never supply allowed ranges. Stable authority comes from the one strict
 `memory_map.yaml`; selected ELF/HEX bytes are checked again at execution time.
 Guarded reads require current board validation. Writes additionally require a
 live identity proof associated with the current canonical map digest. UNKNOWN
@@ -166,8 +176,8 @@ deliberately prohibited security/provisioning range into ordinary memory.
 Follow the exact remedy named in a refusal:
 
 - `board_safety_refresh` deterministically rebuilds the complete map from the
-  profile plus server-owned reviewed catalog/evidence, including when the map
-  is missing, malformed, or old; and
+    profile plus replayed server-owned evidence. A present unreadable generic map
+    refuses replacement because possible one-way deployment ownership cannot be recovered; and
 - `board_validate` establishes live identity proof and map association when it
   is absent or an identity anchor changed.
 
@@ -189,7 +199,13 @@ For firmware, use the exact general native-build helper argv template returned b
 action. Do not refresh merely because build bytes changed. Plan acceptance
 binds the selected artifact digest. Before backend mutation, execution verifies
 that digest and checks ELF/HEX target, load segments, entry point, vector table,
-reviewed deployment partition, and erase sectors. HEX requires a matching ELF
+deployment allocation/partition, and erase sectors. A new generic board begins
+with no deployment authority. An approved plan-bound application flash creates a minimal
+artifact-derived allocation, or monotonically expands it for a larger artifact, after the server
+proves the pack driver is sector-bounded. Existing bytes in those sectors may be replaced; the whole
+device need not be blank. The allocation is persisted before programming so a failed or partial
+flash never leaves modified bytes without durable ownership.
+HEX requires a matching ELF
 companion. Do not rebuild the selected output concurrently after execution
 starts.
 

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -262,6 +263,36 @@ def test_adapter_open_raises_probe_not_found_when_no_probe_matches(monkeypatch) 
         adapter.open(board=None, unique_id="missing", target="stm32l476rgtx")
 
 
+def test_quarantined_pack_digest_drift_refuses_before_probe_open(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    candidate = tmp_path / "candidate.pack"
+    candidate.write_bytes(b"changed candidate bytes")
+    opened = False
+
+    def choose(**_kwargs: object) -> object:
+        nonlocal opened
+        opened = True
+        raise AssertionError("probe selection must not run for changed pack bytes")
+
+    monkeypatch.setattr(
+        swd_pyocd.ConnectHelper,
+        "session_with_chosen_probe",
+        staticmethod(choose),
+    )
+
+    with pytest.raises(TargetConnectionError, match="changed before the live attach"):
+        swd_pyocd.PyOCDSWDInterface().open(
+            board=None,
+            unique_id="probe-1",
+            target="candidate",
+            pack_path=candidate,
+            pack_sha256="0" * 64,
+        )
+
+    assert opened is False
+
+
 def test_validation_attach_mode_overrides_board_under_reset_default(monkeypatch) -> None:
     board = BoardConfig(
         board_id="nucleo_l476rg",
@@ -311,7 +342,7 @@ def test_validation_attach_mode_overrides_board_under_reset_default(monkeypatch)
     assert calls[0]["options"]["connect_mode"] == "attach"  # type: ignore[index]
 
 
-def test_adapter_closes_if_global_target_came_from_different_pack(
+def test_adapter_temporarily_scopes_duplicate_target_to_selected_pack(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     calls: list[str] = []
@@ -321,7 +352,9 @@ def test_adapter_closes_if_global_target_came_from_different_pack(
 
     class FakeSession:
         probe = FakeProbe()
-        target = object()
+
+        def __init__(self, target: object) -> None:
+            self.target = target
 
         def open(self) -> None:
             calls.append("open")
@@ -333,32 +366,44 @@ def test_adapter_closes_if_global_target_came_from_different_pack(
         path = tmp_path / "selected.pack"
 
     class PackObject:
-        devices = [object()]
+        device = SimpleNamespace(part_number="ScopedTarget", vendor="", families=[])
+        collision = SimpleNamespace(part_number="Scoped-Target", vendor="", families=[])
+        sibling = SimpleNamespace(part_number="SiblingTarget", vendor="", families=[])
+        devices = [collision, device, sibling]
 
     chosen: list[dict[str, object] | None] = []
 
     def choose(**kwargs: object) -> object:
         options = kwargs.get("options")
         chosen.append(options if isinstance(options, dict) else None)
-        return FakeSession()
+        swd_pyocd.TARGET["siblingtarget"] = type("LeakedSibling", (), {})
+        target_class = swd_pyocd.TARGET["scopedtarget"]
+        return FakeSession(object.__new__(target_class))
 
     monkeypatch.setattr(
         swd_pyocd.ConnectHelper, "session_with_chosen_probe", staticmethod(choose)
     )
     monkeypatch.setattr(swd_pyocd, "verified_pack_for_target", lambda _target: SelectedPack())
     monkeypatch.setattr(swd_pyocd, "_cmsis_pack_for", lambda _selected: PackObject())
+    previous = type("PreviouslyRegisteredTarget", (), {})
+    monkeypatch.setitem(swd_pyocd.TARGET, "scopedtarget", previous)
 
-    with pytest.raises(TargetConnectionError, match="different device pack"):
-        swd_pyocd.PyOCDSWDInterface().open(
-            board=None, unique_id="probe-1", target="stm32l476rgtx"
-        )
+    handle = swd_pyocd.PyOCDSWDInterface().open(
+        board=None,
+        unique_id="probe-1",
+        target="scopedtarget",
+        pdsc_device="ScopedTarget",
+    )
 
+    assert handle.probe_uid == "probe-1"
+    assert swd_pyocd.TARGET["scopedtarget"] is previous
+    assert "siblingtarget" not in swd_pyocd.TARGET
     assert chosen[0] is not None
     selected = chosen[0]["pack"]
     assert isinstance(selected, list)
     assert len(selected) == 1
     assert isinstance(selected[0], PackObject)
-    assert calls == ["close"]
+    assert calls == ["open"]
 
 
 def test_adapter_uses_promoted_project_pack_manifest(
@@ -369,14 +414,14 @@ def test_adapter_uses_promoted_project_pack_manifest(
     store = FirmStore(tmp_path)
     pack_path = store.layout.pack_files / "promoted.pack"
     store.atomic_write_bytes(pack_path, payload)
-    store.layout.pack_manifest.parent.mkdir(parents=True)
+    store.layout.pack_manifest.parent.mkdir(parents=True, exist_ok=True)
     store.layout.pack_manifest.write_text(
         "packs:\n"
         "  - id: Test.Promoted\n"
         "    filename: promoted.pack\n"
         "    url: https://example.invalid/promoted.pack\n"
         f"    sha256: {digest}\n"
-        "    provides_targets: [promoted_target]\n"
+        "    provides_targets: [stm32l476rctx]\n"
         "    needed_by_boards: [promoted_board]\n",
         encoding="utf-8",
     )
@@ -393,7 +438,9 @@ def test_adapter_uses_promoted_project_pack_manifest(
         selected_options.append(options)
         packs = options["pack"]
         assert isinstance(packs, list) and len(packs) == 1
-        source = packs[0].devices[0]  # type: ignore[attr-defined]
+        source = next(  # type: ignore[attr-defined]
+            device for device in packs[0].devices if device.part_number == "STM32L476RCTx"
+        )
         target_type = type("PromotedTarget", (), {"_pack_device": source})
         return type(
             "PromotedSession",
@@ -411,10 +458,10 @@ def test_adapter_uses_promoted_project_pack_manifest(
     )
 
     handle = swd_pyocd.PyOCDSWDInterface().open(
-        board=None, unique_id="probe-1", target="promoted_target"
+        board=None, unique_id="probe-1", target="stm32l476rctx"
     )
 
-    assert handle.target_override == "promoted_target"
+    assert handle.target_override == "stm32l476rctx"
     assert len(selected_options[0]["pack"]) == 1  # type: ignore[arg-type]
 
 

@@ -99,6 +99,7 @@ def open_hooks(
     *,
     map_present: bool = True,
     map_consistent: bool = True,
+    expected_probe_id: str = "probe-a",
 ) -> ValidationHooks:
     def load(_profile):
         if events is not None:
@@ -120,7 +121,7 @@ def open_hooks(
     ) -> bool:
         assert board == "bench_board"
         assert validation_run.startswith("validation-")
-        assert probe_id == "probe-a"
+        assert probe_id == expected_probe_id
         assert probe is not None
         assert (observed_mcu, map_digest) == (
             "STM32 device-family identity 0x10016415",
@@ -349,9 +350,11 @@ def test_missing_live_identity_evidence_is_stamp_ineligible(tmp_path: Path) -> N
 
     assert result.status == "validation_blocked"
     assert result.code == "validation/live-identity-evidence-missing"
-    assert "maintainers" in result.agent_prompt
+    assert "diagnostics-only" in result.agent_prompt
+    assert result.observed["capability_level"] == "connected_diagnostics_only"
     assert "board_setup" not in result.agent_prompt
-    assert not any(call[0] == "connect" for call in backend.calls)
+    assert any(call[0] == "connect" for call in backend.calls)
+    assert any(call[0] == "close" for call in backend.calls)
     assert all(event[0] != "stamp" for event in events)
 
 
@@ -425,3 +428,28 @@ def test_probe_choice_retry_preserves_only_probe_selector(tmp_path: Path) -> Non
     passed = service.validate(ValidationRequest("bench_board", probe_id="probe-a"))
     assert passed.status == "validation_passed"
     assert passed.to_payload()["accepted_response"] is None
+
+
+def test_validation_accepts_server_issued_usb_serial_with_equivalent_format(
+    tmp_path: Path,
+) -> None:
+    profiles = repository(tmp_path)
+    backend = FakeBackend()
+    backend.inventory_value = ValidationInventory(
+        probes=(
+            ValidationProbe("backend-a", "First probe", "stlink", "000683377322"),
+            ValidationProbe("backend-b", "Second probe", "stlink", "OTHER"),
+        )
+    )
+
+    result = validator(
+        tmp_path,
+        profiles,
+        backend,
+        hooks=open_hooks(expected_probe_id="backend-a"),
+    ).validate(
+        ValidationRequest("bench_board", probe_id="683377322")
+    )
+
+    assert result.status == "validation_passed"
+    assert ("connect", "bench_board", "backend-a", 5.0) in backend.calls

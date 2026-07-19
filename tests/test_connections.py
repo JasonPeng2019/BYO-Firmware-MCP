@@ -448,6 +448,98 @@ async def test_public_connect_rejects_manual_override_fields_before_backend_disp
     assert calls == []
 
 
+def test_under_reset_replays_exact_profile_pack_and_pdsc_leaf(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    board = make_board_config(
+        {
+            "board_id": "generic_under_reset",
+            "display_name": "Generic Under Reset",
+            "mcu_family": "generic",
+            "probe_family": "cmsisdap",
+            "pyocd_target": "part123",
+        },
+        None,
+    )
+    profile = SimpleNamespace(
+        board=board,
+        device_support={"pdsc_device": "PART123"},
+    )
+    selected_pack = SimpleNamespace(
+        path=Path("exact.pack"), spec=SimpleNamespace(sha256="a" * 64)
+    )
+    calls: list[dict[str, object]] = []
+    handle = SimpleNamespace(probe_uid="probe-1", route_used="pyocd-native")
+    monkeypatch.setattr(server.connection_manager, "maybe_connection", lambda _board: None)
+    monkeypatch.setattr(server.connection_manager, "assign", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(server, "resolve_board_config", lambda *_args, **_kwargs: board)
+    monkeypatch.setattr(server, "_resolve_probe_uid_for_connect", lambda *_args: "probe-1")
+    monkeypatch.setattr(server._profile_repository, "load", lambda *_args, **_kwargs: profile)
+    monkeypatch.setattr(server, "_verified_pack_for_profile", lambda _profile: selected_pack)
+    monkeypatch.setattr(
+        server.target_control,
+        "connect_under_reset",
+        lambda **kwargs: calls.append(dict(kwargs)) or handle,
+    )
+    monkeypatch.setattr(server, "stable_connection_identity", lambda _handle: "connection-1")
+    monkeypatch.setattr(
+        server._session_store,
+        "start_session",
+        lambda **_kwargs: SimpleNamespace(session_id="session-1"),
+    )
+    monkeypatch.setattr(server.gate_manager, "clear", lambda *_args: None)
+    monkeypatch.setattr(server, "_record_event", lambda *_args, **_kwargs: None)
+
+    result = server._connect_under_reset_impl("generic_under_reset", "probe-1", None)
+
+    assert "Connected under physical reset" in result
+    assert calls[0]["target"] == "part123"
+    assert calls[0]["pack_path"] == selected_pack.path
+    assert calls[0]["pack_sha256"] == selected_pack.spec.sha256
+    assert calls[0]["pdsc_device"] == "PART123"
+
+
+def test_under_reset_rejects_generic_target_override_before_backend(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    board = make_board_config(
+        {
+            "board_id": "generic_under_reset",
+            "display_name": "Generic Under Reset",
+            "mcu_family": "generic",
+            "probe_family": "cmsisdap",
+            "pyocd_target": "part123",
+        },
+        None,
+    )
+    profile = SimpleNamespace(
+        board=board,
+        device_support={"pdsc_device": "PART123"},
+    )
+    calls: list[object] = []
+    monkeypatch.setattr(server.connection_manager, "maybe_connection", lambda _board: None)
+    monkeypatch.setattr(server, "resolve_board_config", lambda *_args, **_kwargs: board)
+    monkeypatch.setattr(server, "_resolve_probe_uid_for_connect", lambda *_args: "probe-1")
+    monkeypatch.setattr(server._profile_repository, "load", lambda *_args, **_kwargs: profile)
+    monkeypatch.setattr(
+        server,
+        "_verified_pack_for_profile",
+        lambda _profile: SimpleNamespace(
+            path=Path("exact.pack"), spec=SimpleNamespace(sha256="a" * 64)
+        ),
+    )
+    monkeypatch.setattr(
+        server.target_control,
+        "connect_under_reset",
+        lambda **kwargs: calls.append(kwargs),
+    )
+
+    with pytest.raises(ValueError, match="exact PDSC target"):
+        server._connect_under_reset_impl("generic_under_reset", "probe-1", "wrong")
+
+    assert calls == []
+
+
 @pytest.mark.asyncio
 async def test_live_connect_ap_failure_is_neutral_for_generic_and_jlink_retry_paths(
     monkeypatch: pytest.MonkeyPatch,

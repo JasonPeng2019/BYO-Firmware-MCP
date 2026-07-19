@@ -83,9 +83,10 @@ child name, edit fallback arguments, or combine a primary action with a paired r
 still passes through identical plan, permission, validation, gate, freshness, lock, timeout, budget,
 event, and cleanup checks.
 
-At startup, ask the user in ordinary conversation for one unique, familiar name for each
-connected board, or "no board". "no board" is a literal sentinel: pass it by itself, and treat it
-as never a candidate board name. If it is mixed with names, clarify the answer before routing.
+At startup, ask the user in ordinary conversation for one unique, familiar name for each board
+they want to use in this project now, or "no board". Other visible debug probes may remain
+unassigned. "no board" is a literal sentinel: pass it by itself, and treat it as never a candidate
+board name. If it is mixed with names, clarify the answer before routing.
 Never ask the user for structured data, board IDs, connection IDs, or permission values. Never
 expose structured payloads, continuation tokens, or internal field names to the user.
 

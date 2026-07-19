@@ -582,6 +582,44 @@ def test_public_setup_continuation_accepts_only_a_returned_friendly_choice(monke
     assert server._setup_selections_by_board.pop("nf_board").probe_id == "probe-a"
 
 
+def test_friendly_choice_continuation_rejects_pack_reply_before_side_effects(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    user_input = SetupUserInput("nf_board", "probe:x", "NF Board", "nRF52840", 115200)
+    decision = PreflightDecision(
+        "setup_needs_user_input",
+        "setup/probe-selection-required",
+        "Choose a probe.",
+        choices=(FriendlyChoice("probe-a", "Probe A", "First probe"),),
+    )
+    monkeypatch.setattr(
+        server._setup_workflow,
+        "continuation_context",
+        lambda _token: (user_input, "setup_needs_user_input", decision),
+    )
+    monkeypatch.setattr(
+        server,
+        "_setup_pack_pipeline",
+        lambda *_args: pytest.fail("out-of-sequence research must not stage or attach"),
+    )
+
+    with pytest.raises(ValueError, match="friendly choice, not research"):
+        server._setup_continue(
+            "nf_board",
+            "continue-1",
+            {
+                "pack_id": "Vendor.Device",
+                "version": "1.0",
+                "filename": "Vendor.Device.pack",
+                "url": "https://vendor.example/Device.pack",
+                "source_path": "C:/candidate/Device.pack",
+                "official_sha256": None,
+                "evidence": [{"source": "official", "claim": "device support"}],
+                "reasoning_summary": "Official device support.",
+            },
+        )
+
+
 def test_production_loaded_validation_guidance_uses_current_assignment() -> None:
     previous = server.assignment_store.bindings()
     board_id = "probe_guidance_integration_board"

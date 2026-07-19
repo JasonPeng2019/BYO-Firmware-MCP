@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
+from typing import cast
 
 from pyocd_debug_mcp.safety.linker import (
     BuildArtifactSelection,
@@ -15,6 +16,7 @@ from pyocd_debug_mcp.safety.linker import (
 )
 from pyocd_debug_mcp.safety.map_build import (
     GenericSafetyMapDocument,
+    MapGeometry,
     SafetyMapDocument,
     SafetyMapError,
     SafetyMapRepository,
@@ -263,6 +265,98 @@ class SafetyPolicy:
                 )
         return evidence
 
+    def check_generic_application_candidate(
+        self,
+        board_id: str,
+        artifact_path: Path,
+        *,
+        current_target: str,
+    ) -> tuple[BuildEvidence, tuple[AddressRange, ...]]:
+        """Validate a generic application artifact against physical pack authority."""
+
+        loaded = self.load(board_id)
+        document = loaded.document
+        if not isinstance(document, GenericSafetyMapDocument):
+            raise SafetyPolicyError(
+                "safety/partition-authority-unavailable",
+                "Artifact-defined allocation is available only for a generic map.",
+                remedy=("board_safety_refresh",),
+            )
+        if current_target.casefold() != document.identity.pyocd_target.casefold():
+            raise SafetyPolicyError(
+                "safety/target-mismatch",
+                "The live target does not match the generic support record.",
+                remedy=("correct_board_assignment", "board_validate"),
+            )
+        if not document.geometry.erase_available or not document.geometry.erase_sectors:
+            raise SafetyPolicyError(
+                "safety/geometry-incomplete",
+                "The verified support package has no bounded sector erase/program proof.",
+                remedy=("board_safety_refresh",),
+            )
+        evidence = self._extract_runtime_evidence(BuildRole.APPLICATION, artifact_path)
+        if evidence.initial_stack_pointer is None or evidence.initial_stack_pointer < 4:
+            raise SafetyPolicyError(
+                "safety/vector-stack-invalid",
+                "The ELF has no usable Cortex-M initial stack pointer.",
+                remedy=("select_valid_build_artifact",),
+            )
+        stack_word = AddressRange.from_start_size(evidence.initial_stack_pointer - 4, 4)
+        stack_result = loaded.safety_map.check(ActionCategory.MEMORY_WRITE, (stack_word,))
+        if isinstance(stack_result, Refusal):
+            raise SafetyPolicyError(
+                "safety/vector-stack-outside-ram",
+                "The vector-table initial stack pointer is outside verified writable RAM.",
+                remedy=("select_correct_build",),
+            )
+        content_ranges = tuple(
+            segment.load_range
+            for segment in evidence.loadable_segments
+            if segment.load_range is not None
+        ) + tuple(evidence.hex_ranges)
+        if not content_ranges:
+            raise SafetyPolicyError(
+                "safety/flash-content-missing",
+                "The selected artifact contains no loadable flash content.",
+                remedy=("select_valid_build_artifact",),
+            )
+        examined = list(content_ranges)
+        if evidence.entry_point is not None:
+            examined.append(AddressRange.from_start_size(evidence.entry_point, 1))
+        if evidence.vector_table is not None:
+            examined.append(AddressRange.from_start_size(evidence.vector_table, 8))
+        if evidence.reset_handler is None:
+            raise SafetyPolicyError(
+                "safety/vector-reset-invalid",
+                "The ELF has no usable Cortex-M reset handler.",
+                remedy=("select_valid_build_artifact",),
+            )
+        examined.append(AddressRange.from_start_size(evidence.reset_handler, 2))
+        if any(not document.geometry.contains_flash(item) for item in examined):
+            raise SafetyPolicyError(
+                "safety/flash-outside-physical-device",
+                "The artifact is not wholly inside verified physical internal flash.",
+                remedy=("select_correct_build",),
+            )
+        touched = self._erase_sectors(document, content_ranges)
+        all_sectors = tuple(item.address_range for item in document.geometry.erase_sectors)
+        first = min(all_sectors.index(item) for item in touched)
+        last = max(all_sectors.index(item) for item in touched)
+        allocation = all_sectors[first : last + 1]
+        if any(left.end != right.start for left, right in zip(allocation, allocation[1:])):
+            raise SafetyPolicyError(
+                "safety/noncontiguous-application-allocation",
+                "The artifact spans erase regions that cannot form one bounded application allocation.",
+                remedy=("select_correct_build",),
+            )
+        if any(not _fully_covered(item, allocation) for item in examined):
+            raise SafetyPolicyError(
+                "safety/execution-outside-application-allocation",
+                "Entry, vector, or reset execution evidence exits the content-derived allocation.",
+                remedy=("select_correct_build",),
+            )
+        return evidence, allocation
+
     def _extract_runtime_evidence(self, role: BuildRole, artifact: Path) -> BuildEvidence:
         if artifact.suffix.casefold() == ".elf":
             elf_path, hex_path = artifact, None
@@ -318,6 +412,13 @@ class SafetyPolicy:
                     remedy=("board_safety_refresh",),
                 )
             return tuple(sorted(required))
+        if isinstance(document, GenericSafetyMapDocument):
+            raise SafetyPolicyError(
+                "safety/geometry-incomplete",
+                "The generic map has no explicit verified erase sectors.",
+                remedy=("board_safety_refresh",),
+            )
+        geometry = cast(MapGeometry, geometry)
         assert geometry.erase_origin is not None and geometry.erase_size is not None
         sectors: set[AddressRange] = set()
         for requested in ranges:

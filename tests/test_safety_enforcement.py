@@ -9,8 +9,13 @@ import pytest
 from pyocd_debug_mcp.firmstore.store import FirmStore
 from pyocd_debug_mcp.guardrails.flash_gate import FlashArtifactIdentity, ResolvedFlashRequest
 from pyocd_debug_mcp.safety.enforce import SafetyPolicy, SafetyPolicyError
-from pyocd_debug_mcp.safety.linker import BuildRole
+from pyocd_debug_mcp.safety.linker import BuildEvidence, BuildRole, LoadableSegment
 from pyocd_debug_mcp.safety.map_build import (
+    EraseSector,
+    GenericMapGeometry,
+    GenericMapIdentity,
+    GenericSafetyMapDocument,
+    GenericSourceDigests,
     MapGeometry,
     MapIdentity,
     MapPartitions,
@@ -283,6 +288,91 @@ def test_flash_requires_reviewed_application_partition_authority(tmp_path: Path)
     assert unavailable.value.remedy == ("board_safety_refresh",)
 
 
+def test_generic_execution_addresses_must_stay_in_content_derived_allocation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repository = SafetyMapRepository(FirmStore(tmp_path))
+    flash = AddressRange(0x08000000, 0x08002000)
+    ram = AddressRange(0x20000000, 0x20001000)
+    geometry = GenericMapGeometry(
+        (flash,),
+        (ram,),
+        (
+            EraseSector(AddressRange(0x08000000, 0x08001000), "internal"),
+            EraseSector(AddressRange(0x08001000, 0x08002000), "internal"),
+        ),
+    )
+    provenance = (Provenance(SourceAuthority.DEVICE_SUPPORT, "pack", "PDSC"),)
+    document = GenericSafetyMapDocument(
+        "generic_board",
+        GenericMapIdentity("PART123", "part123", "a" * 64),
+        {
+            "kind": "resolved_pack",
+            "support_id": "a" * 64,
+            "pack_id": "Vendor.Device",
+            "pack_filename": "Vendor.Device.pack",
+            "pack_sha256": "b" * 64,
+            "pdsc_device": "PART123",
+            "pyocd_target": "part123",
+        },
+        GenericSourceDigests.build(
+            profile={"board_id": "generic_board"},
+            device_support={"pack": "b" * 64},
+            datasheet_evidence={"sha256": "c" * 64},
+            deployment_policy={"kind": "none"},
+        ),
+        geometry,
+        MapPartitions(None),
+        {"kind": "none"},
+        (
+            SafetyRegion("physical flash", RegionKind.PHYSICAL_FLASH, flash, provenance),
+            SafetyRegion("physical RAM", RegionKind.PHYSICAL_RAM, ram, provenance),
+            SafetyRegion("RAM", RegionKind.RAM, ram, provenance),
+        ),
+    )
+    repository.commit("generic_board", document)
+    evidence = BuildEvidence(
+        "runtime_application",
+        BuildRole.APPLICATION,
+        True,
+        True,
+        None,
+        (ram,),
+        (
+            LoadableSegment(
+                0,
+                AddressRange(0x08000000, 0x08000100),
+                AddressRange(0x08000000, 0x08000100),
+                0x100,
+                0x100,
+                True,
+                False,
+                True,
+            ),
+        ),
+        (),
+        0x08001001,
+        0x08000000,
+        0x20000100,
+        0x08001001,
+        Path("firmware.elf"),
+        None,
+        None,
+        (),
+    )
+    monkeypatch.setattr(
+        SafetyPolicy, "_extract_runtime_evidence", lambda *_args, **_kwargs: evidence
+    )
+    policy = SafetyPolicy(repository, authority_verifier=lambda _document: None)
+
+    with pytest.raises(SafetyPolicyError) as caught:
+        policy.check_generic_application_candidate(
+            "generic_board", Path("firmware.elf"), current_target="part123"
+        )
+
+    assert caught.value.code == "safety/execution-outside-application-allocation"
+
+
 def test_hex_requires_matching_elf_companion(tmp_path: Path) -> None:
     selected = tmp_path / "firmware.hex"
     selected.write_bytes(NUCLEO_HEX.read_bytes())
@@ -490,3 +580,56 @@ def test_backend_mutations_never_run_after_containment_refusal(tmp_path: Path) -
         flash["flash_application"]("board_a", str(NUCLEO_ELF))
 
     assert calls == []
+
+
+def test_generic_allocation_commits_before_backend_mutation_and_survives_failure() -> None:
+    events: list[str] = []
+    pending = object()
+    identity = FlashArtifactIdentity(
+        NUCLEO_ELF,
+        ".elf",
+        NUCLEO_ELF.stat().st_size,
+        sha256(NUCLEO_ELF.read_bytes()).hexdigest(),
+        "explicit",
+    )
+
+    def handlers(*, fail: bool):
+        return build_flash_handlers(
+            FlashToolServices(
+                runtime_for=lambda _board: None,
+                active_session_id=lambda _board: None,
+                duration_ms=lambda _started: 1,
+                record_event=lambda *args, **kwargs: SimpleNamespace(),
+                record_blocked_event=lambda *args, **kwargs: None,
+                format_refusal=lambda refusal, **kwargs: str(refusal),
+                format_block=lambda blocked, **kwargs: str(blocked),
+                ensure_flash_allowed=lambda _runtime: None,
+                action_context=lambda action, _board: ActionContext("test", action, None),
+                maybe_handle_for=lambda _board: object(),
+                handle_for=lambda _board: object(),
+                resolve_request=lambda _handle, _artifact, _context: ResolvedFlashRequest(
+                    NUCLEO_ELF, identity
+                ),
+                flash_target=lambda _handle, artifact: (
+                    (_ for _ in ()).throw(RuntimeError("program failed"))
+                    if fail
+                    else events.append("program") or artifact
+                ),
+                handle_mutation_event=lambda _board, _event: None,
+                error_code=lambda exc: getattr(exc, "code", "runtime/error"),
+                validate_flash=lambda *_args: events.append("containment"),
+                prepare_generic_allocation=lambda *_args: events.append("allocation-proof") or pending,
+                commit_generic_allocation=lambda _board, value: events.append(
+                    "commit" if value is pending else "wrong"
+                ),
+                clear_generic_allocation=lambda _board: events.append("clear"),
+            )
+        )
+
+    handlers(fail=False)["flash_application"]("board_a", str(NUCLEO_ELF))
+    assert events == ["containment", "allocation-proof", "commit", "program"]
+
+    events.clear()
+    with pytest.raises(RuntimeError, match="program failed"):
+        handlers(fail=True)["flash_application"]("board_a", str(NUCLEO_ELF))
+    assert events == ["containment", "allocation-proof", "commit", "clear"]

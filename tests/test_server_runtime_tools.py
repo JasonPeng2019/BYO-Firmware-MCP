@@ -537,11 +537,22 @@ def test_connect_autoresolves_jlink_probe_on_non_windows_when_uid_is_implicit(
         )(),
     )
 
-    def fake_open_session(*, board, unique_id, target, server_timeouts=None):
+    def fake_open_session(
+        *,
+        board,
+        unique_id,
+        target,
+        server_timeouts=None,
+        pack_path=None,
+        pack_sha256=None,
+        pdsc_device=None,
+    ):
         seen["board"] = board
         seen["unique_id"] = unique_id
         seen["target"] = target
         seen["server_timeouts"] = server_timeouts
+        assert pack_path is None
+        assert pack_sha256 is None
         return TargetSessionHandle(
             session=type("Session", (), {"board": type("Board", (), {"name": "nRF52833 DK"})()})(),
             board=board,
@@ -586,11 +597,22 @@ def test_connect_autoresolves_jlink_probe_on_windows_when_multiple_probes_are_at
         )(),
     )
 
-    def fake_open_session(*, board, unique_id, target, server_timeouts=None):
+    def fake_open_session(
+        *,
+        board,
+        unique_id,
+        target,
+        server_timeouts=None,
+        pack_path=None,
+        pack_sha256=None,
+        pdsc_device=None,
+    ):
         seen["board"] = board
         seen["unique_id"] = unique_id
         seen["target"] = target
         seen["server_timeouts"] = server_timeouts
+        assert pack_path is None
+        assert pack_sha256 is None
         return TargetSessionHandle(
             session=type("Session", (), {"board": type("Board", (), {"name": "nRF52833 DK"})()})(),
             board=board,
