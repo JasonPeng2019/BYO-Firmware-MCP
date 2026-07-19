@@ -332,7 +332,7 @@ def test_swd_connect_under_reset_orders_line_attach_halt_release(monkeypatch) ->
     session = FakeSession(calls, FakeProbe(calls))
     adapter = swd_pyocd.PyOCDSWDInterface()
     monkeypatch.setattr(adapter, "_choose_session", lambda **kwargs: session)
-    monkeypatch.setattr(swd_pyocd, "discover_local_packs", lambda: [])
+    monkeypatch.setattr(swd_pyocd, "verified_pack_for_target", lambda _target: None)
 
     handle = adapter.connect_under_reset(
         board=None,
@@ -359,7 +359,7 @@ def test_swd_connect_under_reset_fails_when_probe_has_no_reset_line(monkeypatch)
     session = FakeSession(calls, probe)
     adapter = swd_pyocd.PyOCDSWDInterface()
     monkeypatch.setattr(adapter, "_choose_session", lambda **kwargs: session)
-    monkeypatch.setattr(swd_pyocd, "discover_local_packs", lambda: [])
+    monkeypatch.setattr(swd_pyocd, "verified_pack_for_target", lambda _target: None)
 
     with pytest.raises(ResetLineUnavailableError, match="does not expose wired reset-line"):
         adapter.connect_under_reset(board=None, unique_id="probe-7", target="nrf52833")
@@ -379,7 +379,7 @@ def test_swd_connect_under_reset_maps_unimplemented_reset_control(monkeypatch) -
     session = FakeSession(calls, UnsupportedResetProbe())
     adapter = swd_pyocd.PyOCDSWDInterface()
     monkeypatch.setattr(adapter, "_choose_session", lambda **kwargs: session)
-    monkeypatch.setattr(swd_pyocd, "discover_local_packs", lambda: [])
+    monkeypatch.setattr(swd_pyocd, "verified_pack_for_target", lambda _target: None)
 
     with pytest.raises(ResetLineUnavailableError, match="does not support wired reset-line"):
         adapter.connect_under_reset(board=None, unique_id="probe-7", target="nrf52833")

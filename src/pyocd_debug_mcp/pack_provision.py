@@ -7,9 +7,10 @@ index that drops whole families (e.g. STM32L4) on restrictive networks.
 
 Instead, packs are pinned in ``packs/manifest.yaml`` by URL + sha256, fetched on
 demand, verified, and loaded by pyOCD via its ``pack`` option in the shared
-backend. ``ensure_all`` does the provisioning (network); ``discover_local_packs``
-is the network-free runtime lookup used to populate the pyOCD ``pack`` option for
-both the Python-API path and the Stage 0 subprocess path.
+backend. ``ensure_all`` does the provisioning (network);
+``verified_pack_for_target`` is the network-free runtime selector that binds one
+target to one manifest-pinned pack. ``discover_local_packs`` remains inventory
+only and never grants target-resolution authority.
 """
 
 from __future__ import annotations
@@ -45,6 +46,24 @@ class PackSpec:
     @property
     def is_pinned(self) -> bool:
         return bool(self.url and self.sha256)
+
+
+@dataclass(frozen=True)
+class VerifiedPack:
+    """One manifest-selected pack whose bytes have been verified."""
+
+    path: Path
+    spec: PackSpec
+    payload: bytes
+
+    def verify_unchanged(self) -> None:
+        """Fail closed if the selected pack is absent or no longer pinned bytes."""
+
+        if not _verify(self.path, self.spec.sha256):
+            raise PackProvisionError(
+                f"Pinned pack changed or disappeared: {self.path} "
+                f"(expected sha256 {self.spec.sha256})."
+            )
 
 
 def _text_tuple(value: object, field_name: str) -> tuple[str, ...]:
@@ -205,3 +224,75 @@ def discover_local_packs(packs_dir: Path = PACKS_DIR) -> list[Path]:
         if pack.is_file()
     }
     return sorted(discovered)
+
+
+def verified_pack_for_target(
+    target: str,
+    *,
+    manifest_path: Path = MANIFEST_PATH,
+    packs_dir: Path = PACKS_DIR,
+) -> VerifiedPack | None:
+    """Return the sole pinned local pack that authoritatively provides ``target``.
+
+    Targets absent from the manifest are expected to be built into pyOCD and
+    therefore return ``None``. A manifest target must have exactly one provider;
+    runtime never gives pyOCD unrelated packs and never silently accepts stale
+    or differently-versioned bytes.
+    """
+
+    normalized = target.strip().casefold()
+    sources = [(manifest_path, packs_dir)]
+    artifact_root = os.environ.get("BYO_MCP_ARTIFACT_ROOT", "").strip()
+    if manifest_path == MANIFEST_PATH and packs_dir == PACKS_DIR and artifact_root:
+        active_store = FirmStore(Path(artifact_root).expanduser().resolve())
+        active_source = (active_store.layout.pack_manifest, active_store.layout.pack_files)
+        if active_source not in sources and active_source[0].is_file():
+            sources.append(active_source)
+    matching_sources = [
+        (spec, source_packs)
+        for source_manifest, source_packs in sources
+        for spec in load_manifest(source_manifest)
+        if normalized in {item.casefold() for item in spec.provides_targets}
+    ]
+    # Identical repo/project declarations are one authority, not an ambiguity.
+    unique: dict[PackSpec, list[Path]] = {}
+    for spec, source_packs in matching_sources:
+        unique.setdefault(spec, []).append(source_packs)
+    matches = list(unique)
+    if not matches:
+        return None
+    if len(matches) != 1:
+        raise PackProvisionError(
+            f"Target {target!r} has {len(matches)} providers in the pinned pack manifest; "
+            "exactly one is required."
+        )
+    spec = matches[0]
+
+    # Preserve deployment flexibility: a packaged server may hold packs beside
+    # the source tree, in the shared FirmStore, or in an invocation-scoped
+    # artifact root. Only the exact manifest filename and digest are eligible.
+    roots = list(unique[spec])
+    if manifest_path == MANIFEST_PATH and packs_dir == PACKS_DIR:
+        roots.append(FirmStore(REPO_ROOT).layout.pack_files)
+    candidates: list[Path] = []
+    for root in roots:
+        candidate = root / spec.filename
+        if candidate.is_file():
+            resolved = candidate.resolve()
+            if resolved not in candidates:
+                candidates.append(resolved)
+    if not candidates:
+        raise PackProvisionError(
+            f"Pinned pack for target {target!r} is absent: expected {spec.filename}. "
+            "Run the host bootstrap pack provisioning step."
+        )
+    payloads: list[tuple[Path, bytes]] = []
+    for candidate in candidates:
+        payload = candidate.read_bytes()
+        if sha256_bytes(payload) != spec.sha256:
+            raise PackProvisionError(
+                f"Pinned pack checksum mismatch for {candidate}: expected {spec.sha256}."
+            )
+        payloads.append((candidate, payload))
+    selected_path, selected_payload = payloads[0]
+    return VerifiedPack(path=selected_path, spec=spec, payload=selected_payload)

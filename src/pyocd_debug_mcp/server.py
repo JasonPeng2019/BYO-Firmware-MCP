@@ -61,7 +61,11 @@ from pyocd_debug_mcp.kernel.finalizers import build_finalizer
 from pyocd_debug_mcp.kernel.hygiene import require_clean_startup
 from pyocd_debug_mcp.kernel.processes import run_owned
 from pyocd_debug_mcp.kernel.run_state import create_server_run
-from pyocd_debug_mcp.pack_provision import load_manifest
+from pyocd_debug_mcp.pack_provision import (
+    PackProvisionError,
+    load_manifest,
+    verified_pack_for_target,
+)
 from pyocd_debug_mcp.probe_inventory import (
     list_connected_probes,
     probe_family_from_pyocd_probe,
@@ -2061,13 +2065,17 @@ plan_tool_handlers = register_plan_tools(
 )
 
 
+def _built_in_target_names() -> set[str]:
+    from pyocd.target.builtin import BUILTIN_TARGETS  # type: ignore[reportMissingImports]
+
+    return {str(name).casefold() for name in BUILTIN_TARGETS}
+
+
 def _target_names() -> tuple[str, ...]:
     # Use pyOCD's pinned in-process registry.  Parsing its human-formatted CLI
     # table was locale-dependent on Windows and could turn a supported target
     # into an empty inventory when a description contained non-ASCII text.
-    from pyocd.target.builtin import BUILTIN_TARGETS
-
-    names: set[str] = {str(name).casefold() for name in BUILTIN_TARGETS}
+    names = _built_in_target_names()
     for pack in load_manifest(_firm_store.layout.pack_manifest):
         names.update(target.casefold() for target in pack.provides_targets)
     return tuple(sorted(names))
@@ -2121,7 +2129,15 @@ def _validation_inventory() -> ValidationInventory:
 
 
 def _validation_target_supported(target: str) -> bool | None:
-    return target.casefold() in set(_target_names())
+    normalized = target.casefold()
+    if normalized in _built_in_target_names():
+        return True
+    try:
+        return verified_pack_for_target(normalized) is not None
+    except PackProvisionError:
+        # A declaration or stale process-global registration is not authority.
+        # Missing, changed, or ambiguous pinned bytes must fail closed.
+        return False
 
 
 class _ValidationConnection:
@@ -2623,29 +2639,56 @@ def _setup_inventory(user_input: SetupUserInput) -> PreflightInventory:
             ],
         )
     targets = _target_names()
+    manifest_specs = (*load_manifest(), *load_manifest(_firm_store.layout.pack_manifest))
+    manifest_targets = tuple(
+        sorted({target.casefold() for pack in manifest_specs for target in pack.provides_targets})
+    )
     exact: tuple[str, ...] = ()
     # A fresh profile has no board YAML yet, but a complete reviewed catalog entry is itself
     # authoritative for the exact pyOCD target. Package suffixes such as ``-QIAA`` must not
     # force an unnecessary agent research round trip when the exact built-in target is present.
-    if (
-        user_input.mcu_part_number == catalog.package_part_number
-        and catalog.pyocd_target.casefold() in targets
-    ):
-        exact = (catalog.pyocd_target.casefold(),)
-    manifest_targets = tuple(
-        sorted(
-            {
-                target
-                for pack in load_manifest(_firm_store.layout.pack_manifest)
-                for target in pack.provides_targets
-            }
-        )
-    )
+    reviewed_target = catalog.pyocd_target.casefold()
+    pack_backed = bool(catalog.pyocd_pack_filename and catalog.pyocd_pack_sha256)
+    support_present = reviewed_target in targets if not pack_backed else False
+    if pack_backed:
+        try:
+            support_present = verified_pack_for_target(reviewed_target) is not None
+        except PackProvisionError as exc:
+            return PreflightInventory(
+                probes=probes,
+                serial_ports=serial,
+                cache_resolution=cache_resolution,
+                built_in_targets=tuple(
+                    target for target in targets if target not in manifest_targets
+                ),
+                manifest_targets=manifest_targets,
+                blocking_error=PreflightBlock(
+                    "setup/reviewed-pack-unavailable",
+                    "The reviewed local device-support pack is missing, conflicting, or failed "
+                    f"integrity verification: {exc}",
+                ),
+            )
+        if not support_present:
+            return PreflightInventory(
+                probes=probes,
+                serial_ports=serial,
+                cache_resolution=cache_resolution,
+                built_in_targets=tuple(
+                    target for target in targets if target not in manifest_targets
+                ),
+                manifest_targets=manifest_targets,
+                blocking_error=PreflightBlock(
+                    "setup/reviewed-pack-unavailable",
+                    "The reviewed target has no provider in the local pinned pack manifests. "
+                    "Run the documented host pack provisioning step; do not research or download "
+                    "a replacement during board setup.",
+                ),
+            )
+    if user_input.mcu_part_number == catalog.package_part_number and support_present:
+        exact = (reviewed_target,)
     target_override = _setup_target_overrides.get(user_input.board_id)
-    if target_override is not None:
-        supported = set(targets) | set(manifest_targets)
-        reviewed_target = catalog.pyocd_target.casefold()
-        if target_override in supported and target_override == reviewed_target:
+    if target_override is not None and support_present:
+        if target_override == reviewed_target:
             exact = (target_override,)
     return PreflightInventory(
         probes=probes,
@@ -2729,16 +2772,42 @@ def _setup_connection_phase(context: SetupPhaseContext) -> SetupPhaseOutcome:
         )
 
     opened: list[TargetSessionHandle] = []
+    setup_board = BoardConfig(
+        board_id=context.user_input.board_id,
+        display_name=context.user_input.display_name,
+        mcu_family=_mcu_family(context.user_input.mcu_part_number, target),
+        probe_family=probe.probe_family,
+        pyocd_target=target,
+        probe_type=probe.description,
+        probe_hint_terms=(),
+        serial_hint_terms=(),
+        test_addr=catalog.test_read_address,
+        silicon_id_addr=catalog.silicon_id_address,
+        silicon_id_expected=catalog.silicon_id_expected,
+        silicon_id_mask=catalog.silicon_id_mask,
+        silicon_id_width_bits=catalog.silicon_id_width_bits,
+        silicon_id_label=catalog.silicon_id_label or "",
+        default_baudrate=catalog.default_baudrate,
+        debug_connect_mode=catalog.debug_connect_mode,
+        debug_clock_hz=catalog.debug_clock_hz,
+    )
 
     def connect(candidate_target: str, _pack_path: str | None) -> None:
         handle = target_control.open_session(
-            board=None,
+            board=setup_board,
             unique_id=probe.usb_serial,
             target=candidate_target,
             server_timeouts=_staged_server_timeouts,
         )
         opened.append(handle)
         try:
+            selected_probe_uid = probe.usb_serial or probe.probe_id
+            if not _stable_identity_equal(selected_probe_uid, handle.probe_uid):
+                raise BoardCatalogError(
+                    "Live debug connection identity changed during setup; stop before reading "
+                    "silicon or committing a profile. Restart setup_overview with the current "
+                    "friendly connection inventory."
+                )
             if catalog.silicon_id_address is not None:
                 observed = target_control.read_memory(handle, catalog.silicon_id_address, 32)
                 expected = catalog.silicon_id_expected

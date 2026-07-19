@@ -196,17 +196,21 @@
           "end": 3759144960
         }
       ],
-      "datasheet_sha256": [],
-      "document_revision": "repository-reviewed board support v1",
+      "datasheet_sha256": [
+        "a45a857e3aa75ac166dd532c76d76d5dd8377b9c5bf6f15c03c9cf85aeec0f65"
+      ],
+      "document_revision": "STM32L476xx DS10198 Rev 11 plus NUCLEO-L476RG standard deployment policy v1",
       "zephyr_board_target": "nucleo_l476rg",
-      "device_support_evidence_resource": null,
-      "device_support_evidence_sha256": null,
-      "official_evidence_resource": null,
-      "official_evidence_sha256": null,
-      "pyocd_version": null,
+      "device_support_evidence_resource": "evidence/stm32l476_device_support.json",
+      "device_support_evidence_sha256": "fd79313598bc8ab4f6069b1d3354eb8ae8fba4c0a85f477a1bdd7e468dbb0597",
+      "official_evidence_resource": "evidence/stm32l476_official_document.json",
+      "official_evidence_sha256": "1db80bc7db740d1466da2a854960e70917853264da7f82911e0feebe27fba38d",
+      "pyocd_version": "0.45.0",
       "pyocd_target_module": null,
       "pyocd_target_module_sha256": null,
       "pyocd_svd_bundle_sha256": null,
+      "pyocd_pack_filename": "Keil.STM32L4xx_DFP.3.1.0.pack",
+      "pyocd_pack_sha256": "5672383c07fbdcee0e471a33f4f8beb2e1f3200bc999244dcd6858e0e8e8203f",
       "debug_connect_mode": "under-reset",
       "debug_clock_hz": 1000000,
       "application_partition_authoritative": true,

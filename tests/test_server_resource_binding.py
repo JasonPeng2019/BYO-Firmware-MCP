@@ -460,7 +460,7 @@ def test_reviewed_opaque_target_reaches_live_connect_before_profile_commit(
     profiles = ProfileRepository(FirmStore(tmp_path), legacy_board_dir=tmp_path / "legacy")
     monkeypatch.setattr(server, "_profile_repository", profiles)
     events: list[str] = []
-    handle = SimpleNamespace()
+    handle = SimpleNamespace(probe_uid="opaque-probe")
 
     def open_session(**kwargs: object) -> object:
         assert kwargs["target"] == "nrf52840"
@@ -512,6 +512,118 @@ def test_reviewed_opaque_target_reaches_live_connect_before_profile_commit(
     assert committed.board.silicon_id_mask == 0xFFFFFFFF
 
 
+def test_stm32_fresh_setup_passes_reviewed_connect_policy_to_shared_backend(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    profiles = ProfileRepository(FirmStore(tmp_path), legacy_board_dir=tmp_path / "legacy")
+    monkeypatch.setattr(server, "_profile_repository", profiles)
+    handle = SimpleNamespace(probe_uid="stlink-probe")
+    seen: dict[str, object] = {}
+
+    def open_session(**kwargs: object) -> object:
+        seen.update(kwargs)
+        assert not profiles.store.layout.board_profile("stm32_fresh").exists()
+        return handle
+
+    def read_memory(_handle: object, address: int, _width: int) -> int:
+        return 0x00000415 if address == 0xE0042000 else 0x20020000
+
+    monkeypatch.setattr(server.target_control, "open_session", open_session)
+    monkeypatch.setattr(server.target_control, "read_memory", read_memory)
+    monkeypatch.setattr(server.target_control, "close_session", lambda _handle: None)
+    datasheet = Path("stm32l476je (2).pdf").resolve()
+    user_input = SetupUserInput(
+        "stm32_fresh",
+        "probe:stlink-probe",
+        "STM32 Fresh",
+        "STM32L476RGT6",
+        115200,
+        datasheet_path=str(datasheet),
+        requires_uart=False,
+    )
+    preflight = PreflightDecision(
+        "preflight_ready",
+        "setup/preflight-ready",
+        "ready",
+        selected_probe=ProbeCandidate(
+            "stlink-probe", "Selected ST-Link", "stlink", "stlink-probe"
+        ),
+        selected_target="stm32l476rgtx",
+    )
+    context = cast(
+        SetupPhaseContext,
+        SimpleNamespace(user_input=user_input, preflight=preflight),
+    )
+
+    result = server._setup_connection_phase(context)
+
+    assert result.verified is True
+    setup_board = seen["board"]
+    assert setup_board is not None
+    assert setup_board.probe_family == "stlink"  # type: ignore[union-attr]
+    assert setup_board.debug_connect_mode == "under-reset"  # type: ignore[union-attr]
+    assert setup_board.debug_clock_hz == 1_000_000  # type: ignore[union-attr]
+    assert seen["target"] == "stm32l476rgtx"
+
+
+@pytest.mark.parametrize(
+    ("returned_uid", "expected_verified"),
+    [("123", True), ("456", False)],
+)
+def test_fresh_setup_preserves_selected_probe_identity_across_backend_retry(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    returned_uid: str,
+    expected_verified: bool,
+) -> None:
+    profiles = ProfileRepository(FirmStore(tmp_path), legacy_board_dir=tmp_path / "legacy")
+    monkeypatch.setattr(server, "_profile_repository", profiles)
+    handle = SimpleNamespace(probe_uid=returned_uid)
+    reads: list[int] = []
+    monkeypatch.setattr(
+        server.target_control, "open_session", lambda **_kwargs: handle
+    )
+
+    def read_memory(_handle: object, address: int, _width: int) -> int:
+        reads.append(address)
+        return 0x00052840 if address == 0x10000100 else 0
+
+    monkeypatch.setattr(server.target_control, "read_memory", read_memory)
+    monkeypatch.setattr(server.target_control, "close_session", lambda _handle: None)
+    datasheet = Path("Nano_BLE_MCU-nRF52840_PS_v1.1.pdf").resolve()
+    context = cast(
+        SetupPhaseContext,
+        SimpleNamespace(
+            user_input=SetupUserInput(
+                "probe_identity_board",
+                "probe:000123",
+                "Probe Identity Board",
+                "nRF52840-QIAA",
+                None,
+                datasheet_path=str(datasheet),
+                requires_uart=False,
+            ),
+            preflight=PreflightDecision(
+                "preflight_ready",
+                "setup/preflight-ready",
+                "ready",
+                selected_probe=ProbeCandidate("000123", "J-Link", "jlink", "000123"),
+                selected_target="nrf52840",
+            ),
+        ),
+    )
+
+    result = server._setup_connection_phase(context)
+
+    assert result.verified is expected_verified
+    if expected_verified:
+        assert reads
+        assert profiles.store.layout.board_profile("probe_identity_board").is_file()
+    else:
+        assert reads == []
+        assert not profiles.store.layout.board_profile("probe_identity_board").exists()
+
+
 def test_incomplete_profile_repair_rechecks_identity_and_commits_optional_evidence(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
@@ -530,7 +642,7 @@ def test_incomplete_profile_repair_rechecks_identity_and_commits_optional_eviden
     )
     monkeypatch.setattr(server, "_profile_repository", profiles)
     connected: list[str] = []
-    handle = SimpleNamespace()
+    handle = SimpleNamespace(probe_uid="repair-probe")
 
     def open_session(**kwargs: object) -> object:
         connected.append(str(kwargs["target"]))
@@ -635,7 +747,7 @@ def test_legacy_repair_preserves_identity_and_uses_constrained_migration(
     )
     profiles = ProfileRepository(FirmStore(tmp_path), legacy_board_dir=legacy_dir)
     monkeypatch.setattr(server, "_profile_repository", profiles)
-    handle = SimpleNamespace()
+    handle = SimpleNamespace(probe_uid="probe-a")
     monkeypatch.setattr(server.target_control, "open_session", lambda **_kwargs: handle)
     monkeypatch.setattr(
         server.target_control,
@@ -735,7 +847,7 @@ async def test_live_mcp_board_setup_commits_target_neutral_silicon_identity_labe
     assignment_store = type(server.assignment_store)({})
     assignment_store.assign("probe:PROBE-001", board_id)
     monkeypatch.setattr(server, "assignment_store", assignment_store)
-    handle = SimpleNamespace()
+    handle = SimpleNamespace(probe_uid="PROBE-001")
     monkeypatch.setattr(server.target_control, "open_session", lambda **_kwargs: handle)
     monkeypatch.setattr(
         server.target_control,

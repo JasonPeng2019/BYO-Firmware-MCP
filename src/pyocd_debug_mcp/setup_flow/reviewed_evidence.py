@@ -15,6 +15,7 @@ from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
 from typing import Any, Mapping
 
+from pyocd_debug_mcp.pack_provision import PackProvisionError, verified_pack_for_target
 from pyocd_debug_mcp.safety.verify2 import (
     EvidenceError,
     HardwareEvidence,
@@ -117,12 +118,7 @@ def _load_asset(
 
 
 def _runtime_pyocd_identity(catalog: CatalogBoard) -> tuple[str, str, str]:
-    if not (
-        catalog.pyocd_version
-        and catalog.pyocd_target_module
-        and catalog.pyocd_target_module_sha256
-        and catalog.pyocd_svd_bundle_sha256
-    ):
+    if not catalog.pyocd_version:
         raise BoardCatalogError("installed device-support identity is not pinned")
     try:
         installed_version = version("pyocd")
@@ -132,22 +128,67 @@ def _runtime_pyocd_identity(catalog: CatalogBoard) -> tuple[str, str, str]:
         raise BoardCatalogError(
             f"installed pyOCD {installed_version} does not match reviewed version {catalog.pyocd_version}"
         )
-    try:
-        target_module = import_module(catalog.pyocd_target_module)
-        target_path = Path(str(target_module.__file__)).resolve()
-        svd_loader = import_module("pyocd.debug.svd.loader")
-        svd_path = Path(str(svd_loader.__file__)).resolve().parent / "svd_data.zip"
-    except (ImportError, TypeError) as exc:
-        raise BoardCatalogError("reviewed pyOCD target or SVD support cannot be located") from exc
-    target_digest = _sha256_file(target_path)
-    svd_digest = _sha256_file(svd_path)
-    if target_digest != catalog.pyocd_target_module_sha256:
-        raise BoardCatalogError(
-            "installed pyOCD target implementation failed its pinned SHA-256 check"
-        )
-    if svd_digest != catalog.pyocd_svd_bundle_sha256:
-        raise BoardCatalogError("installed pyOCD SVD bundle failed its pinned SHA-256 check")
-    return installed_version, target_digest, svd_digest
+    module_mode = bool(
+        catalog.pyocd_target_module
+        and catalog.pyocd_target_module_sha256
+        and catalog.pyocd_svd_bundle_sha256
+        and not catalog.pyocd_pack_filename
+        and not catalog.pyocd_pack_sha256
+    )
+    pack_mode = bool(
+        catalog.pyocd_pack_filename
+        and catalog.pyocd_pack_sha256
+        and not catalog.pyocd_target_module
+        and not catalog.pyocd_target_module_sha256
+        and not catalog.pyocd_svd_bundle_sha256
+    )
+    if module_mode:
+        assert catalog.pyocd_target_module is not None
+        try:
+            target_module = import_module(catalog.pyocd_target_module)
+            target_path = Path(str(target_module.__file__)).resolve()
+            svd_loader = import_module("pyocd.debug.svd.loader")
+            svd_path = Path(str(svd_loader.__file__)).resolve().parent / "svd_data.zip"
+        except (ImportError, TypeError) as exc:
+            raise BoardCatalogError(
+                "reviewed pyOCD target or SVD support cannot be located"
+            ) from exc
+        target_digest = _sha256_file(target_path)
+        svd_digest = _sha256_file(svd_path)
+        if target_digest != catalog.pyocd_target_module_sha256:
+            raise BoardCatalogError(
+                "installed pyOCD target implementation failed its pinned SHA-256 check"
+            )
+        if svd_digest != catalog.pyocd_svd_bundle_sha256:
+            raise BoardCatalogError("installed pyOCD SVD bundle failed its pinned SHA-256 check")
+        return installed_version, target_digest, svd_digest
+    if pack_mode:
+        assert catalog.pyocd_pack_filename is not None
+        assert catalog.pyocd_pack_sha256 is not None
+        try:
+            selected = verified_pack_for_target(catalog.pyocd_target)
+        except PackProvisionError as exc:
+            raise BoardCatalogError(f"reviewed pyOCD CMSIS-Pack is unavailable: {exc}") from exc
+        if selected is None:
+            raise BoardCatalogError(
+                "reviewed pyOCD CMSIS-Pack target is absent from the pinned pack manifest"
+            )
+        if (
+            selected.spec.filename != catalog.pyocd_pack_filename
+            or selected.spec.sha256 != catalog.pyocd_pack_sha256
+            or catalog.pyocd_target not in selected.spec.provides_targets
+            or catalog.board_type not in selected.spec.needed_by_boards
+        ):
+            raise BoardCatalogError(
+                "reviewed board catalog and pinned pack manifest do not describe the same authority"
+            )
+        selected.verify_unchanged()
+        pack_digest = selected.spec.sha256
+        # One CMSIS-Pack owns both the generated target and its SVD description.
+        return installed_version, pack_digest, pack_digest
+    raise BoardCatalogError(
+        "installed device-support identity must select exactly one reviewed module or CMSIS-Pack"
+    )
 
 
 def load_pinned_reviewed_evidence(

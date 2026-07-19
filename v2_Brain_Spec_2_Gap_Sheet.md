@@ -254,3 +254,54 @@ two distinct run IDs.
   bounded refusal rather than disconnecting when symbol metadata is unavailable.
 - **Closure:** tracked by `docs/run-scoped-symbol-artifact-spec.md` and
   `docs/run-scoped-symbol-artifact-plan.md`.
+
+# GAP-27: the general native helper supported only Zephyr/west (2026-07-18)
+
+- **Observed:** a fresh bare-metal STM32 repository with a Makefile could not use the exact general
+  helper returned by setup status; provider detection recognized only Zephyr CMake projects.
+- **Required:** add a local-only, offline, managed GNU Make provider with generic fresh-build
+  artifact discovery while leaving the existing Zephyr provider unchanged.
+- **Closure:** tracked by `docs/generic-make-native-build-spec.md` and
+  `docs/generic-make-native-build-plan.md`.
+
+# GAP-28: STM32L476 catalog entry was not eligible for reviewed fresh setup (2026-07-18)
+
+- **Observed:** the server knew the board and pinned pack but the catalog had no datasheet/runtime
+  evidence anchors, so fresh setup could not derive a safety map. Runtime evidence also assumed
+  every target was a built-in Python module even though STM32L476 support is CMSIS-Pack-backed.
+- **Required:** pin the supplied official PDF and independent region evidence, verify the exact
+  local pinned pack bytes as runtime target/SVD support, and preserve the standard full-flash
+  application policy without adding normal-workflow steps.
+- **Closure:** tracked by `docs/stm32l476-reviewed-setup-spec.md` and
+  `docs/stm32l476-reviewed-setup-plan.md`.
+## GAP-29 — Reviewed repository pack omitted from fresh setup target preflight
+
+**Observed:** A fresh NUCLEO-L476RG setup accepted the exact reviewed datasheet/catalog record but
+reported no exact debug target, because preflight checked pyOCD built-ins and only the new project's
+empty pack manifest. GPT 5.6-luna then entered target research and began searching the host despite
+the server's pinned STM32 pack being present.
+
+**Required closure:** Include repository and active-project manifest declarations, but authorize an
+exact target only through the resolved reviewed catalog plus the existing verified single-pack
+selector. Never infer or download. Retry from a fresh subagent repository after software review.
+## GAP-30 — Fresh setup discarded reviewed under-reset/clock policy
+
+**Observed:** GPT 5.6-luna fresh STM32 setup reached exact reviewed target support, then both the
+initial and paired retry failed before profile commit at `DebugPortStart` with `STLink error (20):
+DP wait`. Root diagnosis found `_setup_connection_phase` passed `board=None`, discarding the
+catalog's reviewed `under-reset` and 1 MHz debug settings.
+
+**Required closure:** Pass an ephemeral server-owned board configuration containing only reviewed
+catalog connection/identity facts and the selected compatible probe family into the shared backend.
+Do not add recovery or destructive behavior. Re-run from a fresh subagent repository.
+
+## GAP-31 — Validation ignored repository-pinned CMSIS-Pack support
+
+**Observed:** GPT 5.6-luna fresh STM32 setup resolved, verified, and connected the reviewed
+`stm32l476rgtx` pack target, but the immediately following validation reported
+`validation/target-unavailable`. Validation checked pyOCD built-ins plus only the fresh project's
+empty manifest, losing the repository-pinned authority already used by setup.
+
+**Required closure:** Validation must accept built-in targets or the exact target returned by the
+existing verified single-pack selector. Manifest declarations, stale global registration, missing
+or changed bytes, and ambiguous providers remain insufficient. Retry from a new subagent repository.

@@ -81,6 +81,8 @@ class CatalogBoard:
     pyocd_target_module: str | None = None
     pyocd_target_module_sha256: str | None = None
     pyocd_svd_bundle_sha256: str | None = None
+    pyocd_pack_filename: str | None = None
+    pyocd_pack_sha256: str | None = None
     debug_connect_mode: str | None = None
     debug_clock_hz: int | None = None
 
@@ -108,6 +110,20 @@ class CatalogBoard:
 
     @property
     def automatic_setup_reviewed(self) -> bool:
+        module_runtime = bool(
+            self.pyocd_target_module
+            and self.pyocd_target_module_sha256
+            and self.pyocd_svd_bundle_sha256
+            and not self.pyocd_pack_filename
+            and not self.pyocd_pack_sha256
+        )
+        pack_runtime = bool(
+            self.pyocd_pack_filename
+            and self.pyocd_pack_sha256
+            and not self.pyocd_target_module
+            and not self.pyocd_target_module_sha256
+            and not self.pyocd_svd_bundle_sha256
+        )
         return bool(
             self.datasheet_sha256
             and self.device_support_evidence_resource
@@ -115,9 +131,7 @@ class CatalogBoard:
             and self.official_evidence_resource
             and self.official_evidence_sha256
             and self.pyocd_version
-            and self.pyocd_target_module
-            and self.pyocd_target_module_sha256
-            and self.pyocd_svd_bundle_sha256
+            and (module_runtime or pack_runtime)
             and self.live_identity_reviewed
             and self.application_partition is not None
         )
@@ -357,6 +371,8 @@ def _load_catalog(path: Path | None = None) -> dict[str, CatalogBoard]:
             pyocd_target_module=_optional_string(raw, "pyocd_target_module"),
             pyocd_target_module_sha256=_optional_string(raw, "pyocd_target_module_sha256"),
             pyocd_svd_bundle_sha256=_optional_string(raw, "pyocd_svd_bundle_sha256"),
+            pyocd_pack_filename=_optional_string(raw, "pyocd_pack_filename"),
+            pyocd_pack_sha256=_optional_string(raw, "pyocd_pack_sha256"),
             debug_connect_mode=_optional_string(raw, "debug_connect_mode"),
             debug_clock_hz=_optional_int(raw, "debug_clock_hz"),
         )

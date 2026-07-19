@@ -16,7 +16,7 @@ from pyocd_debug_mcp.setup_flow.board_catalog import (
     resolve_reviewed_support_from_datasheet,
     reviewed_setup_board_types,
 )
-from pyocd_debug_mcp.safety.regions import RegionKind
+from pyocd_debug_mcp.safety.regions import AddressRange, RegionKind
 
 
 def test_nrf52840_catalog_separates_live_family_from_package_evidence() -> None:
@@ -66,7 +66,7 @@ def test_every_catalog_entry_has_explicit_partition_and_live_identity_policy() -
 
 def test_catalog_is_closed_and_requires_reviewed_datasheet_hash(tmp_path: Path) -> None:
     assert catalog_board_types() == ("nrf52833dk", "nrf52840dk", "nucleo_l476rg")
-    assert reviewed_setup_board_types() == ("nrf52840dk",)
+    assert reviewed_setup_board_types() == ("nrf52840dk", "nucleo_l476rg")
     with pytest.raises(BoardCatalogError, match="Unsupported board type"):
         catalog_board("guessed_board")
 
@@ -76,7 +76,7 @@ def test_catalog_is_closed_and_requires_reviewed_datasheet_hash(tmp_path: Path) 
         catalog_board("nrf52840dk").validate_datasheet(fake_pdf)
 
 
-@pytest.mark.parametrize("board_type", ["nrf52833dk", "nucleo_l476rg"])
+@pytest.mark.parametrize("board_type", ["nrf52833dk"])
 def test_empty_datasheet_allowlist_is_unavailable_not_accept_anything(
     board_type: str, tmp_path: Path
 ) -> None:
@@ -93,6 +93,23 @@ def test_reviewed_datasheet_requires_exact_bytes_and_internally_computed_hash() 
     digest = catalog_board("nrf52840dk").validate_datasheet(datasheet)
 
     assert digest in catalog_board("nrf52840dk").datasheet_sha256
+
+    stm32_datasheet = Path("stm32l476je (2).pdf").resolve()
+    stm32_digest = catalog_board("nucleo_l476rg").validate_datasheet(stm32_datasheet)
+    assert stm32_digest == "a45a857e3aa75ac166dd532c76d76d5dd8377b9c5bf6f15c03c9cf85aeec0f65"
+
+
+def test_stm32_uses_pack_backed_runtime_without_changing_standard_partition() -> None:
+    board = catalog_board("nucleo_l476rg")
+
+    assert board.automatic_setup_reviewed
+    assert board.pyocd_target_module is None
+    assert board.pyocd_pack_filename == "Keil.STM32L4xx_DFP.3.1.0.pack"
+    assert board.pyocd_pack_sha256 == (
+        "5672383c07fbdcee0e471a33f4f8beb2e1f3200bc999244dcd6858e0e8e8203f"
+    )
+    assert board.application_partition == AddressRange(0x08000000, 0x08100000)
+    assert board.bootloader_partition is None
 
 
 def test_catalog_rejects_non_pdf_evidence(tmp_path: Path) -> None:

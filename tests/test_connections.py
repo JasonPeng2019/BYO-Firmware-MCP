@@ -516,8 +516,9 @@ async def test_live_connect_ap_failure_is_neutral_for_generic_and_jlink_retry_pa
     selected_uids: list[str | None] = []
 
     class FailingSession:
-        def __init__(self, failure: Exception) -> None:
+        def __init__(self, failure: Exception, probe_uid: str) -> None:
             self.failure = failure
+            self.probe = SimpleNamespace(unique_id=probe_uid)
 
         def open(self) -> None:
             raise self.failure
@@ -531,8 +532,10 @@ async def test_live_connect_ap_failure_is_neutral_for_generic_and_jlink_retry_pa
         del options
         selected_uids.append(probe_uid)
         if probe_uid == "fallback-probe-uid":
-            return FailingSession(RuntimeError("No emulator with serial number was found"))
-        return FailingSession(KeyError(1))
+            return FailingSession(
+                RuntimeError("No emulator with serial number was found"), probe_uid
+            )
+        return FailingSession(KeyError(1), probe_uid or "fallback-probe-uid")
 
     monkeypatch.setattr(
         swd_pyocd.PyOCDSWDInterface,

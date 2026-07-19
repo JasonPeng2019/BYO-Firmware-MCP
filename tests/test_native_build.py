@@ -74,7 +74,9 @@ def test_run_build_executes_one_native_command_and_reports_artifacts(
         executable=tmp_path / "west",
         environment={"PATH": "local-only"},
     )
-    monkeypatch.setattr(native_build, "discover_local_environment", lambda: environment)
+    monkeypatch.setattr(
+        native_build, "discover_local_environment", lambda **_kwargs: environment
+    )
     calls: list[tuple[list[str], Path, dict[str, str]]] = []
 
     def fake_run(
@@ -142,7 +144,9 @@ def test_command_template_is_general_and_parameterized(
         executable=tmp_path / "ncs" / "toolchains" / "one" / "bin" / "west",
         environment={},
     )
-    monkeypatch.setattr(native_build, "discover_local_environment", lambda: selected)
+    monkeypatch.setattr(
+        native_build, "discover_local_environment", lambda **_kwargs: selected
+    )
     template = native_build.command_template()
     argv = template["argv_template"]
     assert isinstance(argv, list)
@@ -162,7 +166,7 @@ def test_command_template_is_general_and_parameterized(
 def test_command_template_reports_missing_local_environment(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    def unavailable() -> native_build.LocalBuildEnvironment:
+    def unavailable(**_kwargs: object) -> native_build.LocalBuildEnvironment:
         raise RuntimeError("no complete local install")
 
     monkeypatch.setattr(native_build, "discover_local_environment", unavailable)
@@ -245,7 +249,7 @@ def test_posix_defaults_never_reinterpret_windows_path() -> None:
 def test_command_template_contains_filesystem_discovery_failure(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    def inaccessible() -> native_build.LocalBuildEnvironment:
+    def inaccessible(**_kwargs: object) -> native_build.LocalBuildEnvironment:
         raise PermissionError("blocked install root")
 
     monkeypatch.setattr(native_build, "discover_local_environment", inaccessible)
@@ -256,3 +260,204 @@ def test_command_template_contains_filesystem_discovery_failure(
         "status": "unavailable",
         "error": "blocked install root",
     }
+
+
+def test_make_provider_uses_fresh_build_variable_and_reports_generic_artifacts(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    project = tmp_path / "bare-metal"
+    project.mkdir()
+    (project / "Makefile").write_text("all:\n\t@echo build\n", encoding="utf-8")
+    build = tmp_path / "out"
+    make = tmp_path / "tools" / "make.exe"
+    make.parent.mkdir()
+    make.write_bytes(b"tool")
+    gcc = make.parent / "arm-none-eabi-gcc.exe"
+    gcc.write_bytes(b"tool")
+    environment = native_build.LocalBuildEnvironment(
+        provider="gnu-make",
+        workspace_dir=make.parent,
+        toolchain_env=gcc,
+        executable=make,
+        environment={"PATH": str(make.parent)},
+    )
+    monkeypatch.setattr(
+        native_build,
+        "discover_local_environment",
+        lambda **kwargs: environment
+        if kwargs.get("provider") == "gnu-make"
+        else pytest.fail("wrong provider"),
+    )
+    calls: list[tuple[list[str], Path, dict[str, str]]] = []
+
+    def fake_run(
+        argv: list[str],
+        *,
+        cwd: Path,
+        env: dict[str, str],
+        check: bool,
+        timeout: float,
+    ) -> object:
+        del check, timeout
+        calls.append((argv, cwd, env))
+        build.mkdir(parents=True, exist_ok=True)
+        (build / "firmware.elf").write_bytes(b"elf")
+        (build / "firmware.map").write_text("map", encoding="utf-8")
+        (build / "firmware.hex").write_text("hex", encoding="utf-8")
+        return Namespace(returncode=0)
+
+    monkeypatch.setattr(native_build, "run_owned", fake_run)
+
+    result = native_build.run_build(
+        Namespace(project_dir=str(project), build_dir=str(build), target="firmware")
+    )
+
+    evidence = json.loads(capsys.readouterr().out)
+    assert result == 0
+    assert calls[0][0] == [
+        str(make),
+        "-C",
+        str(project.resolve()),
+        f"BUILD_DIR={build.resolve()}",
+        "firmware",
+    ]
+    assert calls[0][1] == project.resolve()
+    assert evidence["provider"] == "gnu-make"
+    assert evidence["artifacts"]["elf"] == str((build / "firmware.elf").resolve())
+    assert evidence["artifacts"]["map"] == str((build / "firmware.map").resolve())
+    assert evidence["helper_provisioning"] is False
+
+
+def test_make_environment_prefers_explicit_tools_and_prepends_arm_gcc(
+    tmp_path: Path,
+) -> None:
+    make = tmp_path / "make" / "make.exe"
+    gcc = tmp_path / "gcc" / "arm-none-eabi-gcc.exe"
+    make.parent.mkdir()
+    gcc.parent.mkdir()
+    make.write_bytes(b"tool")
+    gcc.write_bytes(b"tool")
+
+    selected = native_build.discover_local_environment(
+        provider="gnu-make",
+        environ={
+            "NATIVE_MAKE": str(make),
+            "ARM_GCC": str(gcc),
+            "PATH": "original",
+        },
+    )
+
+    assert selected.provider == "gnu-make"
+    assert selected.executable == make.resolve()
+    assert selected.toolchain_env == gcc.resolve()
+    assert selected.environment["PATH"].split(native_build.os.pathsep)[:2] == [
+        str(gcc.parent.resolve()),
+        str(make.parent.resolve()),
+    ]
+
+
+def test_make_artifact_discovery_rejects_ambiguity(tmp_path: Path) -> None:
+    build = tmp_path / "build"
+    build.mkdir()
+    for name in ("one.elf", "two.elf"):
+        (build / name).write_bytes(b"elf")
+
+    with pytest.raises(RuntimeError, match="exactly one ELF"):
+        native_build._artifact_paths(build, "gnu-make")
+
+
+def test_failed_make_reports_child_exit_without_guessing_artifacts(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    (project / "Makefile").write_text("firmware:\n\t@false\n", encoding="utf-8")
+    build = tmp_path / "build"
+    environment = native_build.LocalBuildEnvironment(
+        provider="gnu-make",
+        workspace_dir=tmp_path,
+        toolchain_env=None,
+        executable=tmp_path / "make",
+        environment={},
+    )
+    monkeypatch.setattr(
+        native_build, "discover_local_environment", lambda **_kwargs: environment
+    )
+    monkeypatch.setattr(
+        native_build, "run_owned", lambda *_args, **_kwargs: Namespace(returncode=2)
+    )
+
+    result = native_build.run_build(
+        Namespace(project_dir=str(project), build_dir=str(build), target="firmware")
+    )
+
+    evidence = json.loads(capsys.readouterr().out)
+    assert result == 2
+    assert evidence["exit_code"] == 2
+    assert evidence["artifacts"] == {"elf": None, "hex": None, "map": None}
+
+
+@pytest.mark.parametrize("target", ["-f", "NAME=value", "../outside"])
+def test_native_target_rejects_make_option_or_variable_injection(target: str) -> None:
+    with pytest.raises(RuntimeError, match="project-native target"):
+        native_build._validate_target(target)
+
+
+def test_make_artifacts_reject_extra_unrelated_map(tmp_path: Path) -> None:
+    build = tmp_path / "build"
+    build.mkdir()
+    (build / "firmware.elf").write_bytes(b"elf")
+    (build / "firmware.map").write_text("map", encoding="utf-8")
+    (build / "stale.map").write_text("stale", encoding="utf-8")
+
+    with pytest.raises(RuntimeError, match="exactly one linker map"):
+        native_build._artifact_paths(build, "gnu-make")
+
+
+def test_arm_gcc_root_resolves_conventional_bin_directory(tmp_path: Path) -> None:
+    root = tmp_path / "toolchain"
+    compiler = root / "bin" / (
+        "arm-none-eabi-gcc.exe" if native_build.os.name == "nt" else "arm-none-eabi-gcc"
+    )
+    compiler.parent.mkdir(parents=True)
+    compiler.write_bytes(b"")
+    compiler.chmod(0o755)
+
+    assert native_build._explicit_tool_root(
+        {"ARM_GCC_ROOT": str(root)}, "ARM_GCC_ROOT", "arm-none-eabi-gcc", "Arm GCC"
+    ) == compiler.resolve()
+
+
+@pytest.mark.parametrize(
+    "relative_base",
+    [
+        Path("STM32CubeIDE_1.18.1") / "STM32CubeIDE",
+        Path("STM32CubeIDE.app") / "Contents" / "Eclipse",
+        Path("stm32cubeide_1.18.1"),
+    ],
+)
+def test_vendor_discovery_supports_windows_macos_and_linux_layouts(
+    tmp_path: Path, relative_base: Path
+) -> None:
+    executable = (
+        tmp_path
+        / relative_base
+        / "plugins"
+        / "com.st.stm32cube.ide.mcu.externaltools.make.1"
+        / "tools"
+        / "bin"
+        / ("make.exe" if native_build.os.name == "nt" else "make")
+    )
+    executable.parent.mkdir(parents=True)
+    executable.write_bytes(b"")
+    executable.chmod(0o755)
+
+    matches = native_build._bounded_vendor_tools(
+        (tmp_path,),
+        (
+            "plugins/com.st.stm32cube.ide.mcu.externaltools.make.*/tools/bin/make",
+            "plugins/com.st.stm32cube.ide.mcu.externaltools.make.*/tools/bin/make.exe",
+        ),
+    )
+
+    assert matches == (executable.resolve(),)

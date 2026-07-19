@@ -9,6 +9,7 @@ from mcp.shared.memory import create_connected_server_and_client_session
 
 from pyocd_debug_mcp import probe_inventory, server
 from pyocd_debug_mcp.firmstore.cache import CacheResolution
+from pyocd_debug_mcp.pack_provision import PackProvisionError, PackSpec
 from pyocd_debug_mcp.setup_flow.board_catalog import (
     ReviewedSupportNotFoundError,
     catalog_board,
@@ -153,9 +154,9 @@ def test_setup_inventory_scopes_probe_and_uart_by_stable_connection_identity(
             "nrf52833dk",
             "probe:000683377322",
             "nRF52833 DK",
-                "nRF52833-QIAA",
-                115200,
-            )
+            "nRF52833-QIAA",
+            115200,
+        )
     )
 
     assert [probe.probe_id for probe in result.probes] == ["683377322"]
@@ -301,6 +302,129 @@ def test_fresh_reviewed_catalog_maps_exact_package_to_builtin_target_without_res
     assert wrong_suffix.exact_detected_targets == ()
 
 
+def test_fresh_reviewed_catalog_uses_verified_repository_pack_target(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(server, "_validation_inventory", lambda: ValidationInventory())
+    monkeypatch.setattr(server, "_target_names", lambda: ())
+    spec = PackSpec(
+        id="Keil.STM32L4xx_DFP",
+        version="3.1.0",
+        filename="stm32.pack",
+        url="https://example.invalid/stm32.pack",
+        sha256="1" * 64,
+        provides_targets=("stm32l476rgtx",),
+        needed_by_boards=("nucleo_l476rg",),
+    )
+    monkeypatch.setattr(
+        server,
+        "load_manifest",
+        lambda path=None: (spec,) if path is None else (),
+    )
+    monkeypatch.setattr(server, "verified_pack_for_target", lambda _target: object())
+
+    result = server._setup_inventory(
+        SetupUserInput(
+            "stm32_board",
+            "probe:missing",
+            "STM32 Board",
+            "STM32L476RGT6",
+            115200,
+        )
+    )
+
+    assert result.manifest_targets == ("stm32l476rgtx",)
+    assert result.exact_detected_targets == ("stm32l476rgtx",)
+
+    def invalid_pack(_target: str) -> object:
+        raise PackProvisionError("tampered")
+
+    monkeypatch.setattr(server, "verified_pack_for_target", invalid_pack)
+    refused = server._setup_inventory(
+        SetupUserInput(
+            "stm32_board",
+            "probe:missing",
+            "STM32 Board",
+            "STM32L476RGT6",
+            115200,
+        )
+    )
+    assert refused.exact_detected_targets == ()
+    assert refused.blocking_error is not None
+    assert refused.blocking_error.code == "setup/reviewed-pack-unavailable"
+
+
+def test_validation_target_support_uses_verified_pack_not_manifest_registration(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[str] = []
+
+    def verified(target: str) -> object:
+        calls.append(target)
+        return object()
+
+    monkeypatch.setattr(server, "_built_in_target_names", lambda: {"builtin-target"})
+    monkeypatch.setattr(server, "verified_pack_for_target", verified)
+    assert server._validation_target_supported("builtin-target") is True
+    assert calls == []
+
+    monkeypatch.setattr(server, "_built_in_target_names", lambda: set())
+    assert server._validation_target_supported("stm32l476rgtx") is True
+    assert calls == ["stm32l476rgtx"]
+
+    monkeypatch.setattr(server, "verified_pack_for_target", lambda _target: None)
+    assert server._validation_target_supported("not-a-builtin-target") is False
+
+    def invalid_pack(_target: str) -> object:
+        raise PackProvisionError("changed pack bytes")
+
+    monkeypatch.setattr(server, "verified_pack_for_target", invalid_pack)
+    assert server._validation_target_supported("not-a-builtin-target") is False
+
+
+@pytest.mark.parametrize("failure", ["missing", "checksum-invalid", "ambiguous"])
+def test_pack_backed_exact_override_never_bypasses_verified_provider(
+    monkeypatch: pytest.MonkeyPatch, failure: str
+) -> None:
+    monkeypatch.setattr(server, "_validation_inventory", lambda: ValidationInventory())
+    # Simulate a stale process-global target previously registered from any pack.
+    monkeypatch.setattr(server, "_target_names", lambda: ("stm32l476rgtx",))
+    spec = PackSpec(
+        id="Keil.STM32L4xx_DFP",
+        version="3.1.0",
+        filename="stm32.pack",
+        url="https://example.invalid/stm32.pack",
+        sha256="1" * 64,
+        provides_targets=("stm32l476rgtx",),
+        needed_by_boards=("nucleo_l476rg",),
+    )
+    monkeypatch.setattr(server, "load_manifest", lambda path=None: (spec,) if path is None else ())
+
+    def unavailable(_target: str) -> object | None:
+        if failure == "missing":
+            return None
+        raise PackProvisionError(failure)
+
+    monkeypatch.setattr(server, "verified_pack_for_target", unavailable)
+    server._setup_target_overrides["stm32_board"] = "stm32l476rgtx"
+    try:
+        result = server._setup_inventory(
+            SetupUserInput(
+                "stm32_board",
+                "probe:missing",
+                "STM32 Board",
+                "STM32L476RGT6",
+                115200,
+            )
+        )
+    finally:
+        server._setup_target_overrides.pop("stm32_board", None)
+
+    assert result.exact_detected_targets == ()
+    assert result.blocking_error is not None
+    assert result.blocking_error.code == "setup/reviewed-pack-unavailable"
+
+
 def test_broad_supported_prefix_is_not_part_target_evidence(monkeypatch) -> None:
     monkeypatch.setattr(server, "_validation_inventory", lambda: ValidationInventory())
     monkeypatch.setattr(server, "_target_names", lambda: ("nrf5",))
@@ -343,9 +467,7 @@ def test_validation_inventory_includes_server_owned_active_probe(monkeypatch) ->
 
 
 def test_public_setup_continuation_validates_and_routes_target_research(monkeypatch) -> None:
-    user_input = SetupUserInput(
-        "nf_board", "probe:683377322", "NF Board", "nRF52840-QIAA", 115200
-    )
+    user_input = SetupUserInput("nf_board", "probe:683377322", "NF Board", "nRF52840-QIAA", 115200)
     monkeypatch.setattr(
         server._setup_workflow,
         "continuation_context",
@@ -430,9 +552,7 @@ def test_public_setup_continuation_accepts_real_external_adapter_confirmation_co
         "setup/external-adapter-confirmation-required",
         "Confirm the adapter.",
         choices=(
-            FriendlyChoice(
-                "confirm_external_adapter", "Confirm adapter", "Selected adapter"
-            ),
+            FriendlyChoice("confirm_external_adapter", "Confirm adapter", "Selected adapter"),
         ),
         selected_probe=ProbeCandidate("probe-a", "Adapter probe", "cmsis-dap"),
         selected_serial=SerialCandidate("uart-a", "COM9", "External adapter"),

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 from pathlib import Path
 
 import pytest
@@ -7,6 +8,7 @@ import pytest
 from pyocd_debug_mcp.adapters import swd_pyocd
 from pyocd_debug_mcp.adapters.swd_interface import TargetSessionHandle
 from pyocd_debug_mcp.board_config import BoardConfig, RECOVER_MODE_MANUAL_ONLY
+from pyocd_debug_mcp.firmstore.store import FirmStore
 from pyocd_debug_mcp.services import target_control
 from pyocd_debug_mcp.target_errors import (
     ProbeNotFoundError,
@@ -296,7 +298,7 @@ def test_validation_attach_mode_overrides_board_under_reset_default(monkeypatch)
         "session_with_chosen_probe",
         staticmethod(choose),
     )
-    monkeypatch.setattr(swd_pyocd, "discover_local_packs", lambda: [])
+    monkeypatch.setattr(swd_pyocd, "verified_pack_for_target", lambda _target: None)
 
     handle = swd_pyocd.PyOCDSWDInterface().open(
         board=board,
@@ -307,6 +309,111 @@ def test_validation_attach_mode_overrides_board_under_reset_default(monkeypatch)
 
     assert handle.probe_uid == "probe-1"
     assert calls[0]["options"]["connect_mode"] == "attach"  # type: ignore[index]
+
+
+def test_adapter_closes_if_global_target_came_from_different_pack(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    calls: list[str] = []
+
+    class FakeProbe:
+        unique_id = "probe-1"
+
+    class FakeSession:
+        probe = FakeProbe()
+        target = object()
+
+        def open(self) -> None:
+            calls.append("open")
+
+        def close(self) -> None:
+            calls.append("close")
+
+    class SelectedPack:
+        path = tmp_path / "selected.pack"
+
+    class PackObject:
+        devices = [object()]
+
+    chosen: list[dict[str, object] | None] = []
+
+    def choose(**kwargs: object) -> FakeSession:
+        options = kwargs.get("options")
+        chosen.append(options if isinstance(options, dict) else None)
+        return FakeSession()
+
+    monkeypatch.setattr(
+        swd_pyocd.ConnectHelper, "session_with_chosen_probe", staticmethod(choose)
+    )
+    monkeypatch.setattr(swd_pyocd, "verified_pack_for_target", lambda _target: SelectedPack())
+    monkeypatch.setattr(swd_pyocd, "_cmsis_pack_for", lambda _selected: PackObject())
+
+    with pytest.raises(TargetConnectionError, match="different device pack"):
+        swd_pyocd.PyOCDSWDInterface().open(
+            board=None, unique_id="probe-1", target="stm32l476rgtx"
+        )
+
+    assert chosen[0] is not None
+    assert len(chosen[0]["pack"]) == 1
+    assert isinstance(chosen[0]["pack"][0], PackObject)
+    assert calls == ["close"]
+
+
+def test_adapter_uses_promoted_project_pack_manifest(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    payload = Path("packs/Keil.STM32L4xx_DFP.3.1.0.pack").read_bytes()
+    digest = hashlib.sha256(payload).hexdigest()
+    store = FirmStore(tmp_path)
+    pack_path = store.layout.pack_files / "promoted.pack"
+    store.atomic_write_bytes(pack_path, payload)
+    store.layout.pack_manifest.parent.mkdir(parents=True)
+    store.layout.pack_manifest.write_text(
+        "packs:\n"
+        "  - id: Test.Promoted\n"
+        "    filename: promoted.pack\n"
+        "    url: https://example.invalid/promoted.pack\n"
+        f"    sha256: {digest}\n"
+        "    provides_targets: [promoted_target]\n"
+        "    needed_by_boards: [promoted_board]\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("BYO_MCP_ARTIFACT_ROOT", str(tmp_path))
+
+    class FakeProbe:
+        unique_id = "probe-1"
+
+    selected_options: list[dict[str, object]] = []
+
+    def choose(**kwargs: object) -> object:
+        options = kwargs["options"]
+        assert isinstance(options, dict)
+        selected_options.append(options)
+        packs = options["pack"]
+        assert isinstance(packs, list) and len(packs) == 1
+        source = packs[0].devices[0]  # type: ignore[attr-defined]
+        target_type = type("PromotedTarget", (), {"_pack_device": source})
+        return type(
+            "PromotedSession",
+            (),
+            {
+                "probe": FakeProbe(),
+                "target": target_type(),
+                "open": lambda self: None,
+                "close": lambda self: None,
+            },
+        )()
+
+    monkeypatch.setattr(
+        swd_pyocd.ConnectHelper, "session_with_chosen_probe", staticmethod(choose)
+    )
+
+    handle = swd_pyocd.PyOCDSWDInterface().open(
+        board=None, unique_id="probe-1", target="promoted_target"
+    )
+
+    assert handle.target_override == "promoted_target"
+    assert len(selected_options[0]["pack"]) == 1  # type: ignore[arg-type]
 
 
 def test_adapter_open_retries_jlink_uidless_after_known_serial_open_failure(monkeypatch) -> None:
@@ -364,7 +471,7 @@ def test_adapter_open_retries_jlink_uidless_after_known_serial_open_failure(monk
     )
     # Keep this test hermetic: neutralize locally-provisioned pack discovery so the
     # asserted backend options don't depend on what's in the repo packs/ dir.
-    monkeypatch.setattr(swd_pyocd, "discover_local_packs", lambda *a, **k: [])
+    monkeypatch.setattr(swd_pyocd, "verified_pack_for_target", lambda *a, **k: None)
     monkeypatch.setattr(
         swd_pyocd,
         "list_connected_probes",
@@ -422,6 +529,80 @@ def test_adapter_open_retries_jlink_uidless_after_known_serial_open_failure(monk
             },
         },
     ]
+
+
+def test_jlink_uidless_retry_never_opens_a_different_probe(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    board = BoardConfig(
+        board_id="nrf_board",
+        display_name="nRF Board",
+        mcu_family="nrf52840",
+        probe_family="jlink",
+        pyocd_target="nrf52840",
+        probe_type="SEGGER J-Link",
+        probe_hint_terms=(),
+        serial_hint_terms=(),
+        test_addr=0,
+    )
+    events: list[str] = []
+
+    class ProbeA:
+        unique_id = "000123"
+
+    class ProbeB:
+        unique_id = "456"
+
+    class InitialSession:
+        probe = ProbeA()
+
+        def open(self) -> None:
+            events.append("open-a")
+            raise RuntimeError("No emulator with serial number 000123 found.")
+
+        def close(self) -> None:
+            events.append("close-a")
+
+    class RetrySession:
+        probe = ProbeB()
+
+        def open(self) -> None:
+            events.append("open-b")
+
+        def close(self) -> None:
+            events.append("close-b")
+
+    sessions = [InitialSession(), RetrySession()]
+    monkeypatch.setattr(
+        swd_pyocd.ConnectHelper,
+        "session_with_chosen_probe",
+        staticmethod(lambda **_kwargs: sessions.pop(0)),
+    )
+    monkeypatch.setattr(swd_pyocd, "verified_pack_for_target", lambda *_args: None)
+    monkeypatch.setattr(
+        swd_pyocd,
+        "list_connected_probes",
+        lambda _run: [
+            type(
+                "ProbeRow",
+                (),
+                {
+                    "uid": "456",
+                    "family": "jlink",
+                    "description": "J-Link B",
+                    "raw": "",
+                    "searchable_text": "j-link b",
+                },
+            )()
+        ],
+    )
+
+    with pytest.raises(ProbeNotFoundError, match="different physical probe"):
+        swd_pyocd.PyOCDSWDInterface().open(
+            board=board, unique_id="000123", target="nrf52840"
+        )
+
+    assert events == ["open-a", "close-a", "close-b"]
 
 
 def test_run_cmd_returns_timeout_code(monkeypatch) -> None:

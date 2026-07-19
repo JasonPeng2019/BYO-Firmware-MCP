@@ -6,6 +6,7 @@ from pathlib import Path
 
 import pytest
 
+from pyocd_debug_mcp.pack_provision import PackProvisionError
 from pyocd_debug_mcp.safety.verify2 import ReconciliationResult, VerificationConflict
 from pyocd_debug_mcp.safety.regions import ActionCategory, AddressRange, Allowed, Refusal, SafetyMap
 from pyocd_debug_mcp.setup_flow import reviewed_evidence
@@ -14,6 +15,10 @@ from pyocd_debug_mcp.setup_flow.board_catalog import BoardCatalogError, catalog_
 
 def _datasheet() -> Path:
     return Path("Nano_BLE_MCU-nRF52840_PS_v1.1.pdf").resolve()
+
+
+def _stm32_datasheet() -> Path:
+    return Path("stm32l476je (2).pdf").resolve()
 
 
 def test_reviewed_evidence_checks_runtime_and_reconciles_distinct_authorities() -> None:
@@ -41,6 +46,58 @@ def test_reviewed_evidence_checks_runtime_and_reconciles_distinct_authorities() 
     assert support["asset_sha256"] != official["asset_sha256"]
     assert support["document"] != official["document"]
     assert support["runtime"]["pyocd_version"] == "0.45.0"  # type: ignore[index]
+
+
+def test_stm32_reviewed_evidence_is_bound_to_local_pack_and_official_pdf() -> None:
+    catalog = catalog_board("nucleo_l476rg")
+
+    bundle = reviewed_evidence.load_reviewed_evidence(catalog, _stm32_datasheet())
+
+    assert bundle.reconciliation.accepted
+    assert bundle.pyocd_target_module_sha256 == catalog.pyocd_pack_sha256
+    assert bundle.pyocd_svd_bundle_sha256 == catalog.pyocd_pack_sha256
+    assert {item.fact_id for item in bundle.reconciliation.regions} == {
+        "physical_flash",
+        "physical_ram",
+        "writable_ram",
+        "system_memory",
+        "otp_config",
+        "option_bytes",
+        "peripherals",
+        "cpu_system",
+    }
+
+
+def test_stm32_pack_runtime_fails_closed_on_missing_or_tampered_pack(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    catalog = catalog_board("nucleo_l476rg")
+    monkeypatch.setattr(
+        reviewed_evidence,
+        "verified_pack_for_target",
+        lambda _target: (_ for _ in ()).throw(PackProvisionError("absent")),
+    )
+    with pytest.raises(BoardCatalogError, match="CMSIS-Pack is unavailable"):
+        reviewed_evidence.load_reviewed_evidence(catalog, _stm32_datasheet())
+
+    monkeypatch.undo()
+    with pytest.raises(BoardCatalogError, match="catalog and pinned pack manifest"):
+        reviewed_evidence.load_reviewed_evidence(
+            replace(catalog, pyocd_pack_sha256="0" * 64), _stm32_datasheet()
+        )
+
+
+def test_runtime_identity_rejects_mixed_module_and_pack_configuration() -> None:
+    catalog = catalog_board("nucleo_l476rg")
+    mixed = replace(
+        catalog,
+        pyocd_target_module="pyocd.target.builtin.target_nRF52840_xxAA",
+        pyocd_target_module_sha256="0" * 64,
+        pyocd_svd_bundle_sha256="0" * 64,
+    )
+
+    with pytest.raises(BoardCatalogError, match="exactly one reviewed module or CMSIS-Pack"):
+        reviewed_evidence._runtime_pyocd_identity(mixed)
 
 
 @pytest.mark.parametrize(

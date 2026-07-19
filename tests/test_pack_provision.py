@@ -19,6 +19,7 @@ from pyocd_debug_mcp.pack_provision import (
     pack_spec_document,
     sha256_bytes,
     sha256_file,
+    verified_pack_for_target,
 )
 
 
@@ -173,3 +174,53 @@ def test_repo_manifest_is_valid_and_pinned() -> None:
     for spec in specs:
         assert spec.is_pinned, f"{spec.id} must have url + sha256"
         assert len(spec.sha256) == 64, f"{spec.id} sha256 should be 64 hex chars"
+
+
+def test_verified_pack_for_target_selects_only_manifest_provider(tmp_path: Path) -> None:
+    pack, digest = _write_pack(tmp_path / "packs", "selected.pack", b"selected")
+    _write_pack(tmp_path / "packs", "unrelated.pack", b"unrelated")
+    manifest = tmp_path / "manifest.yaml"
+    manifest.write_text(
+        "packs:\n"
+        "  - id: Vendor.Selected\n"
+        "    filename: selected.pack\n"
+        "    url: https://example.invalid/selected.pack\n"
+        f"    sha256: {digest}\n"
+        "    provides_targets: [target_a]\n"
+        "    needed_by_boards: [board_a]\n",
+        encoding="utf-8",
+    )
+
+    selected = verified_pack_for_target(
+        "TARGET_A", manifest_path=manifest, packs_dir=tmp_path / "packs"
+    )
+
+    assert selected is not None
+    assert selected.path == pack.resolve()
+    assert selected.spec.needed_by_boards == ("board_a",)
+    assert verified_pack_for_target(
+        "builtin_target", manifest_path=manifest, packs_dir=tmp_path / "packs"
+    ) is None
+
+
+def test_verified_pack_for_target_rejects_ambiguous_or_changed_bytes(tmp_path: Path) -> None:
+    packs = tmp_path / "packs"
+    _, digest = _write_pack(packs, "selected.pack", b"selected")
+    manifest = tmp_path / "manifest.yaml"
+    entry = (
+        "  - id: Vendor.Selected\n"
+        "    filename: selected.pack\n"
+        "    url: https://example.invalid/selected.pack\n"
+        f"    sha256: {digest}\n"
+        "    provides_targets: [target_a]\n"
+    )
+    manifest.write_text("packs:\n" + entry + entry.replace("Selected", "Other"), encoding="utf-8")
+    with pytest.raises(PackProvisionError, match="2 providers"):
+        verified_pack_for_target("target_a", manifest_path=manifest, packs_dir=packs)
+
+    manifest.write_text("packs:\n" + entry, encoding="utf-8")
+    selected = verified_pack_for_target("target_a", manifest_path=manifest, packs_dir=packs)
+    assert selected is not None
+    selected.path.write_bytes(b"changed")
+    with pytest.raises(PackProvisionError, match="changed or disappeared"):
+        selected.verify_unchanged()

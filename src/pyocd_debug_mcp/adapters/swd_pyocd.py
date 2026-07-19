@@ -19,10 +19,11 @@ from pyocd.core.exceptions import TransferError  # type: ignore[import-untyped]
 from pyocd.core.helpers import ConnectHelper  # type: ignore[import-untyped]
 from pyocd.flash.eraser import FlashEraser  # type: ignore[import-untyped]
 from pyocd.flash.file_programmer import FileProgrammer  # type: ignore[import-untyped]
+from pyocd.target.pack.cmsis_pack import CmsisPack  # type: ignore[import-untyped]
 
 from pyocd_debug_mcp.adapters.swd_interface import SWDInterface, TargetSessionHandle
 from pyocd_debug_mcp.board_config import BoardConfig
-from pyocd_debug_mcp.pack_provision import discover_local_packs
+from pyocd_debug_mcp.pack_provision import VerifiedPack, verified_pack_for_target
 from pyocd_debug_mcp.probe_inventory import list_connected_probes
 from pyocd_debug_mcp.target_errors import (
     LockedTargetError,
@@ -40,6 +41,22 @@ from pyocd_debug_mcp.timeouts import (
 
 ROUTE_PYOCD_NATIVE = "pyocd-native"
 SUPPORTED_FLASH_SUFFIXES = frozenset({".elf", ".hex"})
+_PACK_OBJECTS: dict[str, tuple[bytes, CmsisPack]] = {}
+
+
+def _cmsis_pack_for(selected: VerifiedPack) -> CmsisPack:
+    """Return the stable in-memory pack object used by pyOCD's global registry."""
+
+    digest = selected.spec.sha256
+    cached = _PACK_OBJECTS.get(digest)
+    if cached is not None:
+        payload, pack = cached
+        if payload != selected.payload:
+            raise TargetConnectionError("Pinned CMSIS-Pack digest collision detected.")
+        return pack
+    pack = CmsisPack(io.BytesIO(selected.payload))
+    _PACK_OBJECTS[digest] = (selected.payload, pack)
+    return pack
 
 
 def _run_cmd(
@@ -128,6 +145,22 @@ def _looks_like_jlink_serial_open_failure(exc: Exception) -> bool:
     return "no emulator with serial number" in lowered
 
 
+def _same_probe_uid(expected: str | None, observed: str | None) -> bool:
+    """Compare exact probe identities, allowing decimal zero padding only."""
+
+    if not expected or not observed:
+        return False
+    left = expected.strip().casefold()
+    right = observed.strip().casefold()
+    if left == right:
+        return True
+    return (
+        left.isdecimal()
+        and right.isdecimal()
+        and (left.lstrip("0") or "0") == (right.lstrip("0") or "0")
+    )
+
+
 def _single_matching_probe_visible_for_board_family(board: BoardConfig) -> bool:
     probes = list_connected_probes(_run_cmd)
     matching = [probe for probe in probes if probe.family == board.probe_family]
@@ -196,6 +229,22 @@ class PyOCDSWDInterface(SWDInterface):
         except Exception:  # noqa: BLE001 - do not hide the original open failure
             pass
 
+    @staticmethod
+    def _verify_session_pack_source(
+        session: object, target: str | None, pack: CmsisPack | None
+    ) -> None:
+        """Prove the instantiated target came from the selected pack object."""
+
+        if pack is None:
+            return
+        session_target = getattr(session, "target", None)
+        source = getattr(type(session_target), "_pack_device", None)
+        if source is None or not any(source is device for device in pack.devices):
+            raise TargetConnectionError(
+                f"pyOCD target {target!r} was already registered by a different device pack; "
+                "restart with one unambiguous pinned provider."
+            )
+
     def open(
         self,
         *,
@@ -218,29 +267,46 @@ class PyOCDSWDInterface(SWDInterface):
                 raise ValueError(f"Unsupported pyOCD connect mode: {connect_mode}")
             options = dict(options or {})
             options["connect_mode"] = connect_mode
-        # Load any locally-provisioned CMSIS-Packs (pinned + sha256-verified) so the
-        # exact target resolves without depending on the live pyOCD pack index. This
-        # is a runtime/filesystem concern, kept out of the pure build_session_options.
-        local_packs = discover_local_packs()
-        if local_packs:
+        # Give pyOCD only the manifest-selected pack for this exact target. Passing
+        # every local pack lets an unrelated provider win target resolution.
+        selected_pack = (
+            verified_pack_for_target(target_override) if target_override is not None else None
+        )
+        pack_object = _cmsis_pack_for(selected_pack) if selected_pack is not None else None
+        if selected_pack is not None:
             options = dict(options or {})
-            options["pack"] = [str(p) for p in local_packs]
+            options["pack"] = [pack_object]
         session = self._choose_session(probe_uid=probe_uid, options=options)
         if session is None:
             raise ProbeNotFoundError("No matching debug probe found.")
 
         try:
+            self._verify_session_pack_source(session, target_override, pack_object)
             with _quiet_backend_streams():
                 session.open()
+            self._verify_session_pack_source(session, target_override, pack_object)
         except Exception as exc:  # noqa: BLE001 - preserve backend context
             self._close_quietly(session)
             if _should_retry_without_uid(board, probe_uid, exc):
                 retry_session = self._choose_session(probe_uid=None, options=options)
                 if retry_session is None:
                     raise ProbeNotFoundError("No matching debug probe found.") from exc
+                retry_uid = getattr(getattr(retry_session, "probe", None), "unique_id", None)
+                if not _same_probe_uid(probe_uid, retry_uid):
+                    self._close_quietly(retry_session)
+                    raise ProbeNotFoundError(
+                        "The selected J-Link was not the sole probe returned by UID-less retry; "
+                        "refusing to open a different physical probe."
+                    ) from exc
                 try:
+                    self._verify_session_pack_source(
+                        retry_session, target_override, pack_object
+                    )
                     with _quiet_backend_streams():
                         retry_session.open()
+                    self._verify_session_pack_source(
+                        retry_session, target_override, pack_object
+                    )
                 except Exception as retry_exc:  # noqa: BLE001 - preserve backend context
                     self._close_quietly(retry_session)
                     raise _typed_backend_error(retry_exc) from retry_exc
@@ -276,9 +342,12 @@ class PyOCDSWDInterface(SWDInterface):
         )
         options = dict(build_session_options(board, target_override, server_timeouts) or {})
         options["connect_mode"] = "under-reset"
-        local_packs = discover_local_packs()
-        if local_packs:
-            options["pack"] = [str(path) for path in local_packs]
+        selected_pack = (
+            verified_pack_for_target(target_override) if target_override is not None else None
+        )
+        pack_object = _cmsis_pack_for(selected_pack) if selected_pack is not None else None
+        if selected_pack is not None:
+            options["pack"] = [pack_object]
         session = self._choose_session(probe_uid=probe_uid, options=options)
         if session is None:
             raise ProbeNotFoundError("No matching debug probe found.")
@@ -290,6 +359,7 @@ class PyOCDSWDInterface(SWDInterface):
                 "connect_under_reset cannot degrade to an ordinary attach."
             )
         try:
+            self._verify_session_pack_source(session, target_override, pack_object)
             with _quiet_backend_streams():
                 # pyOCD's under-reset init sequence owns assertion, reset catch,
                 # halt, and release. Calling assert_reset() before Session.open()
@@ -300,6 +370,7 @@ class PyOCDSWDInterface(SWDInterface):
                 # returning. The bounded retry covers probes where the first halt
                 # command races reset release.
                 session.open()
+                self._verify_session_pack_source(session, target_override, pack_object)
                 halt_deadline = time.monotonic() + 0.5
                 while True:
                     session.target.halt()
