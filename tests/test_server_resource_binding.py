@@ -27,6 +27,7 @@ from pyocd_debug_mcp.setup_flow.preflight import (
     SetupUserInput,
 )
 from pyocd_debug_mcp.setup_flow.setup import SetupPhase, SetupPhaseContext, SetupPhaseOutcome
+from pyocd_debug_mcp.setup_flow.device_support import resolve_registered_pack_support
 from pyocd_debug_mcp.setup_flow.validate import ValidationInventory, ValidationSerial
 from pyocd_debug_mcp.safety.map_build import SafetyMapError
 from pyocd_debug_mcp.services.connections import ConnectionManager
@@ -288,6 +289,52 @@ def test_automatic_setup_commits_the_complete_reviewed_candidate(monkeypatch) ->
     assert commits == [("nrf_board", sentinel)]
 
 
+def test_generic_pack_profile_derives_schema_v3_without_reference_partitions(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A matching MCU must not inherit the Nucleo deployment policy."""
+
+    profiles = ProfileRepository(FirmStore(tmp_path), legacy_board_dir=tmp_path / "legacy")
+    monkeypatch.setattr(server, "_profile_repository", profiles)
+    datasheet = tmp_path / "device.pdf"
+    datasheet.write_bytes(b"%PDF-generic-device")
+    candidate = resolve_registered_pack_support("STM32L476RGT6")
+    profiles.commit_core(
+        profiles.stage_core(
+            {
+                "board_id": "custom_l476",
+                "display_name": "Custom L476",
+                "mcu_part_number": "STM32L476RGT6",
+                "mcu_family": "stm32l4",
+                "probe_family": "stlink",
+                "pyocd_target": candidate.pyocd_target,
+            }
+        )
+    )
+    profiles.commit_optional(
+        profiles.stage_optional(
+            "custom_l476",
+            {
+                "datasheet_sha256": hashlib.sha256(datasheet.read_bytes()).hexdigest(),
+                "device_support": candidate.to_authority_document(),
+                "test_read_address": 0x08000000,
+                "silicon_id_address": 0xE0042000,
+                "silicon_id_expected": 0x415,
+                "silicon_id_mask": 0xFFF,
+                "silicon_id_width_bits": 32,
+                "silicon_id_label": "compatible device identity",
+            },
+        )
+    )
+
+    document = server._derive_generic_safety_map("custom_l476")
+
+    assert document.to_document()["schema_version"] == 3
+    assert document.partitions.application is None
+    assert document.partitions.bootloader is None
+    assert document.deployment_policy == {"kind": "none"}
+
+
 def test_automatic_setup_rejects_family_name_without_rewriting_profile(monkeypatch) -> None:
     builder_called = False
     datasheet = Path("Nano_BLE_MCU-nRF52840_PS_v1.1.pdf").resolve()
@@ -512,7 +559,7 @@ def test_reviewed_opaque_target_reaches_live_connect_before_profile_commit(
     assert committed.board.silicon_id_mask == 0xFFFFFFFF
 
 
-def test_stm32_fresh_setup_passes_reviewed_connect_policy_to_shared_backend(
+def test_generic_stm32_fresh_setup_does_not_inherit_reference_board_connect_policy(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     profiles = ProfileRepository(FirmStore(tmp_path), legacy_board_dir=tmp_path / "legacy")
@@ -561,8 +608,8 @@ def test_stm32_fresh_setup_passes_reviewed_connect_policy_to_shared_backend(
     setup_board = seen["board"]
     assert setup_board is not None
     assert setup_board.probe_family == "stlink"  # type: ignore[union-attr]
-    assert setup_board.debug_connect_mode == "under-reset"  # type: ignore[union-attr]
-    assert setup_board.debug_clock_hz == 1_000_000  # type: ignore[union-attr]
+    assert setup_board.debug_connect_mode is None  # type: ignore[union-attr]
+    assert setup_board.debug_clock_hz is None  # type: ignore[union-attr]
     assert seen["target"] == "stm32l476rgtx"
 
 

@@ -10,7 +10,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
-from typing import Any, Literal
+from typing import Any, Callable, Literal
 
 from pyocd_debug_mcp.board_config import (
     BOARD_CONFIG_SUFFIXES,
@@ -59,6 +59,7 @@ _OPTIONAL_FIELDS = frozenset(
         "expected_uart_substring",
         "debug_connect_mode",
         "debug_clock_hz",
+        "device_support",
     }
 )
 _PROFILE_METADATA_FIELDS = frozenset(
@@ -69,6 +70,7 @@ _PROFILE_METADATA_FIELDS = frozenset(
         "updated_at",
         "safety_ref",
         "datasheet_sha256",
+        "device_support",
     }
 )
 _V2_FIELDS = (
@@ -92,6 +94,20 @@ _PACKAGE_METADATA_FIELDS = frozenset(
         "provides_targets",
     }
 )
+
+_DEVICE_SUPPORT_FIELDS = frozenset(
+    {
+        "kind",
+        "support_id",
+        "pack_id",
+        "pack_filename",
+        "pack_sha256",
+        "pdsc_device",
+        "pyocd_target",
+    }
+)
+
+DeviceSupportVerifier = Callable[[str, str, Mapping[str, str]], None]
 
 
 class ProfileError(ConfigError):
@@ -147,6 +163,58 @@ def _reject_package_metadata(document: Mapping[str, object], *, location: str) -
         )
 
 
+def _validate_device_support(value: object) -> dict[str, str] | None:
+    """Validate the closed, server-generated generic support source record.
+
+    This is source identity, not caller authority.  It is intentionally kept
+    out of ``BoardConfig`` so board parsing cannot reinterpret it as a user
+    supplied target/pack setting.
+    """
+
+    if value is None:
+        return None
+    if not isinstance(value, Mapping):
+        raise ProfileError("device_support must be an object")
+    raw = dict(value)
+    if set(raw) != _DEVICE_SUPPORT_FIELDS:
+        raise ProfileError(
+            "device_support must contain exactly "
+            f"{sorted(_DEVICE_SUPPORT_FIELDS)}"
+        )
+    if raw.get("kind") != "resolved_pack":
+        raise ProfileError("device_support.kind must be 'resolved_pack'")
+    result: dict[str, str] = {}
+    for field_name in _DEVICE_SUPPORT_FIELDS:
+        field_value = raw[field_name]
+        if not isinstance(field_value, str) or not field_value.strip():
+            raise ProfileError(f"device_support.{field_name} must be a non-empty string")
+        result[field_name] = field_value.strip()
+    if re.fullmatch(r"[0-9a-f]{64}", result["support_id"]) is None:
+        raise ProfileError("device_support.support_id must be a lowercase SHA-256 digest")
+    if re.fullmatch(r"[0-9a-f]{64}", result["pack_sha256"]) is None:
+        raise ProfileError("device_support.pack_sha256 must be a lowercase SHA-256 digest")
+    return result
+
+
+def _verify_registered_device_support(
+    mcu_part_number: str,
+    pyocd_target: str,
+    source: Mapping[str, str],
+) -> None:
+    """Require a persisted generic source to replay to immutable registry bytes."""
+
+    try:
+        from pyocd_debug_mcp.setup_flow.device_support import resolve_registered_pack_support
+
+        expected = resolve_registered_pack_support(mcu_part_number).to_authority_document()
+    except Exception as exc:  # noqa: BLE001 - profile authority must fail closed
+        raise ProfileError(f"device_support cannot be resolved from the server registry: {exc}") from exc
+    if expected["pyocd_target"].casefold() != pyocd_target.casefold():
+        raise ProfileError("device_support target does not match the profile target")
+    if dict(source) != expected:
+        raise ProfileError("device_support does not match the current server registry binding")
+
+
 def _validate_safety_ref(value: object, expected_prefix: PurePosixPath) -> str | None:
     if value is None:
         return None
@@ -173,6 +241,7 @@ class BoardProfile:
     created_at: str | None
     updated_at: str | None
     safety_ref: str | None
+    device_support: Mapping[str, str] | None
     source_path: Path
     read_only: bool
     _document: dict[str, Any] = field(repr=False, compare=False)
@@ -206,13 +275,20 @@ class StagedProfile:
 class ProfileRepository:
     """Read profiles and commit prevalidated stages only through FirmStore."""
 
-    def __init__(self, store: FirmStore, *, legacy_board_dir: Path | None = None) -> None:
+    def __init__(
+        self,
+        store: FirmStore,
+        *,
+        legacy_board_dir: Path | None = None,
+        device_support_verifier: DeviceSupportVerifier | None = None,
+    ) -> None:
         self.store = store
         self.legacy_board_dir = (
             Path(legacy_board_dir).expanduser().resolve()
             if legacy_board_dir is not None
             else store.layout.project_root / "boards"
         )
+        self._device_support_verifier = device_support_verifier or _verify_registered_device_support
         self._commit_lock = threading.RLock()
 
     def _v2_paths(self) -> list[Path]:
@@ -252,6 +328,7 @@ class ProfileRepository:
             or re.fullmatch(r"[0-9a-f]{64}", datasheet_sha256) is None
         ):
             raise ProfileError("datasheet_sha256 must be a lowercase SHA-256 digest")
+        device_support = _validate_device_support(document.get("device_support"))
         created_at = _validate_absolute_timestamp(document.get("created_at"), "created_at")
         updated_at = _validate_absolute_timestamp(document.get("updated_at"), "updated_at")
 
@@ -259,6 +336,8 @@ class ProfileRepository:
             key: value for key, value in document.items() if key not in _PROFILE_METADATA_FIELDS
         }
         board = _make_profile_board(board_document, path)
+        if device_support is not None:
+            self._device_support_verifier(part_number, board.pyocd_target, device_support)
         safety_ref = _validate_safety_ref(
             document.get("safety_ref"),
             self.store.layout.safety_reference_prefix(board_id),
@@ -270,6 +349,7 @@ class ProfileRepository:
             created_at=created_at,
             updated_at=updated_at,
             safety_ref=safety_ref,
+            device_support=device_support,
             source_path=path,
             read_only=False,
             _document=document,
@@ -302,6 +382,7 @@ class ProfileRepository:
             created_at=None,
             updated_at=None,
             safety_ref=None,
+            device_support=None,
             source_path=path,
             read_only=True,
             _document=document,

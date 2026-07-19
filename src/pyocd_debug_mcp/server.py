@@ -23,8 +23,9 @@ import sys
 import time
 import unicodedata
 from collections.abc import Callable, Mapping
+from dataclasses import dataclass
 from pathlib import Path
-from typing import cast
+from typing import Any, cast
 
 from pyocd.target.pack.cmsis_pack import CmsisPack  # type: ignore[import-untyped]
 
@@ -136,6 +137,12 @@ from pyocd_debug_mcp.setup_flow.reviewed_evidence import (
     load_pinned_reviewed_evidence,
     pack_matches_reviewed_catalog,
 )
+from pyocd_debug_mcp.setup_flow.device_support import (
+    DeviceSupportCandidate,
+    resolve_registered_pack_geometry,
+    resolve_registered_pack_support,
+    has_registered_pack_binding,
+)
 from pyocd_debug_mcp.setup_flow.setup import (
     RunAssignmentStore,
     SetupPhase,
@@ -162,6 +169,9 @@ from pyocd_debug_mcp.setup_flow.validate import (
 from pyocd_debug_mcp.safety.enforce import SafetyPolicy, SafetyPolicyError
 from pyocd_debug_mcp.safety.linker import BuildRole
 from pyocd_debug_mcp.safety.map_build import (
+    GenericMapIdentity,
+    GenericSafetyMapDocument,
+    GenericSourceDigests,
     MapGeometry,
     MapIdentity,
     MapPartitions,
@@ -178,8 +188,10 @@ from pyocd_debug_mcp.safety.map_build import (
 from pyocd_debug_mcp.safety.refresh import SafetyRefreshRequest, SafetyRefresher
 from pyocd_debug_mcp.safety.regions import (
     AddressRange,
+    Provenance,
     RegionKind,
     SafetyRegion,
+    SourceAuthority,
 )
 from pyocd_debug_mcp.target_errors import (
     LockedTargetError,
@@ -2320,16 +2332,88 @@ def _derive_reviewed_safety_map(board_id: str):
     )
 
 
+def _derive_generic_safety_map(board_id: str) -> GenericSafetyMapDocument:
+    """Build a read/debug-only schema-v3 map from a replayed pack binding."""
+
+    profile = _profile_repository.load(board_id, include_legacy=False)
+    if profile.mcu_part_number is None or profile.device_support is None:
+        raise SafetyMapError("profile lacks a resolved generic device-support source")
+    candidate = resolve_registered_pack_support(profile.mcu_part_number)
+    if profile.device_support != candidate.to_authority_document():
+        raise SafetyMapError("profile generic device-support source no longer matches the registry")
+    if profile.board.pyocd_target.casefold() != candidate.pyocd_target.casefold():
+        raise SafetyMapError("profile target no longer matches the generic device-support source")
+    geometry = resolve_registered_pack_geometry(candidate)
+    profile_document = profile.to_document()
+    datasheet_digest = profile_document.get("datasheet_sha256")
+    if not isinstance(datasheet_digest, str) or not datasheet_digest:
+        raise SafetyMapError("profile has no server-computed local datasheet digest")
+    map_geometry = MapGeometry(
+        AddressRange(geometry.flash_start, geometry.flash_end),
+        AddressRange(geometry.ram_start, geometry.ram_end),
+        erase_available=False,
+    )
+    source = candidate.to_authority_document()
+    provenance = (
+        Provenance(
+            SourceAuthority.DEVICE_SUPPORT,
+            f"pack:{candidate.pack_sha256}",
+            f"verified PDSC leaf {candidate.pdsc_device}",
+        ),
+    )
+    regions = (
+        SafetyRegion("physical flash", RegionKind.PHYSICAL_FLASH, map_geometry.physical_flash, provenance),
+        SafetyRegion("physical RAM", RegionKind.PHYSICAL_RAM, map_geometry.physical_ram, provenance),
+        SafetyRegion("writable default RAM", RegionKind.RAM, map_geometry.physical_ram, provenance),
+    )
+    return GenericSafetyMapDocument(
+        board_id,
+        GenericMapIdentity(profile.mcu_part_number, candidate.pyocd_target, candidate.support_id),
+        {
+            "kind": "resolved_pack",
+            "support_id": candidate.support_id,
+            "pack_sha256": candidate.pack_sha256,
+            "pdsc_device": candidate.pdsc_device,
+            "pyocd_target": candidate.pyocd_target,
+        },
+        GenericSourceDigests.build(
+            profile=profile_document,
+            device_support=source,
+            datasheet_evidence={"sha256": datasheet_digest},
+            deployment_policy={"kind": "none"},
+        ),
+        map_geometry,
+        MapPartitions(None),
+        {"kind": "none"},
+        regions,
+    )
+
+
 def _require_current_reviewed_map(document) -> None:
     """Reject a valid but stale map without consulting any build output."""
 
     require_reconciled_authority(document)
-    candidate = _derive_reviewed_safety_map(document.board_id)
+    candidate = (
+        _derive_generic_safety_map(document.board_id)
+        if isinstance(document, GenericSafetyMapDocument)
+        else _derive_reviewed_safety_map(document.board_id)
+    )
     if document != candidate:
         raise SafetyMapError(
             "the stable map no longer matches the semantic profile or current reviewed evidence; "
             "run board_safety_refresh"
         )
+
+
+def _derive_safety_map(board_id: str):
+    """Re-derive the sole map using the profile's recorded authority kind."""
+
+    profile = _profile_repository.load(board_id, include_legacy=False)
+    return (
+        _derive_generic_safety_map(board_id)
+        if profile.device_support is not None
+        else _derive_reviewed_safety_map(board_id)
+    )
 
 
 _safety_policy = SafetyPolicy(
@@ -2359,7 +2443,7 @@ def _has_current_live_identity(board_id: str) -> bool:
 
 _safety_refresher = SafetyRefresher(
     _firm_store,
-    derive=_derive_reviewed_safety_map,
+    derive=_derive_safety_map,
     has_live_identity=_has_current_live_identity,
     on_commit=_restamp_after_refresh,
 )
@@ -2385,16 +2469,25 @@ _REQUIRED_BASE_SAFETY_KINDS = frozenset(
 )
 
 
-def _missing_base_safety_kinds(regions: tuple[SafetyRegion, ...]) -> tuple[str, ...]:
+def _missing_base_safety_kinds(
+    regions: tuple[SafetyRegion, ...], *, generic: bool = False
+) -> tuple[str, ...]:
     present = {item.kind for item in regions}
-    return tuple(sorted(kind.value for kind in _REQUIRED_BASE_SAFETY_KINDS - present))
+    required = (
+        {RegionKind.PHYSICAL_FLASH, RegionKind.PHYSICAL_RAM, RegionKind.RAM}
+        if generic
+        else _REQUIRED_BASE_SAFETY_KINDS
+    )
+    return tuple(sorted(kind.value for kind in required - present))
 
 
 def _load_validation_safety_map(profile) -> SafetyMapSnapshot:
     try:
         document = _safety_repository.load_current(profile.board_id)
         require_reconciled_authority(document)
-        missing_kinds = _missing_base_safety_kinds(document.regions)
+        missing_kinds = _missing_base_safety_kinds(
+            document.regions, generic=isinstance(document, GenericSafetyMapDocument)
+        )
         if missing_kinds:
             return SafetyMapSnapshot(
                 True,
@@ -2421,7 +2514,7 @@ def _load_validation_safety_map(profile) -> SafetyMapSnapshot:
             False,
             reason=f"Safety map is missing or inconsistent; run board_safety_refresh: {exc}",
         )
-    return SafetyMapSnapshot(True, True, map_digest, "Profile and reviewed safety map agree.")
+    return SafetyMapSnapshot(True, True, map_digest, "Profile and current safety map agree.")
 
 
 def _stamp_validation_session(
@@ -2443,6 +2536,16 @@ def _stamp_validation_session(
         return False
     provisional_connection_id = f"probe:{probe_uid or probe_id}"
     try:
+        profile = _profile_repository.load(board_id, include_legacy=False)
+        capability = "exact"
+        if profile.device_support is not None and profile.mcu_part_number is not None:
+            proof = resolve_registered_pack_support(profile.mcu_part_number).identity_proof
+            if proof is None:
+                return False
+            capability = proof.capability
+    except (ProfileError, PackProvisionError):
+        return False
+    try:
         assignment_store.run_if_current(
             provisional_connection_id,
             board_id,
@@ -2452,6 +2555,7 @@ def _stamp_validation_session(
                     connection_id=connection.connection_id,
                     probe_identity=stable_probe,
                     observed_mcu=observed_mcu,
+                    identity_capability=capability,
                     validation_run=validation_run,
                     map_digest=map_digest,
                 )
@@ -2570,13 +2674,37 @@ _setup_selections_by_board: dict[str, PreflightSelections] = {}
 _setup_pack_pipelines: dict[tuple[str, str], PackCandidatePipeline] = {}
 
 
-def _resolve_setup_support(user_input: SetupUserInput):
-    """Resolve internal reviewed support without a caller-owned catalog identifier."""
+@dataclass(frozen=True, slots=True)
+class _ResolvedGenericSetupSupport:
+    candidate: DeviceSupportCandidate
+    datasheet_path: Path
+    datasheet_sha256: str
 
-    return resolve_reviewed_support_from_datasheet(
-        user_input.mcu_part_number,
-        Path(user_input.datasheet_path),
-    )
+
+def _is_generic_support(value: object) -> bool:
+    return isinstance(value, _ResolvedGenericSetupSupport)
+
+
+def _resolve_setup_support(user_input: SetupUserInput):
+    """Resolve generic registered support before legacy catalog compatibility."""
+
+    path, digest = hash_local_datasheet(Path(user_input.datasheet_path))
+    try:
+        candidate = resolve_registered_pack_support(user_input.mcu_part_number)
+    except PackProvisionError:
+        if has_registered_pack_binding(user_input.mcu_part_number):
+            # A registered generic binding whose bytes, PDSC leaf, or target
+            # proof no longer verify is an authority failure, not a reason to
+            # inherit a reference-board catalog policy.
+            raise
+        # Compatibility profiles and devices not yet provisioned into the
+        # generic registry retain the legacy reviewed path.  This fallback is
+        # never used to attach a generic deployment policy.
+        return resolve_reviewed_support_from_datasheet(
+            user_input.mcu_part_number,
+            path,
+        )
+    return _ResolvedGenericSetupSupport(candidate, path, digest)
 
 
 def _setup_inventory(user_input: SetupUserInput) -> PreflightInventory:
@@ -2591,7 +2719,9 @@ def _setup_inventory(user_input: SetupUserInput) -> PreflightInventory:
                 f"The local official datasheet could not be accepted: {exc}",
             )
         )
-    catalog = support.catalog
+    generic = _is_generic_support(support)
+    generic_support = cast(_ResolvedGenericSetupSupport, support) if generic else None
+    catalog = None if generic else cast(Any, support).catalog
     validation_inventory = _validation_inventory()
     probes = tuple(
         ProbeCandidate(
@@ -2648,14 +2778,20 @@ def _setup_inventory(user_input: SetupUserInput) -> PreflightInventory:
     # A fresh profile has no board YAML yet, but a complete reviewed catalog entry is itself
     # authoritative for the exact pyOCD target. Package suffixes such as ``-QIAA`` must not
     # force an unnecessary agent research round trip when the exact built-in target is present.
-    reviewed_target = catalog.pyocd_target.casefold()
-    pack_backed = bool(catalog.pyocd_pack_filename and catalog.pyocd_pack_sha256)
-    support_present = reviewed_target in targets if not pack_backed else False
-    if pack_backed:
+    if generic_support is not None:
+        reviewed_target = generic_support.candidate.pyocd_target.casefold()
+        pack_backed = False
+        support_present = True
+    else:
+        assert catalog is not None
+        reviewed_target = catalog.pyocd_target.casefold()
+        pack_backed = bool(catalog.pyocd_pack_filename and catalog.pyocd_pack_sha256)
+        support_present = reviewed_target in targets if not pack_backed else False
+    if not generic and pack_backed:
         try:
             selected_pack = verified_pack_for_target(reviewed_target)
             support_present = selected_pack is not None and pack_matches_reviewed_catalog(
-                selected_pack, catalog
+                selected_pack, cast(Any, catalog)
             )
         except PackProvisionError as exc:
             return PreflightInventory(
@@ -2688,7 +2824,9 @@ def _setup_inventory(user_input: SetupUserInput) -> PreflightInventory:
                     "a replacement during board setup.",
                 ),
             )
-    if user_input.mcu_part_number == catalog.package_part_number and support_present:
+    if generic_support is not None and support_present:
+        exact = (reviewed_target,)
+    elif catalog is not None and user_input.mcu_part_number == catalog.package_part_number and support_present:
         exact = (reviewed_target,)
     target_override = _setup_target_overrides.get(user_input.board_id)
     if target_override is not None and support_present:
@@ -2712,9 +2850,17 @@ def _mcu_family(mcu_part_number: str, target: str) -> str:
 def _setup_connection_phase(context: SetupPhaseContext) -> SetupPhaseOutcome:
     try:
         support = _resolve_setup_support(context.user_input)
-        catalog = support.catalog
+        generic = _is_generic_support(support)
+        generic_support = cast(_ResolvedGenericSetupSupport, support) if generic else None
+        catalog = None if generic else cast(Any, support).catalog
+        legacy_catalog = cast(Any, catalog)
         actual_datasheet_hash = support.datasheet_sha256
-    except (BoardCatalogError, OSError, ValueError) as exc:
+        generic_geometry = (
+            resolve_registered_pack_geometry(generic_support.candidate)
+            if generic_support is not None
+            else None
+        )
+    except (BoardCatalogError, PackProvisionError, OSError, ValueError) as exc:
         return SetupPhaseOutcome.stop(
             "setup_blocked",
             getattr(exc, "code", "setup/catalog-evidence-mismatch"),
@@ -2732,7 +2878,12 @@ def _setup_connection_phase(context: SetupPhaseContext) -> SetupPhaseOutcome:
             "setup/connection-input-missing",
             "Target or probe resolution is incomplete; stop before committing a profile.",
         )
-    if target.casefold() != catalog.pyocd_target or probe.probe_family == "unknown":
+    expected_target = (
+        generic_support.candidate.pyocd_target
+        if generic_support is not None
+        else legacy_catalog.pyocd_target
+    )
+    if target.casefold() != expected_target.casefold() or probe.probe_family == "unknown":
         if probe.probe_family == "unknown":
             remedy = (
                 "The debug probe provider could not be identified. Choose a recognized pyOCD "
@@ -2749,7 +2900,7 @@ def _setup_connection_phase(context: SetupPhaseContext) -> SetupPhaseOutcome:
             remedy,
             details={
                 "selected_target": target,
-                "expected_target": catalog.pyocd_target,
+                "expected_target": expected_target,
                 "selected_probe_family": probe.probe_family,
             },
         )
@@ -2776,6 +2927,7 @@ def _setup_connection_phase(context: SetupPhaseContext) -> SetupPhaseOutcome:
         )
 
     opened: list[TargetSessionHandle] = []
+    identity_proof = generic_support.candidate.identity_proof if generic_support is not None else None
     setup_board = BoardConfig(
         board_id=context.user_input.board_id,
         display_name=context.user_input.display_name,
@@ -2785,15 +2937,15 @@ def _setup_connection_phase(context: SetupPhaseContext) -> SetupPhaseOutcome:
         probe_type=probe.description,
         probe_hint_terms=(),
         serial_hint_terms=(),
-        test_addr=catalog.test_read_address,
-        silicon_id_addr=catalog.silicon_id_address,
-        silicon_id_expected=catalog.silicon_id_expected,
-        silicon_id_mask=catalog.silicon_id_mask,
-        silicon_id_width_bits=catalog.silicon_id_width_bits,
-        silicon_id_label=catalog.silicon_id_label or "",
-        default_baudrate=catalog.default_baudrate,
-        debug_connect_mode=catalog.debug_connect_mode,
-        debug_clock_hz=catalog.debug_clock_hz,
+        test_addr=(generic_geometry.flash_start if generic_geometry is not None else legacy_catalog.test_read_address),
+        silicon_id_addr=(identity_proof.address if identity_proof is not None else legacy_catalog.silicon_id_address),
+        silicon_id_expected=(identity_proof.expected if identity_proof is not None else legacy_catalog.silicon_id_expected),
+        silicon_id_mask=(identity_proof.mask if identity_proof is not None else legacy_catalog.silicon_id_mask),
+        silicon_id_width_bits=(identity_proof.width_bits if identity_proof is not None else legacy_catalog.silicon_id_width_bits),
+        silicon_id_label=(identity_proof.label if identity_proof is not None else legacy_catalog.silicon_id_label or ""),
+        default_baudrate=(115200 if generic else legacy_catalog.default_baudrate),
+        debug_connect_mode=(None if generic else legacy_catalog.debug_connect_mode),
+        debug_clock_hz=(None if generic else legacy_catalog.debug_clock_hz),
     )
 
     def connect(candidate_target: str, _pack_path: str | None) -> None:
@@ -2812,41 +2964,52 @@ def _setup_connection_phase(context: SetupPhaseContext) -> SetupPhaseOutcome:
                     "silicon or committing a profile. Restart setup_overview with the current "
                     "friendly connection inventory."
                 )
-            if catalog.silicon_id_address is not None:
-                observed = target_control.read_memory(handle, catalog.silicon_id_address, 32)
-                expected = catalog.silicon_id_expected
+            if setup_board.silicon_id_addr is not None:
+                observed = target_control.read_memory(
+                    handle, setup_board.silicon_id_addr, setup_board.silicon_id_width_bits
+                )
+                expected = setup_board.silicon_id_expected
                 assert expected is not None
-                if (observed & catalog.silicon_id_mask) != (expected & catalog.silicon_id_mask):
+                assert setup_board.silicon_id_mask is not None
+                if (observed & setup_board.silicon_id_mask) != (
+                    expected & setup_board.silicon_id_mask
+                ):
                     raise BoardCatalogError(
                         "Live silicon identity did not match the reviewed board catalog "
                         f"(observed 0x{observed:08X}, expected 0x{expected:08X})."
                     )
-            target_control.read_memory(handle, catalog.test_read_address, 32)
+            assert setup_board.test_addr is not None
+            target_control.read_memory(handle, setup_board.test_addr, 32)
         finally:
             target_control.close_session(handle)
 
     optional_fields = {
-        "test_read_address": catalog.test_read_address,
+        "test_read_address": setup_board.test_addr,
         "datasheet_sha256": actual_datasheet_hash,
         **(
-            {"debug_connect_mode": catalog.debug_connect_mode}
-            if catalog.debug_connect_mode is not None
+            {"device_support": generic_support.candidate.to_authority_document()}
+            if generic_support is not None
             else {}
         ),
         **(
-            {"debug_clock_hz": catalog.debug_clock_hz}
-            if catalog.debug_clock_hz is not None
+            {"debug_connect_mode": legacy_catalog.debug_connect_mode}
+            if not generic and legacy_catalog.debug_connect_mode is not None
+            else {}
+        ),
+        **(
+            {"debug_clock_hz": legacy_catalog.debug_clock_hz}
+            if not generic and legacy_catalog.debug_clock_hz is not None
             else {}
         ),
         **(
             {
-                "silicon_id_address": catalog.silicon_id_address,
-                "silicon_id_expected": catalog.silicon_id_expected,
-                "silicon_id_mask": catalog.silicon_id_mask,
-                "silicon_id_width_bits": catalog.silicon_id_width_bits,
-                "silicon_id_label": catalog.silicon_id_label,
+                "silicon_id_address": setup_board.silicon_id_addr,
+                "silicon_id_expected": setup_board.silicon_id_expected,
+                "silicon_id_mask": setup_board.silicon_id_mask,
+                "silicon_id_width_bits": setup_board.silicon_id_width_bits,
+                "silicon_id_label": setup_board.silicon_id_label,
             }
-            if catalog.silicon_id_address is not None
+            if setup_board.silicon_id_addr is not None
             else {}
         ),
     }
@@ -2866,7 +3029,7 @@ def _setup_connection_phase(context: SetupPhaseContext) -> SetupPhaseOutcome:
                     "probe_family": probe.probe_family,
                     "pyocd_target": target,
                     "serial_baudrate": (
-                        context.user_input.serial_baudrate or catalog.default_baudrate
+                        context.user_input.serial_baudrate or setup_board.default_baudrate
                     ),
                 }
             )
@@ -2935,6 +3098,19 @@ def _build_automatic_catalog_safety(context: SetupPhaseContext):
     """Build the first v2 map only after pinned independent authorities agree."""
 
     profile = _profile_repository.load(context.user_input.board_id, include_legacy=False)
+    if getattr(profile, "device_support", None) is not None:
+        _datasheet_path, current_digest = hash_local_datasheet(
+            Path(context.user_input.datasheet_path)
+        )
+        profile_digest = profile.to_document().get("datasheet_sha256")
+        if current_digest != profile_digest:
+            raise SafetyMapError(
+                "datasheet bytes changed after profile acceptance; restart setup with one stable local PDF"
+            )
+        candidate = _derive_generic_safety_map(context.user_input.board_id)
+        cancellation_checkpoint()
+        _safety_repository.commit(context.user_input.board_id, candidate)
+        return candidate
     profile_document = profile.to_document()
     datasheet_digest = profile_document.get("datasheet_sha256")
     if not isinstance(datasheet_digest, str) or not datasheet_digest.strip():
@@ -3008,7 +3184,9 @@ def _setup_safety_map_phase(context: SetupPhaseContext) -> SetupPhaseOutcome:
             "rerun board_safety_refresh.",
             details={"conflicts": conflicts},
         )
-    missing_kinds = _missing_base_safety_kinds(artifacts.regions)
+    missing_kinds = _missing_base_safety_kinds(
+        artifacts.regions, generic=isinstance(artifacts, GenericSafetyMapDocument)
+    )
     if missing_kinds:
         return SetupPhaseOutcome.stop(
             "setup_safety_incomplete",
@@ -3897,7 +4075,7 @@ def _setup_continue(
         raise ResearchError("research/target-required", "pyocd_target must be non-empty text")
     target = target.strip().casefold()
     try:
-        reviewed_board = _resolve_setup_support(user_input).catalog
+        reviewed_board = cast(Any, _resolve_setup_support(user_input)).catalog
     except BoardCatalogError as exc:
         raise ResearchError(
             "target/reviewed-mapping-unavailable",

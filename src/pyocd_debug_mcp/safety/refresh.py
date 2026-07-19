@@ -8,6 +8,7 @@ from typing import Literal
 
 from pyocd_debug_mcp.firmstore.store import FirmStore
 from pyocd_debug_mcp.safety.map_build import (
+    GenericSafetyMapDocument,
     NO_INTERNALS,
     SafetyMapDocument,
     SafetyMapError,
@@ -16,7 +17,8 @@ from pyocd_debug_mcp.safety.map_build import (
 )
 
 SafetyRefreshStatus = Literal["safety_refresh_completed", "safety_refresh_blocked"]
-MapDeriver = Callable[[str], SafetyMapDocument]
+MapDocument = SafetyMapDocument | GenericSafetyMapDocument
+MapDeriver = Callable[[str], MapDocument]
 LiveIdentityProvider = Callable[[str], bool]
 MapCommitHook = Callable[[str, str, bool], None]
 
@@ -87,7 +89,7 @@ class SafetyRefresher:
         board_id = _require_board_id(request.board_id)
         if not request.continuation_id.strip():
             raise SafetyMapError("continuation_id must be non-empty")
-        previous: SafetyMapDocument | None = None
+        previous: MapDocument | None = None
         prior_invalid = False
         try:
             previous = self.repository.load_current(board_id)
@@ -144,8 +146,8 @@ class SafetyRefresher:
 
 
 def _changed_groups(
-    previous: SafetyMapDocument | None,
-    candidate: SafetyMapDocument,
+    previous: MapDocument | None,
+    candidate: MapDocument,
     *,
     prior_invalid: bool,
 ) -> tuple[str, ...]:
@@ -154,23 +156,11 @@ def _changed_groups(
     changed: list[str] = []
     if previous.identity != candidate.identity:
         changed.append("identity")
-    if previous.source_digests.semantic_profile != candidate.source_digests.semantic_profile:
-        changed.append("semantic_profile")
-    if (
-        previous.source_digests.reviewed_device_support
-        != candidate.source_digests.reviewed_device_support
-    ):
-        changed.append("reviewed_device_support")
-    if (
-        previous.source_digests.reviewed_official_evidence
-        != candidate.source_digests.reviewed_official_evidence
-    ):
-        changed.append("reviewed_official_evidence")
-    if (
-        previous.source_digests.map_generator_schema
-        != candidate.source_digests.map_generator_schema
-    ):
-        changed.append("map_generator_schema")
+    previous_sources = previous.source_digests.to_document()
+    candidate_sources = candidate.source_digests.to_document()
+    for name in sorted(set(previous_sources) | set(candidate_sources)):
+        if previous_sources.get(name) != candidate_sources.get(name):
+            changed.append(name)
     if previous.geometry != candidate.geometry:
         changed.append("geometry")
     if previous.partitions != candidate.partitions:

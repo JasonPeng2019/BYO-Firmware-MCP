@@ -28,6 +28,17 @@ packs:
       - stm32l476rgtx
     needed_by_boards:
       - nucleo_l476rg
+    device_bindings:
+      - part_number: STM32L476RGT6
+        pdsc_device: STM32L476RGTx
+        pyocd_target: stm32l476rgtx
+        identity_proof:
+          capability: compatible
+          address: 3758366720 # DBGMCU_IDCODE (0xE0042000)
+          expected: 1045
+          mask: 4095
+          width_bits: 32
+          label: STM32L476 compatible DBGMCU_IDCODE
     note: >-
       Provides the exact stm32l476rgtx target for the Nucleo-L476RG. Verified on a
       real Windows host: pyOCD resolves stm32l476rgtx from this local pack and

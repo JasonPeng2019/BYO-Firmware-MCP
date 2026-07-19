@@ -20,6 +20,7 @@ from pyocd_debug_mcp.pack_provision import (
     sha256_bytes,
     sha256_file,
     verified_pack_for_target,
+    verified_registry_pack_for_target,
 )
 
 
@@ -224,3 +225,43 @@ def test_verified_pack_for_target_rejects_ambiguous_or_changed_bytes(tmp_path: P
     selected.path.write_bytes(b"changed")
     with pytest.raises(PackProvisionError, match="changed or disappeared"):
         selected.verify_unchanged()
+
+
+def test_registry_selector_never_uses_an_active_project_manifest(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A project may provide build inventory but cannot redefine device authority."""
+
+    registry_packs = tmp_path / "registry-packs"
+    _, registry_digest = _write_pack(registry_packs, "registry.pack", b"registry")
+    registry_manifest = tmp_path / "registry.yaml"
+    registry_manifest.write_text(
+        "packs:\n"
+        "  - id: Vendor.Registry\n"
+        "    filename: registry.pack\n"
+        "    url: https://example.invalid/registry.pack\n"
+        f"    sha256: {registry_digest}\n"
+        "    provides_targets: [target_a]\n",
+        encoding="utf-8",
+    )
+    project = tmp_path / "project"
+    project_store = FirmStore(project)
+    _, project_digest = _write_pack(project_store.layout.pack_files, "project.pack", b"project")
+    project_store.layout.pack_manifest.parent.mkdir(parents=True, exist_ok=True)
+    project_store.layout.pack_manifest.write_text(
+        "packs:\n"
+        "  - id: Vendor.Project\n"
+        "    filename: project.pack\n"
+        "    url: https://example.invalid/project.pack\n"
+        f"    sha256: {project_digest}\n"
+        "    provides_targets: [target_a]\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(pack_provision, "MANIFEST_PATH", registry_manifest)
+    monkeypatch.setattr(pack_provision, "PACKS_DIR", registry_packs)
+    monkeypatch.setenv("BYO_MCP_ARTIFACT_ROOT", str(project))
+
+    selected = verified_registry_pack_for_target("target_a")
+
+    assert selected is not None
+    assert selected.spec.id == "Vendor.Registry"

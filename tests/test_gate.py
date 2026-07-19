@@ -71,9 +71,27 @@ def test_success_stamps_distinct_live_identity_and_safety_map_concepts() -> None
     assert stamped.safety_map == manager.map_stamp("board_a")
     assert stamped.connection_id == "probe:a"
     assert stamped.observed_mcu == "STM32L476RGT6"
+    assert stamped.identity_capability == "exact"
     assert stamped.validation_run == "validation-1"
     assert stamped.map_digest == "map-a"
     assert stamped.validated_at.endswith("Z")
+
+
+def test_compatible_identity_proof_is_explicit_in_live_gate_state() -> None:
+    manager = GateManager()
+
+    stamped = manager.stamp_validation(
+        board_id="board_a",
+        connection_id="probe:a",
+        probe_identity="probe:a",
+        observed_mcu="STM32L4 compatible ID 0x415",
+        validation_run="validation-1",
+        map_digest="map-a",
+        identity_capability="compatible",
+    )
+
+    assert stamped.identity_capability == "compatible"
+    assert manager.live_identity("board_a").identity_capability == "compatible"  # type: ignore[union-attr]
 
 
 def test_connection_change_clears_live_proof_and_requires_validation() -> None:

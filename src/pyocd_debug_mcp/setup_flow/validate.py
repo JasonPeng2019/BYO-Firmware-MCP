@@ -549,4 +549,4 @@ def profile_from_board_config(board: Any, source_path: Path) -> BoardProfile:
         "probe_family": board.probe_family,
         "pyocd_target": board.pyocd_target,
     }
-    return BoardProfile(2, part_number, board, None, None, None, source_path, True, document)
+    return BoardProfile(2, part_number, board, None, None, None, None, source_path, True, document)

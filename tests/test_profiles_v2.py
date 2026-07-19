@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import copy
+from collections.abc import Callable, Mapping
 from datetime import datetime
 from pathlib import Path
 
@@ -15,6 +16,8 @@ from pyocd_debug_mcp.firmstore.profiles import (
 )
 from pyocd_debug_mcp.firmstore.store import FirmStore, PersistedAuthorityError
 from pyocd_debug_mcp.pack_provision import load_manifest
+from pyocd_debug_mcp.setup_flow import device_support
+from pyocd_debug_mcp.setup_flow.device_support import DeviceSupportCandidate
 
 
 PACKAGE_METADATA_FIELDS = {
@@ -44,10 +47,19 @@ def core_fields(
     }
 
 
-def repository(tmp_path: Path) -> ProfileRepository:
+DeviceSupportVerifier = Callable[[str, str, Mapping[str, str]], None]
+
+
+def repository(
+    tmp_path: Path, *, device_support_verifier: DeviceSupportVerifier | None = None
+) -> ProfileRepository:
     legacy = tmp_path / "boards"
     legacy.mkdir(exist_ok=True)
-    return ProfileRepository(FirmStore(tmp_path), legacy_board_dir=legacy)
+    return ProfileRepository(
+        FirmStore(tmp_path),
+        legacy_board_dir=legacy,
+        device_support_verifier=device_support_verifier,
+    )
 
 
 def test_core_stage_and_commit_preserve_exact_part_and_absolute_timestamps(
@@ -109,6 +121,63 @@ def test_core_commit_excludes_optional_fields_until_separately_staged(tmp_path: 
 
     assert enriched.to_document()["test_read_address"] == 0x08000000
     assert enriched.to_document()["expected_uart_substring"] == "boot ok"
+
+
+def test_generic_device_support_source_is_closed_and_round_trips(tmp_path: Path) -> None:
+    """A profile may record only the server-generated generic source identity."""
+
+    calls: list[tuple[str, str, dict[str, str]]] = []
+
+    def verify(part_number: str, target: str, source: Mapping[str, str]) -> None:
+        calls.append((part_number, target, dict(source)))
+
+    profiles = repository(tmp_path, device_support_verifier=verify)
+    profiles.commit_core(profiles.stage_core(core_fields()))
+    source = {
+        "kind": "resolved_pack",
+        "support_id": "a" * 64,
+        "pack_id": "Keil.STM32L4xx_DFP",
+        "pack_filename": "Keil.STM32L4xx_DFP.3.1.0.pack",
+        "pack_sha256": "b" * 64,
+        "pdsc_device": "STM32L476RGTx",
+        "pyocd_target": "stm32l476rgtx",
+    }
+
+    committed = profiles.commit_optional(
+        profiles.stage_optional("bench_board", {"device_support": source})
+    )
+
+    assert committed.device_support == source
+    assert profiles.load("bench_board", include_legacy=False).device_support == source
+    assert calls and all(call[1] == "stm32l476rgtx" for call in calls)
+    with pytest.raises(ProfileError, match="exactly"):
+        profiles.stage_optional("bench_board", {"device_support": source | {"extra": "no"}})
+
+
+def test_default_device_support_verifier_replays_the_registry_binding(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    candidate = DeviceSupportCandidate(
+        candidate_id="a" * 64,
+        part_number="STM32L476RGTx-Exact",
+        pdsc_device="STM32L476RGTx",
+        pyocd_target="stm32l476rgtx",
+        pack_id="Vendor.Device_DFP",
+        pack_filename="device.pack",
+        pack_sha256="b" * 64,
+    )
+    monkeypatch.setattr(device_support, "resolve_registered_pack_support", lambda _part: candidate)
+    profiles = repository(tmp_path)
+    profiles.commit_core(profiles.stage_core(core_fields()))
+
+    committed = profiles.commit_optional(
+        profiles.stage_optional("bench_board", {"device_support": candidate.to_authority_document()})
+    )
+
+    assert committed.device_support == candidate.to_authority_document()
+    wrong_target = candidate.to_authority_document() | {"pyocd_target": "other-target"}
+    with pytest.raises(ProfileError, match="registry binding"):
+        profiles.stage_optional("bench_board", {"device_support": wrong_target})
 
 
 def test_stale_optional_stage_cannot_overwrite_newer_commit(tmp_path: Path) -> None:

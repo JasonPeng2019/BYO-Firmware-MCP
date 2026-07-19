@@ -8,6 +8,9 @@ import yaml
 
 from pyocd_debug_mcp.firmstore.store import FirmStore, PERSISTED_AUTHORITY_KEYS
 from pyocd_debug_mcp.safety.map_build import (
+    GenericMapIdentity,
+    GenericSafetyMapDocument,
+    GenericSourceDigests,
     MapGeometry,
     MapIdentity,
     MapPartitions,
@@ -192,6 +195,80 @@ def test_load_rejects_malformed_old_and_wrong_board_maps(tmp_path: Path) -> None
     path.write_text(yaml.safe_dump(wrong, sort_keys=False), encoding="utf-8")
     with pytest.raises(SafetyMapError, match="requested board"):
         repository.load_current("board")
+
+
+def test_generic_schema_v3_map_preserves_physical_authority_without_deployment(tmp_path: Path) -> None:
+    """Generic device support must not turn physical flash into application ownership."""
+
+    repository = SafetyMapRepository(FirmStore(tmp_path))
+    geometry = MapGeometry(
+        AddressRange(0x08000000, 0x08100000),
+        AddressRange(0x20000000, 0x20018000),
+        erase_available=False,
+    )
+    document = GenericSafetyMapDocument(
+        "board",
+        GenericMapIdentity("STM32L476RGT6", "stm32l476rgtx", "a" * 64),
+        {
+            "kind": "resolved_pack",
+            "support_id": "a" * 64,
+            "pack_sha256": "b" * 64,
+            "pdsc_device": "STM32L476RGTx",
+            "pyocd_target": "stm32l476rgtx",
+        },
+        GenericSourceDigests.build(
+            profile=PROFILE | {"mcu_part_number": "STM32L476RGT6", "pyocd_target": "stm32l476rgtx"},
+            device_support={"support": "pack"},
+            datasheet_evidence={"sha256": "c" * 64},
+            deployment_policy={"kind": "none"},
+        ),
+        geometry,
+        MapPartitions(None),
+        {"kind": "none"},
+        (
+            SafetyRegion(
+                "physical flash",
+                RegionKind.PHYSICAL_FLASH,
+                geometry.physical_flash,
+                (Provenance(SourceAuthority.DEVICE_SUPPORT, "pack", "PDSC memory map"),),
+            ),
+            SafetyRegion(
+                "physical RAM",
+                RegionKind.PHYSICAL_RAM,
+                geometry.physical_ram,
+                (Provenance(SourceAuthority.DEVICE_SUPPORT, "pack", "PDSC memory map"),),
+            ),
+            SafetyRegion(
+                "writable RAM",
+                RegionKind.RAM,
+                geometry.physical_ram,
+                (Provenance(SourceAuthority.DEVICE_SUPPORT, "pack", "PDSC memory map"),),
+            ),
+        ),
+    )
+
+    repository.commit("board", document)
+    raw = yaml.safe_load(repository.path("board").read_text(encoding="utf-8"))
+
+    assert raw["schema_version"] == 3
+    assert raw["partitions"] == {"application": None, "bootloader": None}
+    assert raw["deployment_policy"] == {"kind": "none"}
+    assert repository.load_current("board") == document
+    malformed = document.to_document()
+    malformed["authority_source"]["pack_sha256"] = 1  # type: ignore[index]
+    with pytest.raises(SafetyMapError, match="values must be strings"):
+        GenericSafetyMapDocument.from_document(malformed)
+    with pytest.raises(SafetyMapError, match="deployment partition"):
+        GenericSafetyMapDocument(
+            document.board_id,
+            document.identity,
+            document.authority_source,
+            document.source_digests,
+            document.geometry,
+            MapPartitions(AddressRange(0x08000000, 0x08001000)),
+            {"kind": "none"},
+            document.regions,
+        )
 
 
 def test_commit_and_load_cleanup_only_exact_legacy_siblings(tmp_path: Path) -> None:

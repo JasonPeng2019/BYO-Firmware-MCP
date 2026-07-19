@@ -14,7 +14,7 @@ from dataclasses import dataclass
 from enum import Enum
 from hashlib import sha256
 from pathlib import Path
-from typing import Final
+from typing import Final, cast
 
 import yaml  # type: ignore[import-untyped]
 
@@ -258,12 +258,17 @@ class MapGeometry:
     erase_origin: int | None = None
     erase_size: int | None = None
     erase_sectors: tuple[EraseSector, ...] = ()
+    erase_available: bool = True
 
     def __post_init__(self) -> None:
         if self.physical_flash.overlaps(self.physical_ram):
             raise SafetyMapError("physical flash and RAM geometry must not overlap")
         uniform = self.erase_origin is not None or self.erase_size is not None
         explicit = bool(self.erase_sectors)
+        if not self.erase_available:
+            if uniform or explicit:
+                raise SafetyMapError("unavailable erase geometry must not contain erase sectors")
+            return
         if uniform == explicit:
             raise SafetyMapError("geometry requires exactly one uniform or explicit erase model")
         if uniform:
@@ -291,7 +296,9 @@ class MapGeometry:
 
     def to_document(self) -> dict[str, object]:
         erase: dict[str, object]
-        if self.erase_sectors:
+        if not self.erase_available:
+            erase = {"kind": "unavailable"}
+        elif self.erase_sectors:
             erase = {
                 "kind": "explicit",
                 "sectors": [sector.to_document() for sector in self.erase_sectors],
@@ -340,7 +347,11 @@ class MapGeometry:
                     )
                 )
             return cls(flash, ram, erase_sectors=tuple(sectors))
-        raise SafetyMapError("geometry.erase.kind must be 'uniform' or 'explicit'")
+        if erase.get("kind") == "unavailable":
+            unavailable = _exact_mapping(erase, {"kind"}, "geometry.erase")
+            del unavailable
+            return cls(flash, ram, erase_available=False)
+        raise SafetyMapError("geometry.erase.kind must be 'uniform', 'explicit', or 'unavailable'")
 
 
 @dataclass(frozen=True, slots=True)
@@ -656,6 +667,218 @@ class SafetyMapDocument:
 
 
 @dataclass(frozen=True, slots=True)
+class GenericMapIdentity:
+    """Schema-v3 identity for a generic resolved-pack device authority."""
+
+    mcu_part_number: str
+    pyocd_target: str
+    support_id: str
+
+    def __post_init__(self) -> None:
+        object.__setattr__(
+            self, "mcu_part_number", _required_string(self.mcu_part_number, "identity.mcu_part_number")
+        )
+        object.__setattr__(
+            self, "pyocd_target", _required_string(self.pyocd_target, "identity.pyocd_target")
+        )
+        if not isinstance(self.support_id, str) or _DIGEST.fullmatch(self.support_id) is None:
+            raise SafetyMapError("identity.support_id must be a lowercase SHA-256")
+
+    def to_document(self) -> dict[str, str]:
+        return {
+            "mcu_part_number": self.mcu_part_number,
+            "pyocd_target": self.pyocd_target,
+            "authority_kind": "resolved_pack",
+            "support_id": self.support_id,
+        }
+
+    @classmethod
+    def from_document(cls, value: object) -> "GenericMapIdentity":
+        raw = _exact_mapping(
+            value,
+            {"mcu_part_number", "pyocd_target", "authority_kind", "support_id"},
+            "identity",
+        )
+        if raw["authority_kind"] != "resolved_pack":
+            raise SafetyMapError("generic memory-map authority_kind must be 'resolved_pack'")
+        return cls(
+            _required_string(raw["mcu_part_number"], "identity.mcu_part_number"),
+            _required_string(raw["pyocd_target"], "identity.pyocd_target"),
+            _required_string(raw["support_id"], "identity.support_id"),
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class GenericSourceDigests:
+    """Schema-v3 source digests without misleading reviewed-catalog labels."""
+
+    semantic_profile: str
+    device_support: str
+    datasheet_evidence: str
+    deployment_policy: str
+    map_generator_schema: str
+
+    def __post_init__(self) -> None:
+        for name in (
+            "semantic_profile",
+            "device_support",
+            "datasheet_evidence",
+            "deployment_policy",
+            "map_generator_schema",
+        ):
+            if not isinstance(getattr(self, name), str) or _DIGEST.fullmatch(getattr(self, name)) is None:
+                raise SafetyMapError(f"source_digests.{name} must be a lowercase SHA-256")
+
+    @classmethod
+    def build(
+        cls,
+        *,
+        profile: Mapping[str, object],
+        device_support: object,
+        datasheet_evidence: object,
+        deployment_policy: object,
+    ) -> "GenericSourceDigests":
+        return cls(
+            semantic_profile_digest(profile),
+            _domain_digest("generic-device-support", device_support),
+            _domain_digest("generic-datasheet-evidence", datasheet_evidence),
+            _domain_digest("generic-deployment-policy", deployment_policy),
+            _domain_digest("map-generator-schema", _GENERATOR_SCHEMA_DOCUMENT),
+        )
+
+    def to_document(self) -> dict[str, str]:
+        return {
+            "semantic_profile": self.semantic_profile,
+            "device_support": self.device_support,
+            "datasheet_evidence": self.datasheet_evidence,
+            "deployment_policy": self.deployment_policy,
+            "map_generator_schema": self.map_generator_schema,
+        }
+
+    @classmethod
+    def from_document(cls, value: object) -> "GenericSourceDigests":
+        raw = _exact_mapping(
+            value,
+            {
+                "semantic_profile",
+                "device_support",
+                "datasheet_evidence",
+                "deployment_policy",
+                "map_generator_schema",
+            },
+            "source_digests",
+        )
+        return cls(*( _required_string(raw[name], f"source_digests.{name}") for name in (
+            "semantic_profile", "device_support", "datasheet_evidence", "deployment_policy", "map_generator_schema"
+        )))
+
+
+@dataclass(frozen=True, slots=True)
+class GenericSafetyMapDocument:
+    """A schema-v3 generic map with physical authority but no deployment ownership."""
+
+    board_id: str
+    identity: GenericMapIdentity
+    authority_source: Mapping[str, str]
+    source_digests: GenericSourceDigests
+    geometry: MapGeometry
+    partitions: MapPartitions
+    deployment_policy: Mapping[str, object]
+    regions: tuple[SafetyRegion, ...]
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "board_id", _require_board_id(self.board_id))
+        if self.partitions.application is not None or self.partitions.bootloader is not None:
+            raise SafetyMapError("generic map cannot claim a deployment partition without allocation")
+        if dict(self.deployment_policy) != {"kind": "none"}:
+            raise SafetyMapError("generic map deployment_policy must be exactly kind none")
+        source = dict(self.authority_source)
+        required = {"kind", "support_id", "pack_sha256", "pdsc_device", "pyocd_target"}
+        if set(source) != required or source.get("kind") != "resolved_pack":
+            raise SafetyMapError("generic authority_source is incomplete")
+        if any(not isinstance(value, str) or not value for value in source.values()):
+            raise SafetyMapError("generic authority_source values must be non-empty strings")
+        if source["support_id"] != self.identity.support_id:
+            raise SafetyMapError("generic authority_source support_id does not match identity")
+        if source["pyocd_target"] != self.identity.pyocd_target:
+            raise SafetyMapError("generic authority_source target does not match identity")
+        if _DIGEST.fullmatch(source["pack_sha256"]) is None:
+            raise SafetyMapError("generic authority_source pack_sha256 must be a lowercase SHA-256")
+        canonical_regions = tuple(sorted(set(self.regions), key=_region_sort_key))
+        if any(region.kind in {RegionKind.APPLICATION_FLASH, RegionKind.BOOTLOADER_FLASH} for region in canonical_regions):
+            raise SafetyMapError("generic map must not persist deployment partition regions")
+        if not canonical_regions:
+            raise SafetyMapError("a generic map requires physical regions")
+        if tuple(region.address_range for region in canonical_regions if region.kind is RegionKind.PHYSICAL_FLASH) != (self.geometry.physical_flash,):
+            raise SafetyMapError("generic map must contain exactly its physical flash geometry")
+        if tuple(region.address_range for region in canonical_regions if region.kind is RegionKind.PHYSICAL_RAM) != (self.geometry.physical_ram,):
+            raise SafetyMapError("generic map must contain exactly its physical RAM geometry")
+        object.__setattr__(self, "authority_source", source)
+        object.__setattr__(self, "regions", canonical_regions)
+
+    def to_document(self) -> dict[str, object]:
+        return {
+            "schema_version": 3,
+            "board_id": self.board_id,
+            "identity": self.identity.to_document(),
+            "authority_source": dict(sorted(self.authority_source.items())),
+            "source_digests": self.source_digests.to_document(),
+            "geometry": self.geometry.to_document(),
+            "partitions": self.partitions.to_document(),
+            "deployment_policy": {"kind": "none"},
+            "regions": [region.to_document() for region in self.regions],
+        }
+
+    @property
+    def canonical_digest(self) -> str:
+        return _domain_digest("canonical-generic-map", self.to_document())
+
+    @property
+    def safety_map(self) -> SafetyMap:
+        return SafetyMap(list(self.regions))
+
+    def to_safety_map(self) -> SafetyMap:
+        return self.safety_map
+
+    @classmethod
+    def from_document(cls, value: object) -> "GenericSafetyMapDocument":
+        raw = _exact_mapping(
+            value,
+            {
+                "schema_version", "board_id", "identity", "authority_source", "source_digests",
+                "geometry", "partitions", "deployment_policy", "regions",
+            },
+            "generic memory map",
+        )
+        if raw["schema_version"] != 3:
+            raise SafetyMapError("unsupported generic memory-map schema version")
+        if not isinstance(raw["authority_source"], Mapping):
+            raise SafetyMapError("generic authority_source must be an object")
+        if not isinstance(raw["deployment_policy"], Mapping):
+            raise SafetyMapError("generic deployment_policy must be an object")
+        rows = raw["regions"]
+        if not isinstance(rows, list) or not rows:
+            raise SafetyMapError("generic memory map regions must be a non-empty list")
+        authority_source = _exact_mapping(
+            raw["authority_source"],
+            {"kind", "support_id", "pack_sha256", "pdsc_device", "pyocd_target"},
+            "generic authority_source",
+        )
+        if any(not isinstance(item, str) for item in authority_source.values()):
+            raise SafetyMapError("generic authority_source values must be strings")
+        return cls(
+            _require_board_id(raw["board_id"]),
+            GenericMapIdentity.from_document(raw["identity"]),
+            cast(dict[str, str], authority_source),
+            GenericSourceDigests.from_document(raw["source_digests"]),
+            MapGeometry.from_document(raw["geometry"]),
+            MapPartitions.from_document(raw["partitions"]),
+            dict(raw["deployment_policy"]),
+            tuple(_region_from_document(row, f"regions[{index}]") for index, row in enumerate(rows)),
+        )
+
+
+@dataclass(frozen=True, slots=True)
 class SafetyMapBuildRequest:
     board_id: str
     identity: MapIdentity
@@ -684,7 +907,7 @@ class SafetyMapRepository:
         for path in self._legacy_paths(board_id):
             self.store.remove_artifact(path)
 
-    def commit(self, board_id: str, document: SafetyMapDocument) -> Path:
+    def commit(self, board_id: str, document: SafetyMapDocument | GenericSafetyMapDocument) -> Path:
         identity = _require_board_id(board_id)
         if document.board_id != identity:
             raise SafetyMapError("memory map does not match the requested board")
@@ -700,7 +923,7 @@ class SafetyMapRepository:
         self._cleanup_legacy(identity)
         return result
 
-    def load_current(self, board_id: str) -> SafetyMapDocument:
+    def load_current(self, board_id: str) -> SafetyMapDocument | GenericSafetyMapDocument:
         identity = _require_board_id(board_id)
         self._cleanup_legacy(identity)
         path = self.path(identity)
@@ -712,7 +935,10 @@ class SafetyMapRepository:
             raise SafetyMapError(
                 f"current memory map is malformed; run board_safety_refresh: {exc}"
             ) from exc
-        document = SafetyMapDocument.from_document(raw)
+        if isinstance(raw, Mapping) and raw.get("schema_version") == 3:
+            document = GenericSafetyMapDocument.from_document(raw)
+        else:
+            document = SafetyMapDocument.from_document(raw)
         if document.board_id != identity:
             raise SafetyMapError("memory map does not match the requested board")
         return document
@@ -778,8 +1004,29 @@ def reviewed_map_source_documents(
     return device_support, official_and_policy
 
 
-def require_reconciled_authority(document: SafetyMapDocument) -> None:
+def require_reconciled_authority(document: SafetyMapDocument | GenericSafetyMapDocument) -> None:
     """Fail closed unless the map identity and partitions match reviewed policy."""
+
+    if isinstance(document, GenericSafetyMapDocument):
+        if document.partitions.application is not None or document.partitions.bootloader is not None:
+            raise SafetyMapError("generic map cannot authorize a deployment partition")
+        if document.deployment_policy != {"kind": "none"}:
+            raise SafetyMapError("generic map has an invalid deployment policy")
+        try:
+            from pyocd_debug_mcp.setup_flow.device_support import resolve_registered_pack_support
+
+            candidate = resolve_registered_pack_support(document.identity.mcu_part_number)
+        except Exception as exc:  # noqa: BLE001 - authority resolution must fail closed
+            raise SafetyMapError(f"generic map support authority is unavailable: {exc}") from exc
+        expected = candidate.to_authority_document()
+        source = dict(document.authority_source)
+        if (
+            document.identity.pyocd_target != candidate.pyocd_target
+            or document.identity.support_id != candidate.support_id
+            or any(source[key] != expected[key] for key in source)
+        ):
+            raise SafetyMapError("generic map identity does not match registered support authority")
+        return
 
     try:
         from pyocd_debug_mcp.setup_flow.board_catalog import catalog_board

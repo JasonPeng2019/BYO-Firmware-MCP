@@ -14,6 +14,7 @@ from pyocd_debug_mcp.safety.linker import (
     extract_build_evidence,
 )
 from pyocd_debug_mcp.safety.map_build import (
+    GenericSafetyMapDocument,
     SafetyMapDocument,
     SafetyMapError,
     SafetyMapRepository,
@@ -40,13 +41,13 @@ class SafetyPolicyError(RuntimeError):
 
 @dataclass(frozen=True, slots=True)
 class LoadedSafetyMap:
-    document: SafetyMapDocument
+    document: SafetyMapDocument | GenericSafetyMapDocument
     safety_map: SafetyMap
 
     # Transitional spelling used by a few callers while the v2 migration is in
     # flight.  It returns the one map document, never a legacy artifact bundle.
     @property
-    def artifacts(self) -> SafetyMapDocument:
+    def artifacts(self) -> SafetyMapDocument | GenericSafetyMapDocument:
         return self.document
 
 
@@ -292,10 +293,16 @@ class SafetyPolicy:
 
     def _erase_sectors(
         self,
-        document: SafetyMapDocument,
+        document: SafetyMapDocument | GenericSafetyMapDocument,
         ranges: Sequence[AddressRange],
     ) -> tuple[AddressRange, ...]:
         geometry = document.geometry
+        if not geometry.erase_available:
+            raise SafetyPolicyError(
+                "safety/geometry-incomplete",
+                "The stable map has no verified erase-sector geometry.",
+                remedy=("board_safety_refresh",),
+            )
         if geometry.erase_sectors:
             explicit_sectors = tuple(item.address_range for item in geometry.erase_sectors)
             required = {

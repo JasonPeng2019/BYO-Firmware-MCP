@@ -26,6 +26,7 @@ class LiveIdentityStamp:
     connection_id: str
     probe_identity: str
     observed_mcu: str
+    identity_capability: str
     validation_run: str
     validated_at: str
 
@@ -60,6 +61,12 @@ class ValidationStamp:
     @property
     def observed_mcu(self) -> str:
         return self.live_identity.observed_mcu
+
+    @property
+    def identity_capability(self) -> str:
+        """Whether the live proof is exact or a documented compatibility proof."""
+
+        return self.live_identity.identity_capability
 
     @property
     def validation_run(self) -> str:
@@ -144,6 +151,7 @@ class GateManager:
         observed_mcu: str,
         validation_run: str,
         map_digest: str,
+        identity_capability: str = "exact",
     ) -> ValidationStamp:
         """Atomically establish live identity and bind the current parsed map."""
 
@@ -151,6 +159,9 @@ class GateManager:
         connection = self._required(connection_id, "connection_id")
         probe = self._required(probe_identity, "probe_identity")
         observed = self._required(observed_mcu, "observed_mcu")
+        capability = self._required(identity_capability, "identity_capability")
+        if capability not in {"exact", "compatible"}:
+            raise ValueError("identity_capability must be exact or compatible")
         validation = self._required(validation_run, "validation_run")
         digest = self._required(map_digest, "map_digest")
         identity = LiveIdentityStamp(
@@ -158,6 +169,7 @@ class GateManager:
             connection,
             probe,
             observed,
+            capability,
             validation,
             datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
         )
