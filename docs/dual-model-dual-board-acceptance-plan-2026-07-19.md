@@ -3,7 +3,7 @@
 ## Objective
 
 Prove the current MCP server can autonomously onboard fresh datasheet-only projects and support
-real build, guarded flash, UART verification, and live debugging for eight independent runs:
+real build, guarded flash, UART verification, and live debugging for twelve independent runs:
 
 | Task | Hardware | GPT 5.6 Luna medium | Claude Sonnet 5 medium |
 |---|---|---:|---:|
@@ -11,13 +11,18 @@ real build, guarded flash, UART verification, and live debugging for eight indep
 | Zephyr multithreaded console | nRF52840-DK | pending | pending |
 | ThreadX multithreaded console | NUCLEO-L476RG | pending | pending |
 | True bare-metal scheduler/console | nRF52840-DK | pending | pending |
+| Repair frozen broken bare-metal console | nRF52840-DK | pending | pending |
+| Repair frozen broken ThreadX console | NUCLEO-L476RG | pending | pending |
 
 ## Isolation and launch discipline
 
 1. Before each run, independently enumerate probes and serial ports and reconcile the intended
    physical board by stable UID. Do not silently reuse stale COM assumptions.
-2. Create a new temporary git repository containing exactly one file, `datasheet.pdf`, copied from
-   the matching repository-root datasheet. Give it a unique project-local `.firm` artifact root.
+2. For ordinary cells, create a new temporary git repository containing exactly one file,
+   `datasheet.pdf`, copied from the matching repository-root datasheet. For each repair task, first
+   freeze one canonical broken tree and an external `bugs.yaml` answer key, then copy the identical
+   tree (without the answer key) into both model repos. Give every run a unique project-local
+   `.firm` artifact root.
 3. Register the checkout MCP only for that invocation. Do not change global client configuration.
 4. Use exact models and effort: `gpt-5.6-luna` medium without fast mode, and
    `claude-sonnet-5` medium without fast mode.
@@ -27,13 +32,17 @@ real build, guarded flash, UART verification, and live debugging for eight indep
 ## Per-run conversation
 
 1. Send only the task-specific framing prompt and hard constraints.
-2. Resume the same session after build and guarded flash; require at least 15 seconds of UART.
+2. Resume the same session after build and guarded flash; let the model choose its bounded UART
+   duration, then perform a separate orchestrator-controlled capture of at least 15 seconds.
 3. For console applications, resume again and exercise every command individually, including
    before/after interval evidence and concurrent background output.
 4. Resume again for live debug: halt, PC/SP, exported symbols, task breakpoint hit/removal, resume,
    and a running final state.
 5. Resume once more to write `journey.md` with plan IDs, artifact hashes, steps, failures, and
    recoveries.
+6. For repair cells, require pre-edit UART/SWD evidence for every seeded real defect, minimal
+   targeted changes, live fault/peripheral-register diagnosis where the answer key requires it,
+   and no edits to answer-key red herrings.
 
 ## Independent verification
 
@@ -44,6 +53,9 @@ real build, guarded flash, UART verification, and live debugging for eight indep
 - Confirm every console command and both interval changes from timestamps while console responses
   interleave with background activity.
 - Confirm the breakpoint really hits a task function and is removed before resume.
+- For repair cells, compare the raw edit/evidence timeline to the external `bugs.yaml`: every real
+  defect must be observed through its intended channel before editing; fault and peripheral cases
+  need live register evidence; red herrings and wholesale rewrites are automatic reds.
 - Confirm the board is left running and no unapproved destructive operation occurred.
 
 ## Failure loop
@@ -63,7 +75,6 @@ replaced only with a newly isolated repo and a recorded explanation.
 
 ## Exit gate
 
-Do not claim completion until all eight rows are green, every `journey.md` and raw transcript has
+Do not claim completion until all twelve model/task cells are green, every `journey.md` and raw transcript has
 been audited, all server defects have a clean Terra audit, and the final complete software suite is
 green.
-
