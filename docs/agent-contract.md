@@ -184,8 +184,7 @@ Follow the exact remedy named in a refusal:
 Refresh accepts only `board_id`; it never accepts artifacts or caller ranges.
 It may update the map association of existing live identity proof, but cannot
 create identity authority. A missing application or bootloader partition stays
-fail-closed and cannot be inferred from the old full-flash ceiling. Public
-`board_safety_setup` no longer exists.
+fail-closed and cannot be inferred from the full-flash ceiling.
 
 The three validation trigger categories are: first live connection after setup
 or server restart; reconnect, disconnect, or connection/probe change; and live

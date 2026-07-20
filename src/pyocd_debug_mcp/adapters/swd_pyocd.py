@@ -276,7 +276,7 @@ def build_session_options(
         options["target_override"] = target
     options.update((server_timeouts or default_server_timeout_config()).pyocd_options())
     if board and board.probe_family == "jlink":
-        # Match the Stage 0/J-Link open-by-serial workaround proven on hardware.
+        # J-Link sessions require opening the selected probe by serial number.
         options["jlink.non_interactive"] = False
     if board and board.debug_protocol:
         options["dap_protocol"] = board.debug_protocol
@@ -648,7 +648,7 @@ class PyOCDSWDInterface(SWDInterface):
         try:
             with _quiet_backend_streams():
                 target.reset_and_halt()
-                # M7 containment pre-computes and validates every implied erase sector.
+                # Containment pre-computes and validates every implied erase sector.
                 # Force pyOCD to honor that sector scope even when a host/session option
                 # would otherwise select auto or whole-chip erase.
                 FileProgrammer(handle.session, chip_erase="sector").program(str(firmware))

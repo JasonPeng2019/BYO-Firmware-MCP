@@ -13,14 +13,9 @@ __pycache__/
 !.env.example
 pyocd.local.yaml
 
-# Tool caches and coverage output
-.pytest_cache/
-.mypy_cache/
+# Tool caches
 .pyright/
 .ruff_cache/
-htmlcov/
-.coverage
-.coverage.*
 
 # Runtime and local work output
 /runs/

@@ -1,4 +1,4 @@
-"""Distinct M5 application and bootloader flash actions."""
+"""Distinct application and bootloader flash actions."""
 
 from __future__ import annotations
 

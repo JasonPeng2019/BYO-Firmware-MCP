@@ -1,4 +1,4 @@
-"""Configured labels and the legacy CLI fallback for debug-probe inventory."""
+"""Configured labels and the pyOCD CLI fallback for debug-probe inventory."""
 
 from __future__ import annotations
 

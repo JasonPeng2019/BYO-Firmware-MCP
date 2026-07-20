@@ -1,7 +1,0 @@
-{
-  "complete_for_provider_output": true,
-  "events": [],
-  "mcp_call_count": 0,
-  "note": "The provider failed before issuing any MCP request.",
-  "source": "raw-codex-events.jsonl"
-}

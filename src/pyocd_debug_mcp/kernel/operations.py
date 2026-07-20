@@ -27,7 +27,6 @@ import anyio
 
 from pyocd_debug_mcp.kernel.processes import (
     ProcessMarkerStore,
-    popen_owned,
     terminate_process_group,
 )
 
@@ -418,16 +417,6 @@ def operation_resources() -> OperationResources:
     if operation is None:
         raise RuntimeError("operation resources are available only during managed dispatch")
     return operation.resources
-
-
-def start_owned_subprocess(args: list[str], **kwargs: Any) -> subprocess.Popen[Any]:
-    """Start a helper in a new process group and bind it to the current operation."""
-
-    store = ProcessMarkerStore()
-    process, marker = popen_owned(args, marker_store=store, **kwargs)
-    resources = operation_resources()
-    resources.subprocesses.append(_OwnedSubprocess(process, store, marker))
-    return process
 
 
 def wrap_layer2_response(result: str) -> str:

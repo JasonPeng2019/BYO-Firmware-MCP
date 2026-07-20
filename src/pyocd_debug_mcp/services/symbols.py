@@ -1,4 +1,4 @@
-"""Shared ELF symbol-resolution helpers for Stage 1 harnesses and later tools."""
+"""Shared ELF symbol-resolution helpers for server tools."""
 
 from __future__ import annotations
 

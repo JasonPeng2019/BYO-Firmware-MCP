@@ -1,54 +1,24 @@
 # BYO Server Firmware Workflow
 
 BYO Server is a guarded local MCP server for embedded-board setup, debugging, serial I/O,
-deployment, and recovery. Its agent workflow lives in the `.agent-workspace` submodule.
+deployment, and recovery through pyOCD.
 
-## Install the workflow and launch an agent
+## Install and connect
 
-Add the workflow submodule to an existing BYO Server checkout once:
+Install the locked environment from the checkout:
 
-```powershell
-cd C:\path\to\BYO-Server
-git submodule add <agent-workspace-repository-url> .agent-workspace
-git submodule update --init --recursive
+```text
+uv sync --locked
 ```
 
-When cloning a checkout that already records the submodule, use either:
+Register the following stdio command in any MCP-compatible client:
 
-```powershell
-git clone --recurse-submodules <BYO-Server-repository-url>
-# or, inside an existing clone:
-git submodule update --init --recursive
+```text
+uv run --project <absolute-path-to-BYO-Server> --locked pyocd-debug-mcp
 ```
 
-Run the submodule loader to render the selected mode and mirror its skills into `.claude/skills`,
-`.agents/skills`, and `.codex`:
-
-```powershell
-py .agent-workspace\bin\setup-project --mode firmware
-```
-
-Run it again after updating the submodule. To change mode after initial setup, use:
-
-```powershell
-py .agent-workspace\bin\set-mode firmware-full
-```
-
-Launch an agent from the outer BYO Server directory:
-
-```powershell
-py .agent-workspace\bin\codex-mode firmware
-# or
-py .agent-workspace\bin\claude-mode firmware
-```
-
-Then explicitly tell the agent to register and connect to the local server by running:
-
-```powershell
-codex mcp add pyocd-debug -- uv run --project C:\path\to\BYO-Server pyocd-debug-mcp
-```
-
-Replace the path with this checkout. The workflow never silently connects an agent to hardware.
+The server is client-neutral and never launches an agent or silently connects to hardware. See
+[SERVER_GUIDE.md](SERVER_GUIDE.md) for the full setup and tool workflow.
 
 ## Firmware MCP capabilities
 
@@ -136,28 +106,10 @@ identity first, with configured vendor helpers only as ambiguity fallbacks. Dest
 uses the target-neutral `backend_mass_erase` capability after live-backend support, complete erase
 disclosure, and fresh one-time permission checks; `manual_only` remains fail-closed.
 
-## Firmware workflow skills
+## Further documentation
 
-Skills are manually invoked with `/name` in Claude Code or `$name` in Codex, except `mcp-help`,
-the sole auto-invocable firmware skill. It gives the model MCP setup, gate, and two-call plan
-guidance without exposing server internals.
-
-Common skills include `spec`, `read-spec`, `plan`, `test-first`, `verify`, `adversarial`,
-`implement-high`, `implement-low`, `bug-fix-simple`, and `bug-fix-complex`.
-
-Firmware adds `board-setup`, `verify-firmware-hil`, `implement-hil`,
-`bug-fix-firmware-hil`, `verify-firmware-large`, `implement-firmware-large`,
-`bug-fix-firmware-large`, `hard-fault-triage`, `memory-map-safety`,
-`peripheral-contract`, `rtos-patterns`, and `server-help`.
-
-Run `py .agent-workspace\bin\doctor --mode firmware` after setup. For the full server reference,
-see [SERVER_GUIDE.md](SERVER_GUIDE.md).
-
-## Verified
-
-The checked-in software workflows and hardware evidence are identified in docs/verification.md.
-
-## Pending verification
-
-Hardware-dependent results remain bounded by the exact identities and blockers recorded in docs/verification.md.
+- [Server operation and recovery](SERVER_GUIDE.md)
+- [Agent interaction contract](docs/agent-contract.md)
+- [Architecture and state ownership](docs/architecture.md)
+- [Plan-tool contract](docs/plan-tool-contract.md)
 

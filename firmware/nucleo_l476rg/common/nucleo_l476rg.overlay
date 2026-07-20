@@ -1,6 +1,0 @@
-/ {
-	chosen {
-		zephyr,console = &usart2;
-		zephyr,shell-uart = &usart2;
-	};
-};

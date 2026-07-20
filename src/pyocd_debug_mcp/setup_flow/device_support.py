@@ -764,38 +764,6 @@ class DeviceSupportResolver:
         return candidates[0]
 
 
-def registered_pack_targets() -> tuple[str, ...]:
-    """Return only target names present in the server-owned pack registry."""
-
-    return tuple(
-        sorted(
-            {
-                target.casefold()
-                for spec in load_manifest(MANIFEST_PATH)
-                for target in spec.provides_targets
-                if spec.device_bindings
-            }
-        )
-    )
-
-
-def has_registered_pack_binding(part_number: str) -> bool:
-    """Return whether the server registry owns an exact binding for ``part_number``.
-
-    This intentionally examines only the immutable server manifest, not the pack
-    payload.  Callers use it to distinguish "there is no generic record" from
-    "the generic record exists but its pinned bytes can no longer be verified";
-    the latter must never fall back to a catalog record.
-    """
-
-    requested = normalize_part_number(part_number)
-    return any(
-        normalize_part_number(binding.part_number) == requested
-        for spec in load_manifest(MANIFEST_PATH)
-        for binding in spec.device_bindings
-    )
-
-
 def has_available_pack_binding(store: FirmStore, part_number: str) -> bool:
     """Detect repository or project bindings without accepting their payload bytes."""
 

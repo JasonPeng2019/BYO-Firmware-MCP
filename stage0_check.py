@@ -592,7 +592,7 @@ def run_shared_safe_validation(
     """Run Stage 0 connection/identity checks through ``BoardValidator``.
 
     Stage 0's opt-in flash and recovery checks remain separate. The shared path
-    intentionally disables UART here because the legacy CLI performs that check
+    intentionally disables UART here because this CLI performs that check
     only after its optional reference-firmware step.
     """
 

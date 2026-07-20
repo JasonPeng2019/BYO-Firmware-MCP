@@ -1,5 +1,4 @@
-# PROJECT-DEFINED: BYO-only package metadata. The duplicated-tree and legal
-# disposition decisions remain open in the extraction ledger.
+# BYO Server package metadata.
 [project]
 name = "pyocd-debug-mcp"
 version = "0.1.0"
@@ -20,15 +19,12 @@ dependencies = [
 [project.scripts]
 pyocd-debug-mcp = "pyocd_debug_mcp.server:main"
 pyocd-pack-repair = "pyocd_debug_mcp.pack_index_repair:main"
-pyocd-zephyr-build = "pyocd_debug_mcp.zephyr_build:main"
 pyocd-collect-artifacts = "pyocd_debug_mcp.artifact_collector:main"
 pyocd-native-build = "pyocd_debug_mcp.native_build:main"
 
 [dependency-groups]
 dev = [
     "pyright>=1.1",
-    "pytest>=8.0",
-    "pytest-asyncio>=0.23",
     "ruff>=0.6",
 ]
 
@@ -37,7 +33,7 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
-# Checkout-owned boards, firmware, packs, cases, and scripts are intentionally
+# Checkout-owned boards, firmware, packs, and host utilities are intentionally
 # not package data. The installed wheel is a build/import artifact, not a
 # supported operational deployment; see README.md and docs/architecture.md.
 packages = ["src/pyocd_debug_mcp"]
@@ -48,10 +44,6 @@ include = [
     "/pyproject.toml",
     "/src/pyocd_debug_mcp",
 ]
-
-[tool.pytest.ini_options]
-asyncio_mode = "auto"
-testpaths = ["tests"]
 
 [tool.ruff]
 target-version = "py310"

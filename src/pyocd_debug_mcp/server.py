@@ -942,13 +942,6 @@ def format_board_info(b: BoardConfig) -> str:
     return "\n".join(lines)
 
 
-def build_session_options(
-    board: BoardConfig | None, target: str | None
-) -> dict[str, object] | None:
-    """Compatibility wrapper around the shared target-control option builder."""
-    return target_control.build_session_options(board, target)
-
-
 def _should_bypass_jlink_probe_resolution(
     board: BoardConfig | None,
     *,
@@ -2355,7 +2348,7 @@ for _handler_name, _handler in (
 forbid_unknown_tool_arguments(mcp, "connect")
 forbid_unknown_tool_arguments(mcp, "collect_build_artifacts")
 
-M5_LAYER2_ACTIONS = tuple(
+LAYER2_ACTIONS = tuple(
     session_tool_handlers
     | execution_tool_handlers
     | register_tool_handlers
@@ -2365,11 +2358,10 @@ M5_LAYER2_ACTIONS = tuple(
     | breakpoint_tool_handlers
     | misc_tool_handlers
 )
-for _layer2_action in M5_LAYER2_ACTIONS:
+for _layer2_action in LAYER2_ACTIONS:
     mcp.configure_layer2(_layer2_action)
 
-PILOT_PLAN_ACTIONS = ("read_serial", "write_serial", "write_memory")
-TASK7_GUARDED_ACTIONS = (
+CONNECTION_AND_REGISTER_GUARDED_ACTIONS = (
     "connect_override",
     "reset_and_halt",
     "connect_under_reset",
@@ -2377,7 +2369,7 @@ TASK7_GUARDED_ACTIONS = (
     "set_execution_state",
     "register_write",
 )
-TASK8_GUARDED_ACTIONS = (
+MEMORY_FLASH_AND_SERIAL_GUARDED_ACTIONS = (
     "read_memory_address",
     "write_memory",
     "set_breakpoint",
@@ -2387,8 +2379,10 @@ TASK8_GUARDED_ACTIONS = (
     "write_serial",
     "serial_exchange",
 )
-M5_GUARDED_ACTIONS = TASK7_GUARDED_ACTIONS + TASK8_GUARDED_ACTIONS
-for _guarded_action in M5_GUARDED_ACTIONS:
+GUARDED_ACTIONS = (
+    CONNECTION_AND_REGISTER_GUARDED_ACTIONS + MEMORY_FLASH_AND_SERIAL_GUARDED_ACTIONS
+)
+for _guarded_action in GUARDED_ACTIONS:
     tool_registry.configure(
         _guarded_action,
         hidden=True,
@@ -2404,7 +2398,7 @@ for _guarded_action in M5_GUARDED_ACTIONS:
 plan_tool_handlers = register_plan_tools(
     mcp,
     plan_engine,
-    (PLAN_DEFINITIONS[action] for action in M5_GUARDED_ACTIONS),
+    (PLAN_DEFINITIONS[action] for action in GUARDED_ACTIONS),
     _active_session_id,
 )
 
@@ -5396,7 +5390,7 @@ def _revoke_with_setup_closure(action_name: str, board_id: str, reason: str) -> 
 
 
 permission_store.set_revocation_handler(_revoke_with_setup_closure)
-M6_GUARDED_ACTIONS = ("board_setup", "board_fix_setup")
+SETUP_GUARDED_ACTIONS = ("board_setup", "board_fix_setup")
 for _setup_name, _setup_handler in setup_tool_handlers.items():
     mcp.add_tool(
         _setup_handler,
@@ -5407,7 +5401,7 @@ for _setup_name, _setup_handler in setup_tool_handlers.items():
     if _setup_name.endswith("-plan"):
         forbid_unknown_tool_arguments(mcp, _setup_name)
 
-for _setup_action in M6_GUARDED_ACTIONS:
+for _setup_action in SETUP_GUARDED_ACTIONS:
     tool_registry.configure(
         _setup_action,
         hidden=True,
@@ -5474,8 +5468,6 @@ mcp.configure_guarded_dispatch(
     guard=_enforce_guarded_invocation,
     lock_for_board=lambda board_id: connection_manager.lock_for(board_id),
 )
-M8_GUARDED_ACTIONS = ("target_unlock",)
-
 batch_tool_handlers = build_batch_handlers(
     mcp.call_tool,
     tool_exists=tool_registry.is_registered,
@@ -5488,7 +5480,6 @@ for _batch_name, _batch_handler in batch_tool_handlers.items():
         structured_output=False,
     )
     mcp.configure_layer2(_batch_name)
-M9_BATCH_ACTIONS = tuple(batch_tool_handlers)
 
 
 def _bind_managed_board_resources(operation: ManagedOperation) -> None:

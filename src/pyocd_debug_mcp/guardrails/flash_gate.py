@@ -1,4 +1,4 @@
-"""Shared flash-artifact guardrail policy for R10."""
+"""Shared flash-artifact guardrail policy."""
 
 from __future__ import annotations
 

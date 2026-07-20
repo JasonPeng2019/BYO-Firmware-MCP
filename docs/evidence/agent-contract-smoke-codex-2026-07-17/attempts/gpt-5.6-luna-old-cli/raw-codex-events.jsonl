@@ -1,7 +1,0 @@
-{"type":"thread.started","thread_id":"019f73ab-d244-7012-b9ee-cef50d4d623d"}
-{"type":"item.completed","item":{"id":"item_0","type":"error","message":"`--dangerously-bypass-hook-trust` is enabled. Enabled hooks may run without review for this invocation."}}
-{"type":"item.completed","item":{"id":"item_1","type":"error","message":"`--dangerously-bypass-hook-trust` is enabled. Enabled hooks may run without review for this invocation."}}
-{"type":"item.completed","item":{"id":"item_2","type":"error","message":"Model metadata for `gpt-5.6-luna` not found. Defaulting to fallback metadata; this can degrade performance and cause issues."}}
-{"type":"turn.started"}
-{"type":"error","message":"{\"type\":\"error\",\"status\":400,\"error\":{\"type\":\"invalid_request_error\",\"message\":\"The 'gpt-5.6-luna' model requires a newer version of Codex. Please upgrade to the latest app or CLI and try again.\"}}"}
-{"type":"turn.failed","error":{"message":"{\"type\":\"error\",\"status\":400,\"error\":{\"type\":\"invalid_request_error\",\"message\":\"The 'gpt-5.6-luna' model requires a newer version of Codex. Please upgrade to the latest app or CLI and try again.\"}}"}}

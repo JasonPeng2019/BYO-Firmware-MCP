@@ -25,9 +25,6 @@ class BreakpointToolServices:
     set_target_breakpoint: Callable[[Any, int], None]
     remove_target_breakpoint: Callable[[Any, int], None]
     check_breakpoint: Callable[[str, int, Path], None] | None = None
-    # Transitional construction compatibility only. The selected ELF now comes
-    # from the immutable action parameters, never from the connected handle.
-    symbol_artifact_for: Callable[[Any], Path] | None = None
 
 
 def _parse_address(value: str | int) -> int:

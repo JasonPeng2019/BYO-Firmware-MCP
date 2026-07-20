@@ -165,38 +165,6 @@ class BuildEvidence:
         )
 
 
-def select_build_configuration(
-    configurations: tuple[BuildArtifactSelection, ...] | list[BuildArtifactSelection],
-    configuration_id: str | None,
-) -> BuildArtifactSelection | None:
-    """Select exactly one build without accepting partition ranges from the caller."""
-
-    candidates = tuple(configurations)
-    if not candidates:
-        return None
-    identifiers = [item.configuration_id for item in candidates]
-    if len(set(identifiers)) != len(identifiers):
-        raise LinkerEvidenceError(
-            "build/duplicate-configuration", "build configuration identifiers must be unique"
-        )
-    if configuration_id is not None:
-        selected = next(
-            (item for item in candidates if item.configuration_id == configuration_id), None
-        )
-        if selected is None:
-            raise LinkerEvidenceError(
-                "build/unknown-configuration",
-                f"Unknown build configuration '{configuration_id}'",
-            )
-        return selected
-    if len(candidates) == 1:
-        return candidates[0]
-    raise LinkerEvidenceError(
-        "build/selection-required",
-        "More than one build configuration is present; select one by its identifier.",
-    )
-
-
 def _parse_map(path: Path) -> dict[str, int]:
     if not path.is_file():
         raise LinkerEvidenceError("build/map-missing", f"Linker map does not exist: {path}")

@@ -9,8 +9,9 @@ and cleanup.
 ## Run from the checkout
 
 Operational use is checkout-only and requires the complete checkout because board profiles, pack
-metadata, firmware, and `.firm` evidence are not wheel package data. Python
-3.12 is the team pin; package metadata supports Python 3.10 and newer.
+metadata, and reference artifacts are not wheel package data. Runtime `.firm` state is generated
+inside the selected project root and is never shipped as authority. Python
+3.12 is the repository pin; package metadata supports Python 3.10 and newer.
 
 1. Read [init.md](init.md) for host prerequisites.
 2. Follow [stage0_setup.md](stage0_setup.md) for board readiness.
@@ -44,8 +45,6 @@ Checkout utilities include:
 ```text
 uv run --locked python host_bootstrap.py --help
 uv run --locked python stage0_check.py --help
-uv run --locked python scripts/migrate_boards_to_firm.py --help
-uv run --locked python scripts/run_fresh_workspace_e2e.py --help
 uv run --locked pyocd-pack-repair --help
 uv run --locked pyocd-native-build --help
 ```
@@ -58,17 +57,8 @@ does not choose an SDK, compiler, provider, or target. Compatible local tools
 are preferred; ordinary acquisition is allowed when none is usable. Build
 guidance never grants memory authority.
 
-For a brand-new artifact root, `scripts/run_fresh_workspace_e2e.py` is the
-checkout-local setup-only orchestrator. It takes the exact board, MCU, probe,
-stable UART identity, datasheet path, and artifact-root identity, requires the explicit
-`--authorize-setup` flag, drives the real MCP stdio handshake/plan/setup/
-validation sequence, and writes fixed-path machine-readable evidence. It has
-no callback, shell command, code-generation, build, flash, or UART-write
-option. Any terminal status other than completed setup plus current-run
-readiness stops the process before a coding workflow can begin.
-
 Plan fields, budgets, and permission modes are listed in
-[`docs/plan-tool-contract.md`](docs/plan-tool-contract.md), which is generated
+[`docs/plan-tool-contract.md`](docs/plan-tool-contract.md), which is derived
 from the same definitions used by the live MCP schemas. Setup resolves the
 current UART port from the selected stable identity and computes the datasheet
 SHA-256 itself; agents never need to bind a COM path or run a hash command.
@@ -92,7 +82,7 @@ Always-advertised operational tools cover:
   `remove_breakpoint`, and bounded `wait`;
 - setup and safety: familiar-name `setup_overview`, `load_setup_tool`,
   setup-first `board_setup-plan`, strict `continue_setup`,
-  `board_safety_setup`, application/bootloader-aware `board_safety_refresh`, `board_validate`,
+  application/bootloader-aware `board_safety_refresh`, `board_validate`,
   and the non-authoritative `get_setup_status` readiness barrier;
 - orchestration: `action_batch`; and
 - the `*-plan` tools for guarded actions.
@@ -158,69 +148,28 @@ Target recovery and bootloader flash are destructive operations with stronger
 approval rules. Never treat conversational approval, a report, tool visibility,
 or a prior run as current authorization.
 
-## Validation
+## Build and import check
 
-Run the software suite from the checkout:
-
-```text
-uv run --locked pytest
-uv run --locked ruff check .
-uv run --locked pyright
-```
-
-The optional agent benchmark can launch an arbitrary operator-selected agent
-CLI or wrapper through an explicit argv config. See
-[`docs/agent-command-adapter.md`](docs/agent-command-adapter.md). This does not
-mean every vendor CLI has identical zero-configuration flags: the adapter
-supplies a neutral stdio launch manifest, while the configured CLI/wrapper must
-translate it or use an existing registration.
-
-M10 performance targets are measured without making host speed a CI gate:
+The distributable package can be checked without operating hardware:
 
 ```text
-uv run --locked python scripts/measure_m10_performance.py --samples 7
+uv build
+uv run --locked python -c "import pyocd_debug_mcp; import pyocd_debug_mcp.server"
 ```
-
-The tool records host and dependency context and measures gate/freshness,
-eight-device enumeration, and NULL-plan/handshake latency. Current dated
-evidence is in `docs/evidence/`.
-
-Hardware acceptance is separate because it requires positively identified,
-recoverable bench boards and explicit destructive authorization. See
-[docs/verification.md](docs/verification.md) for the evidence labels and open
-hardware/client matrix.
 
 ## More detail
 
 - [Architecture and state ownership](docs/architecture.md)
 - [Agent interaction contract](docs/agent-contract.md)
-- [Contract snapshot history](docs/contract-history.md)
-- [Verification status](docs/verification.md)
-- [Historical extraction provenance](docs/extraction-manifest.json)
+- [Plan-tool contract](docs/plan-tool-contract.md)
 
-No authoritative project-root LICENSE or NOTICE was available. This project
-makes no license claim; publication remains blocked on the authoritative human
-licensing decision.
+## Runtime guarantees
 
-## Verified
-
-The current software suite covers the MCP product contract, board-scoped
-routing, plans and permissions, safety containment, managed cleanup, stdio-only
-exposure, authority-free persistence, relay text, Unicode profile names, and
-the non-gating M10 performance measurements. `InMemorySessionStore` remains the
-process-local session implementation; durable reports are evidence only. The
-optional R11 path has a backward-compatible Codex adapter plus a configurable
-agent-command adapter and does not define ordinary server behavior.
+`InMemorySessionStore` is the process-local session implementation; durable reports are
+evidence only and cannot restore live authority. The MCP server is provider-neutral over stdio.
 
 For project build dependencies, the agent inspects the project's own metadata and available host
 resources, prefers a compatible existing SDK/toolchain/library, and uses the project's ordinary
 installation or network acquisition path when none is usable. The server does not prescribe vendor
 locations, select a provider, or manage a build-environment fallback. Device-support packs used as
 debug authority follow the separate verified-pack onboarding contract.
-
-## Pending verification
-
-Fresh hardware/client acceptance remains separately scoped in
-[docs/verification.md](docs/verification.md), including the exact
-`nrf52833dk` and `nucleo_l476rg` pair, cross-host proof, and any authorized destructive work. Publication licensing
-and independent process-tree cleanup evidence also remain human/bench gates.

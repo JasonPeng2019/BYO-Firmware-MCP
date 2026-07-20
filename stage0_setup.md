@@ -1,4 +1,4 @@
-# Stage 0 and Stage 1 board setup
+# Stage 0 board setup
 
 Use this guide only after [init.md](init.md). Every command assumes the current
 directory is the `BYO-Server/` checkout and the independent environment is
@@ -9,9 +9,9 @@ synced with `uv sync --locked`.
 Host bootstrap is observational except for dependency/pack installation. Stage
 0 normally connects, reads identity, resolves UART, and reports manual gaps.
 Supplying `--reference-firmware` authorizes a real flash for that board.
-Supplying `--recover-test` authorizes a destructive erase/unlock cycle. Stage 1
-also flashes the selected reference artifact. Do not run those commands against
-an unknown board, shared bench, or uncommitted target state.
+Supplying `--recover-test` authorizes a destructive erase/unlock cycle. Do not
+run those commands against an unknown board, shared bench, or uncommitted target
+state.
 
 The MCP server keeps the same server-owned guardrails regardless of which model
 or client connects. Tool contracts and confirmation rules are the docstrings in
@@ -23,8 +23,8 @@ or client connects. Tool contracts and confirmation rules are the docstrings in
 uv run --locked python host_bootstrap.py --board-id <board-id> --install-packs
 ```
 
-Use `nrf52833dk` or `nucleo_l476rg` for the official pair. `nrf52840dk` is an
-alternate profile only. Resolve every FAIL before continuing. A WARN about no
+The checkout includes `nrf52833dk`, `nrf52840dk`, and `nucleo_l476rg` profiles.
+Resolve every FAIL before continuing. A WARN about no
 probe or serial port means the attached-board path is not ready even if Python
 dependencies pass.
 
@@ -67,21 +67,7 @@ uv run --locked python stage0_check.py --board-id nrf52833dk --recover-test nrf5
 This may erase flash. Never infer authorization from a general request to test
 or inspect the board.
 
-## 4. Stage 1 shared substrate smoke
-
-Stage 1 performs the canonical SWD plus UART smoke and flashes its reference
-artifact. Run it only after Stage 0 is green and mutation is authorized:
-
-```text
-uv run --locked python -m tests.harness.stage1_smoke --board-id <board-id>
-```
-
-Use `--probe-uid`, `--port`, `--flash-artifact`, `--elf`, `--baudrate`, or
-`--serial-read-seconds` when the tracked defaults are insufficient. After the
-run, confirm normal disconnect and inspect for stale pyOCD, serial, Python/uv,
-or probe-owner processes before reusing the bench.
-
-## 5. Start the MCP server
+## 4. Start the MCP server
 
 Register the checkout command from [README.md](README.md), or start it from an
 MCP-aware client with:
@@ -107,14 +93,3 @@ before stopping the client.
 | Flash input is refused | Missing/non-file/unsupported or policy-disallowed path | Use a reviewed local `.hex`/`.bin` artifact and follow the server/Stage 0 refusal text. |
 | Recover is refused | Board policy disallows it or confirmation is absent | Confirm the selected profile and use the explicit confirmation path only when destructive recovery is authorized. |
 | A command timed out | The direct operation exceeded its budget | Treat cleanup as uncertain, audit processes/probe ownership, disconnect/reconnect the board if safe, then rerun from host bootstrap. |
-
-## Verified
-
-Parser/help behavior, board selection, refusal contracts, Stage 0/1 mocked
-paths, and checkout-relative data resolution are non-hardware verified.
-
-## Pending verification
-
-Fresh Stage 0/1 and MCP Inspector runs on exact `nrf52833dk` and
-`nucleo_l476rg`, destructive recovery where authorized, full cleanup evidence,
-and official-pair closure remain pending.

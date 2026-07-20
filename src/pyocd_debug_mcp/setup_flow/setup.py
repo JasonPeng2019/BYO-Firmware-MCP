@@ -4,8 +4,7 @@ from __future__ import annotations
 
 import secrets
 import threading
-import unicodedata
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Mapping
 from dataclasses import asdict, dataclass, field
 from enum import Enum
 from typing import Any, Literal
@@ -469,7 +468,6 @@ class SetupWorkflow:
         decision: PreflightDecision | None = None
         self.cancellation_checkpoint()
         try:
-            # AC-7.7: this provider is called on every setup and repair attempt.
             inventory = self.inventory_provider(state.user_input)
             self.cancellation_checkpoint()
             decision = self.preflight.evaluate(state.user_input, inventory, selections)
@@ -877,73 +875,6 @@ class AssignmentRoute:
     kind: AssignmentRouteKind
     board_id: str | None
     agent_prompt: str
-
-
-def route_board_name(
-    display_name: str,
-    profiles: Sequence[ProfileRouteView],
-    *,
-    hardware_mismatch: bool = False,
-    expected_mcu: str | None = None,
-    observed_mcu: str | None = None,
-) -> AssignmentRoute:
-    """Route a conversational name without mutating or silently reassigning profiles."""
-
-    supplied = display_name.strip()
-    if supplied.casefold() == "no board":
-        return AssignmentRoute(
-            "no_board",
-            None,
-            _relay_prompt("No board was selected. Do not begin setup or hardware work."),
-        )
-    key = unicodedata.normalize("NFC", supplied).casefold()
-    matches = [
-        profile
-        for profile in profiles
-        if unicodedata.normalize("NFC", profile.display_name).casefold() == key
-    ]
-    if len(matches) > 1:
-        return AssignmentRoute(
-            "conflict",
-            None,
-            _relay_prompt(
-                "More than one stored profile has that familiar name. Report the profile "
-                "conflict and stop; do not choose or rename either profile."
-            ),
-        )
-    if not matches:
-        return AssignmentRoute(
-            "setup",
-            None,
-            _relay_prompt(
-                "That familiar name does not match a stored profile. Offer first-time setup."
-            ),
-        )
-    profile = matches[0]
-    if hardware_mismatch:
-        identities = ""
-        if expected_mcu and observed_mcu:
-            identities = f" Expected MCU {expected_mcu}; observed MCU {observed_mcu}."
-        return AssignmentRoute(
-            "mismatch",
-            profile.board_id,
-            _relay_prompt(
-                "The attached hardware does not match this established profile."
-                f"{identities} Tell the user and ask what they want to do. If they elect to keep "
-                "the different hardware, obtain a new familiar name and create a new logical "
-                "board/profile; do not rewrite, rename, or silently reassign this profile."
-            ),
-        )
-    return AssignmentRoute(
-        "validate",
-        profile.board_id,
-        _relay_prompt(
-            "The familiar name matches one stored profile. Validate the attached hardware first, "
-            "even when stored setup evidence is incomplete or previously failed. Follow only the "
-            "specific repair, safety, attachment, or retry remedy returned by validation; never "
-            "route it directly through first-time setup."
-        ),
-    )
 
 
 class RunAssignmentStore:

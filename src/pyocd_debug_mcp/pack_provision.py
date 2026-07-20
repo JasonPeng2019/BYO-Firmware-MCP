@@ -507,21 +507,3 @@ def verified_pack_for_target(
         payloads.append((candidate, payload))
     selected_path, selected_payload = payloads[0]
     return VerifiedPack(path=selected_path, spec=spec, payload=selected_payload)
-
-
-def verified_registry_pack_for_target(target: str) -> VerifiedPack | None:
-    """Select a pack from the immutable server registry only.
-
-    ``verified_pack_for_target`` also supports an invocation-local manifest so
-    existing project tooling can inventory its pinned build dependencies.  That
-    flexibility is intentionally not device authority: a project can edit its
-    own manifest.  Generic part-to-target resolution must use this narrow
-    entry point, whose manifest is versioned with the server.
-    """
-
-    return verified_pack_for_target(
-        target,
-        manifest_path=MANIFEST_PATH,
-        packs_dir=PACKS_DIR,
-        allow_active_project_manifest=False,
-    )

@@ -1,4 +1,4 @@
-"""Runtime session, structured event logging, and refusal primitives for R10."""
+"""Runtime session, structured event logging, and refusal primitives."""
 
 from __future__ import annotations
 
@@ -8,7 +8,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from enum import Enum
 from pathlib import Path
-from typing import Any, Protocol
+from typing import Any
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 RUNS_ROOT = REPO_ROOT / "runs"
@@ -134,31 +134,6 @@ class SessionRecord:
     @property
     def event_count(self) -> int:
         return len(self.events)
-
-
-class SessionStore(Protocol):
-    def start_session(
-        self,
-        *,
-        board_id: str,
-        connection_id: str,
-        probe_uid: str | None,
-        route_used: str | None,
-    ) -> SessionRecord: ...
-
-    def append_event(self, session: SessionRecord, event: ToolEvent) -> None: ...
-
-    def append_global_event(self, event: ToolEvent) -> None: ...
-
-    def set_block(
-        self, session: SessionRecord, action_family: str, code: str, message: str
-    ) -> None: ...
-
-    def clear_block(self, session: SessionRecord, action_family: str) -> None: ...
-
-    def mark_recover_completed(self, session: SessionRecord) -> None: ...
-
-    def close_session(self, session: SessionRecord) -> None: ...
 
 
 class InMemorySessionStore:

@@ -1,4 +1,4 @@
-"""Shared UART capture helpers for Stage 0 and later harnesses."""
+"""Shared UART capture helpers for host checks and server tools."""
 
 from __future__ import annotations
 

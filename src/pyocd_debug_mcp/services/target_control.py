@@ -5,10 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from pyocd_debug_mcp.adapters.swd_interface import TargetSessionHandle
-from pyocd_debug_mcp.adapters.swd_pyocd import (
-    PyOCDSWDInterface,
-    build_session_options as _build_session_options,
-)
+from pyocd_debug_mcp.adapters.swd_pyocd import PyOCDSWDInterface
 from pyocd_debug_mcp.board_config import (
     RECOVER_MODE_MANUAL_ONLY,
     RECOVER_MODE_BACKEND_MASS_ERASE,
@@ -17,16 +14,6 @@ from pyocd_debug_mcp.board_config import (
 from pyocd_debug_mcp.timeouts import ServerTimeoutConfig
 
 _BACKEND = PyOCDSWDInterface()
-
-
-def build_session_options(
-    board: BoardConfig | None,
-    target: str | None,
-    server_timeouts: ServerTimeoutConfig | None = None,
-) -> dict[str, object] | None:
-    """Expose the backend option builder for tests and wrapper compatibility."""
-
-    return _build_session_options(board, target, server_timeouts)
 
 
 def open_session(

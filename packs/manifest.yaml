@@ -1,18 +1,12 @@
 # Pinned CMSIS-Pack provisioning manifest.
 #
-# WHY THIS EXISTS: the shipped server must NOT depend on the live
-# cmsis-pack-manager index (`pyocd pack update` / `pyocd pack install`). That flow
-# bulk-fetches ~1500 vendor descriptors from many servers and silently skips any
-# that fail or time out, producing a partial index. On restrictive/slow networks
-# (reproduced on a Windows host here) whole families — e.g. STM32L4 — never make
-# it in, so `pyocd pack install stm32l476` reports "No matching devices" and the
-# board's exact target (stm32l476rgtx) is unavailable.
+# WHY THIS EXISTS: the shipped server must not depend on a possibly incomplete
+# live cmsis-pack-manager index (`pyocd pack update` / `pyocd pack install`).
 #
 # Instead, each pack below is fetched DETERMINISTICALLY by one pinned URL and
 # verified by sha256 (see `pyocd_debug_mcp.pack_provision`, invoked by
 # `host_bootstrap.py --install-packs` / the setup scripts). pyOCD then loads the
-# local .pack files via its `pack` option in the shared backend, so stage0, the
-# MCP server, and the Stage 1 harness all resolve the exact target offline.
+# local .pack files via its `pack` option in the shared backend.
 #
 # The .pack files themselves are NOT committed (gitignored); only this manifest
 # is tracked. To update a pin: bump version + url, recompute sha256
@@ -39,11 +33,7 @@ packs:
           mask: 4095
           width_bits: 32
           label: STM32L476 compatible DBGMCU_IDCODE
-    note: >-
-      Provides the exact stm32l476rgtx target for the Nucleo-L476RG. Verified on a
-      real Windows host: pyOCD resolves stm32l476rgtx from this local pack and
-      reads the board, where the live index could not supply STM32L4 at all.
+    note: Provides the exact stm32l476rgtx target for the Nucleo-L476RG.
 
-# nRF52833 / nRF52840 targets are built into pyOCD on the verified hosts, so no
-# Nordic DFP is pinned here yet. Add one the same way if a host is found where the
-# built-in nRF targets are unavailable.
+# nRF52833 / nRF52840 targets are normally built into pyOCD, so no Nordic DFP is
+# pinned here. Add one the same way if a supported installation requires it.

@@ -472,20 +472,3 @@ def catalog_board(board_type: str) -> CatalogBoard:
         raise BoardCatalogError(
             f"Unsupported board type '{board_type}'. Setup requires reviewed board evidence."
         ) from exc
-
-
-def catalog_board_types() -> tuple[str, ...]:
-    return tuple(sorted(_CATALOG))
-
-
-def reviewed_setup_board_types() -> tuple[str, ...]:
-    """Return only identities with complete pinned two-source setup evidence."""
-
-    return tuple(sorted(key for key, board in _CATALOG.items() if board.automatic_setup_reviewed))
-
-
-def catalog_board_for_mcu(mcu_part_number: str) -> CatalogBoard | None:
-    """Resolve one unambiguous reviewed catalog entry for non-authoritative build guidance."""
-
-    matches = [board for board in _CATALOG.values() if board.accepts_mcu(mcu_part_number)]
-    return matches[0] if len(matches) == 1 else None

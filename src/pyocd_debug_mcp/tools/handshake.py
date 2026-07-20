@@ -31,7 +31,7 @@ def build_initialization_guidance(
     run_evidence = ""
     if server_run is not None:
         run_evidence = f"""
-Server Run evidence (record these values in acceptance artifacts):
+Server Run identity:
 - run_id: {server_run.run_id}
 - started_at: {server_run.started_at_text}
 These values identify this in-memory server process; they grant no authority and change after restart.

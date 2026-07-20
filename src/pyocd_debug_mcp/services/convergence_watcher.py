@@ -1,4 +1,4 @@
-"""Mutation-focused convergence watcher for the first R10 pass."""
+"""Mutation-focused convergence watcher."""
 
 from __future__ import annotations
 

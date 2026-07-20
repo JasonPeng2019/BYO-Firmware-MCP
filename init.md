@@ -25,8 +25,7 @@ and download dependencies, so inspect or dry-run them before execution.
     MCP flash contract.
 
 Do not store provider credentials in this project. Ordinary MCP operation does
-not require a model-provider key. The optional R11 benchmark requires a working
-and separately registered Codex CLI.
+not require a model-provider key.
 
 ## 1. Enter the checkout and inspect setup
 
@@ -99,16 +98,5 @@ do not.
 ## 4. Continue with board validation
 
 Follow [stage0_setup.md](stage0_setup.md). Read every destructive flag before
-using it. In particular, Stage 0 `--recover-test` and MCP `unlock_recover` can
+using it. In particular, Stage 0 `--recover-test` and MCP `target_unlock` can
 erase the target and always require explicit opt-in/confirmation.
-
-## Verified
-
-The Python pin, BYO-only dependency set, script help surfaces, board-scoped
-setup flow, and checkout-relative paths are non-hardware verified on the
-extracted tree.
-
-## Pending verification
-
-A fresh Windows host, a fresh macOS host, vendor-driver installation on both,
-and attached-board bootstrap remain pending for this standalone checkout.

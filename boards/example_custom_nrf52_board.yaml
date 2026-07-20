@@ -5,7 +5,6 @@ probe_family: jlink  # HW-FIXED, UNVERIFIED (confirm the actual attached probe f
 pyocd_target: nrf52832  # VENDOR-FIXED, UNVERIFIED (confirm via `pyocd list --targets`)
 serial_baudrate: 115200  # PROJECT-DEFINED, UNVERIFIED (example reference-firmware UART default)
 test_read_address: 0x10000000  # HW-FIXED (nRF FICR base; safe readable smoke-test address)
-pack_name: nrf52832  # VENDOR-FIXED, UNVERIFIED (`pyocd pack install` search/install token)
 probe_hint_terms:  # PROJECT-DEFINED, UNVERIFIED (example host-side probe matching heuristics)
   - j-link
   - segger
@@ -16,7 +15,7 @@ serial_hint_terms:  # PROJECT-DEFINED, UNVERIFIED (example host-side serial-port
   - virtual com
 reference_uart_patterns:  # PROJECT-DEFINED, UNVERIFIED (example expected UART validation text)
   - "boot ok"
-requires_recover_validation: true  # PROJECT-DEFINED, UNVERIFIED (example Stage 0 recovery policy)
-recover_mode: backend_mass_erase  # PROJECT-DEFINED, UNVERIFIED (example recover backend selection for a Nordic board)
+requires_recover_validation: true  # PROJECT-DEFINED, UNVERIFIED (example recovery policy)
+recover_mode: backend_mass_erase  # PROJECT-DEFINED, UNVERIFIED (example recover backend selection)
 # Do not add firmware paths, user project paths, build commands, or output artifact paths here.
 # Those are runtime/session inputs supplied by the host, not board metadata.

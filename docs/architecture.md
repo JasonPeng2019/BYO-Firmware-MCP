@@ -235,7 +235,7 @@ present but unreadable generic map is not replaced because it may contain one-wa
 ownership that cannot be reconstructed safely. Refresh can
 replace the map association of existing live identity proof, but cannot create
 identity authority. An identity-anchor change closes the proof and requires
-`board_validate`; public `board_safety_setup` is retired.
+`board_validate`.
 
 Validation connects through the selected probe, reads only replayed exact or
 compatible identity evidence, associates the current map digest, and stamps
@@ -253,15 +253,6 @@ or backend work. Flash containment then checks target, segments, entry, vector,
 reviewed partition, and erase sectors; HEX also requires its matching ELF.
 Breakpoint containment uses executable segments from the selected current ELF,
 not blanket partition executability.
-
-`scripts/run_fresh_workspace_e2e.py` is a narrow real-stdio adapter for a clean
-artifact root. Its input surface is fixed to board/probe/UART/datasheet
-identity plus a one-attempt setup authorization. It emits an immutable-style
-acceptance transcript at a fixed path and contains no downstream execution
-hook. Therefore a setup refusal, timeout, incomplete continuation, failed
-validation, or false readiness result is terminal; a separate orchestrator may
-start a coding agent only after reading a `pass` record whose
-`ready_for_code` value is true.
 
 Setup and validation return structured control payloads for the agent plus an
 `agent_prompt` written as ordinary prose. The agent must relay only that prose
@@ -370,40 +361,12 @@ compiled host installation path. Recovery exposes only `backend_mass_erase` or
 `manual_only`, checks the connected backend capability before disclosure, and
 retains the existing exact-map disclosure and fresh one-time approval boundary.
 
-## Contracts, performance, and historical evidence
+## Runtime contracts
 
-The active MCP contract is `tests/contracts/product-server-tools.json`. It
-imports the frozen M9 schema/implementation baseline by digest and records M10
-hardening evidence. Extraction-era snapshots and
-`docs/extraction-manifest.json` remain immutable historical provenance; they
-are not the active product contract. The transition is documented in
-[contract-history.md](contract-history.md).
-
-`scripts/measure_m10_performance.py` measures gate/freshness, eight-device
-enumeration, and NULL-plan/handshake latency with host context. Tests validate
-the measurement and report target misses as warnings so host speed does not
-become a CI correctness gate. A dated local result is retained under
-`docs/evidence/`.
+The live MCP `tools/list` schemas, tool descriptions, and the plan definitions in
+`guardrails/plan_defs.py` are the runtime contract. The generated
+[plan-tool contract](plan-tool-contract.md) is the corresponding human-readable reference.
 
 The server is supported operationally from the complete checkout. Wheels and
 sdists prove metadata, entry points, and importability; they do not include the
 board, pack, firmware, or evidence roots needed for board control.
-
-## Verified
-
-The software suite exercises the layers and invariants described here,
-including stdio discovery, handler locks, `InMemorySessionStore`, per-board
-dispatch, exact plans, permission consumption, safety freshness, cleanup,
-contract ownership, and M10 hardening assertions. This is checkout-only
-software evidence. The optional R11 harness retains its legacy Codex adapter
-and can instead use an explicit, operator-owned argv adapter for any CLI or
-thin wrapper that satisfies the documented prompt/result contract. The MCP
-server itself remains provider-neutral over stdio; the harness does not pretend
-that vendor-specific CLI flags or MCP registration formats are standardized.
-
-## Pending verification
-
-Bench evidence remains separately labeled in `docs/verification.md`. Exact
-official-board coverage (`nrf52833dk` and `nucleo_l476rg`), alternate
-`nrf52840dk` evidence, external-client behavior, cross-host process-tree
-cleanup, and destructive authorization are not inferred from software tests.

@@ -5,7 +5,6 @@ probe_family: cmsisdap  # HW-FIXED, UNVERIFIED (confirm the actual attached prob
 pyocd_target: rp2040  # VENDOR-FIXED, UNVERIFIED (confirm via `pyocd list --targets`)
 serial_baudrate: 115200  # PROJECT-DEFINED, UNVERIFIED (example reference-firmware UART default)
 test_read_address: 0x20000000  # HW-FIXED, UNVERIFIED (example readable SRAM address; confirm for your target)
-pack_name: rp2040  # VENDOR-FIXED, UNVERIFIED (`pyocd pack install` search/install token)
 probe_hint_terms:  # PROJECT-DEFINED, UNVERIFIED (example host-side probe matching heuristics)
   - cmsis-dap
   - daplink

@@ -55,7 +55,7 @@ class PlanLockRegistry(Protocol):
 
 
 class PermissionProvider(Protocol):
-    """Task 6 extension point; implementations own permission grant semantics."""
+    """Interface for run-scoped permission grant and consumption semantics."""
 
     def null_disclosure(self, definition: PlanDefinition) -> str | None: ...
 
@@ -86,7 +86,7 @@ class PermissionProvider(Protocol):
 
 
 class UnavailablePermissionProvider:
-    """Fail closed until Task 6 injects a real run-scoped permission store."""
+    """Fail closed when no run-scoped permission provider is configured."""
 
     def null_disclosure(self, definition: PlanDefinition) -> str | None:
         del definition
@@ -103,7 +103,7 @@ class UnavailablePermissionProvider:
         del board_id, user_permission, max_calls, max_calls_buffer
         raise PlanRefusal(
             "permission/provider-unavailable",
-            f"{definition.plan_tool_name} requires the injected permission provider from Task 6.",
+            f"{definition.plan_tool_name} requires an active run-scoped permission provider.",
         )
 
     def validate_execution(

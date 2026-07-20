@@ -85,12 +85,6 @@ def candidate_fingerprint(candidate: Mapping[str, Any]) -> str:
     return hashlib.sha256(encoded).hexdigest()
 
 
-def classify_research_condition(condition: str) -> Literal["setup_blocked", "research"]:
-    """Separate conditions that research cannot solve from unknown facts."""
-
-    return "setup_blocked" if condition in BLOCKED_CONDITIONS else "research"
-
-
 class ResearchTracker:
     """Track candidate attempts in memory for one server run."""
 

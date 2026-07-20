@@ -1,9 +1,7 @@
 # Current plan-tool contract
 
-This document is generated from `guardrails/plan_defs.py`, the runtime source of truth.
-Do not edit field lists by hand. Regenerate it after changing a plan definition; the
-contract test compares this entire file with the live deterministic rendering.
-Historical design prose remains under `archive_docs/` and is not runtime authority.
+This reference is derived from `guardrails/plan_defs.py`, the runtime source of truth.
+The live MCP schemas remain authoritative if this reference drifts.
 
 Every plan tool is first called with its complete NULL envelope. A populated call accepts
 only the plan JSON object, binds the exact action parameters below, and rejects extra fields.

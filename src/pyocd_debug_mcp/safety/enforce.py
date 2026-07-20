@@ -46,24 +46,14 @@ class LoadedSafetyMap:
     document: SafetyMapDocument | GenericSafetyMapDocument
     safety_map: SafetyMap
 
-    # Transitional spelling used by a few callers while the v2 migration is in
-    # flight.  It returns the one map document, never a legacy artifact bundle.
-    @property
-    def artifacts(self) -> SafetyMapDocument | GenericSafetyMapDocument:
-        return self.document
-
 
 class SafetyPolicy:
     def __init__(
         self,
         repository: SafetyMapRepository,
         *,
-        live_inputs: object | None = None,
         authority_verifier: object | None = None,
     ) -> None:
-        # ``live_inputs`` is accepted only to keep old composition roots importable
-        # during the migration. Build artifacts are deliberately not currentness.
-        del live_inputs
         self.repository = repository
         self.authority_verifier = authority_verifier or require_reconciled_authority
 

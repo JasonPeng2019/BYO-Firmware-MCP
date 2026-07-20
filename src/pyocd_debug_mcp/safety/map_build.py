@@ -1475,7 +1475,3 @@ def require_reconciled_authority(
         raise SafetyMapError(
             f"memory-map source digests do not match current reviewed evidence: {details}"
         )
-
-
-def canonical_map_digest(document: SafetyMapDocument) -> str:
-    return document.canonical_digest

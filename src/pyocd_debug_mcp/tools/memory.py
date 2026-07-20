@@ -214,7 +214,7 @@ def _lookup_or_artifact_refusal(
 def build_memory_handlers(
     services: MemoryToolServices,
 ) -> dict[str, Callable[..., str]]:
-    """Build the final M5 memory surface."""
+    """Build the memory tool surface."""
 
     def find_symbol(board_id: str, query: str, elf_artifact: str | None = None) -> str:
         """Search an ELF for symbols; pass elf_artifact after restart or before same-run flash."""

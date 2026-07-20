@@ -1,4 +1,4 @@
-"""Shared recover/unlock guardrail policy for R10."""
+"""Shared recover/unlock guardrail policy."""
 
 from __future__ import annotations
 
