@@ -10,7 +10,18 @@ from pyocd_debug_mcp import native_build
 
 
 def _elf_bytes(elf_type: int = 2, payload: bytes = b"") -> bytes:
-    return b"\x7fELF\x01\x01\x01" + (b"\x00" * 9) + elf_type.to_bytes(2, "little") + payload
+    header = bytearray(52)
+    header[:7] = b"\x7fELF\x01\x01\x01"
+    header[16:18] = elf_type.to_bytes(2, "little")
+    header[18:20] = (40).to_bytes(2, "little")  # EM_ARM
+    header[20:24] = (1).to_bytes(4, "little")
+    header[28:32] = (52).to_bytes(4, "little")
+    header[40:42] = (52).to_bytes(2, "little")
+    header[42:44] = (32).to_bytes(2, "little")
+    header[44:46] = (1).to_bytes(2, "little")
+    program_header = bytearray(32)
+    program_header[:4] = (1).to_bytes(4, "little")  # PT_LOAD
+    return bytes(header + program_header) + payload
 
 
 def _write_toolchain_environment(root: Path) -> Path:
@@ -518,7 +529,7 @@ def test_agent_command_supports_unknown_provider_cwd_env_and_declared_outputs(
         "hex": None,
         "map": str((build / "linker-output.txt").resolve()),
     }
-    assert evidence["artifact_assurance"]["elf"] == "loadable-elf-header-verified"
+    assert evidence["artifact_assurance"]["elf"] == "loadable-elf-structure-verified"
     assert evidence["artifact_assurance"]["map"] == "agent-declared-existing"
 
 
@@ -544,6 +555,15 @@ def test_discovery_ignores_relocatable_object_elf_files(tmp_path: Path) -> None:
     artifacts = native_build._artifact_paths(build, "agent-command")
 
     assert artifacts["elf"] == str((build / "firmware.axf").resolve())
+
+
+def test_loadable_elf_check_rejects_truncated_header(tmp_path: Path) -> None:
+    candidate = tmp_path / "truncated.elf"
+    candidate.write_bytes(
+        b"\x7fELF\x01\x01\x01" + (b"\x00" * 9) + (2).to_bytes(2, "little")
+    )
+
+    assert native_build._is_loadable_elf(candidate) is False
 
 
 def test_discovery_never_reuses_elf_bytes_as_linker_map(tmp_path: Path) -> None:

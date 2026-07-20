@@ -583,20 +583,61 @@ def _has_elf_magic(path: Path) -> bool:
 
 
 def _is_loadable_elf(path: Path) -> bool:
-    """Return whether *path* has an ELF header for an executable/shared image."""
+    """Return whether *path* has a complete loadable ELF structure."""
 
     try:
         with path.open("rb") as stream:
-            header = stream.read(18)
+            header = stream.read(64)
+            file_size = path.stat().st_size
     except OSError as exc:
         raise RuntimeError(f"Cannot inspect build output: {path}") from exc
-    if len(header) < 18 or header[:4] != b"\x7fELF":
+    if len(header) < 52 or header[:4] != b"\x7fELF" or header[6] != 1:
         return False
+    elf_class = header[4]
     byte_order = "little" if header[5] == 1 else "big" if header[5] == 2 else None
-    if byte_order is None:
+    if byte_order is None or elf_class not in {1, 2}:
         return False
     elf_type = int.from_bytes(header[16:18], byte_order)
-    return elf_type in {2, 3}
+    machine = int.from_bytes(header[18:20], byte_order)
+    version = int.from_bytes(header[20:24], byte_order)
+    if elf_type not in {2, 3} or machine == 0 or version != 1:
+        return False
+    if elf_class == 1:
+        expected_header_size = 52
+        expected_program_header_size = 32
+        program_offset = int.from_bytes(header[28:32], byte_order)
+        header_size = int.from_bytes(header[40:42], byte_order)
+        program_header_size = int.from_bytes(header[42:44], byte_order)
+        program_count = int.from_bytes(header[44:46], byte_order)
+    else:
+        if len(header) < 64:
+            return False
+        expected_header_size = 64
+        expected_program_header_size = 56
+        program_offset = int.from_bytes(header[32:40], byte_order)
+        header_size = int.from_bytes(header[52:54], byte_order)
+        program_header_size = int.from_bytes(header[54:56], byte_order)
+        program_count = int.from_bytes(header[56:58], byte_order)
+    if (
+        header_size != expected_header_size
+        or program_header_size != expected_program_header_size
+        or program_count == 0
+        or program_offset < header_size
+        or program_offset + (program_header_size * program_count) > file_size
+    ):
+        return False
+    try:
+        with path.open("rb") as stream:
+            stream.seek(program_offset)
+            for _ in range(program_count):
+                program_header = stream.read(program_header_size)
+                if len(program_header) != program_header_size:
+                    return False
+                if int.from_bytes(program_header[:4], byte_order) == 1:
+                    return True
+    except OSError as exc:
+        raise RuntimeError(f"Cannot inspect build output: {path}") from exc
+    return False
 
 
 def _is_intel_hex(path: Path) -> bool:
@@ -739,7 +780,7 @@ def _artifact_assurance(
     else:
         map_assurance = "unique-discovered-existing"
     return {
-        "elf": "loadable-elf-header-verified",
+        "elf": "loadable-elf-structure-verified",
         "hex": "intel-hex-format-verified" if hex_path is not None else None,
         "map": map_assurance,
         "map_elf_coherence": "not-machine-verifiable; downstream consumers must not assume it",
@@ -898,8 +939,8 @@ def run_build(args: argparse.Namespace) -> int:
             artifacts = _artifact_paths(build_dir, provider, expected_root=created_build_root)
         if completed.returncode == 0 and (artifacts["elf"] is None or artifacts["map"] is None):
             raise RuntimeError(
-                "Native build succeeded without one coherent ELF and linker map in its selected "
-                "domain."
+                "Native build succeeded without a declared or discoverable loadable ELF image "
+                "and linker map in its selected domain."
             )
         assurance = (
             _artifact_assurance(
