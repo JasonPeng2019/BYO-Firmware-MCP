@@ -197,8 +197,8 @@ For firmware, inspect the project and use the general native-build helper templa
 `get_setup_status.build_guidance`: supply the exact argv after `--`, plus cwd/environment/output
 parameters as needed. Prefer compatible local tools, but normal acquisition is allowed when none
 exist; network is inherited unless `--offline` is explicitly chosen. That option is a best-effort
-common-client environment guard, not a network sandbox. Named provider detection is only a
-convenience. Optionally call
+common-client environment guard, not a network sandbox. The server never detects or selects a
+provider, SDK, compiler, target, or installation layout. Optionally call
 `collect_build_artifacts`, submit the matching flash plan, then call the flash
 action. Do not refresh merely because build bytes changed. Plan acceptance
 binds the selected artifact digest. Before backend mutation, execution verifies

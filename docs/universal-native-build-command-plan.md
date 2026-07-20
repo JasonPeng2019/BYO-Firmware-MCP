@@ -1,18 +1,20 @@
 # Universal native build command — implementation plan
 
-1. Extend `native_build` CLI with argv-after-`--`, optional cwd, repeatable environment overrides,
-   explicit artifact paths, and opt-in offline mode.
-2. Route explicit argv directly through the existing owned-process runner and inherited environment;
-   bypass all named provider/environment logic.
-3. Generalize artifact discovery to loadable ELF headers (excluding relocatable objects) plus
-   linker-map uniqueness. Permit generic commands
-   to use existing/in-source output roots and explicit output paths anywhere, while retaining the
-   clean output contract and exact Zephyr domain handling only for named conveniences.
-4. Make network inheritance the default for every mode; apply offline environment/CMake flags only
-   when requested.
-5. Reframe command templates and all normative guidance so agent-resolved argv is the universal
-   path and Zephyr/Make are conveniences.
-6. Add non-redundant tests for unknown build systems, arbitrary argv, cwd/env, explicit and
-   extension-independent artifacts, network defaults, offline opt-in, and recovery errors.
+1. Delete native-build provider detection, fixed SDK/toolchain-root discovery, target synthesis, and
+   provider-specific artifact conventions. Require exact argv after `--`.
+2. Keep optional cwd, repeatable environment overrides, arbitrary repeatable named artifact paths,
+   caller-adjustable timeout, and opt-in offline mode on the one generic path. Execute argv directly
+   through the owned-process runner and inherit the environment by default.
+3. Use only content-based loadable-ELF detection (excluding relocatable objects), linker-map
+   uniqueness, and optional Intel HEX validation. Permit existing/in-source output roots and
+   explicit output paths anywhere.
+4. Remove named-provider fields and templates from evidence and guidance. Teach the agent to inspect
+   project files, prefer compatible installed resources, and acquire missing resources normally.
+5. Remove the provider-specific Zephyr command from normative product documentation and host setup.
+   Retain its legacy console entry point only while repository benchmark fixtures still invoke it;
+   it must never appear in MCP guidance or the normal workflow.
+6. Add non-redundant tests for missing argv refusal, arbitrary argv, cwd/env, arbitrary opaque
+   outputs, explicit and extension-independent ELF artifacts, adjustable timeout, network defaults,
+   offline opt-in, and recovery errors.
 7. Run focused suites, Ruff, Pyright, and full pytest. Then run a fresh GPT 5.6 Terra high/fast
    read-only diff audit, vet every finding, and repeat until clean.

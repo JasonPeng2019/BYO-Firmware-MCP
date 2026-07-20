@@ -83,11 +83,12 @@ def mutate_plan(
 
 def write_memory_parameters(value: object = 1) -> dict[str, object]:
     return {
-        "symbol_or_address": "counter",
+        "symbol_or_address": "0x20000000",
         "value": value,
         "width": 32,
-        "allow_address_fallback": False,
-        "reason": None,
+        "allow_address_fallback": True,
+        "reason": "pointer-derived address",
+        "elf_artifact": None,
     }
 
 
@@ -172,9 +173,7 @@ def test_ac_4_1_partially_null_call_never_substitutes_for_initialization() -> No
 
 def test_ac_4_1_nullable_action_parameters_are_valid_only_after_initialization() -> None:
     engine, _ = engine_for()
-    fields = mutate_plan(
-        read_serial_fields(expected_text=None), {"baudrate": None, "port": None}
-    )
+    fields = mutate_plan(read_serial_fields(expected_text=None), {"baudrate": None, "port": None})
 
     with pytest.raises(PlanRefusal) as before_null:
         engine.submit("read_serial-plan", fields, session_id=SESSION)
@@ -295,8 +294,7 @@ def test_ac_4_4_every_fixed_budget_drift_is_rejected(
     with pytest.raises(PlanRefusal) as fixed:
         fixed_engine.submit(
             "write_memory-plan",
-            write_memory_fields()
-            | {"max_calls": max_calls, "max_calls_buffer": max_calls_buffer},
+            write_memory_fields() | {"max_calls": max_calls, "max_calls_buffer": max_calls_buffer},
             session_id=SESSION,
         )
     assert fixed.value.code == "plan/fixed-budget"
@@ -315,8 +313,7 @@ def test_a9_flexible_budget_ceilings_are_independently_enforced(
     with pytest.raises(PlanRefusal) as capped:
         flexible_engine.submit(
             "read_serial-plan",
-            read_serial_fields(max_calls=max_calls)
-            | {"max_calls_buffer": max_calls_buffer},
+            read_serial_fields(max_calls=max_calls) | {"max_calls_buffer": max_calls_buffer},
             session_id=SESSION,
         )
     assert capped.value.code == "plan/budget-cap"
@@ -502,9 +499,7 @@ def test_ac_4_8_exhaustion_relocks_and_requires_replacement() -> None:
         session_id=SESSION,
     )
 
-    permit = engine.enforce(
-        "read_serial", "board_a", read_serial_parameters(), session_id=SESSION
-    )
+    permit = engine.enforce("read_serial", "board_a", read_serial_parameters(), session_id=SESSION)
 
     assert permit.status is PlanStatus.EXHAUSTED
     assert permit.remaining_calls == 0
@@ -554,6 +549,105 @@ def test_v2_changed_artifact_invalidates_before_preconditions_or_budget(
             session_id=SESSION,
         )
     assert restored.value.code == "plan/no-active-plan"
+
+
+def test_symbol_write_binds_explicit_elf_and_raw_write_accepts_null(tmp_path: Path) -> None:
+    artifact = tmp_path / "current.axf"
+    artifact.write_bytes(b"current symbols")
+    engine, registry = engine_for("write_memory")
+    initialize(engine, "write_memory-plan")
+    symbol_fields = write_memory_fields()
+    symbol_parameters = write_memory_parameters() | {
+        "symbol_or_address": "counter",
+        "allow_address_fallback": False,
+        "reason": None,
+        "elf_artifact": str(artifact),
+    }
+    symbol_fields["action_parameters"] = symbol_parameters
+    engine.submit("write_memory-plan", symbol_fields, session_id=SESSION)
+
+    artifact.write_bytes(b"changed symbols")
+    reached_preconditions: list[bool] = []
+    with pytest.raises(PlanRefusal) as changed:
+        engine.enforce(
+            "write_memory",
+            "board_a",
+            symbol_parameters,
+            session_id=SESSION,
+            preconditions=lambda: reached_preconditions.append(True),
+        )
+    assert changed.value.code == "plan/artifact-changed"
+    assert reached_preconditions == []
+    assert registry.is_unlocked("write_memory", "board_a") is False
+
+    raw_parameters = {
+        "symbol_or_address": "0x20000000",
+        "value": 1,
+        "width": 32,
+        "allow_address_fallback": True,
+        "reason": "pointer-derived address",
+        "elf_artifact": None,
+    }
+    raw_fields = common_fields(max_calls=1) | {"action_parameters": raw_parameters}
+    engine.submit("write_memory-plan", raw_fields, session_id=SESSION)
+    result = engine.enforce("write_memory", "board_a", raw_parameters, session_id=SESSION)
+    assert result.status is PlanStatus.EXHAUSTED
+
+
+def test_artifact_change_during_preconditions_refuses_before_consumption(
+    tmp_path: Path,
+) -> None:
+    artifact = tmp_path / "current.elf"
+    artifact.write_bytes(b"accepted symbols")
+    engine, registry = engine_for("write_memory")
+    initialize(engine, "write_memory-plan")
+    parameters = write_memory_parameters() | {
+        "symbol_or_address": "counter",
+        "allow_address_fallback": False,
+        "reason": None,
+        "elf_artifact": str(artifact),
+    }
+    fields = write_memory_fields()
+    fields["action_parameters"] = parameters
+    engine.submit("write_memory-plan", fields, session_id=SESSION)
+
+    def replace_artifact() -> None:
+        artifact.write_bytes(b"replacement symbols")
+
+    with pytest.raises(PlanRefusal) as changed:
+        engine.enforce(
+            "write_memory",
+            "board_a",
+            parameters,
+            session_id=SESSION,
+            preconditions=replace_artifact,
+        )
+
+    assert changed.value.code == "plan/artifact-changed"
+    assert registry.is_unlocked("write_memory", "board_a") is False
+
+
+def test_symbol_write_plan_requires_explicit_elf_and_raw_plan_rejects_one(
+    tmp_path: Path,
+) -> None:
+    artifact = tmp_path / "current.elf"
+    artifact.write_bytes(b"symbols")
+    engine, _ = engine_for("write_memory")
+    initialize(engine, "write_memory-plan")
+
+    symbol = write_memory_fields()
+    symbol["action_parameters"] = write_memory_parameters() | {
+        "symbol_or_address": "counter",
+        "allow_address_fallback": False,
+        "reason": None,
+    }
+    with pytest.raises(PlanRefusal, match="current project ELF"):
+        engine.submit("write_memory-plan", symbol, session_id=SESSION)
+
+    raw = write_memory_fields()
+    raw["action_parameters"] = write_memory_parameters() | {"elf_artifact": str(artifact)}
+    with pytest.raises(PlanRefusal, match="NULL for a raw-address write"):
+        engine.submit("write_memory-plan", raw, session_id=SESSION)
 
 
 def test_v2_replacement_plan_binds_the_replacement_artifact_bytes(tmp_path: Path) -> None:
@@ -665,9 +759,7 @@ def test_concurrent_execution_decrements_exactly_once_and_never_overspends() -> 
     def attempt() -> str:
         barrier.wait()
         try:
-            engine.enforce(
-                "read_serial", "board_a", read_serial_parameters(), session_id=SESSION
-            )
+            engine.enforce("read_serial", "board_a", read_serial_parameters(), session_id=SESSION)
         except PlanRefusal as exc:
             return exc.code
         return "started"
@@ -756,9 +848,7 @@ def test_board_and_session_scope_never_transfer_and_session_change_invalidates()
     engine.submit("read_serial-plan", read_serial_fields(), session_id=SESSION)
 
     with pytest.raises(PlanRefusal) as wrong_board:
-        engine.enforce(
-            "read_serial", "board_b", read_serial_parameters(), session_id=SESSION
-        )
+        engine.enforce("read_serial", "board_b", read_serial_parameters(), session_id=SESSION)
     assert wrong_board.value.code == "plan/no-active-plan"
     assert registry.is_unlocked("read_serial", "board_a") is True
 
@@ -976,9 +1066,9 @@ def test_a10_setup_plan_cycle_limit_relocks_after_three_replacements() -> None:
             "mode": "setup",
             "connection_id": "connection-1",
             "display_name": "Bench Board",
-                "mcu_part_number": "STM32L476RGT6",
-                "requires_uart": True,
-                "serial_baudrate": 115200,
+            "mcu_part_number": "STM32L476RGT6",
+            "requires_uart": True,
+            "serial_baudrate": 115200,
             "serial_id": "UART-001",
             "datasheet_path": "board-datasheet.pdf",
         },

@@ -1,5 +1,9 @@
 # De-bias round 1 specification
 
+> Historical: build-guidance portions are superseded by
+> `docs/universal-native-build-command-spec.md`. Current guidance has no named provider detection
+> or `toolchain_fallback` field.
+
 Status: accepted for implementation
 
 ## Audit triage

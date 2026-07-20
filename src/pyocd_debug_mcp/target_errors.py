@@ -15,6 +15,10 @@ class TargetConnectionError(TargetControlError):
     """Raised when a probe is visible but target access still fails."""
 
 
+class TargetStateError(TargetControlError):
+    """Raised when a live target refuses an operation in its current state."""
+
+
 class LockedTargetError(TargetConnectionError):
     """Raised when the target appears locked or access-protected."""
 

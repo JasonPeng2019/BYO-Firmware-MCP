@@ -33,6 +33,7 @@ class SWDInterface(ABC):
         unique_id: str | None,
         target: str | None,
         server_timeouts: ServerTimeoutConfig | None = None,
+        protocol: str | None = None,
         connect_mode: str | None = None,
         pack_path: Path | None = None,
         pack_sha256: str | None = None,

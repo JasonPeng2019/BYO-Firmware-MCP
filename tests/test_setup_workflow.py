@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from pyocd_debug_mcp.firmstore.reports import ReportWriter
+from pyocd_debug_mcp.firmstore.reports import ReportPaths, ReportWriter
 from pyocd_debug_mcp.firmstore.store import FirmStore, ImmutableArtifactError
 from pyocd_debug_mcp.kernel.run_state import ServerRun
 from pyocd_debug_mcp.kernel.operations import OperationCancelledError
@@ -22,15 +22,58 @@ from pyocd_debug_mcp.setup_flow.preflight import (
 from pyocd_debug_mcp.setup_flow.setup import (
     PHASE_ORDER,
     AssignmentRoute,
+    PhaseRecord,
     PhaseState,
     ProfileRouteView,
     RunAssignmentStore,
     SetupPhase,
     SetupPhaseOutcome,
+    SetupResponse,
     SetupWorkflow,
     SetupWorkflowError,
     route_board_name,
 )
+
+
+def test_research_response_teaches_the_exact_phase_schema(tmp_path: Path) -> None:
+    response = SetupResponse(
+        "setup_research_required",
+        "continuation",
+        "attempt",
+        "research attachment",
+        (),
+        SetupPhase.CONNECTION,
+        (
+            PhaseRecord(
+                SetupPhase.CONNECTION,
+                PhaseState.UNVERIFIED,
+                "setup/research",
+                {
+                    "exact_response_fields": [
+                        "pyocd_target",
+                        "debug_protocol",
+                        "debug_connect_mode",
+                        "debug_clock_hz",
+                        "evidence",
+                        "reasoning_summary",
+                    ]
+                },
+            ),
+        ),
+        ReportPaths(tmp_path / "report.json", tmp_path / "events.jsonl"),
+    )
+
+    taught = response.to_payload()["accepted_response"]
+
+    assert taught["tool"] == "continue_setup"
+    assert set(taught["response"]) == {
+        "pyocd_target",
+        "debug_protocol",
+        "debug_connect_mode",
+        "debug_clock_hz",
+        "evidence",
+        "reasoning_summary",
+    }
 
 
 USER_INPUT = SetupUserInput(
@@ -322,17 +365,17 @@ def test_preflight_terminal_transitions_also_produce_immutable_attempt_reports(
             "response": {"choice_id": "one exact choice_id returned above"},
         }
     elif status == "setup_research_required":
-            assert payload["accepted_response"]["tool"] == "continue_setup"
-            assert set(payload["accepted_response"]["response"]) == {
-                "pack_id",
-                "version",
-                "filename",
-                "url",
-                "source_path",
-                "official_sha256",
-                "evidence",
-                "reasoning_summary",
-            }
+        assert payload["accepted_response"]["tool"] == "continue_setup"
+        assert set(payload["accepted_response"]["response"]) == {
+            "pack_id",
+            "version",
+            "filename",
+            "url",
+            "source_path",
+            "official_sha256",
+            "evidence",
+            "reasoning_summary",
+        }
     report = json.loads(result.report_paths.report.read_text(encoding="utf-8"))
     assert report["terminal_status"] == status
     assert NO_INTERNALS_RELAY_INSTRUCTION in result.agent_prompt

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import io
+import json
 import xml.etree.ElementTree as ET
 import zipfile
 from collections.abc import Callable, Iterable, Mapping
@@ -12,6 +13,7 @@ from pathlib import Path
 from typing import Any, cast
 
 from pyocd.target.pack.cmsis_pack import CmsisPack  # type: ignore[import-untyped]
+from pyocd.target import TARGET, normalise_target_type_name  # type: ignore[import-untyped]
 from pyocd.debug.svd.parser import SVDParser  # type: ignore[import-untyped]
 
 from pyocd_debug_mcp.pack_provision import (
@@ -44,6 +46,63 @@ _ARM_CPUID_PARTNO = {
     "cortexm55": 0xD22,
     "cortexm85": 0xD23,
 }
+_ARM_CPUID_COMPATIBILITY_MASK = 0xFF0FFFF0
+_ARM_CPUID_IMPLEMENTER = 0x41
+_ARM_CPUID_ARCHITECTURES = {0xC, 0xF}
+
+
+class BuiltInTargetGeometryError(PackProvisionError):
+    """An installed target is real but its static geometry needs pack augmentation."""
+
+
+def live_cpuid_compatibility_proof(observed_cpuid: int) -> LiveIdentityProof:
+    """Bind standard Arm Cortex-M CPUID fields without enumerating core models."""
+
+    implementer = (observed_cpuid >> 24) & 0xFF
+    architecture = (observed_cpuid >> 16) & 0xF
+    part_number = (observed_cpuid >> 4) & 0xFFF
+    if (
+        implementer != _ARM_CPUID_IMPLEMENTER
+        or architecture not in _ARM_CPUID_ARCHITECTURES
+        or part_number == 0
+    ):
+        raise PackProvisionError(
+            "live CPUID is not a recognized Arm Cortex-M compatibility identity"
+        )
+    return LiveIdentityProof(
+        "compatible",
+        0xE000ED00,
+        observed_cpuid & _ARM_CPUID_COMPATIBILITY_MASK,
+        _ARM_CPUID_COMPATIBILITY_MASK,
+        32,
+        "live Arm implementer, architecture, and Cortex-M part compatibility identity",
+    )
+
+
+def replay_live_cpuid_compatibility_proof(
+    *,
+    address: int | None,
+    expected: int | None,
+    mask: int | None,
+    width_bits: int,
+    label: str,
+) -> LiveIdentityProof:
+    """Replay server-captured CPUID fields without trusting profile text as authority."""
+
+    if address is None or expected is None or mask is None:
+        raise PackProvisionError("live CPUID compatibility identity is incomplete")
+    canonical = live_cpuid_compatibility_proof(expected)
+    recorded = LiveIdentityProof(
+        "compatible",
+        address,
+        expected,
+        mask,
+        width_bits,
+        label,
+    )
+    if recorded != canonical:
+        raise PackProvisionError("live CPUID compatibility identity is not canonical")
+    return canonical
 
 
 def normalize_part_number(value: str) -> str:
@@ -90,9 +149,7 @@ def _pdsc_leaf_matches_part(leaf: str, requested: str) -> bool:
         ):
             return ""
         return "".join(
-            character
-            for character in value
-            if character.isascii() and character.isalnum()
+            character for character in value if character.isascii() and character.isalnum()
         )
 
     left = compact(leaf)
@@ -113,8 +170,7 @@ def _compatible_core_identity(device: object) -> LiveIdentityProof | None:
         return None
     names = tuple(str(getattr(processor, "name", "")) for processor in processors.values())
     normalized = tuple(
-        "".join(character for character in name.casefold() if character.isalnum())
-        for name in names
+        "".join(character for character in name.casefold() if character.isalnum()) for name in names
     )
     known_parts = {_ARM_CPUID_PARTNO[name] for name in normalized if name in _ARM_CPUID_PARTNO}
     if len(known_parts) == 1 and all(name in _ARM_CPUID_PARTNO for name in normalized):
@@ -159,7 +215,9 @@ def _derive_verified_binding(selected: VerifiedPack, part_number: str) -> Device
         leaf = device.part_number
         target = normalise_target_type_name(leaf)
     except Exception as exc:
-        raise PackProvisionError(f"candidate PDSC leaf has no canonical pyOCD target: {exc}") from exc
+        raise PackProvisionError(
+            f"candidate PDSC leaf has no canonical pyOCD target: {exc}"
+        ) from exc
     return DeviceBinding(part_number, leaf, target, _compatible_core_identity(device))
 
 
@@ -191,7 +249,9 @@ class DeviceSupportCandidate:
     identity_proof: LiveIdentityProof | None = None
 
     @classmethod
-    def from_verified_pack(cls, selected: VerifiedPack, binding: DeviceBinding) -> "DeviceSupportCandidate":
+    def from_verified_pack(
+        cls, selected: VerifiedPack, binding: DeviceBinding
+    ) -> "DeviceSupportCandidate":
         material = "\0".join(
             (
                 selected.spec.sha256,
@@ -239,6 +299,63 @@ class DeviceSupportCandidate:
 
 
 @dataclass(frozen=True, slots=True)
+class BuiltInTargetSupportCandidate:
+    """Agent-resolved built-in pyOCD target, replayable from the installed registry.
+
+    The target name is a research result, not authority by itself. Authority is
+    established by resolving that exact installed target, hashing its static
+    memory geometry, and recording a compatible live Arm CPUID proof.
+    """
+
+    part_number: str
+    pyocd_target: str
+    geometry_sha256: str
+    identity_proof: LiveIdentityProof | None = None
+
+    @property
+    def support_id(self) -> str:
+        proof = self.identity_proof.to_document() if self.identity_proof is not None else None
+        material = {
+            "kind": "resolved_builtin_target",
+            "part_number": normalize_part_number(self.part_number),
+            "pyocd_target": self.pyocd_target.casefold(),
+            "geometry_sha256": self.geometry_sha256,
+            "identity_proof": proof,
+        }
+        return hashlib.sha256(
+            json.dumps(material, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        ).hexdigest()
+
+    def with_identity_proof(self, observed_cpuid: int) -> "BuiltInTargetSupportCandidate":
+        proof = live_cpuid_compatibility_proof(observed_cpuid)
+        return BuiltInTargetSupportCandidate(
+            self.part_number,
+            self.pyocd_target,
+            self.geometry_sha256,
+            proof,
+        )
+
+    def to_authority_document(self) -> dict[str, str]:
+        if self.identity_proof is None:
+            raise PackProvisionError(
+                "built-in target support has not captured a live compatible identity proof"
+            )
+        proof = self.identity_proof
+        return {
+            "kind": "resolved_builtin_target",
+            "support_id": self.support_id,
+            "part_number": self.part_number,
+            "pyocd_target": self.pyocd_target,
+            "geometry_sha256": self.geometry_sha256,
+            "identity_address": str(proof.address),
+            "identity_expected": str(proof.expected),
+            "identity_mask": str(proof.mask),
+            "identity_width_bits": str(proof.width_bits),
+            "identity_label": proof.label,
+        }
+
+
+@dataclass(frozen=True, slots=True)
 class PackAddressRegion:
     """One independently described pack/SVD address range."""
 
@@ -263,21 +380,27 @@ class PackAddressRegion:
 
     @property
     def readable(self) -> bool:
-        normalized = "".join(
-            character
-            for character in str(self.access).casefold().rsplit(".", 1)[-1]
-            if character.isalnum()
-        )
-        return normalized in {"readonly", "readwrite", "readwriteonce"}
+        return self.access in {
+            "r",
+            "rx",
+            "rw",
+            "rwx",
+            "read-only",
+            "read-write",
+            "read-writeOnce",
+        }
 
     @property
     def writable(self) -> bool:
-        normalized = "".join(
-            character
-            for character in str(self.access).casefold().rsplit(".", 1)[-1]
-            if character.isalnum()
-        )
-        return normalized in {"writeonly", "readwrite"}
+        return self.access in {
+            "w",
+            "rw",
+            "rwx",
+            "write-only",
+            "writeOnce",
+            "read-write",
+            "read-writeOnce",
+        }
 
 
 @dataclass(frozen=True, slots=True)
@@ -303,9 +426,7 @@ class PackMemoryGeometry:
             "flash_end": self.flash_end,
             "ram_start": self.ram_start,
             "ram_end": self.ram_end,
-            "erase_sectors": [
-                {"start": start, "end": end} for start, end in self.erase_sectors
-            ],
+            "erase_sectors": [{"start": start, "end": end} for start, end in self.erase_sectors],
             "driver_proof_digest": self.driver_proof_digest,
             "erased_byte_value": self.erased_byte_value,
             "flash_regions": [item.to_document() for item in self.flash_regions],
@@ -314,6 +435,212 @@ class PackMemoryGeometry:
             "peripheral_regions": [item.to_document() for item in self.peripheral_regions],
             "cpu_system_regions": [item.to_document() for item in self.cpu_system_regions],
         }
+
+
+DeviceSupportAuthority = DeviceSupportCandidate | BuiltInTargetSupportCandidate
+
+
+def _geometry_digest(geometry: PackMemoryGeometry) -> str:
+    return hashlib.sha256(
+        json.dumps(geometry.to_document(), sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
+
+
+def _builtin_target_class(target: str) -> type[Any]:
+    normalized = normalise_target_type_name(target)
+    target_class = TARGET.get(normalized)
+    if target_class is None:
+        raise PackProvisionError(f"{target!r} is not an installed built-in pyOCD target")
+    return cast(type[Any], target_class)
+
+
+def resolve_builtin_target_geometry(target: str) -> PackMemoryGeometry:
+    """Derive deterministic physical facts from one installed built-in target.
+
+    This adapter deliberately uses only the target class's static memory map.
+    Multiple flash banks are preserved and remain usable for read/debug, while
+    erase authority requires one unambiguous programming bank. A target with no
+    static physical flash or writable RAM needs an exact pack before the current
+    generic-map schema can persist it.
+    """
+
+    target_class = _builtin_target_class(target)
+    memory_map = getattr(target_class, "MEMORY_MAP", None)
+    regions: tuple[Any, ...] = tuple(getattr(memory_map, "regions", ()) or ())
+    flash: tuple[Any, ...] = tuple(
+        region for region in regions if bool(getattr(region, "is_flash", False))
+    )
+    ram: tuple[Any, ...] = tuple(
+        region
+        for region in regions
+        if bool(getattr(region, "is_ram", False)) and bool(getattr(region, "is_writable", False))
+    )
+    peripherals: tuple[Any, ...] = tuple(
+        region
+        for region in regions
+        if bool(getattr(region, "is_device", False))
+        or str(getattr(region, "type", "")).casefold().endswith("device")
+    )
+    boot_flash = tuple(region for region in flash if bool(getattr(region, "is_boot_memory", False)))
+    marked_default = tuple(region for region in flash if bool(getattr(region, "is_default", False)))
+    programmable_flash = (
+        boot_flash
+        if len(boot_flash) == 1
+        else marked_default
+        if len(marked_default) == 1
+        else flash
+        if len(flash) == 1
+        else ()
+    )
+    if not flash or not ram:
+        raise BuiltInTargetGeometryError(
+            "built-in target lacks physical flash or writable RAM required by the current map schema"
+        )
+    selected_flash = (
+        programmable_flash[0]
+        if len(programmable_flash) == 1
+        else min(flash, key=lambda item: int(item.start))
+    )
+    default_ram = tuple(region for region in ram if bool(getattr(region, "is_default", False)))
+    selected_ram = (
+        default_ram[0] if len(default_ram) == 1 else min(ram, key=lambda item: int(item.start))
+    )
+    sectors: list[tuple[int, int]] = []
+    driver_rows: list[dict[str, object]] = []
+    erased_values: set[int] = set()
+    for region in programmable_flash:
+        # Non-testable config/OTP regions remain visible physical memory but do
+        # not become ordinary application-allocation sectors.
+        if not bool(getattr(region, "is_testable", True)):
+            continue
+        sector_size = int(getattr(region, "sector_size", 0) or 0)
+        start = int(region.start)
+        end = int(region.end) + 1
+        flash_class = getattr(region, "flash_class", None)
+        if sector_size <= 0 or (end - start) % sector_size or flash_class is None:
+            continue
+        sectors.extend(
+            (address, address + sector_size) for address in range(start, end, sector_size)
+        )
+        erased = int(getattr(region, "erased_byte_value", 0xFF))
+        if not 0 <= erased <= 0xFF:
+            raise PackProvisionError("built-in target has an invalid erased-byte value")
+        erased_values.add(erased)
+        driver_rows.append(
+            {
+                "start": start,
+                "end": end,
+                "sector_size": sector_size,
+                "flash_class": f"{flash_class.__module__}.{flash_class.__qualname__}",
+                "erased_byte_value": erased,
+            }
+        )
+    if len(erased_values) != 1:
+        sectors.clear()
+        driver_rows.clear()
+    driver_digest = (
+        hashlib.sha256(
+            json.dumps(driver_rows, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        ).hexdigest()
+        if driver_rows
+        else None
+    )
+    as_region = lambda region: PackAddressRegion(  # noqa: E731 - compact pure adapter
+        str(region.name), int(region.start), int(region.end) + 1, str(region.access)
+    )
+    return PackMemoryGeometry(
+        int(selected_flash.start),
+        int(selected_flash.end) + 1,
+        int(selected_ram.start),
+        int(selected_ram.end) + 1,
+        tuple(sectors),
+        driver_digest,
+        next(iter(erased_values)) if driver_digest is not None else None,
+        tuple(as_region(region) for region in flash),
+        tuple(as_region(region) for region in ram),
+        peripheral_regions=tuple(as_region(region) for region in peripherals),
+        cpu_system_regions=(
+            PackAddressRegion("Arm Cortex-M system control space", 0xE0000000, 0xE0100000),
+        ),
+    )
+
+
+def resolve_builtin_target_support(
+    part_number: str,
+    pyocd_target: str,
+    *,
+    identity_proof: LiveIdentityProof | None = None,
+) -> BuiltInTargetSupportCandidate:
+    """Resolve an agent-researched exact built-in target without a pack requirement."""
+
+    normalized = normalise_target_type_name(pyocd_target)
+    geometry = resolve_builtin_target_geometry(normalized)
+    return BuiltInTargetSupportCandidate(
+        part_number.strip(), normalized, _geometry_digest(geometry), identity_proof
+    )
+
+
+def resolve_persisted_builtin_target_support(
+    part_number: str, authority: Mapping[str, str]
+) -> BuiltInTargetSupportCandidate:
+    """Replay a persisted built-in target against the current installed registry."""
+
+    required = {
+        "kind",
+        "support_id",
+        "part_number",
+        "pyocd_target",
+        "geometry_sha256",
+        "identity_address",
+        "identity_expected",
+        "identity_mask",
+        "identity_width_bits",
+        "identity_label",
+    }
+    source = dict(authority)
+    if set(source) != required or source.get("kind") != "resolved_builtin_target":
+        raise PackProvisionError("Persisted built-in target authority is incomplete")
+    if normalize_part_number(source["part_number"]) != normalize_part_number(part_number):
+        raise PackProvisionError("Persisted built-in target part number does not match the profile")
+    try:
+        proof = LiveIdentityProof(
+            "compatible",
+            int(source["identity_address"], 0),
+            int(source["identity_expected"], 0),
+            int(source["identity_mask"], 0),
+            int(source["identity_width_bits"], 0),
+            source["identity_label"],
+        )
+    except (TypeError, ValueError) as exc:
+        raise PackProvisionError("Persisted built-in target identity proof is invalid") from exc
+    pending = resolve_builtin_target_support(part_number, source["pyocd_target"])
+    try:
+        canonical_proof = pending.with_identity_proof(proof.expected).identity_proof
+    except PackProvisionError as exc:
+        raise PackProvisionError(
+            "Persisted built-in target identity proof is not canonical"
+        ) from exc
+    if proof != canonical_proof:
+        raise PackProvisionError("Persisted built-in target identity proof is not canonical")
+    candidate = resolve_builtin_target_support(
+        part_number, source["pyocd_target"], identity_proof=canonical_proof
+    )
+    if candidate.geometry_sha256 != source["geometry_sha256"]:
+        raise PackProvisionError("Built-in target memory geometry changed since setup")
+    if candidate.to_authority_document() != source:
+        raise PackProvisionError("Persisted built-in target authority failed exact replay")
+    return candidate
+
+
+def resolve_device_support_geometry(
+    candidate: DeviceSupportAuthority, store: FirmStore | None = None
+) -> PackMemoryGeometry:
+    if isinstance(candidate, BuiltInTargetSupportCandidate):
+        geometry = resolve_builtin_target_geometry(candidate.pyocd_target)
+        if _geometry_digest(geometry) != candidate.geometry_sha256:
+            raise PackProvisionError("Built-in target memory geometry changed since resolution")
+        return geometry
+    return resolve_registered_pack_geometry(candidate, store)
 
 
 class DeviceSupportResolver:
@@ -349,7 +676,9 @@ class DeviceSupportResolver:
             with zipfile.ZipFile(io.BytesIO(selected.payload)) as archive:
                 members = archive.infolist()
                 if not 1 <= len(members) <= _MAX_PACK_MEMBERS:
-                    raise PackProvisionError("CMSIS-Pack member count is outside the supported limit")
+                    raise PackProvisionError(
+                        "CMSIS-Pack member count is outside the supported limit"
+                    )
                 total_size = 0
                 pdsc_rows: list[zipfile.ZipInfo] = []
                 for member in members:
@@ -377,7 +706,9 @@ class DeviceSupportResolver:
         except (OSError, zipfile.BadZipFile) as exc:
             raise PackProvisionError("Verified CMSIS-Pack is not a safe ZIP archive") from exc
 
-    def candidates(self, part_number: str, targets: Iterable[str]) -> tuple[DeviceSupportCandidate, ...]:
+    def candidates(
+        self, part_number: str, targets: Iterable[str]
+    ) -> tuple[DeviceSupportCandidate, ...]:
         """Return exact provisioned candidates from a server-issued target inventory."""
 
         requested = normalize_part_number(part_number)
@@ -537,9 +868,7 @@ def _resolve_manifest_pack_support(
                     "verified PDSC leaf"
                 )
             authoritative_binding = binding if allow_reviewed_identity_proof else replayed
-            candidate = DeviceSupportCandidate.from_verified_pack(
-                selected, authoritative_binding
-            )
+            candidate = DeviceSupportCandidate.from_verified_pack(selected, authoritative_binding)
             if candidate.support_id not in {item.support_id for item in candidates}:
                 candidates.append(candidate)
     if not candidates:
@@ -557,7 +886,9 @@ def resolve_project_pack_support(store: FirmStore, part_number: str) -> DeviceSu
     """Replay one dynamically promoted binding from bytes, never manifest claims alone."""
 
     if store.layout.pack_manifest.resolve() == MANIFEST_PATH.resolve():
-        raise PackProvisionError("No server-registered project device-support record matches the exact MCU part")
+        raise PackProvisionError(
+            "No server-registered project device-support record matches the exact MCU part"
+        )
     return _resolve_manifest_pack_support(
         store.layout.pack_manifest,
         store.layout.pack_files,
@@ -654,9 +985,82 @@ def resolve_persisted_pack_support(
 def _overlaps_memory(
     region: PackAddressRegion, memory_regions: tuple[PackAddressRegion, ...]
 ) -> bool:
-    return any(
-        region.start < memory.end and memory.start < region.end
-        for memory in memory_regions
+    return any(region.start < memory.end and memory.start < region.end for memory in memory_regions)
+
+
+def _resolved_svd_access(*levels: object | None) -> str:
+    """Resolve inherited CMSIS-SVD access, whose schema default is read-write."""
+
+    for access in levels:
+        if access is not None:
+            value = str(access)
+            return value or "unspecified"
+    return "read-write"
+
+
+def _intersect_access_regions(
+    rows: Iterable[PackAddressRegion],
+) -> tuple[PackAddressRegion, ...]:
+    """Segment aliases/overlaps using only access every covering source permits."""
+
+    unique = set(rows)
+    if not unique:
+        return ()
+    boundaries = sorted({point for row in unique for point in (row.start, row.end)})
+    segmented: list[PackAddressRegion] = []
+    for start, end in zip(boundaries, boundaries[1:]):
+        covering = tuple(row for row in unique if row.start <= start and end <= row.end)
+        if not covering:
+            continue
+        readable = all(row.readable for row in covering)
+        writable = all(row.writable for row in covering)
+        if not readable and not writable:
+            continue
+        access = "read-write" if readable and writable else "read-only" if readable else "write-only"
+        names = sorted({row.name for row in covering}, key=str.casefold)
+        name = names[0] if len(names) == 1 else f"{names[0]} (+{len(names) - 1} aliases)"
+        if (
+            segmented
+            and segmented[-1].end == start
+            and segmented[-1].access == access
+            and segmented[-1].name == name
+        ):
+            previous = segmented.pop()
+            segmented.append(PackAddressRegion(name, previous.start, end, access))
+        else:
+            segmented.append(PackAddressRegion(name, start, end, access))
+    return tuple(segmented)
+
+
+def _subtract_address_regions(
+    row: PackAddressRegion,
+    exclusions: Iterable[PackAddressRegion],
+) -> tuple[PackAddressRegion, ...]:
+    """Remove physical-memory/system spans without discarding unrelated peripheral pieces."""
+
+    clipped = tuple(
+        exclusion
+        for exclusion in exclusions
+        if row.start < exclusion.end and exclusion.start < row.end
+    )
+    boundaries = sorted(
+        {
+            row.start,
+            row.end,
+            *(
+                point
+                for exclusion in clipped
+                for point in (
+                    max(row.start, exclusion.start),
+                    min(row.end, exclusion.end),
+                )
+            ),
+        }
+    )
+    return tuple(
+        PackAddressRegion(row.name, start, end, row.access)
+        for start, end in zip(boundaries, boundaries[1:])
+        if not any(start < exclusion.end and exclusion.start < end for exclusion in clipped)
     )
 
 
@@ -677,6 +1081,12 @@ def _svd_peripheral_regions(
         if b"<!doctype" in lowered or b"<!entity" in lowered:
             return ()
         root = ET.fromstring(payload)
+        # pyOCD maps both a missing <access> and a present empty <access/> to
+        # None. Preserve the latter as an invalid token so only true absence
+        # can inherit or reach the CMSIS-SVD read-write schema default.
+        for access_element in root.iter("access"):
+            if access_element.text is None:
+                access_element.text = "unspecified"
         parsed = SVDParser(ET.ElementTree(root)).get_device()
         rows: set[PackAddressRegion] = set()
         for peripheral in parsed.peripherals or ():
@@ -692,12 +1102,11 @@ def _svd_peripheral_regions(
                         width_bytes = max(1, (width_bits + 7) // 8)
                         start = base + offset
                         end = start + width_bytes
-                        access = register.access or peripheral.access or parsed.access
                         row = PackAddressRegion(
                             f"{peripheral.name}.{register.name}",
                             start,
                             end,
-                            str(access or "unspecified"),
+                            _resolved_svd_access(register.access, peripheral.access, parsed.access),
                         )
                     except (AttributeError, TypeError, ValueError, PackProvisionError):
                         continue
@@ -709,12 +1118,17 @@ def _svd_peripheral_regions(
             block = peripheral.address_block
             if block is None:
                 continue
+            usage = str(getattr(block, "usage", ""))
+            if usage != "registers":
+                continue
             try:
                 start = base + int(block.offset)
                 end = start + int(block.size)
-                access = peripheral.access or parsed.access
                 row = PackAddressRegion(
-                    str(peripheral.name), start, end, str(access or "unspecified")
+                    str(peripheral.name),
+                    start,
+                    end,
+                    _resolved_svd_access(peripheral.access, parsed.access),
                 )
             except (AttributeError, TypeError, ValueError, PackProvisionError):
                 continue
@@ -723,38 +1137,7 @@ def _svd_peripheral_regions(
             if not _overlaps_memory(row, memory_regions):
                 rows.add(row)
 
-        if not rows:
-            return ()
-        boundaries = sorted({point for row in rows for point in (row.start, row.end)})
-        segmented: list[PackAddressRegion] = []
-        for start, end in zip(boundaries, boundaries[1:]):
-            covering = tuple(row for row in rows if row.start <= start and end <= row.end)
-            if not covering:
-                continue
-            readable = all(row.readable for row in covering)
-            writable = all(row.writable for row in covering)
-            if not readable and not writable:
-                continue
-            access = (
-                "read-write"
-                if readable and writable
-                else "read-only"
-                if readable
-                else "write-only"
-            )
-            names = sorted({row.name for row in covering}, key=str.casefold)
-            name = names[0] if len(names) == 1 else f"{names[0]} (+{len(names) - 1} aliases)"
-            if (
-                segmented
-                and segmented[-1].end == start
-                and segmented[-1].access == access
-                and segmented[-1].name == name
-            ):
-                previous = segmented.pop()
-                segmented.append(PackAddressRegion(name, previous.start, end, access))
-            else:
-                segmented.append(PackAddressRegion(name, start, end, access))
-        return tuple(segmented)
+        return _intersect_access_regions(rows)
     except Exception:  # noqa: BLE001 - malformed optional SVD removes only register capability
         return ()
 
@@ -820,12 +1203,16 @@ def resolve_registered_pack_geometry(
         or selected.spec.filename != candidate.pack_filename
         or selected.spec.sha256 != candidate.pack_sha256
     ):
-        raise PackProvisionError("registered pack identity no longer matches the selected candidate")
+        raise PackProvisionError(
+            "registered pack identity no longer matches the selected candidate"
+        )
     try:
         DeviceSupportResolver._validate_archive(selected)
         pack = CmsisPack(io.BytesIO(selected.payload))
         device = next(
-            item for item in pack.devices if item.part_number.casefold() == candidate.pdsc_device.casefold()
+            item
+            for item in pack.devices
+            if item.part_number.casefold() == candidate.pdsc_device.casefold()
         )
         regions = tuple(device.memory_map.regions)
     except StopIteration as exc:
@@ -846,7 +1233,13 @@ def resolve_registered_pack_geometry(
     rom_candidates = tuple(
         region for region in regions if str(region.type).casefold().endswith("rom")
     )
-    def select_unambiguous(candidates: tuple[Any, ...], *, allow_lowest: bool = False) -> Any | None:
+    peripheral_candidates = tuple(
+        region for region in regions if str(region.type).casefold().endswith("device")
+    )
+
+    def select_unambiguous(
+        candidates: tuple[Any, ...], *, allow_lowest: bool = False
+    ) -> Any | None:
         defaults = tuple(item for item in candidates if bool(getattr(item, "is_default", False)))
         if len(defaults) == 1:
             return defaults[0]
@@ -855,9 +1248,14 @@ def resolve_registered_pack_geometry(
             return boot[0]
         if not defaults and len(candidates) == 1:
             return candidates[0]
-        return min(candidates, key=lambda item: int(item.start)) if allow_lowest and candidates else None
+        return (
+            min(candidates, key=lambda item: int(item.start))
+            if allow_lowest and candidates
+            else None
+        )
 
-    flash = select_unambiguous(flash_candidates)
+    flash = select_unambiguous(flash_candidates, allow_lowest=True)
+    programmable_flash = select_unambiguous(flash_candidates)
     ram = select_unambiguous(ram_candidates, allow_lowest=True)
     if flash is None or ram is None:
         raise PackProvisionError(
@@ -866,10 +1264,8 @@ def resolve_registered_pack_geometry(
     sectors: list[tuple[int, int]] = []
     driver_digest: str | None = None
     erased_byte: int | None = None
-    flm = getattr(flash, "flm", None)
-    sector_sizes = tuple(
-        cast(Iterable[tuple[int, int]], getattr(flm, "sector_sizes", ()) or ())
-    )
+    flm = getattr(programmable_flash, "flm", None) if programmable_flash is not None else None
+    sector_sizes = tuple(cast(Iterable[tuple[int, int]], getattr(flm, "sector_sizes", ()) or ()))
     symbols = getattr(flm, "symbols", {}) if flm is not None else {}
     if (
         flm is not None
@@ -878,7 +1274,8 @@ def resolve_registered_pack_geometry(
         and "EraseSector" in symbols
         and "ProgramPage" in symbols
     ):
-        flash_length = int(flash.length)
+        assert programmable_flash is not None
+        flash_length = int(programmable_flash.length)
         ordered = sorted((int(offset), int(size)) for offset, size in sector_sizes)
         valid = ordered[0][0] == 0 and all(
             offset >= 0 and size > 0 and offset < flash_length for offset, size in ordered
@@ -892,11 +1289,20 @@ def resolve_registered_pack_geometry(
                     if end - cursor != size:
                         valid = False
                         break
-                    sectors.append((int(flash.start) + cursor, int(flash.start) + end))
+                    sectors.append(
+                        (
+                            int(programmable_flash.start) + cursor,
+                            int(programmable_flash.start) + end,
+                        )
+                    )
                     cursor = end
                 if not valid:
                     break
-        if valid and sectors and sectors[-1][1] == int(flash.start) + flash_length:
+        if (
+            valid
+            and sectors
+            and sectors[-1][1] == int(programmable_flash.start) + flash_length
+        ):
             candidate_erased = getattr(getattr(flm, "flash_info", None), "value_empty", None)
             if isinstance(candidate_erased, int) and 0 <= candidate_erased <= 0xFF:
                 erased_byte = candidate_erased
@@ -915,19 +1321,25 @@ def resolve_registered_pack_geometry(
                 driver_digest = hashlib.sha256(proof_material).hexdigest()
         else:
             sectors.clear()
-    if driver_digest is None:
+    if driver_digest is None and programmable_flash is not None:
         # Newer CMSIS-Packs may describe flash through debug-sequence
         # ``flashinfo`` instead of an FLM. pyOCD exposes those descriptions as
         # ordinary FlashRegion sector geometry and a concrete flash class.
         candidate_sectors: list[tuple[int, int]] = []
-        subregions = tuple(getattr(getattr(flash, "submap", None), "regions", ()) or ())
-        sources = subregions or (flash,)
+        subregions = tuple(
+            getattr(getattr(programmable_flash, "submap", None), "regions", ()) or ()
+        )
+        sources = subregions or (programmable_flash,)
         valid = True
         for source in sorted(sources, key=lambda item: int(item.start)):
             start = int(source.start)
             end = start + int(source.length)
             size = int(getattr(source, "sector_size", 0) or 0)
-            if size <= 0 or start < int(flash.start) or end > int(flash.start + flash.length):
+            if (
+                size <= 0
+                or start < int(programmable_flash.start)
+                or end > int(programmable_flash.start + programmable_flash.length)
+            ):
                 valid = False
                 break
             cursor = start
@@ -940,12 +1352,17 @@ def resolve_registered_pack_geometry(
                 cursor = next_cursor
             if not valid:
                 break
-        contiguous = bool(candidate_sectors) and candidate_sectors[0][0] == int(flash.start) and all(
-            left[1] == right[0]
-            for left, right in zip(candidate_sectors, candidate_sectors[1:])
-        ) and candidate_sectors[-1][1] == int(flash.start + flash.length)
-        candidate_erased = getattr(flash, "erased_byte_value", None)
-        flash_class = getattr(flash, "flash_class", None)
+        contiguous = (
+            bool(candidate_sectors)
+            and candidate_sectors[0][0] == int(programmable_flash.start)
+            and all(
+                left[1] == right[0] for left, right in zip(candidate_sectors, candidate_sectors[1:])
+            )
+            and candidate_sectors[-1][1]
+            == int(programmable_flash.start + programmable_flash.length)
+        )
+        candidate_erased = getattr(programmable_flash, "erased_byte_value", None)
+        flash_class = getattr(programmable_flash, "flash_class", None)
         if (
             valid
             and contiguous
@@ -961,13 +1378,14 @@ def resolve_registered_pack_geometry(
                     (
                         candidate.pack_sha256,
                         tuple(candidate_sectors),
-                        int(getattr(flash, "page_size", 0) or 0),
+                        int(getattr(programmable_flash, "page_size", 0) or 0),
                         f"{flash_class.__module__}.{flash_class.__qualname__}",
                         erased_byte,
                         "FileProgrammer:chip_erase=sector",
                     )
                 ).encode("utf-8")
             ).hexdigest()
+
     def memory_region(item: Any) -> PackAddressRegion:
         return PackAddressRegion(
             str(getattr(item, "name", str(item.type))),
@@ -991,6 +1409,17 @@ def resolve_registered_pack_geometry(
     canonical_flash = canonical_memory_regions(flash_candidates)
     canonical_ram = canonical_memory_regions(ram_candidates)
     canonical_rom = canonical_memory_regions(rom_candidates)
+    peripheral_exclusions = (
+        *canonical_flash,
+        *canonical_ram,
+        *canonical_rom,
+        PackAddressRegion("Arm Cortex-M system control space", 0xE0000000, 0xE0100000),
+    )
+    canonical_peripherals = _intersect_access_regions(
+        fragment
+        for item in peripheral_candidates
+        for fragment in _subtract_address_regions(memory_region(item), peripheral_exclusions)
+    )
     svd_regions = _svd_peripheral_regions(
         device,
         (*canonical_flash, *canonical_ram, *canonical_rom),
@@ -1006,6 +1435,6 @@ def resolve_registered_pack_geometry(
         canonical_flash,
         canonical_ram,
         canonical_rom,
-        svd_regions,
+        svd_regions or canonical_peripherals,
         cpu_system_regions,
     )

@@ -103,6 +103,25 @@ def test_third_distinct_failure_exhausts_fact_budget() -> None:
     ]
 
 
+def test_board_scoped_clear_resets_research_budget() -> None:
+    tracker = ResearchTracker(max_candidates=1)
+    rejected = tracker.validate_reply(
+        request(),
+        {"pyocd_target": "bad"},
+        lambda _candidate: ValidationOutcome(False, "failed"),
+    )
+    assert rejected.status == "setup_unresolved"
+
+    tracker.clear("bench_board")
+
+    accepted = tracker.validate_reply(
+        request(),
+        {"pyocd_target": "good"},
+        lambda _candidate: ValidationOutcome(True),
+    )
+    assert accepted.status == "accepted"
+
+
 @pytest.mark.parametrize(
     ("condition", "expected"),
     [
@@ -112,5 +131,7 @@ def test_third_distinct_failure_exhausts_fact_budget() -> None:
         ("unknown_target", "research"),
     ],
 )
-def test_blocked_conditions_are_not_misclassified_as_research(condition: str, expected: str) -> None:
+def test_blocked_conditions_are_not_misclassified_as_research(
+    condition: str, expected: str
+) -> None:
     assert classify_research_condition(condition) == expected

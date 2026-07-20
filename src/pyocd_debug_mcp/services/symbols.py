@@ -22,6 +22,16 @@ class ResolvedSymbol:
     value_u32: int | None = None
 
 
+def is_elf_artifact(path: Path) -> bool:
+    """Recognize ELF by its format marker, independent of toolchain suffix."""
+
+    try:
+        with path.open("rb") as stream:
+            return stream.read(4) == b"\x7fELF"
+    except OSError:
+        return False
+
+
 def _normalize_elf_path(elf_path: Path | str) -> Path:
     path = Path(elf_path).expanduser().resolve()
     if not path.exists():

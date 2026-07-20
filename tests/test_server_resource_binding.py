@@ -78,6 +78,149 @@ def test_successful_ordinary_operation_releases_reset_without_rebooting(monkeypa
     assert operation.resources.restore_final_state == []
 
 
+def test_started_handler_failure_preserves_healthy_connection(monkeypatch) -> None:
+    reset_line: list[bool] = []
+    handle = SimpleNamespace(
+        session=SimpleNamespace(probe=SimpleNamespace(assert_reset=reset_line.append))
+    )
+    runtime = object()
+    connection = SimpleNamespace(handle=handle, runtime_session=runtime)
+    cleared: list[str] = []
+    closed_handles: list[object] = []
+    closed_runtimes: list[object] = []
+    cleared_gates: list[tuple[str, str]] = []
+    monkeypatch.setattr(
+        server.connection_manager,
+        "maybe_connection",
+        lambda board_id: connection if board_id == "board_a" else None,
+    )
+    monkeypatch.setattr(server.connection_manager, "clear", cleared.append)
+    monkeypatch.setattr(server.target_control, "close_session", closed_handles.append)
+    monkeypatch.setattr(server._session_store, "close_session", closed_runtimes.append)
+    monkeypatch.setattr(
+        server.gate_manager,
+        "clear",
+        lambda board_id, reason: cleared_gates.append((board_id, reason)),
+    )
+    operation = ManagedOperation(
+        "op-failed",
+        "request-failed",
+        "read_execution_state",
+        "board_a",
+        10.0,
+        False,
+        False,
+        state=OperationState.FAILED,
+        handler_started_at=1.0,
+        error=RuntimeError("core must be halted"),
+    )
+
+    server._bind_managed_board_resources(operation)
+    operation.cleanup()
+
+    assert reset_line == [False]
+    assert cleared == []
+    assert closed_handles == []
+    assert closed_runtimes == []
+    assert cleared_gates == []
+
+
+def test_cancelled_operation_closes_uncertain_connection(monkeypatch) -> None:
+    reset_line: list[bool] = []
+    handle = SimpleNamespace(
+        session=SimpleNamespace(probe=SimpleNamespace(assert_reset=reset_line.append))
+    )
+    runtime = object()
+    connection = SimpleNamespace(handle=handle, runtime_session=runtime)
+    cleared: list[str] = []
+    closed_handles: list[object] = []
+    closed_runtimes: list[object] = []
+    cleared_gates: list[tuple[str, str]] = []
+    monkeypatch.setattr(
+        server.connection_manager,
+        "maybe_connection",
+        lambda board_id: connection if board_id == "board_a" else None,
+    )
+    monkeypatch.setattr(server.connection_manager, "clear", cleared.append)
+    monkeypatch.setattr(server.target_control, "close_session", closed_handles.append)
+    monkeypatch.setattr(server._session_store, "close_session", closed_runtimes.append)
+    monkeypatch.setattr(
+        server.gate_manager,
+        "clear",
+        lambda board_id, reason: cleared_gates.append((board_id, reason)),
+    )
+    operation = ManagedOperation(
+        "op-cancelled",
+        "request-cancelled",
+        "read_memory",
+        "board_a",
+        10.0,
+        False,
+        False,
+        state=OperationState.CANCELLED,
+        handler_started_at=1.0,
+    )
+    operation.request_cancel("operation timeout")
+
+    server._bind_managed_board_resources(operation)
+    operation.cleanup()
+
+    assert reset_line == [False]
+    assert cleared == ["board_a"]
+    assert closed_handles == [handle]
+    assert closed_runtimes == [runtime]
+    assert cleared_gates == [("board_a", "operation cancelled or timed out")]
+
+
+def test_preexecution_target_connection_failure_closes_stale_connection(monkeypatch) -> None:
+    reset_line: list[bool] = []
+    handle = SimpleNamespace(
+        session=SimpleNamespace(probe=SimpleNamespace(assert_reset=reset_line.append))
+    )
+    runtime = object()
+    connection = SimpleNamespace(handle=handle, runtime_session=runtime)
+    cleared: list[str] = []
+    closed_handles: list[object] = []
+    closed_runtimes: list[object] = []
+    cleared_gates: list[tuple[str, str]] = []
+    monkeypatch.setattr(
+        server.connection_manager,
+        "maybe_connection",
+        lambda board_id: connection if board_id == "board_a" else None,
+    )
+    monkeypatch.setattr(server.connection_manager, "clear", cleared.append)
+    monkeypatch.setattr(server.target_control, "close_session", closed_handles.append)
+    monkeypatch.setattr(server._session_store, "close_session", closed_runtimes.append)
+    monkeypatch.setattr(
+        server.gate_manager,
+        "clear",
+        lambda board_id, reason: cleared_gates.append((board_id, reason)),
+    )
+    backend_error = server.TargetConnectionError("probe transport disconnected")
+    wrapped_error = RuntimeError("tool failed")
+    wrapped_error.__cause__ = backend_error
+    operation = ManagedOperation(
+        "op-connection-failed",
+        "request-connection-failed",
+        "read_memory_address",
+        "board_a",
+        10.0,
+        False,
+        False,
+        state=OperationState.FAILED,
+        error=wrapped_error,
+    )
+
+    server._bind_managed_board_resources(operation)
+    operation.cleanup()
+
+    assert reset_line == [False]
+    assert cleared == ["board_a"]
+    assert closed_handles == [handle]
+    assert closed_runtimes == [runtime]
+    assert cleared_gates == [("board_a", "target connection failed during operation")]
+
+
 def test_setup_status_exposes_uart_readiness_as_a_separate_barrier(monkeypatch) -> None:
     expected_ref = (
         server._firm_store.layout.safety_reference_prefix("board_a") / "memory_map.yaml"
@@ -150,8 +293,8 @@ def test_setup_status_exposes_uart_readiness_as_a_separate_barrier(monkeypatch) 
     assert helper["helper_provisioning"] is False
     collector = cast(dict[str, object], guidance["artifact_collection"])
     assert collector["tool"] == "collect_build_artifacts"
-    assert "agent may use the normal installation or network acquisition path" in str(
-        guidance["toolchain_fallback"]
+    assert "normal installation or network acquisition is allowed" in str(
+        guidance["dependency_resolution"]
     )
     boundary = str(guidance["safety_boundary"])
     assert "advisory and not safety authority" in boundary
@@ -301,7 +444,7 @@ def test_build_guidance_does_not_infer_board_target_from_mcu(monkeypatch) -> Non
     guidance = cast(dict[str, object], status["build_guidance"])
     assert guidance["primary_workflow"] == "general_native_build_helper"
     assert "nrf52840dk" not in str(guidance["general_build_helper"])
-    assert "project's actual toolchain" in str(guidance["toolchain_fallback"])
+    assert "project's actual build entry point" in str(guidance["dependency_resolution"])
 
 
 def test_automatic_setup_commits_the_complete_reviewed_candidate(monkeypatch) -> None:
@@ -701,6 +844,7 @@ def test_validation_replays_the_discovered_attach_frequency(
     profile = SimpleNamespace(
         board_id="generic_board",
         board=SimpleNamespace(
+            debug_protocol="swd",
             debug_connect_mode="attach",
             debug_clock_hz=1_000_000,
             pyocd_target="generic_target",
@@ -715,8 +859,6 @@ def test_validation_replays_the_discovered_attach_frequency(
 
     def open_session(**kwargs: object) -> object:
         attempts.append(dict(kwargs))
-        if len(attempts) == 1:
-            raise server.TargetConnectionError("default frequency rejected")
         return handle
 
     monkeypatch.setattr(server.target_control, "open_session", open_session)
@@ -733,9 +875,11 @@ def test_validation_replays_the_discovered_attach_frequency(
         5.0,
     )
 
-    assert [(item["connect_mode"], item["frequency_hz"]) for item in attempts] == [
-        ("attach", None),
-        ("attach", 1_000_000),
+    assert [
+        (item["protocol"], item["connect_mode"], item["frequency_hz"])
+        for item in attempts
+    ] == [
+        ("swd", "attach", 1_000_000),
     ]
     assert all(item["pack_path"] == selected_pack.path for item in attempts)
     assert all(item["pack_sha256"] == selected_pack.spec.sha256 for item in attempts)

@@ -163,6 +163,12 @@ The resulting action policy is:
 - target recovery uses a typed mechanism, complete disclosure, a fixed one-call
   plan, and fresh one-time permission, then clears live proof.
 
+Symbol tools use either an explicit project `elf_artifact` or the ELF bound by a successful
+application flash in the same Server Run. The binding is only a convenience: it is not persisted,
+does not grant address authority, and packaged reference firmware is never silently substituted
+after restart. Explicit symbol-write ELFs are digest-bound by the accepted plan; every resolved
+address still passes the stable memory-map containment check before target access.
+
 Every refusal occurs before the corresponding backend mutation and names the
 required remedy.
 
@@ -326,12 +332,14 @@ Firmware builds remain native-project work. The server returns an exact paramete
 the provider-neutral `pyocd_debug_mcp.native_build` helper. The agent resolves the project's real
 executable, argv, cwd, environment, and outputs; the helper executes that argv directly without a
 shell, inherits network access by default, verifies ELF/HEX formats, and records whether the linker
-map was explicit, provider-conventional, or uniquely discovered without claiming universal ELF/map
-coherence. Outputs may be discovered under a caller-selected artifact root. Existing incremental
-and in-source layouts are supported. Local
+map was explicit or uniquely discovered without claiming universal ELF/map
+coherence. Any project-native output can be declared with a named path; understood ELF/HEX formats
+receive structural checks and unknown formats are honestly reported as opaque nonempty files.
+Outputs may be discovered under a caller-selected artifact root. Existing incremental and in-source
+layouts and caller-adjustable timeouts are supported. Local
 toolchains are preferred, acquisition is allowed when none is compatible, and best-effort offline
-environment guards are explicit rather than an OS network-sandbox claim. Optional Zephyr/west and
-GNU Make detection never limit the generic path. The always-visible
+environment guards are explicit rather than an OS network-sandbox claim. The server does not infer
+a provider, toolchain, SDK root, target, or output convention. The always-visible
 `collect_build_artifacts` MCP tool then provides an optional build-system-neutral
 handoff for explicit ELF, HEX, BIN, and linker-map outputs. It performs no build,
 search, subprocess, download, or hardware access. Collection stages a canonical
@@ -340,12 +348,8 @@ manifest contains provenance but no allowed ranges, plans, permissions, or gate
 state. Safety refresh never consumes build outputs. The flash plan binds the selected
 artifact and runtime containment parses it immediately before execution.
 
-The Zephyr helper is a separate terminal convenience, not an MCP hardware action.
-It reuses the same collector after selecting the declared sysbuild default domain,
-which keeps the application ELF and linker map coherent and preserves the native
-incremental build tree. Other build systems need no provider adapter: their exact command runs
-through the same owned-process helper and their normal output can enter through the same visible
-collector.
+All build systems use the same owned-process helper with exact agent-resolved argv, and their normal
+output can enter through the same visible collector.
 
 ## Target and host de-biasing boundaries
 

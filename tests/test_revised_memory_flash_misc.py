@@ -5,6 +5,7 @@ from types import SimpleNamespace
 from typing import cast
 
 import pytest
+from elftools.common.exceptions import ELFError
 from mcp.server.fastmcp.exceptions import ToolError
 
 from pyocd_debug_mcp import server
@@ -55,9 +56,10 @@ def _memory_handlers(
     *,
     check_memory_read=None,
     symbol_artifact_for=None,
+    resolve_symbol=None,
 ):
     artifact = tmp_path / "firmware.elf"
-    artifact.write_bytes(b"elf")
+    artifact.write_bytes(b"\x7fELFfixture")
     calls: list[tuple[str, object]] = []
     handle = object()
     resolved = ResolvedSymbol("counter", 0x20000010, 4, "STT_OBJECT")
@@ -70,7 +72,7 @@ def _memory_handlers(
         handle_for=lambda board: handle,
         symbol_artifact_for=symbol_artifact_for or (lambda selected: artifact),
         find_symbols=lambda selected, query: (resolved,),
-        resolve_symbol=lambda selected, name: resolved,
+        resolve_symbol=resolve_symbol or (lambda selected, name: resolved),
         read_target_memory=lambda selected, address, width: (
             calls.append(("read", (selected, address, width))) or 0x12
         ),
@@ -163,6 +165,32 @@ def test_memory_reads_check_scalar_block_and_symbol_bytes_before_backend(
     assert [call[0] for call in calls] == ["read", "read", "block"]
 
 
+def test_symbol_scalar_access_refuses_functions_and_unaligned_objects_before_backend(
+    tmp_path: Path,
+) -> None:
+    symbols = {
+        "task": ResolvedSymbol("task", 0x0000019D, 104, "STT_FUNC"),
+        "packed": ResolvedSymbol("packed", 0x20000001, 4, "STT_OBJECT"),
+    }
+    handlers, calls = _memory_handlers(
+        tmp_path, resolve_symbol=lambda _selected, name: symbols[name]
+    )
+
+    assert "memory/symbol-is-function" in handlers["read_memory_symbol"](
+        "board_b", "task", 32
+    )
+    assert "memory/symbol-is-function" in handlers["write_memory"](
+        "board_b", "task", 1, 32, False, None
+    )
+    assert "memory/symbol-address-unaligned" in handlers["read_memory_symbol"](
+        "board_b", "packed", 32
+    )
+    assert "memory/symbol-address-unaligned" in handlers["write_memory"](
+        "board_b", "packed", 1, 32, False, None
+    )
+    assert calls == []
+
+
 def test_missing_current_symbol_artifact_refuses_before_backend(tmp_path: Path) -> None:
     def missing(_handle):
         raise RuntimeError("current ELF missing")
@@ -177,6 +205,58 @@ def test_missing_current_symbol_artifact_refuses_before_backend(tmp_path: Path) 
         "board_b", "counter", 1, 32, False, None
     )
     assert calls == []
+
+
+def test_explicit_project_elf_works_without_current_run_binding(tmp_path: Path) -> None:
+    def missing(_handle):
+        raise RuntimeError("no current-run binding")
+
+    handlers, calls = _memory_handlers(tmp_path, symbol_artifact_for=missing)
+    elf = tmp_path / "firmware.elf"
+
+    assert "counter@0x20000010" in handlers["find_symbol"](
+        "board_b", "count", str(elf)
+    )
+    assert "value=0x00000012" in handlers["read_memory_symbol"](
+        "board_b", "counter", 32, str(elf)
+    )
+    assert "mapped RAM" in handlers["write_memory"](
+        "board_b", "counter", 1, 32, False, None, str(elf)
+    )
+    assert [call[0] for call in calls] == ["read", "write"]
+
+
+def test_changed_explicit_project_elf_refuses_before_backend(tmp_path: Path) -> None:
+    artifact = tmp_path / "firmware.elf"
+    artifact.write_bytes(b"\x7fELFstable")
+    backend_calls: list[str] = []
+
+    def changing_resolver(_artifact: Path, name: str) -> ResolvedSymbol:
+        artifact.write_bytes(b"changed")
+        return ResolvedSymbol(name, 0x20000010, 4, "STT_OBJECT")
+
+    handlers = build_memory_handlers(
+        MemoryToolServices(
+            runtime_for=lambda board: None,
+            active_session_id=lambda board: None,
+            duration_ms=lambda started: 1,
+            record_event=lambda *args, **kwargs: None,
+            format_refusal=_format_refusal,
+            handle_for=lambda board: object(),
+            symbol_artifact_for=lambda selected: pytest.fail("implicit binding used"),
+            find_symbols=lambda selected, query: (),
+            resolve_symbol=changing_resolver,
+            read_target_memory=lambda *args: backend_calls.append("read") or 0,
+            read_target_block=lambda *args: [],
+            write_target_memory=lambda *args: backend_calls.append("write"),
+            check_memory_read=lambda *args: backend_calls.append("check-read"),
+            check_memory_write=lambda *args: backend_calls.append("check-write"),
+        )
+    )
+
+    result = handlers["read_memory_symbol"]("board_b", "counter", 32, str(artifact))
+    assert "memory/symbol-artifact-unavailable" in result
+    assert backend_calls == []
 
 
 def test_real_symbol_parser_failure_is_refused_before_backend(tmp_path: Path) -> None:
@@ -211,7 +291,7 @@ def test_real_symbol_parser_failure_is_refused_before_backend(tmp_path: Path) ->
 
 def test_missing_symbol_has_distinct_refusal(tmp_path: Path) -> None:
     artifact = tmp_path / "firmware.elf"
-    artifact.write_bytes(b"fixture")
+    artifact.write_bytes(b"\x7fELFfixture")
     handlers = build_memory_handlers(
         MemoryToolServices(
             runtime_for=lambda board: None,
@@ -241,7 +321,7 @@ def test_disappearing_symbol_artifact_is_not_reported_as_missing_symbol(
     tmp_path: Path,
 ) -> None:
     artifact = tmp_path / "firmware.elf"
-    artifact.write_bytes(b"fixture")
+    artifact.write_bytes(b"\x7fELFfixture")
 
     def selected_artifact(_handle):
         if not artifact.is_file():
@@ -281,7 +361,7 @@ def test_symbol_change_during_resolution_blocks_backend(
     operation: str,
 ) -> None:
     artifact = tmp_path / "firmware.elf"
-    stable = b"stable"
+    stable = b"\x7fELFstable"
     artifact.write_bytes(stable)
     backend_calls: list[str] = []
 
@@ -521,6 +601,152 @@ def test_run_scoped_symbol_binding_verifies_current_elf_digest(tmp_path: Path) -
         server._current_symbol_artifacts.clear()
 
 
+def test_no_run_scoped_symbol_binding_never_substitutes_reference_firmware() -> None:
+    handle = cast(
+        TargetSessionHandle,
+        SimpleNamespace(board=SimpleNamespace(board_id="board_b")),
+    )
+    server._current_symbol_artifacts.clear()
+
+    with pytest.raises(RuntimeError, match="local symbol artifact"):
+        server._symbol_artifact_for_handle(handle)
+
+
+def test_symbol_write_containment_reports_missing_elf_as_plan_refusal(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    handle = cast(
+        TargetSessionHandle,
+        SimpleNamespace(board=SimpleNamespace(board_id="board_b")),
+    )
+    server._current_symbol_artifacts.clear()
+    monkeypatch.setattr(server, "_handle", lambda board_id: handle)
+
+    with pytest.raises(server.PlanRefusal) as refused:
+        server._enforce_action_containment(
+            "write_memory",
+            "board_b",
+            {
+                "symbol_or_address": "counter",
+                "value": 1,
+                "width": 32,
+                "allow_address_fallback": False,
+                "reason": None,
+                "elf_artifact": None,
+            },
+        )
+
+    assert refused.value.code == "safety/invalid-request"
+    assert "local symbol artifact" in str(refused.value)
+
+
+def test_symbol_write_containment_normalizes_malformed_elf(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    artifact = tmp_path / "malformed.elf"
+    artifact.write_bytes(b"not an ELF")
+    monkeypatch.setattr(
+        server,
+        "resolve_symbol",
+        lambda *_args: (_ for _ in ()).throw(ELFError("bad ELF header")),
+    )
+    monkeypatch.setattr(server, "_active_session_id", lambda _board_id: None)
+
+    with pytest.raises(server.PlanRefusal) as refused:
+        server._enforce_action_containment(
+            "write_memory",
+            "board_b",
+            {
+                "symbol_or_address": "counter",
+                "value": 1,
+                "width": 32,
+                "allow_address_fallback": False,
+                "reason": None,
+                "elf_artifact": str(artifact),
+            },
+        )
+
+    assert refused.value.code == "safety/invalid-request"
+    assert "bad ELF header" in str(refused.value)
+
+
+def test_guarded_symbol_write_uses_prepared_resolution(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    artifact = tmp_path / "firmware.elf"
+    artifact.write_bytes(b"plan-bound bytes")
+    resolved = ResolvedSymbol("counter", 0x20000010, 4, "STT_OBJECT")
+    operation = SimpleNamespace(prepared={})
+    checked: list[tuple[str, int, int]] = []
+    monkeypatch.setattr(server, "current_operation", lambda: operation)
+    monkeypatch.setattr(server, "resolve_symbol", lambda *_args: resolved)
+    monkeypatch.setattr(
+        server._safety_policy,
+        "check_memory_write",
+        lambda board_id, address, width: checked.append((board_id, address, width)),
+    )
+    parameters = {
+        "symbol_or_address": "counter",
+        "value": 1,
+        "width": 32,
+        "allow_address_fallback": False,
+        "reason": None,
+        "elf_artifact": str(artifact),
+    }
+
+    server._enforce_action_containment("write_memory", "board_b", parameters)
+
+    prepared = server._prepared_symbol_write_for("board_b", "counter", str(artifact))
+    assert checked == [("board_b", 0x20000010, 32)]
+    assert prepared == resolved
+    assert server.memory_services.prepared_symbol_for is server._prepared_symbol_write_for
+    assert operation.prepared == {}
+
+
+@pytest.mark.parametrize(
+    ("resolved", "code"),
+    [
+        (ResolvedSymbol("task", 0x0000019D, 16, "STT_FUNC"), "memory/symbol-is-function"),
+        (
+            ResolvedSymbol("packed", 0x20000001, 4, "STT_OBJECT"),
+            "memory/symbol-address-unaligned",
+        ),
+    ],
+)
+def test_guarded_symbol_write_refuses_before_containment(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    resolved: ResolvedSymbol,
+    code: str,
+) -> None:
+    artifact = tmp_path / "firmware.elf"
+    artifact.write_bytes(b"plan-bound bytes")
+    checked: list[tuple[str, int, int]] = []
+    monkeypatch.setattr(server, "resolve_symbol", lambda *_args: resolved)
+    monkeypatch.setattr(
+        server._safety_policy,
+        "check_memory_write",
+        lambda board_id, address, width: checked.append((board_id, address, width)),
+    )
+
+    with pytest.raises(server.PlanRefusal) as refused:
+        server._enforce_action_containment(
+            "write_memory",
+            "board_b",
+            {
+                "symbol_or_address": resolved.name,
+                "value": 1,
+                "width": 32,
+                "allow_address_fallback": False,
+                "reason": None,
+                "elf_artifact": str(artifact),
+            },
+        )
+
+    assert refused.value.code == code
+    assert checked == []
+
+
 def test_hex_symbol_binding_is_prepared_from_same_stem_elf(tmp_path: Path) -> None:
     selected = tmp_path / "firmware.hex"
     companion = tmp_path / "firmware.elf"
@@ -578,7 +804,7 @@ async def test_flash_bootloader_is_physically_locked_without_permission_plan() -
 
 def test_breakpoint_symbol_and_address_paths_are_wrapped(tmp_path: Path) -> None:
     artifact = tmp_path / "firmware.elf"
-    artifact.write_bytes(b"elf")
+    artifact.write_bytes(b"\x7fELFfixture")
     calls: list[tuple[str, int]] = []
     checked: list[tuple[str, int, Path]] = []
     handlers = build_breakpoint_handlers(

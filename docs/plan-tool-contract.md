@@ -286,7 +286,7 @@ Extra instructions: Control-flow, security, and provisioning registers are exclu
 - Safety mode: `fresh-write`
 - Timeout: `30` seconds
 - Populated plan fields, in order: `board_id`, `hypothesis`, `strategy`, `hypothesis_made`, `strategy_evaluated`, `expected_fail_return`, `expected_success_return`, `max_calls`, `max_calls_buffer`, `action_parameters`
-- Exact action-parameter fields, in order: `symbol_or_address`, `value`, `width`, `allow_address_fallback`, `reason`
+- Exact action-parameter fields, in order: `symbol_or_address`, `value`, `width`, `allow_address_fallback`, `reason`, `elf_artifact`
 
 | Action field | Type | Constraints | Description |
 | --- | --- | --- | --- |
@@ -295,8 +295,9 @@ Extra instructions: Control-flow, security, and provisioning registers are exclu
 | `width` | `integer` | required; choices=8, 16, 32 | Transfer width: 8, 16, or 32 bits. |
 | `allow_address_fallback` | `boolean` | required | Explicit raw-address fallback. |
 | `reason` | `text` | nullable | Reason symbol access is unsuitable. |
+| `elf_artifact` | `text` | nullable | Current project ELF for a symbol write; NULL for a raw-address write. |
 
-Extra instructions: Prefer symbols; raw addresses require fallback=true and a concrete reason.
+Extra instructions: Prefer symbols and pass their current project ELF. Raw addresses require fallback=true and a concrete reason but no ELF.
 
 ## `write_serial-plan`
 

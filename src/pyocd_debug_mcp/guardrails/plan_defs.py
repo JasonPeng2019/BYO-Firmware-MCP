@@ -181,6 +181,26 @@ def _validate_setup_parameters(values: Mapping[str, object]) -> str | None:
     return None
 
 
+def _validate_write_memory_parameters(values: Mapping[str, object]) -> str | None:
+    target = values.get("symbol_or_address")
+    is_address = isinstance(target, int) and not isinstance(target, bool)
+    if isinstance(target, str):
+        try:
+            int(target, 0)
+        except ValueError:
+            pass
+        else:
+            is_address = True
+    elf_artifact = values.get("elf_artifact")
+    if is_address:
+        if elf_artifact is not None:
+            return "elf_artifact must be NULL for a raw-address write"
+        return None
+    if not isinstance(elf_artifact, str) or not elf_artifact.strip():
+        return "elf_artifact must name the current project ELF for a symbol write"
+    return None
+
+
 _DEFINITIONS = (
     PlanDefinition(
         "board_setup",
@@ -326,12 +346,22 @@ _DEFINITIONS = (
             ),
             _field("allow_address_fallback", FieldType.BOOLEAN, "Explicit raw-address fallback."),
             _field("reason", FieldType.TEXT, "Reason symbol access is unsuitable.", nullable=True),
+            _field(
+                "elf_artifact",
+                FieldType.TEXT,
+                "Current project ELF for a symbol write; NULL for a raw-address write.",
+                nullable=True,
+            ),
         ),
         BudgetMode.FIXED,
         PermissionMode.NONE,
         SafetyMode.FRESH_WRITE,
         30.0,
-        "Prefer symbols; raw addresses require fallback=true and a concrete reason.",
+        "Prefer symbols and pass their current project ELF. Raw addresses require fallback=true "
+        "and a concrete reason but no ELF.",
+        action_validator=_validate_write_memory_parameters,
+        artifact_binding_field="elf_artifact",
+        artifact_binding_suffixes=(".elf", ".axf"),
     ),
     PlanDefinition(
         "set_breakpoint",
@@ -352,7 +382,7 @@ _DEFINITIONS = (
         "The resolved location must be in an executable section of the plan-bound current ELF and "
         "supported by the connected core.",
         artifact_binding_field="elf_artifact",
-        artifact_binding_suffixes=(".elf",),
+        artifact_binding_suffixes=(".elf", ".axf"),
     ),
     PlanDefinition(
         "flash_application",
@@ -366,7 +396,7 @@ _DEFINITIONS = (
         "Load addresses come only from the artifact; no caller-supplied address or allowed range "
         "is accepted.",
         artifact_binding_field="artifact",
-        artifact_binding_suffixes=(".elf", ".hex"),
+        artifact_binding_suffixes=(".elf", ".axf", ".hex"),
     ),
     PlanDefinition(
         "flash_bootloader",
@@ -380,7 +410,7 @@ _DEFINITIONS = (
         "Load addresses come only from the artifact. Permission is partition-specific and never "
         "authorizes application or prohibited ranges.",
         artifact_binding_field="artifact",
-        artifact_binding_suffixes=(".elf", ".hex"),
+        artifact_binding_suffixes=(".elf", ".axf", ".hex"),
     ),
     PlanDefinition(
         "register_write",
@@ -645,7 +675,9 @@ _GUIDANCE: Final = MappingProxyType(
             "the exact package-level MCU part number (the full package marking, not only the chip "
             "family) and authoritative local datasheet PDF. Never ask for a board type, pack, "
             "target, or digest; the server hashes the PDF and either replays exact verified support "
-            "or asks the agent to locate one official CMSIS-Pack whose target it derives. If "
+            "or asks the agent to research an exact installed pyOCD target or official "
+            "CMSIS-Pack. The server verifies an installed target directly or derives the pack "
+            "target from its exact PDSC leaf. If "
             "setup_overview finds a matching board-name YAML profile, do not populate this setup "
             "plan: load "
             "and call board_validate only. If validation passes, "
@@ -763,7 +795,8 @@ _GUIDANCE: Final = MappingProxyType(
         ),
         "read_memory_address": _PromptGuidance(
             "Prefer symbol access whenever source code or debug symbols identify the intended "
-            "variable (find_symbol and read_memory_symbol are always available and need no plan). "
+            "variable (find_symbol and read_memory_symbol are always available and need no plan; "
+            "pass the current project ELF as elf_artifact after a server restart). "
             "Use raw addresses only for dynamically allocated, pointer-derived, stack, optimized-out, "
             "or otherwise unsymbolized memory.",
             "The server verifies a validated session and full containment in a mapped region; unknown "
@@ -778,7 +811,8 @@ _GUIDANCE: Final = MappingProxyType(
             {"address": "0x20000400", "width": 32, "length": 64},
         ),
         "write_memory": _PromptGuidance(
-            "Use to change one variable for a bounded hypothesis test. Prefer a symbol. A raw address "
+            "Use to change one variable for a bounded hypothesis test. Prefer a symbol and pass its "
+            "current project ELF as elf_artifact. A raw address "
             "requires allow_address_fallback=true plus a concrete reason and is RAM-only. Do not use "
             "this for peripheral registers or flash.",
             "The server verifies a validated session, open gate, current safety-map stamp, exact plan, "
@@ -798,6 +832,7 @@ _GUIDANCE: Final = MappingProxyType(
                 "width": 32,
                 "allow_address_fallback": False,
                 "reason": None,
+                "elf_artifact": "build/firmware.elf",
             },
         ),
         "set_breakpoint": _PromptGuidance(

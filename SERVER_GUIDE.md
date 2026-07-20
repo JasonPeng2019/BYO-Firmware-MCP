@@ -47,15 +47,15 @@ uv run --locked python stage0_check.py --help
 uv run --locked python scripts/migrate_boards_to_firm.py --help
 uv run --locked python scripts/run_fresh_workspace_e2e.py --help
 uv run --locked pyocd-pack-repair --help
-uv run --locked pyocd-zephyr-build --help
+uv run --locked pyocd-native-build --help
 ```
 
-After setup validation, `get_setup_status` returns advisory build guidance for
-a known MCU, including the exact Zephyr board target and a directly executable
-`<server-python> -m pyocd_debug_mcp.zephyr_build ...` command that does not
-depend on ambient `PATH`. The helper automatically uses a short scratch path
-for generated files when a Windows checkout path would exceed west/CMake
-limits. Final ELF/map artifacts still require `board_safety_refresh`; build
+After setup validation, `get_setup_status` returns advisory, provider-neutral
+build guidance. The agent inspects the project's own build metadata, resolves
+its actual toolchain and target, and supplies exact argv to
+`<server-python> -m pyocd_debug_mcp.native_build ... -- <command>`. The server
+does not choose an SDK, compiler, provider, or target. Compatible local tools
+are preferred; ordinary acquisition is allowed when none is usable. Build
 guidance never grants memory authority.
 
 For a brand-new artifact root, `scripts/run_fresh_workspace_e2e.py` is the
@@ -212,11 +212,11 @@ process-local session implementation; durable reports are evidence only. The
 optional R11 path has a backward-compatible Codex adapter plus a configurable
 agent-command adapter and does not define ordinary server behavior.
 
-Build/setup guidance is local-first for heavy dependencies. Agents are told to
-reuse validated SDKs, RTOS trees, toolchains, packs, and large libraries from
-bounded standard locationsâ€”including NCS/Zephyr and STM32CubeIDE-provided
-STM32Cube/ThreadXâ€”before using a managed network fallback. Discovery validates
-versions and executable tools and never recursively scans a whole disk.
+For project build dependencies, the agent inspects the project's own metadata and available host
+resources, prefers a compatible existing SDK/toolchain/library, and uses the project's ordinary
+installation or network acquisition path when none is usable. The server does not prescribe vendor
+locations, select a provider, or manage a build-environment fallback. Device-support packs used as
+debug authority follow the separate verified-pack onboarding contract.
 
 ## Pending verification
 

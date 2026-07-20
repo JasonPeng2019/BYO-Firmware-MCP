@@ -4,6 +4,7 @@ import json
 from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
+from typing import cast
 
 import mcp.types as types
 import pytest
@@ -16,6 +17,7 @@ from pyocd_debug_mcp.setup_flow.board_catalog import (
     ReviewedSupportNotFoundError,
     catalog_board,
 )
+from pyocd_debug_mcp.setup_flow.device_support import BuiltInTargetGeometryError
 from pyocd_debug_mcp.setup_flow.preflight import (
     FriendlyChoice,
     PreflightDecision,
@@ -163,6 +165,8 @@ def test_setup_inventory_scopes_probe_and_uart_by_stable_connection_identity(
 
     assert [probe.probe_id for probe in result.probes] == ["683377322"]
     assert [serial.serial_id for serial in result.serial_ports] == ["000683377322"]
+    assert result.serial_ports[0].external_adapter is False
+    assert result.serial_ports[0].provably_mapped is True
     assert result.exact_detected_targets == ("nrf52833",)
     assert resolutions == [("nrf52833dk", "683377322", ("COM11",))]
 
@@ -194,6 +198,37 @@ def test_setup_inventory_rejects_a_different_sole_uart_from_explicit_binding(
     )
 
     assert result.serial_ports == ()
+
+
+def test_setup_inventory_marks_unassociated_selected_uart_as_external(
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(
+        server,
+        "_validation_inventory",
+        lambda: ValidationInventory(
+            (ValidationProbe("PROBE-1", "Probe", "cmsisdap", "PROBE-1"),),
+            (ValidationSerial("UART-9", "COM9", "USB UART", "UART-9", 1, 2),),
+        ),
+    )
+    monkeypatch.setattr(server, "_target_names", lambda: ("future_target",))
+    monkeypatch.setattr(server, "load_manifest", lambda *_args, **_kwargs: ())
+    monkeypatch.setattr(server, "resolve_board_config", lambda *_args: None)
+
+    result = server._setup_inventory(
+        SetupUserInput(
+            "future_board",
+            "PROBE-1",
+            "Future board",
+            "PART-1",
+            115200,
+            serial_id="UART-9",
+        )
+    )
+
+    assert len(result.serial_ports) == 1
+    assert result.serial_ports[0].external_adapter is True
+    assert result.serial_ports[0].provably_mapped is False
 
 
 def test_setup_inventory_rejects_wrong_single_probe_and_port_path_as_uart_id(
@@ -389,7 +424,9 @@ def test_fresh_reviewed_catalog_rejects_pack_not_pinned_for_board(
         needed_by_boards=("nucleo_l476rg",),
     )
     actual = replace(expected, **{field: replacement})
-    monkeypatch.setattr(server, "load_manifest", lambda path=None: (expected,) if path is None else ())
+    monkeypatch.setattr(
+        server, "load_manifest", lambda path=None: (expected,) if path is None else ()
+    )
     monkeypatch.setattr(
         server,
         "verified_pack_for_target",
@@ -557,6 +594,141 @@ def test_public_setup_continuation_validates_and_routes_target_research(monkeypa
                 "reasoning_summary": "Exact match.",
             },
         )
+
+
+def test_generic_target_research_accepts_installed_builtin_without_pack(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    board_id = "builtin_only_board"
+    user_input = SetupUserInput(
+        board_id, "probe:683377322", "Unknown carrier", "nRF52840-QIAA", 115200
+    )
+    monkeypatch.setattr(
+        server._setup_workflow,
+        "continuation_context",
+        lambda _token: (user_input, "setup_research_required", None),
+    )
+    monkeypatch.setattr(
+        server,
+        "_resolve_setup_support",
+        lambda _input: (_ for _ in ()).throw(PackProvisionError("no pack")),
+    )
+    monkeypatch.setattr(
+        server,
+        "_live_test_builtin_setup_target",
+        lambda *, probe_uid, candidate, requested_policy: (
+            candidate.with_identity_proof(0x410FC241),
+            requested_policy,
+        ),
+    )
+    monkeypatch.setattr(
+        server,
+        "resolve_device_support_geometry",
+        lambda _candidate: SimpleNamespace(peripheral_regions=(object(),)),
+    )
+    server._setup_builtin_candidates.pop(board_id, None)
+
+    result = server._setup_continue(
+        board_id,
+        "builtin-continuation",
+        {
+            "pyocd_target": "nrf52840",
+            "evidence": [{"source": "official pyOCD", "claim": "installed target"}],
+            "reasoning_summary": "The exact part is supported by the installed built-in target.",
+            "debug_protocol": "swd",
+            "debug_connect_mode": "attach",
+            "debug_clock_hz": 2_000_000,
+        },
+    )
+
+    candidate = server._setup_builtin_candidates.pop(board_id)
+    assert result["status"] == "setup_continuation_accepted"
+    assert candidate.pyocd_target == "nrf52840"
+    assert candidate.identity_proof is not None
+    assert server._setup_attachment_overrides.pop(board_id) == (
+        "swd",
+        "attach",
+        2_000_000,
+    )
+    server._setup_target_overrides.pop(board_id, None)
+
+
+def test_builtin_with_incomplete_static_geometry_routes_to_pack_research(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    board_id = "builtin_needs_pack"
+    user_input = SetupUserInput(
+        board_id, "probe:probe-1", "Unknown carrier", "PART-1", None, requires_uart=False
+    )
+    monkeypatch.setattr(
+        server._setup_workflow,
+        "continuation_context",
+        lambda _token: (user_input, "setup_research_required", None),
+    )
+    monkeypatch.setattr(
+        server,
+        "_resolve_setup_support",
+        lambda _input: (_ for _ in ()).throw(PackProvisionError("no pack")),
+    )
+    monkeypatch.setattr(
+        server,
+        "resolve_builtin_target_support",
+        lambda *_args: (_ for _ in ()).throw(
+            BuiltInTargetGeometryError(
+                "built-in target lacks physical flash required by the current map schema"
+            )
+        ),
+    )
+
+    result = server._setup_continue(
+        board_id,
+        "builtin-needs-pack",
+        {
+            "pyocd_target": "installed-but-incomplete",
+            "evidence": [{"source": "official pyOCD", "claim": "installed target"}],
+            "reasoning_summary": "The installed target matches the exact part.",
+        },
+    )
+
+    assert result["status"] == "setup_research_required"
+    assert "CMSIS-Pack" in cast(str, result["agent_prompt"])
+    assert "pack_id" in cast(list[str], result["exact_response_fields"])
+
+
+def test_invalid_target_with_attachment_does_not_poison_later_setup(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    board_id = "invalid_attachment_board"
+    user_input = SetupUserInput(
+        board_id, "probe:probe-1", "Unknown board", "PART-1", None, requires_uart=False
+    )
+    monkeypatch.setattr(
+        server._setup_workflow,
+        "continuation_context",
+        lambda _token: (user_input, "setup_research_required", None),
+    )
+    monkeypatch.setattr(
+        server,
+        "_resolve_setup_support",
+        lambda _input: (_ for _ in ()).throw(PackProvisionError("no pack")),
+    )
+    server._setup_attachment_overrides.pop(board_id, None)
+
+    result = server._setup_continue(
+        board_id,
+        "attachment-continuation",
+        {
+            "pyocd_target": "not-an-installed-target",
+            "debug_protocol": "jtag",
+            "debug_connect_mode": "pre-reset",
+            "debug_clock_hz": 500_000,
+            "evidence": [{"source": "probe manual", "claim": "required attach policy"}],
+            "reasoning_summary": "The probe and target documentation require this policy.",
+        },
+    )
+
+    assert result["status"] == "setup_research_required"
+    assert board_id not in server._setup_attachment_overrides
 
 
 def test_public_setup_continuation_accepts_only_a_returned_friendly_choice(monkeypatch) -> None:

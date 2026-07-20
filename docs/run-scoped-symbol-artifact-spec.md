@@ -1,5 +1,9 @@
 # Run-scoped Current Symbol Artifact Specification
 
+> Superseded in part by `generic-symbol-artifact-selection-spec.md`: same-run binding remains a
+> convenience, but packaged reference firmware is no longer a fallback. Agents can supply any
+> current project ELF explicitly, including after a server restart.
+
 ## Problem
 
 Fresh generalized builds are collected and flashed from project-owned paths, but the always-visible
@@ -11,14 +15,16 @@ tears down the live debug session instead of returning a bounded refusal.
 ## Required behavior
 
 - After a successful `flash_application`, associate that board with the exact ELF used by the
-  guarded flash (or the required same-stem ELF companion for a HEX) for this server run only.
+  guarded flash (or the required same-stem ELF companion for a HEX) for this server run only. This
+  convenience serves read-only symbol tools; symbol-write plans now require an explicit digest-bound
+  ELF.
 - Bind the ELF path and SHA-256 digest. Recheck the digest before every symbol lookup so later file
   replacement cannot silently change symbol addresses.
 - Never persist this association and never treat it as gate, identity, range, partition, plan, or
   permission authority.
 - Do not replace the association on a failed/refused flash or on bootloader flashing.
-- Keep the repository reference ELF as the compatibility fallback when no run-scoped application
-  ELF has been flashed.
+- When no same-run association exists, require an explicit current-project ELF; never silently use
+  repository reference firmware as another project's symbols.
 - Convert a missing, unreadable, or changed symbol ELF into a normal
   `memory/symbol-artifact-unavailable` refusal without touching the backend or disconnecting the
   session.

@@ -66,9 +66,9 @@ macOS:
 Replace the board id with `nucleo_l476rg` when preparing the official ST board.
 The scripts sync the independent lockfile, inspect the board through the shared
 loader, set up host dependencies they know how to manage, provision pinned
-packs, and run `host_bootstrap.py`. Use `-EnsureZephyrBuildEnv` on Windows or
-`--ensure-zephyr-build-env` on macOS only when this host must rebuild firmware;
-that path can download a Zephyr workspace and SDK.
+packs, and run `host_bootstrap.py`. Project build SDKs and toolchains are not
+selected or provisioned by host setup; the agent resolves them from project
+metadata and available host resources.
 
 If you do not want the setup script to install host software, install Python
 3.12, `uv`, probe/vendor support, and libusb where applicable yourself, then

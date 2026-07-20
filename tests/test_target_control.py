@@ -11,9 +11,12 @@ from pyocd_debug_mcp.adapters.swd_interface import TargetSessionHandle
 from pyocd_debug_mcp.board_config import BoardConfig, RECOVER_MODE_MANUAL_ONLY
 from pyocd_debug_mcp.firmstore.store import FirmStore
 from pyocd_debug_mcp.services import target_control
+from pyocd.core.exceptions import CoreRegisterAccessError  # type: ignore[import-untyped]
+
 from pyocd_debug_mcp.target_errors import (
     ProbeNotFoundError,
     TargetConnectionError,
+    TargetStateError,
     UnsupportedArtifactError,
 )
 from pyocd_debug_mcp.timeouts import (
@@ -89,6 +92,16 @@ def test_typed_backend_error_explains_missing_ap_keyerror() -> None:
     assert "typed target recovery" in str(error)
     assert "nrf" not in str(error).casefold()
     assert "j-link" not in str(error).casefold()
+
+
+def test_typed_backend_error_preserves_recoverable_core_register_state() -> None:
+    error = swd_pyocd._typed_backend_error(
+        CoreRegisterAccessError("cannot read register pc because core is not halted")
+    )
+
+    assert isinstance(error, TargetStateError)
+    assert not isinstance(error, TargetConnectionError)
+    assert "CoreRegisterAccessError" in str(error)
 
 
 def test_build_session_options_adds_nucleo_under_reset_workaround() -> None:

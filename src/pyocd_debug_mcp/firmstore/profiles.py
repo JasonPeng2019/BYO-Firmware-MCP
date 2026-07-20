@@ -58,6 +58,7 @@ _OPTIONAL_FIELDS = frozenset(
         "datasheet_sha256",
         "datasheet_ref",
         "expected_uart_substring",
+        "debug_protocol",
         "debug_connect_mode",
         "debug_clock_hz",
         "device_support",
@@ -97,7 +98,7 @@ _PACKAGE_METADATA_FIELDS = frozenset(
     }
 )
 
-_DEVICE_SUPPORT_FIELDS = frozenset(
+_PACK_DEVICE_SUPPORT_FIELDS = frozenset(
     {
         "kind",
         "support_id",
@@ -106,6 +107,20 @@ _DEVICE_SUPPORT_FIELDS = frozenset(
         "pack_sha256",
         "pdsc_device",
         "pyocd_target",
+    }
+)
+_BUILTIN_DEVICE_SUPPORT_FIELDS = frozenset(
+    {
+        "kind",
+        "support_id",
+        "part_number",
+        "pyocd_target",
+        "geometry_sha256",
+        "identity_address",
+        "identity_expected",
+        "identity_mask",
+        "identity_width_bits",
+        "identity_label",
     }
 )
 
@@ -178,23 +193,33 @@ def _validate_device_support(value: object) -> dict[str, str] | None:
     if not isinstance(value, Mapping):
         raise ProfileError("device_support must be an object")
     raw = dict(value)
-    if set(raw) != _DEVICE_SUPPORT_FIELDS:
+    kind = raw.get("kind")
+    expected_fields = (
+        _PACK_DEVICE_SUPPORT_FIELDS
+        if kind == "resolved_pack"
+        else _BUILTIN_DEVICE_SUPPORT_FIELDS
+        if kind == "resolved_builtin_target"
+        else None
+    )
+    if expected_fields is None:
         raise ProfileError(
-            "device_support must contain exactly "
-            f"{sorted(_DEVICE_SUPPORT_FIELDS)}"
+            "device_support.kind must be 'resolved_pack' or 'resolved_builtin_target'"
         )
-    if raw.get("kind") != "resolved_pack":
-        raise ProfileError("device_support.kind must be 'resolved_pack'")
+    if set(raw) != expected_fields:
+        raise ProfileError(
+            f"device_support must contain exactly {sorted(expected_fields)} for kind {kind!r}"
+        )
     result: dict[str, str] = {}
-    for field_name in _DEVICE_SUPPORT_FIELDS:
+    for field_name in expected_fields:
         field_value = raw[field_name]
         if not isinstance(field_value, str) or not field_value.strip():
             raise ProfileError(f"device_support.{field_name} must be a non-empty string")
         result[field_name] = field_value.strip()
     if re.fullmatch(r"[0-9a-f]{64}", result["support_id"]) is None:
         raise ProfileError("device_support.support_id must be a lowercase SHA-256 digest")
-    if re.fullmatch(r"[0-9a-f]{64}", result["pack_sha256"]) is None:
-        raise ProfileError("device_support.pack_sha256 must be a lowercase SHA-256 digest")
+    digest_field = "pack_sha256" if kind == "resolved_pack" else "geometry_sha256"
+    if re.fullmatch(r"[0-9a-f]{64}", result[digest_field]) is None:
+        raise ProfileError(f"device_support.{digest_field} must be a lowercase SHA-256 digest")
     return result
 
 
@@ -209,18 +234,25 @@ def _verify_registered_device_support(
 
     try:
         from pyocd_debug_mcp.setup_flow.device_support import (
+            replay_live_cpuid_compatibility_proof,
+            resolve_persisted_builtin_target_support,
             resolve_persisted_pack_support,
             resolve_registered_pack_support,
         )
 
-        candidate = (
-            resolve_registered_pack_support(mcu_part_number)
-            if store is None
-            else resolve_persisted_pack_support(store, mcu_part_number, source)
-        )
+        if source.get("kind") == "resolved_builtin_target":
+            candidate = resolve_persisted_builtin_target_support(mcu_part_number, source)
+        else:
+            candidate = (
+                resolve_registered_pack_support(mcu_part_number)
+                if store is None
+                else resolve_persisted_pack_support(store, mcu_part_number, source)
+            )
         expected = candidate.to_authority_document()
     except Exception as exc:  # noqa: BLE001 - profile authority must fail closed
-        raise ProfileError(f"device_support cannot be replayed from verified support: {exc}") from exc
+        raise ProfileError(
+            f"device_support cannot be replayed from verified support: {exc}"
+        ) from exc
     if expected["pyocd_target"].casefold() != board.pyocd_target.casefold():
         raise ProfileError("device_support target does not match the profile target")
     if dict(source) != expected:
@@ -233,18 +265,24 @@ def _verify_registered_device_support(
     )
     if proof is None:
         if actual_identity != (None, None, None):
-            raise ProfileError(
-                "profile identity fields exist without verified device-support evidence"
-            )
+            try:
+                replay_live_cpuid_compatibility_proof(
+                    address=board.silicon_id_addr,
+                    expected=board.silicon_id_expected,
+                    mask=board.silicon_id_mask,
+                    width_bits=board.silicon_id_width_bits,
+                    label=board.silicon_id_label,
+                )
+            except Exception as exc:  # noqa: BLE001 - reject noncanonical persisted identity
+                raise ProfileError(
+                    "profile identity fields do not contain canonical live CPUID evidence"
+                ) from exc
     elif (
-        actual_identity
-        != (proof.address, proof.expected, proof.mask)
+        actual_identity != (proof.address, proof.expected, proof.mask)
         or board.silicon_id_width_bits != proof.width_bits
         or board.silicon_id_label != proof.label
     ):
-        raise ProfileError(
-            "profile identity fields do not match verified device-support evidence"
-        )
+        raise ProfileError("profile identity fields do not match verified device-support evidence")
 
 
 def _validate_safety_ref(value: object, expected_prefix: PurePosixPath) -> str | None:
@@ -380,9 +418,7 @@ class ProfileRepository:
             except Exception as exc:  # noqa: BLE001 - evidence replay must fail closed
                 raise ProfileError(f"datasheet evidence replay failed: {exc}") from exc
         device_support = _validate_device_support(document.get("device_support"))
-        if device_support is not None and (
-            datasheet_sha256 is None or datasheet_ref is None
-        ):
+        if device_support is not None and (datasheet_sha256 is None or datasheet_ref is None):
             raise ProfileError(
                 "generic device_support requires captured datasheet_sha256 and datasheet_ref"
             )

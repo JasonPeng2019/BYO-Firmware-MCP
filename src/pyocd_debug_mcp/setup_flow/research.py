@@ -107,6 +107,14 @@ class ResearchTracker:
     def failures(self, request: ResearchRequest) -> tuple[CandidateFailure, ...]:
         return tuple(self._failures.get(self._key(request), ()))
 
+    def clear(self, board_id: str) -> None:
+        """Discard rejected candidates when a board's setup allowance closes."""
+
+        normalized = board_id.strip()
+        for key in tuple(self._failures):
+            if key[0] == normalized:
+                self._failures.pop(key, None)
+
     def prompt(self, request: ResearchRequest) -> dict[str, Any]:
         """Build a self-contained relay payload with no authority-bearing state."""
 
@@ -173,9 +181,7 @@ class ResearchTracker:
 
         outcome = validator(candidate)
         if outcome.accepted:
-            return ResearchResult(
-                status="accepted", fingerprint=fingerprint, candidate=candidate
-            )
+            return ResearchResult(status="accepted", fingerprint=fingerprint, candidate=candidate)
         failure = CandidateFailure(
             fingerprint=fingerprint,
             candidate=candidate,

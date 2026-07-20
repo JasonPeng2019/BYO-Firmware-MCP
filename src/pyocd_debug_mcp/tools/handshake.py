@@ -67,9 +67,8 @@ executable, argv, cwd, environment, and outputs. Prefer a compatible local insta
 none exists normal dependency/toolchain acquisition is allowed. Put the exact argv after `--`; the
 helper executes it directly without a shell and inherits network access unless you intentionally
 pass `--offline`. That flag applies best-effort environment guards for common dependency clients;
-it is not an OS network sandbox, so inspect the actual process/log evidence. Zephyr/west and GNU
-Make detection are optional shortcuts, not the supported-set
-boundary. The legacy Zephyr-specific helper is not the generic route. After any native
+it is not an OS network sandbox, so inspect the actual process/log evidence. The server does not
+detect or select a provider, SDK, compiler, target, fixed path, or output convention. After any native
 build whose outputs are scattered or vendor-named, use the
 always-visible collect_build_artifacts MCP tool with the
 explicit paths the build actually produced. For guarded application or bootloader work, normally

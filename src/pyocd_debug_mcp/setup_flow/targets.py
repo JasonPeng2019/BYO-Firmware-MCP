@@ -78,10 +78,28 @@ class TargetResolver:
                 "Live-connect before committing the profile.",
             ),
         )
+        prompt = self._research.prompt(request)
+        prompt["optional_response_fields"] = {
+            "when": (
+                "Supply all three only when target/probe documentation requires a non-default "
+                "debug attachment policy; the server will live-test it before persistence."
+            ),
+            "fields": ["debug_protocol", "debug_connect_mode", "debug_clock_hz"],
+            "allowed": {
+                "debug_protocol": ["default", "swd", "jtag"],
+                "debug_connect_mode": ["attach", "halt", "pre-reset", "under-reset"],
+                "debug_clock_hz": "positive integer Hz",
+            },
+        }
+        prompt["agent_prompt"] = (
+            str(prompt["agent_prompt"])
+            + " If authoritative target/probe documentation requires a non-default attachment, "
+            "also include all three typed debug fields described in optional_response_fields."
+        )
         return TargetResolution(
             status="research",
             research_request=request,
-            agent_prompt=self._research.prompt(request),
+            agent_prompt=prompt,
         )
 
     @staticmethod

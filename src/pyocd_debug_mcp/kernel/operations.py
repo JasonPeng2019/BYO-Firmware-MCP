@@ -204,6 +204,7 @@ class ManagedOperation:
     non_interruptible: bool
     preserve_halt: bool
     resources: OperationResources = field(default_factory=OperationResources)
+    prepared: dict[str, object] = field(default_factory=dict)
     state: OperationState = OperationState.QUEUED
     cancellation_reason: str | None = None
     completion_committed: bool = False
@@ -632,8 +633,9 @@ async def dispatch(
     def run_synchronous() -> None:
         worker_token = _current_operation.set(managed)
         try:
-            with _acquire_worker_lock(reservation_lock, managed), _acquire_worker_lock(
-                worker_lock, managed
+            with (
+                _acquire_worker_lock(reservation_lock, managed),
+                _acquire_worker_lock(worker_lock, managed),
             ):
                 try:
                     with execution_lock or nullcontext():
@@ -729,9 +731,8 @@ async def dispatch(
         _current_operation.reset(token)
 
     if managed.error is not None:
-        if (
-            managed.resources.fatal_cleanup_errors
-            and not isinstance(managed.error, OperationCleanupError)
+        if managed.resources.fatal_cleanup_errors and not isinstance(
+            managed.error, OperationCleanupError
         ):
             raise _operation_cleanup_error(managed, managed.error) from managed.error
         raise managed.error

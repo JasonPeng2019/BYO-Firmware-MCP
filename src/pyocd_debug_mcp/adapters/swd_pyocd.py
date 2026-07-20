@@ -16,7 +16,10 @@ from pathlib import Path
 from pyocd_debug_mcp.kernel.processes import run_owned
 from typing import Any, BinaryIO, TextIO, cast
 
-from pyocd.core.exceptions import TransferError  # type: ignore[import-untyped]
+from pyocd.core.exceptions import (  # type: ignore[import-untyped]
+    CoreRegisterAccessError,
+    TransferError,
+)
 from pyocd.core.helpers import ConnectHelper  # type: ignore[import-untyped]
 from pyocd.flash.eraser import FlashEraser  # type: ignore[import-untyped]
 from pyocd.flash.file_programmer import FileProgrammer  # type: ignore[import-untyped]
@@ -42,6 +45,8 @@ from pyocd_debug_mcp.target_errors import (
     ProbeNotFoundError,
     ResetLineUnavailableError,
     TargetConnectionError,
+    TargetControlError,
+    TargetStateError,
     UnsupportedArtifactError,
 )
 from pyocd_debug_mcp.timeouts import (
@@ -52,7 +57,7 @@ from pyocd_debug_mcp.timeouts import (
 )
 
 ROUTE_PYOCD_NATIVE = "pyocd-native"
-SUPPORTED_FLASH_SUFFIXES = frozenset({".elf", ".hex"})
+SUPPORTED_FLASH_SUFFIXES = frozenset({".axf", ".elf", ".hex"})
 _PACK_OBJECTS: dict[str, tuple[bytes, CmsisPack]] = {}
 _PACK_TARGET_LOCK = threading.RLock()
 _MISSING_TARGET = object()
@@ -81,9 +86,7 @@ def _quarantined_cmsis_pack(path: Path, expected_sha256: str) -> CmsisPack:
     except PackProvisionError as exc:
         raise TargetConnectionError(f"Quarantined CMSIS-Pack cannot be read: {exc}") from exc
     if sha256_bytes(payload) != expected_sha256:
-        raise TargetConnectionError(
-            "Quarantined CMSIS-Pack changed before the live attach."
-        )
+        raise TargetConnectionError("Quarantined CMSIS-Pack changed before the live attach.")
     try:
         return CmsisPack(io.BytesIO(payload))
     except Exception as exc:  # noqa: BLE001 - normalize third-party parser failures
@@ -117,13 +120,9 @@ def _pack_target_scope(
         )
     if normalise_target_type_name(matches[0].part_number) != normalized:
         raise TargetConnectionError("Selected PDSC device does not match the canonical target.")
-    pack_target_names = {
-        normalise_target_type_name(device.part_number) for device in pack.devices
-    }
+    pack_target_names = {normalise_target_type_name(device.part_number) for device in pack.devices}
     with _PACK_TARGET_LOCK:
-        previous = {
-            name: TARGET.get(name, _MISSING_TARGET) for name in pack_target_names
-        }
+        previous = {name: TARGET.get(name, _MISSING_TARGET) for name in pack_target_names}
         for name in pack_target_names:
             TARGET.pop(name, None)
         try:
@@ -205,7 +204,9 @@ def _quiet_backend_streams() -> Iterator[None]:
             opened_file.close()
 
 
-def _typed_backend_error(exc: Exception) -> TargetConnectionError:
+def _typed_backend_error(exc: Exception) -> TargetControlError:
+    if isinstance(exc, CoreRegisterAccessError):
+        return TargetStateError(f"{type(exc).__name__}: {exc}")
     if isinstance(exc, KeyError) and exc.args == (1,):
         return TargetConnectionError(
             "pyOCD target initialization could not reach expected access port AP#1. "
@@ -277,6 +278,8 @@ def build_session_options(
     if board and board.probe_family == "jlink":
         # Match the Stage 0/J-Link open-by-serial workaround proven on hardware.
         options["jlink.non_interactive"] = False
+    if board and board.debug_protocol:
+        options["dap_protocol"] = board.debug_protocol
     if board and board.debug_connect_mode:
         options["connect_mode"] = board.debug_connect_mode
     if board and board.debug_clock_hz:
@@ -341,6 +344,7 @@ class PyOCDSWDInterface(SWDInterface):
         unique_id: str | None,
         target: str | None,
         server_timeouts: ServerTimeoutConfig | None = None,
+        protocol: str | None = None,
         connect_mode: str | None = None,
         pack_path: Path | None = None,
         pack_sha256: str | None = None,
@@ -355,6 +359,11 @@ class PyOCDSWDInterface(SWDInterface):
             or None
         )
         options = build_session_options(board, target_override, server_timeouts)
+        if protocol is not None:
+            if protocol not in {"default", "swd", "jtag"}:
+                raise ValueError(f"Unsupported pyOCD debug protocol: {protocol}")
+            options = dict(options or {})
+            options["dap_protocol"] = protocol
         if connect_mode is not None:
             if connect_mode not in {"attach", "halt", "pre-reset", "under-reset"}:
                 raise ValueError(f"Unsupported pyOCD connect mode: {connect_mode}")
@@ -370,9 +379,7 @@ class PyOCDSWDInterface(SWDInterface):
         if pack_path is not None:
             if pack_sha256 is None:
                 raise ValueError("pack_sha256 is required with a quarantined pack_path")
-            pack_object = _quarantined_cmsis_pack(
-                pack_path.expanduser().resolve(), pack_sha256
-            )
+            pack_object = _quarantined_cmsis_pack(pack_path.expanduser().resolve(), pack_sha256)
         elif pack_sha256 is not None:
             raise ValueError("pack_sha256 is valid only with a quarantined pack_path")
         else:
@@ -389,14 +396,10 @@ class PyOCDSWDInterface(SWDInterface):
             raise ProbeNotFoundError("No matching debug probe found.")
 
         try:
-            self._verify_session_pack_source(
-                session, target_override, pack_object, pdsc_device
-            )
+            self._verify_session_pack_source(session, target_override, pack_object, pdsc_device)
             with _quiet_backend_streams():
                 session.open()
-            self._verify_session_pack_source(
-                session, target_override, pack_object, pdsc_device
-            )
+            self._verify_session_pack_source(session, target_override, pack_object, pdsc_device)
         except Exception as exc:  # noqa: BLE001 - preserve backend context
             self._close_quietly(session)
             if _should_retry_without_uid(board, probe_uid, exc):
@@ -461,9 +464,7 @@ class PyOCDSWDInterface(SWDInterface):
         if pack_path is not None:
             if pack_sha256 is None:
                 raise ValueError("pack_sha256 is required with a quarantined pack_path")
-            pack_object = _quarantined_cmsis_pack(
-                pack_path.expanduser().resolve(), pack_sha256
-            )
+            pack_object = _quarantined_cmsis_pack(pack_path.expanduser().resolve(), pack_sha256)
         elif pack_sha256 is not None:
             raise ValueError("pack_sha256 is valid only with a quarantined pack_path")
         else:
@@ -485,9 +486,7 @@ class PyOCDSWDInterface(SWDInterface):
                 "connect_under_reset cannot degrade to an ordinary attach."
             )
         try:
-            self._verify_session_pack_source(
-                session, target_override, pack_object, pdsc_device
-            )
+            self._verify_session_pack_source(session, target_override, pack_object, pdsc_device)
             with _quiet_backend_streams():
                 # pyOCD's under-reset init sequence owns assertion, reset catch,
                 # halt, and release. Calling assert_reset() before Session.open()
@@ -498,9 +497,7 @@ class PyOCDSWDInterface(SWDInterface):
                 # returning. The bounded retry covers probes where the first halt
                 # command races reset release.
                 session.open()
-                self._verify_session_pack_source(
-                    session, target_override, pack_object, pdsc_device
-                )
+                self._verify_session_pack_source(session, target_override, pack_object, pdsc_device)
                 halt_deadline = time.monotonic() + 0.5
                 while True:
                     session.target.halt()

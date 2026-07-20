@@ -5,6 +5,7 @@ import hashlib
 import zipfile
 from pathlib import Path
 from types import SimpleNamespace
+from xml.etree import ElementTree as ET
 
 import pytest
 
@@ -18,17 +19,174 @@ from pyocd_debug_mcp.pack_provision import (
 from pyocd_debug_mcp.firmstore.store import FirmStore
 from pyocd_debug_mcp.setup_flow import device_support
 from pyocd_debug_mcp.setup_flow.device_support import (
+    BuiltInTargetSupportCandidate,
     DeviceSupportResolver,
     DeviceSupportCandidate,
     _compatible_core_identity,
     _derive_verified_binding,
     _pdsc_leaf_matches_part,
     _svd_peripheral_regions,
+    live_cpuid_compatibility_proof,
     normalize_part_number,
     resolve_project_pack_support,
     resolve_persisted_pack_support,
+    replay_live_cpuid_compatibility_proof,
+    resolve_builtin_target_geometry,
+    resolve_builtin_target_support,
+    resolve_persisted_builtin_target_support,
     resolve_registered_pack_geometry,
 )
+
+
+def test_builtin_target_support_replays_geometry_and_live_identity() -> None:
+    geometry = resolve_builtin_target_geometry("nrf52840")
+    pending = resolve_builtin_target_support("nRF52840-QIAA", "nrf52840")
+    assert isinstance(pending, BuiltInTargetSupportCandidate)
+    candidate = pending.with_identity_proof(0x410FC241)
+    source = candidate.to_authority_document()
+
+    assert geometry.flash_start == 0
+    assert geometry.flash_end == 0x100000
+    assert geometry.ram_start == 0x20000000
+    assert geometry.erase_sectors
+    assert geometry.driver_proof_digest is not None
+    assert geometry.cpu_system_regions[0].start == 0xE0000000
+    assert geometry.cpu_system_regions[0].end == 0xE0100000
+    assert candidate.identity_proof is not None
+    assert candidate.identity_proof.mask == 0xFF0FFFF0
+    assert source["kind"] == "resolved_builtin_target"
+    assert resolve_persisted_builtin_target_support("nRF52840-QIAA", source) == candidate
+
+
+@pytest.mark.parametrize("observed", [0, 0x420FC241, 0x410A0001, 0x410AC241])
+def test_builtin_target_support_refuses_unrecognized_cpuid(observed: int) -> None:
+    pending = resolve_builtin_target_support("nRF52840-QIAA", "nrf52840")
+
+    with pytest.raises(PackProvisionError, match="recognized Arm Cortex-M"):
+        pending.with_identity_proof(observed)
+
+
+def test_builtin_target_support_accepts_future_nonzero_cortex_m_part() -> None:
+    candidate = resolve_builtin_target_support("FUTURE-MCU", "nrf52840").with_identity_proof(
+        0x410F1231
+    )
+
+    assert candidate.identity_proof is not None
+    assert candidate.identity_proof.expected == 0x410F1230
+
+
+def test_builtin_multibank_geometry_keeps_regions_without_inferred_erase_authority(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class FakeFlash:
+        pass
+
+    def flash(name: str, start: int) -> SimpleNamespace:
+        return SimpleNamespace(
+            name=name,
+            start=start,
+            end=start + 0xFFF,
+            access="rx",
+            type="MemoryType.FLASH",
+            is_flash=True,
+            is_ram=False,
+            is_device=False,
+            is_writable=False,
+            is_boot_memory=False,
+            is_default=False,
+            is_testable=True,
+            sector_size=0x1000,
+            flash_class=FakeFlash,
+            erased_byte_value=0xFF,
+        )
+
+    ram = SimpleNamespace(
+        name="RAM",
+        start=0x20000000,
+        end=0x20000FFF,
+        access="rwx",
+        type="MemoryType.RAM",
+        is_flash=False,
+        is_ram=True,
+        is_device=False,
+        is_writable=True,
+        is_boot_memory=False,
+        is_default=True,
+    )
+    target = SimpleNamespace(
+        MEMORY_MAP=SimpleNamespace(regions=(flash("bank-b", 0x10000), flash("bank-a", 0), ram))
+    )
+    monkeypatch.setattr(device_support, "_builtin_target_class", lambda _target: target)
+
+    geometry = resolve_builtin_target_geometry("future-target")
+
+    assert geometry.flash_start == 0
+    assert [(item.start, item.end) for item in geometry.flash_regions] == [
+        (0x10000, 0x11000),
+        (0, 0x1000),
+    ]
+    assert geometry.erase_sectors == ()
+    assert geometry.driver_proof_digest is None
+
+
+def test_live_cpuid_compatibility_proof_replays_only_canonical_fields() -> None:
+    proof = live_cpuid_compatibility_proof(0x410FC241)
+
+    assert (
+        replay_live_cpuid_compatibility_proof(
+            address=proof.address,
+            expected=proof.expected,
+            mask=proof.mask,
+            width_bits=proof.width_bits,
+            label=proof.label,
+        )
+        == proof
+    )
+    with pytest.raises(PackProvisionError, match="not canonical"):
+        replay_live_cpuid_compatibility_proof(
+            address=proof.address,
+            expected=proof.expected,
+            mask=0xFFF0,
+            width_bits=proof.width_bits,
+            label=proof.label,
+        )
+
+
+def test_builtin_target_support_refuses_tampered_replay() -> None:
+    candidate = resolve_builtin_target_support("nRF52840-QIAA", "nrf52840").with_identity_proof(
+        0x410FC241
+    )
+    source = candidate.to_authority_document()
+    source["geometry_sha256"] = "0" * 64
+
+    with pytest.raises(PackProvisionError, match="geometry"):
+        resolve_persisted_builtin_target_support("nRF52840-QIAA", source)
+
+
+def test_builtin_target_support_refuses_noncanonical_identity_replay() -> None:
+    candidate = resolve_builtin_target_support("nRF52840-QIAA", "nrf52840").with_identity_proof(
+        0x410FC241
+    )
+    source = candidate.to_authority_document()
+    assert candidate.identity_proof is not None
+    source["identity_mask"] = str(0x0000FFF0)
+    source["identity_expected"] = str(0x0000C240)
+    source["support_id"] = BuiltInTargetSupportCandidate(
+        candidate.part_number,
+        candidate.pyocd_target,
+        candidate.geometry_sha256,
+        LiveIdentityProof(
+            "compatible",
+            0xE000ED00,
+            0x0000C240,
+            0x0000FFF0,
+            32,
+            candidate.identity_proof.label,
+        ),
+    ).support_id
+
+    with pytest.raises(PackProvisionError, match="not canonical"):
+        resolve_persisted_builtin_target_support("nRF52840-QIAA", source)
 
 
 def _selected(*, bindings: tuple[DeviceBinding, ...] = ()) -> VerifiedPack:
@@ -112,7 +270,7 @@ def test_duplicate_matching_pdsc_entries_are_ambiguous(
         _derive_verified_binding(selected, "PART123")
 
 
-def test_geometry_accepts_pack_flashinfo_sector_driver_without_flm(
+def test_geometry_keeps_multibank_pack_without_inferring_driver_authority(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     binding = DeviceBinding("PART123", "PART123", "device-target")
@@ -129,8 +287,24 @@ def test_geometry_accepts_pack_flashinfo_sector_driver_without_flm(
         start=0x10000000,
         length=0x2000,
         access="rx",
-        is_default=True,
-        is_boot_memory=True,
+        is_default=False,
+        is_boot_memory=False,
+        flm=None,
+        submap=SimpleNamespace(regions=()),
+        sector_size=0x1000,
+        page_size=0x100,
+        erased_byte_value=0xFF,
+        flash_class=FakeFlash,
+        is_erasable=True,
+    )
+    second_flash = SimpleNamespace(
+        type="MemoryType.FLASH",
+        name="second flash bank",
+        start=0x10010000,
+        length=0x2000,
+        access="rx",
+        is_default=False,
+        is_boot_memory=False,
         flm=None,
         submap=SimpleNamespace(regions=()),
         sector_size=0x1000,
@@ -156,9 +330,48 @@ def test_geometry_accepts_pack_flashinfo_sector_driver_without_flm(
         length=0x10000000,
         access="rw",
     )
+    unknown_device_region = SimpleNamespace(
+        type="MemoryType.DEVICE",
+        name="PDSC peripheral window with unknown access",
+        start=0x60000000,
+        length=0x1000,
+        access=None,
+    )
+    restrictive_alias = SimpleNamespace(
+        type="MemoryType.DEVICE",
+        name="A read-only alias",
+        start=0x40000000,
+        length=0x10000000,
+        access="read-only",
+    )
+    ram_overlap = SimpleNamespace(
+        type="MemoryType.DEVICE",
+        name="Broad device range overlapping RAM",
+        start=0x1FFFF000,
+        length=0x3000,
+        access="read-only",
+    )
+    scs_overlap = SimpleNamespace(
+        type="MemoryType.DEVICE",
+        name="Broad device range overlapping SCS",
+        start=0xDFFFF000,
+        length=0x102000,
+        access="read-only",
+    )
     device = SimpleNamespace(
         part_number="PART123",
-        memory_map=SimpleNamespace(regions=(flash, ram, pdsc_device_region)),
+        memory_map=SimpleNamespace(
+            regions=(
+                second_flash,
+                flash,
+                ram,
+                pdsc_device_region,
+                restrictive_alias,
+                unknown_device_region,
+                ram_overlap,
+                scs_overlap,
+            )
+        ),
         svd=None,
         processors_map={"core": SimpleNamespace(name="Cortex-M4")},
     )
@@ -173,12 +386,19 @@ def test_geometry_accepts_pack_flashinfo_sector_driver_without_flm(
 
     geometry = resolve_registered_pack_geometry(candidate)
 
-    assert geometry.erase_sectors == (
-        (0x10000000, 0x10001000),
-        (0x10001000, 0x10002000),
-    )
-    assert geometry.driver_proof_digest is not None
-    assert geometry.peripheral_regions == ()
+    assert geometry.erase_sectors == ()
+    assert geometry.driver_proof_digest is None
+    assert [(item.start, item.end) for item in geometry.flash_regions] == [
+        (0x10000000, 0x10002000),
+        (0x10010000, 0x10012000),
+    ]
+    assert [(item.start, item.end, item.access) for item in geometry.peripheral_regions] == [
+        (0x1FFFF000, 0x20000000, "read-only"),
+        (0x20001000, 0x20002000, "read-only"),
+        (0x40000000, 0x50000000, "read-only"),
+        (0xDFFFF000, 0xE0000000, "read-only"),
+        (0xE0100000, 0xE0101000, "read-only"),
+    ]
 
 
 def test_geometry_prefers_pack_memory_kind_over_overlapping_svd_register(
@@ -234,12 +454,8 @@ def test_geometry_prefers_pack_memory_kind_over_overlapping_svd_register(
                 access=None,
                 address_block=None,
                 registers=(
-                    SimpleNamespace(
-                        name="WIDE", address_offset=0, size=64, access="read-write"
-                    ),
-                    SimpleNamespace(
-                        name="ALIAS", address_offset=0, size=32, access="read-only"
-                    ),
+                    SimpleNamespace(name="WIDE", address_offset=0, size=64, access="read-write"),
+                    SimpleNamespace(name="ALIAS", address_offset=0, size=32, access="read-only"),
                 ),
             ),
             SimpleNamespace(
@@ -248,9 +464,7 @@ def test_geometry_prefers_pack_memory_kind_over_overlapping_svd_register(
                 access=None,
                 address_block=None,
                 registers=(
-                    SimpleNamespace(
-                        name="INPUT", address_offset=0, size=32, access="read-only"
-                    ),
+                    SimpleNamespace(name="INPUT", address_offset=0, size=32, access="read-only"),
                 ),
             ),
         ),
@@ -258,7 +472,9 @@ def test_geometry_prefers_pack_memory_kind_over_overlapping_svd_register(
     monkeypatch.setattr(
         device_support, "verified_pack_for_candidate", lambda _candidate, _store: selected
     )
-    monkeypatch.setattr(device_support, "CmsisPack", lambda _stream: SimpleNamespace(devices=(device,)))
+    monkeypatch.setattr(
+        device_support, "CmsisPack", lambda _stream: SimpleNamespace(devices=(device,))
+    )
     monkeypatch.setattr(
         device_support,
         "SVDParser",
@@ -268,8 +484,7 @@ def test_geometry_prefers_pack_memory_kind_over_overlapping_svd_register(
     geometry = resolve_registered_pack_geometry(candidate)
 
     assert [
-        (item.name, item.start, item.end, item.access)
-        for item in geometry.peripheral_regions
+        (item.name, item.start, item.end, item.access) for item in geometry.peripheral_regions
     ] == [
         ("CONFIG.ALIAS", 0x10000000, 0x10000004, "read-only"),
         ("GPIO.INPUT", 0x40020000, 0x40020004, "read-only"),
@@ -293,6 +508,19 @@ def test_svd_register_spans_preserve_resolved_access(
                     SimpleNamespace(name="RO", address_offset=4, size=32, access="read-only"),
                     SimpleNamespace(name="WO", address_offset=8, size=32, access="write-only"),
                     SimpleNamespace(name="UNKNOWN", address_offset=12, size=32, access=None),
+                    SimpleNamespace(name="MALFORMED", address_offset=16, size=32, access="   "),
+                    SimpleNamespace(
+                        name="DOTTED", address_offset=20, size=32, access="junk.read-write"
+                    ),
+                    SimpleNamespace(
+                        name="WRONG_CASE", address_offset=24, size=32, access="READ-WRITE"
+                    ),
+                    SimpleNamespace(
+                        name="PUNCTUATED", address_offset=28, size=32, access="read write"
+                    ),
+                    SimpleNamespace(
+                        name="PADDED", address_offset=32, size=32, access=" read-write "
+                    ),
                 ),
             ),
         ),
@@ -309,7 +537,166 @@ def test_svd_register_spans_preserve_resolved_access(
         (0x40020000, 0x40020004, "read-write"),
         (0x40020004, 0x40020008, "read-only"),
         (0x40020008, 0x4002000C, "write-only"),
+        (0x4002000C, 0x40020010, "read-write"),
     ]
+
+
+def test_svd_access_uses_register_peripheral_device_then_schema_default(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    parsed = SimpleNamespace(
+        width=32,
+        access="read-only",
+        peripherals=(
+            SimpleNamespace(
+                name="PERIPHERAL_DEFAULT",
+                base_address=0x40000000,
+                access="write-only",
+                address_block=None,
+                registers=(
+                    SimpleNamespace(
+                        name="REGISTER_EXPLICIT",
+                        address_offset=0,
+                        size=32,
+                        access="read-write",
+                    ),
+                    SimpleNamespace(
+                        name="REGISTER_INHERITED",
+                        address_offset=4,
+                        size=32,
+                        access=None,
+                    ),
+                ),
+            ),
+            SimpleNamespace(
+                name="DEVICE_DEFAULT",
+                base_address=0x40001000,
+                access=None,
+                address_block=None,
+                registers=(
+                    SimpleNamespace(
+                        name="REGISTER_INHERITED",
+                        address_offset=0,
+                        size=32,
+                        access=None,
+                    ),
+                ),
+            ),
+        ),
+    )
+    monkeypatch.setattr(
+        device_support,
+        "SVDParser",
+        lambda _tree: SimpleNamespace(get_device=lambda: parsed),
+    )
+
+    regions = _svd_peripheral_regions(SimpleNamespace(svd=io.BytesIO(b"<device/>")))
+
+    assert [(item.start, item.end, item.access) for item in regions] == [
+        (0x40000000, 0x40000004, "read-write"),
+        (0x40000004, 0x40000008, "write-only"),
+        (0x40001000, 0x40001004, "read-only"),
+    ]
+
+    parsed.access = None
+    parsed.peripherals = (
+        SimpleNamespace(
+            name="SCHEMA_DEFAULT",
+            base_address=0x40002000,
+            access=None,
+            address_block=SimpleNamespace(offset=0x20, size=0x10, usage="registers"),
+            registers=(),
+        ),
+        SimpleNamespace(
+            name="RESERVED",
+            base_address=0x40003000,
+            access=None,
+            address_block=SimpleNamespace(offset=0, size=0x10, usage=" reserved "),
+            registers=(),
+        ),
+        SimpleNamespace(
+            name="BUFFER",
+            base_address=0x40004000,
+            access=None,
+            address_block=SimpleNamespace(offset=0, size=0x10, usage="buffer"),
+            registers=(),
+        ),
+        SimpleNamespace(
+            name="MISSING_USAGE",
+            base_address=0x40005000,
+            access=None,
+            address_block=SimpleNamespace(offset=0, size=0x10),
+            registers=(),
+        ),
+        SimpleNamespace(
+            name="MALFORMED_USAGE",
+            base_address=0x40006000,
+            access=None,
+            address_block=SimpleNamespace(offset=0, size=0x10, usage="malformed.registers"),
+            registers=(),
+        ),
+        SimpleNamespace(
+            name="WRONG_CASE_USAGE",
+            base_address=0x40007000,
+            access=None,
+            address_block=SimpleNamespace(offset=0, size=0x10, usage="REGISTERS"),
+            registers=(),
+        ),
+        SimpleNamespace(
+            name="PADDED_USAGE",
+            base_address=0x40008000,
+            access=None,
+            address_block=SimpleNamespace(offset=0, size=0x10, usage=" registers "),
+            registers=(),
+        ),
+    )
+
+    regions = _svd_peripheral_regions(SimpleNamespace(svd=io.BytesIO(b"<device/>")))
+
+    assert [(item.start, item.end, item.access) for item in regions] == [
+        (0x40002020, 0x40002030, "read-write"),
+    ]
+
+
+def test_present_empty_svd_access_does_not_inherit_or_default(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    parsed = SimpleNamespace(
+        width=32,
+        access=None,
+        peripherals=(
+            SimpleNamespace(
+                name="GPIO",
+                base_address=0x40020000,
+                access=None,
+                address_block=None,
+                registers=(
+                    SimpleNamespace(
+                        name="EMPTY_ACCESS",
+                        address_offset=0,
+                        size=32,
+                        access="unspecified",
+                    ),
+                ),
+            ),
+        ),
+    )
+
+    def parser(tree: ET.ElementTree) -> SimpleNamespace:
+        root = tree.getroot()
+        assert root is not None
+        access = root.find(".//access")
+        assert access is not None
+        assert access.text == "unspecified"
+        return SimpleNamespace(get_device=lambda: parsed)
+
+    monkeypatch.setattr(device_support, "SVDParser", parser)
+
+    regions = _svd_peripheral_regions(
+        SimpleNamespace(svd=io.BytesIO(b"<device><access/></device>"))
+    )
+
+    assert regions == ()
 
 
 def test_resolver_uses_exact_provisioned_binding_and_pdsc_leaf() -> None:
@@ -347,9 +734,7 @@ def test_resolver_replays_manifest_leaf_and_target_from_verified_bytes() -> None
     resolver = DeviceSupportResolver(
         pack_loader=lambda _target: selected,
         device_names=lambda _pack: ("STM32L476RGTx",),
-        binding_deriver=lambda _pack, part: DeviceBinding(
-            part, "STM32L476RGTx", "stm32l476rgtx"
-        ),
+        binding_deriver=lambda _pack, part: DeviceBinding(part, "STM32L476RGTx", "stm32l476rgtx"),
     )
 
     with pytest.raises(PackProvisionError, match="canonical target"):
@@ -378,7 +763,9 @@ def test_default_pack_parser_rejects_unsafe_archive_before_pyocd(
     member_name: str, pdsc: bytes, message: str
 ) -> None:
     selected = _selected()
-    unsafe = VerifiedPack(selected.path, selected.spec, _pack_payload(member_name=member_name, pdsc=pdsc))
+    unsafe = VerifiedPack(
+        selected.path, selected.spec, _pack_payload(member_name=member_name, pdsc=pdsc)
+    )
 
     with pytest.raises(PackProvisionError, match=message):
         DeviceSupportResolver._cmsis_device_names(unsafe)
@@ -630,8 +1017,6 @@ def test_saved_authority_is_not_ambiguous_when_another_pack_supports_same_part(
     )
     expected = DeviceSupportCandidate.from_verified_pack(selected, binding)
 
-    replayed = resolve_persisted_pack_support(
-        store, "PART123", expected.to_authority_document()
-    )
+    replayed = resolve_persisted_pack_support(store, "PART123", expected.to_authority_document())
 
     assert replayed == expected

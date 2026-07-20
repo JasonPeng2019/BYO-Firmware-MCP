@@ -29,9 +29,7 @@ from pyocd_debug_mcp.services.session_runtime import PolicyRefusal
 MAX_FLEXIBLE_CALLS = 20
 MAX_FLEXIBLE_BUFFER = 10
 _BOARD_ID = re.compile(r"[a-z0-9_]{1,64}")
-_PLACEHOLDERS = frozenset(
-    {"n/a", "na", "none", "null", "placeholder", "tbd", "todo", "unknown"}
-)
+_PLACEHOLDERS = frozenset({"n/a", "na", "none", "null", "placeholder", "tbd", "todo", "unknown"})
 
 
 class PlanRefusal(PolicyRefusal):
@@ -169,8 +167,10 @@ class ActivePlan:
 
     @property
     def total_calls(self) -> int:
-        return self.max_calls + self.max_calls_buffer + sum(
-            remaining for _, remaining in self.paired_remaining
+        return (
+            self.max_calls
+            + self.max_calls_buffer
+            + sum(remaining for _, remaining in self.paired_remaining)
         )
 
     def remaining_for(self, action_name: str) -> int:
@@ -385,11 +385,7 @@ def _canonical_action_parameters(
     normalized = dict(parameters)
     for field in definition.action_fields:
         value = normalized.get(field.name)
-        if (
-            field.field_type is FieldType.NUMBER
-            and isinstance(value, float)
-            and value.is_integer()
-        ):
+        if field.field_type is FieldType.NUMBER and isinstance(value, float) and value.is_integer():
             normalized[field.name] = int(value)
     return canonical_json(normalized)
 
@@ -439,7 +435,11 @@ def _field_error(field: FieldDefinition, value: object) -> str | None:
         type(value) is type(choice) and value == choice for choice in field.choices
     ):
         return f"must be one of {field.choices}"
-    if field.minimum is not None and isinstance(value, (int, float)) and not isinstance(value, bool):
+    if (
+        field.minimum is not None
+        and isinstance(value, (int, float))
+        and not isinstance(value, bool)
+    ):
         if field.exclusive_minimum and value <= field.minimum:
             return f"must be greater than {field.minimum:g}"
         if not field.exclusive_minimum and value < field.minimum:
@@ -812,8 +812,7 @@ class PlanEngine:
             if (max_calls, max_calls_buffer) != (1, 0):
                 raise _refuse(
                     "plan/fixed-budget",
-                    f"{definition.plan_tool_name} requires max_calls=1 and "
-                    "max_calls_buffer=0.",
+                    f"{definition.plan_tool_name} requires max_calls=1 and max_calls_buffer=0.",
                     session_id=session_id,
                 )
         elif max_calls > MAX_FLEXIBLE_CALLS or max_calls_buffer > MAX_FLEXIBLE_BUFFER:
@@ -906,6 +905,16 @@ class PlanEngine:
                 )
         if preconditions is not None:
             preconditions()
+        # Preconditions may parse the selected artifact to derive the exact
+        # contained operation. Recheck afterward so execution can use that
+        # prepared result without reopening mutable path contents.
+        if artifact_binding is not None:
+            self._verify_artifact_binding(
+                key,
+                plan_id,
+                artifact_binding,
+                session_id=session_id,
+            )
 
         with self._guard:
             state = self._precheck_locked(
@@ -927,9 +936,7 @@ class PlanEngine:
                 state.remaining_calls -= 1
             else:
                 state.paired_remaining[action_name] -= 1
-            exhausted = state.remaining_calls == 0 and not any(
-                state.paired_remaining.values()
-            )
+            exhausted = state.remaining_calls == 0 and not any(state.paired_remaining.values())
             if exhausted:
                 if definition.permission_mode is not PermissionMode.NONE:
                     assert state.authorization is not None
@@ -939,7 +946,9 @@ class PlanEngine:
                         state.authorization,
                     )
                 state.status = PlanStatus.EXHAUSTED
-                state.close_reason = "primary and paired call allowances exhausted at execution start"
+                state.close_reason = (
+                    "primary and paired call allowances exhausted at execution start"
+                )
                 state.artifact_binding = None
                 self._relock_definition(definition, normalized_board)
             return state.snapshot()
@@ -955,6 +964,12 @@ class PlanEngine:
         if field_name is None:
             return None
         supplied = parameters.get(field_name)
+        binding_field = next(
+            (field for field in definition.action_fields if field.name == field_name),
+            None,
+        )
+        if supplied is None and binding_field is not None and binding_field.nullable:
+            return None
         if not isinstance(supplied, str) or not supplied.strip():
             raise _refuse(
                 "plan/artifact-unreadable",
@@ -1020,10 +1035,7 @@ class PlanEngine:
                 session_id=session_id,
             ) from exc
         assert observed is not None
-        if (
-            observed.resolved_path != expected.resolved_path
-            or observed.sha256 != expected.sha256
-        ):
+        if observed.resolved_path != expected.resolved_path or observed.sha256 != expected.sha256:
             self._invalidate_for_artifact_change(key, plan_id)
             raise _refuse(
                 "plan/artifact-changed",
@@ -1107,8 +1119,7 @@ class PlanEngine:
         if not self.registry.is_unlocked(lock_name, key[1]):
             raise _refuse(
                 "plan/tool-locked",
-                f"{invoked_action} is physically locked; call "
-                f"{definition.plan_tool_name} again.",
+                f"{invoked_action} is physically locked; call {definition.plan_tool_name} again.",
                 session_id=session_id,
             )
         return state

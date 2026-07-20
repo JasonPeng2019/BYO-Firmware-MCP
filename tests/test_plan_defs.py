@@ -149,4 +149,4 @@ def test_action_schema_carries_format_constraints() -> None:
         "elf_artifact",
     }
     assert breakpoint.artifact_binding_field == "elf_artifact"
-    assert breakpoint.artifact_binding_suffixes == (".elf",)
+    assert breakpoint.artifact_binding_suffixes == (".elf", ".axf")

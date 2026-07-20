@@ -10,7 +10,8 @@ from typing import Any
 
 from pyocd_debug_mcp.kernel.operations import wrap_layer2_response
 from pyocd_debug_mcp.services.session_runtime import PolicyRefusal, SessionRecord, ToolOutcome
-from pyocd_debug_mcp.services.symbols import ResolvedSymbol
+from pyocd_debug_mcp.services.symbols import ResolvedSymbol, is_elf_artifact
+
 
 @dataclass(frozen=True, slots=True)
 class BreakpointToolServices:
@@ -94,7 +95,7 @@ def build_breakpoint_handlers(
                 started,
                 runtime,
             )
-        if artifact.suffix.casefold() != ".elf" or not artifact.is_file():
+        if not is_elf_artifact(artifact):
             return refuse(
                 "set_breakpoint",
                 board_id,

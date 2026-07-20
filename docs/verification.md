@@ -415,3 +415,88 @@ and Pyright were clean. A fresh package build/import passed (wheel SHA-256
 `706a4fb26ea42c66588d95034c6c2c5dec7807798f912b5022ff27f037097508`, sdist SHA-256
 `a915d07c6a77f1dbd77c1c3c542e64815340b79c6c91dcd64f095be3c022ae5f`), and a fresh-root bounded
 stdio client initialized MCP protocol `2025-11-25`, listed 39 tools, and completed the handshake.
+
+## Dual-board bootloader/RTOS/bare-metal matrix continuation (2026-07-20)
+
+The current continuation invoked the Claude Usage Carve-Out after exact claude-sonnet-5, medium,
+returned its five-hour usage limit. The unfinished nRF bare-metal console and STM32 ThreadX states,
+including transcript hashes and the precise unproven work, are recorded in
+[evidence/claude-usage-carve-out-dual-board-matrix-2026-07-20.md](evidence/claude-usage-carve-out-dual-board-matrix-2026-07-20.md).
+No unfinished Claude leg is reported as green; the remaining acceptance proceeds on GPT Luna.
+
+## Dual-model / dual-board acceptance completion (2026-07-20)
+
+Evidence index:
+[`evidence/dual-model-dual-board-acceptance-2026-07-20.md`](evidence/dual-model-dual-board-acceptance-2026-07-20.md).
+
+All six GPT Luna medium task cells passed. The nRF bootloader and Zephyr Sonnet medium cells also
+passed. Provider exhaustion invoked the explicit Claude Usage Carve-Out for the four remaining
+Sonnet cells; the partial and unstarted states are documented and no skipped cell is claimed green.
+The completed matrix includes freestanding bootloader, Zephyr, ThreadX, custom bare-metal scheduler,
+and both frozen broken-project repair exams across nRF52840 and STM32L476 hardware. Guarded
+application-only flash, UART behavior, and live breakpoint/debug evidence are preserved per run.
+
+The acceptance loop closed GAP-36 through GAP-39. In particular, native builds now accept an
+agent-resolved exact command for any build system and inherit network access by default; named
+provider selection and fixed local-environment discovery have been removed. The final
+locked suite was **1155 passed, 3 skipped, 85 warnings**; repository-wide Ruff and Pyright were
+clean. Package build, fresh-wheel install/import, and bounded fresh-root stdio MCP smoke passed.
+
+## Universal native-build exact-argv closure (2026-07-20)
+
+The general helper now has one agent-resolved execution path and no named provider, SDK/compiler,
+target, fixed install-root, or provider-output selection. Network access is inherited by default;
+offline guards are explicit. Repeatable named outputs admit opaque/future firmware formats while
+known ELF/HEX formats retain structural validation. Windows case-insensitive environment merging,
+empty non-executable argv tokens, configurable timeouts, disappearing output roots, and owned-process
+cleanup errors have focused regression coverage.
+
+- Focused native-build/process/product-contract checks: **60 passed, 1 skipped**.
+- Full locked suite: **1147 passed, 3 skipped, 85 warnings**.
+- Repository Ruff: clean.
+- Repository Pyright: 0 errors, 0 warnings.
+- Final Terra high/fast read-only adversarial pass: **CLEAN** after seven review rounds.
+- Fresh wheel SHA-256: `51751868f9e3d4fda476e2dffa772b1b7dbb431af02e3e5f69dc56dbfe5dd2e7`.
+- Fresh sdist SHA-256: `335f538a173e14bc1522262aa2741b29197c00040db4a12ff20a53d70aa58b3e`.
+- Fresh-wheel import: passed.
+- Fresh-root bounded stdio smoke: protocol `2025-11-25`, 39 tools, exit 0, zero hardware calls.
+- Provider-neutral opaque-output CLI smoke: passed with inherited network policy and exact evidence.
+
+This host-side correction did not change flash, debug, UART, setup authority, or hardware mutation
+paths, so the already completed dual-board hardware matrix above remains the hardware acceptance
+evidence; no additional flash was needed for this closure.
+
+## Unsupported/convenience-free generic-path acceptance (2026-07-20)
+
+A fresh `gpt-5.6-luna` high run began with only the nRF52840 datasheet and part number under the
+new logical name `LabRig-Unknown-NRF-A`. It did not use reviewed-board routing, Zephyr/west, GNU Make,
+or a server-selected SDK/toolchain. The agent independently located the official Nordic pack,
+submitted its exact part/pack/target evidence, acquired an Arm toolchain, and invoked the generic
+native helper with literal Ninja argv and explicit ELF/HEX/map outputs. Setup, guarded application
+flash, UART console/timing, symbols, breakpoint, CPU state, memory/register reads, reset, reconnect,
+refresh, NULL teaching plans, and safe disconnect all passed. The preserved journey is
+[evidence/unsupported-path-luna-high-journey.md](evidence/unsupported-path-luna-high-journey.md).
+
+Two independent adversarial review loops found and closed run-state replacement, AXF consistency,
+open-ended CPUID compatibility, multi-bank programming authority, incomplete peripheral metadata,
+same-pack attachment retry, and conservative PDSC alias/overlap issues. Both final passes returned
+**CLEAN**. Final verification on the remediated tree:
+
+- focused unsupported/setup/safety/runtime suites: **236 passed**;
+- repository Ruff: clean;
+- repository Pyright: **0 errors, 0 warnings**;
+- complete pytest suite: **1171 passed, 3 skipped, 93 warnings**;
+- active product contract: **2 passed**, 56 registered contracts and 60 implementation owners;
+- fresh wheel build/install/import: pass, wheel SHA-256
+  `19603d0ec4630058db0b9d46df2adc54d26b56f14c91a57ce9b1f9e189142d8d`;
+- bounded fresh-root stdio smoke: protocol `2025-11-25`, 39 initially visible tools, clean shutdown;
+- final non-mutating real-hardware regression: validation, RUNNING → halt, PC/SP/r0 reads, resume,
+  RUNNING, full 15.02-second UART capture with LED and heartbeat events, disconnect. Evidence:
+  [evidence/unsupported-path-final-hardware-regression-r5.json](evidence/unsupported-path-final-hardware-regression-r5.json).
+
+The hardware regression's first three UART-plan attempts exposed only orchestrator input mistakes
+(a forbidden `user_permission=null`, `board_id` placed inside action parameters, then an intentional
+expected-text early exit). Each was diagnosed and corrected; the fourth attempt captured the full
+15-second window green. No server change was made for those correct contract refusals. No unlock,
+mass erase, bootloader flash, recovery, deployment, or additional application flash occurred during
+the final regression.

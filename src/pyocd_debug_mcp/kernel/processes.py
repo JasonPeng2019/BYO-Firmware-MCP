@@ -42,8 +42,10 @@ def validate_argv(argv: Sequence[str]) -> tuple[str, ...]:
     if isinstance(argv, str | bytes) or not argv:
         raise ValueError("argv must be a non-empty sequence of explicit arguments")
     values = tuple(argv)
-    if any(not isinstance(value, str) or not value or "\x00" in value for value in values):
-        raise ValueError("every argv item must be a non-empty NUL-free string")
+    if not isinstance(values[0], str) or not values[0] or "\x00" in values[0]:
+        raise ValueError("argv executable must be a non-empty NUL-free string")
+    if any(not isinstance(value, str) or "\x00" in value for value in values[1:]):
+        raise ValueError("every argv argument must be a NUL-free string")
     return values
 
 
@@ -292,9 +294,7 @@ def identity_matches(pid: int, expected_start_token: str) -> bool:
     return _start_token(pid) == expected_start_token
 
 
-def terminate_process_group(
-    process: subprocess.Popen[Any], *, grace_seconds: float = 0.5
-) -> bool:
+def terminate_process_group(process: subprocess.Popen[Any], *, grace_seconds: float = 0.5) -> bool:
     if os.name == "nt":
         with _WINDOWS_JOB_GUARD:
             handle = _WINDOWS_JOB_HANDLES.get(process.pid)
@@ -435,9 +435,7 @@ def popen_owned(
             _resume_windows_process(process)
     except BaseException as exc:
         if job_handle is not None:
-            cleaned = _close_windows_job(
-                process.pid, job_handle, terminate=True, timeout=0.5
-            )
+            cleaned = _close_windows_job(process.pid, job_handle, terminate=True, timeout=0.5)
         else:
             cleaned = terminate_process_group(process)
         if cleaned:

@@ -1,5 +1,8 @@
 # De-bias round 1 implementation plan
 
+> Historical: build-guidance portions are superseded by
+> `docs/universal-native-build-command-plan.md`.
+
 Status: implemented and verified
 
 ## Approach

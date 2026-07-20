@@ -187,17 +187,46 @@ class SetupResponse:
                 "response": {"choice_id": "one exact choice_id returned above"},
             }
         elif self.status == "setup_research_required":
+            exact_fields = next(
+                (
+                    record.details.get("exact_response_fields")
+                    for record in reversed(self.phase_records)
+                    if isinstance(record.details.get("exact_response_fields"), list)
+                ),
+                None,
+            )
+            placeholders: dict[str, Any] = {
+                "pack_id": "official vendor pack identifier",
+                "version": "official pack version",
+                "filename": "official.pack",
+                "url": "official vendor source URL",
+                "source_path": "local path to the acquired official .pack bytes",
+                "official_sha256": None,
+                "pyocd_target": "exact installed pyOCD target name",
+                "debug_protocol": "default, swd, or jtag",
+                "debug_connect_mode": "attach, halt, pre-reset, or under-reset",
+                "debug_clock_hz": 1_000_000,
+                "evidence": [{"source": "official source", "claim": "resolved fact"}],
+                "reasoning_summary": "why the evidence resolves the exact requested fact",
+            }
+            response_fields = (
+                tuple(str(field) for field in exact_fields)
+                if exact_fields is not None
+                else (
+                    "pack_id",
+                    "version",
+                    "filename",
+                    "url",
+                    "source_path",
+                    "official_sha256",
+                    "evidence",
+                    "reasoning_summary",
+                )
+            )
             accepted_response = {
                 "tool": "continue_setup",
                 "response": {
-                    "pack_id": "official vendor pack identifier",
-                    "version": "official pack version",
-                    "filename": "official.pack",
-                    "url": "official vendor source URL",
-                    "source_path": "local path to the acquired official .pack bytes",
-                    "official_sha256": None,
-                    "evidence": [{"source": "official source", "claim": "pack-to-part claim"}],
-                    "reasoning_summary": "why the pack contains the immutable exact MCU part",
+                    field: placeholders.get(field, "required value") for field in response_fields
                 },
             }
         return {
@@ -946,9 +975,7 @@ class RunAssignmentStore:
     def replace(self, bindings: Mapping[str, str]) -> None:
         """Atomically replace the run's provisional one-to-one assignments."""
 
-        normalized = {
-            connection.strip(): board.strip() for connection, board in bindings.items()
-        }
+        normalized = {connection.strip(): board.strip() for connection, board in bindings.items()}
         if any(not connection or not board for connection, board in normalized.items()):
             raise SetupWorkflowError("connection_id and board_id must be non-empty")
         if len(set(normalized.values())) != len(normalized):
@@ -965,9 +992,10 @@ class RunAssignmentStore:
         connection = connection_id.strip()
         board = board_id.strip()
         with self._guard:
-            if self._assignments.get(("connection", connection)) != board or self._assignments.get(
-                ("board", board)
-            ) != connection:
+            if (
+                self._assignments.get(("connection", connection)) != board
+                or self._assignments.get(("board", board)) != connection
+            ):
                 raise SetupWorkflowError(
                     "The board and debug connection do not match the current setup_overview "
                     "assignment. Call setup_overview again before hardware access."
@@ -1007,9 +1035,10 @@ class RunAssignmentStore:
         connection = connection_id.strip()
         board = board_id.strip()
         with self._guard:
-            if self._assignments.get(("connection", connection)) != board or self._assignments.get(
-                ("board", board)
-            ) != connection:
+            if (
+                self._assignments.get(("connection", connection)) != board
+                or self._assignments.get(("board", board)) != connection
+            ):
                 raise SetupWorkflowError(
                     "The board assignment changed before live validation could stamp it."
                 )

@@ -33,10 +33,14 @@ from pyocd_debug_mcp.kernel.processes import (
 )
 
 
-@pytest.mark.parametrize("argv", [[], "echo hello", ["ok", ""], ["ok", "bad\x00arg"]])
+@pytest.mark.parametrize("argv", [[], "echo hello", [""], ["ok", "bad\x00arg"]])
 def test_explicit_argv_validation_rejects_hostile_shapes(argv: object) -> None:
     with pytest.raises(ValueError):
         validate_argv(argv)  # type: ignore[arg-type]
+
+
+def test_explicit_argv_allows_empty_non_executable_argument() -> None:
+    assert validate_argv(["tool", "", "value"]) == ("tool", "", "value")
 
 
 def test_platform_process_group_abstraction() -> None:

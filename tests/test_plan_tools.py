@@ -262,6 +262,7 @@ PILOT_PARAMETERS: dict[str, dict[str, object]] = {
         "width": 32,
         "allow_address_fallback": True,
         "reason": "The address is pointer-derived and has no stable symbol.",
+        "elf_artifact": None,
     },
 }
 PILOT_BUDGETS = {"read_serial": 2, "write_serial": 2, "write_memory": 1}
@@ -356,6 +357,7 @@ def make_all_pilot_server() -> PilotHarness:
         width: int,
         allow_address_fallback: bool,
         reason: str | None,
+        elf_artifact: str | None,
     ) -> str:
         return record(
             "write_memory",
@@ -366,6 +368,7 @@ def make_all_pilot_server() -> PilotHarness:
                 "width": width,
                 "allow_address_fallback": allow_address_fallback,
                 "reason": reason,
+                "elf_artifact": elf_artifact,
             },
         )
 

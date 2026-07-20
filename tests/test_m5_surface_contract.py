@@ -205,8 +205,8 @@ def test_m5_every_revised_runtime_and_plan_schema_is_exact() -> None:
         "write_cpu_register": {"board_id", "name", "value"},
         "set_execution_state": {"board_id", "name", "value"},
         "register_write": {"board_id", "address", "mask", "value"},
-        "find_symbol": {"board_id", "query"},
-        "read_memory_symbol": {"board_id", "symbol", "width"},
+        "find_symbol": {"board_id", "query", "elf_artifact"},
+        "read_memory_symbol": {"board_id", "symbol", "width", "elf_artifact"},
         "read_memory_address": {"board_id", "address", "width", "length"},
         "write_memory": {
             "board_id",
@@ -215,6 +215,7 @@ def test_m5_every_revised_runtime_and_plan_schema_is_exact() -> None:
             "width",
             "allow_address_fallback",
             "reason",
+            "elf_artifact",
         },
         "flash_application": {"board_id", "artifact"},
         "flash_bootloader": {"board_id", "artifact"},

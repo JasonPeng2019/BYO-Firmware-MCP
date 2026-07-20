@@ -245,6 +245,73 @@ def test_generic_profile_identity_fields_must_replay_verified_support(
         profiles.load("bench_board", include_legacy=False)
 
 
+def test_generic_profile_accepts_server_captured_canonical_cpuid_when_pack_has_no_proof(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    candidate = DeviceSupportCandidate(
+        candidate_id="a" * 64,
+        part_number="STM32L476RGTx-Exact",
+        pdsc_device="STM32L476RGTx",
+        pyocd_target="stm32l476rgtx",
+        pack_id="Vendor.Device_DFP",
+        pack_filename="device.pack",
+        pack_sha256="b" * 64,
+    )
+    monkeypatch.setattr(
+        device_support,
+        "resolve_persisted_pack_support",
+        lambda _store, _part, _source: candidate,
+    )
+    profiles = repository(tmp_path)
+    profiles.commit_core(profiles.stage_core(core_fields()))
+    proof = device_support.live_cpuid_compatibility_proof(0x410FC241)
+    fields = {
+        "device_support": candidate.to_authority_document(),
+        "silicon_id_address": proof.address,
+        "silicon_id_expected": proof.expected,
+        "silicon_id_mask": proof.mask,
+        "silicon_id_width_bits": proof.width_bits,
+        "silicon_id_label": proof.label,
+    } | captured_datasheet_fields(tmp_path, profiles)
+
+    committed = profiles.commit_optional(profiles.stage_optional("bench_board", fields))
+
+    assert committed.board.silicon_id_expected == proof.expected
+
+
+def test_generic_profile_refuses_noncanonical_live_cpuid_fallback(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    candidate = DeviceSupportCandidate(
+        candidate_id="a" * 64,
+        part_number="STM32L476RGTx-Exact",
+        pdsc_device="STM32L476RGTx",
+        pyocd_target="stm32l476rgtx",
+        pack_id="Vendor.Device_DFP",
+        pack_filename="device.pack",
+        pack_sha256="b" * 64,
+    )
+    monkeypatch.setattr(
+        device_support,
+        "resolve_persisted_pack_support",
+        lambda _store, _part, _source: candidate,
+    )
+    profiles = repository(tmp_path)
+    profiles.commit_core(profiles.stage_core(core_fields()))
+    proof = device_support.live_cpuid_compatibility_proof(0x410FC241)
+    fields = {
+        "device_support": candidate.to_authority_document(),
+        "silicon_id_address": proof.address,
+        "silicon_id_expected": proof.expected,
+        "silicon_id_mask": 0xFFF0,
+        "silicon_id_width_bits": proof.width_bits,
+        "silicon_id_label": proof.label,
+    } | captured_datasheet_fields(tmp_path, profiles)
+
+    with pytest.raises(ProfileError, match="canonical live CPUID"):
+        profiles.stage_optional("bench_board", fields)
+
+
 def test_generic_device_support_requires_captured_datasheet_evidence(tmp_path: Path) -> None:
     profiles = repository(tmp_path, device_support_verifier=lambda *_args: None)
     profiles.commit_core(profiles.stage_core(core_fields()))

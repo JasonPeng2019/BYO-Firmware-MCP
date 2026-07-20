@@ -59,6 +59,7 @@ class BoardConfig:
     uart_note: str = ""
     requires_recover_validation: bool = False
     recover_mode: str | None = None
+    debug_protocol: str | None = None
     debug_connect_mode: str | None = None
     debug_clock_hz: int | None = None
     expected_uart_substring: str | None = None
@@ -212,9 +213,7 @@ def make_board_config(raw: dict[str, object], source_path: Path | None) -> Board
             LegacyPackNameWarning,
             stacklevel=2,
         )
-    probe_type = str(
-        raw.get("probe_type") or probe_family_label(probe_family)
-    ).strip()
+    probe_type = str(raw.get("probe_type") or probe_family_label(probe_family)).strip()
 
     test_addr = None
     if raw.get("test_read_address") is not None:
@@ -230,6 +229,11 @@ def make_board_config(raw: dict[str, object], source_path: Path | None) -> Board
         requires_recover_validation=requires_recover_validation,
     )
 
+    debug_protocol = None
+    if raw.get("debug_protocol") is not None:
+        debug_protocol = str(raw["debug_protocol"]).strip().lower()
+        if debug_protocol not in {"default", "swd", "jtag"}:
+            raise ConfigError("Field 'debug_protocol' must be one of: default, swd, jtag")
     debug_connect_mode = None
     if raw.get("debug_connect_mode") is not None:
         debug_connect_mode = str(raw["debug_connect_mode"]).strip().lower()
@@ -314,6 +318,7 @@ def make_board_config(raw: dict[str, object], source_path: Path | None) -> Board
         uart_note=uart_note,
         requires_recover_validation=requires_recover_validation,
         recover_mode=recover_mode,
+        debug_protocol=debug_protocol,
         debug_connect_mode=debug_connect_mode,
         debug_clock_hz=debug_clock_hz,
         expected_uart_substring=expected_uart_substring,

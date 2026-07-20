@@ -358,20 +358,25 @@ class SafetyPolicy:
         return evidence, allocation
 
     def _extract_runtime_evidence(self, role: BuildRole, artifact: Path) -> BuildEvidence:
-        if artifact.suffix.casefold() == ".elf":
+        if artifact.suffix.casefold() in {".elf", ".axf"}:
             elf_path, hex_path = artifact, None
         elif artifact.suffix.casefold() == ".hex":
-            elf_path, hex_path = artifact.with_suffix(".elf"), artifact
-            if not elf_path.is_file():
+            companions = tuple(
+                path
+                for suffix in (".elf", ".axf")
+                if (path := artifact.with_suffix(suffix)).is_file()
+            )
+            if len(companions) != 1:
                 raise SafetyPolicyError(
                     "safety/hex-elf-companion-required",
-                    "HEX flashing requires a same-build, same-stem ELF companion.",
+                    "HEX flashing requires exactly one same-build, same-stem ELF or AXF companion.",
                     remedy=("collect_matching_elf_and_hex",),
                 )
+            elf_path, hex_path = companions[0], artifact
         else:
             raise SafetyPolicyError(
                 "safety/flash-artifact-type",
-                "Safety extraction requires an ELF or HEX artifact.",
+                "Safety extraction requires an ELF, AXF, or HEX artifact.",
                 remedy=("select_valid_build_artifact",),
             )
         try:
@@ -428,9 +433,11 @@ class SafetyPolicy:
                     "A flash range precedes the reviewed erase geometry origin.",
                     remedy=("board_safety_refresh",),
                 )
-            first = geometry.erase_origin + (
-                (requested.start - geometry.erase_origin) // geometry.erase_size
-            ) * geometry.erase_size
+            first = (
+                geometry.erase_origin
+                + ((requested.start - geometry.erase_origin) // geometry.erase_size)
+                * geometry.erase_size
+            )
             cursor = first
             while cursor < requested.end:
                 sectors.add(AddressRange.from_start_size(cursor, geometry.erase_size))

@@ -374,7 +374,167 @@ network access, so PlatformIO, ESP-IDF, plain CMake/Ninja, Cargo, SCons, Bazel, 
 wrappers, and novel build systems could not use the advertised general path without a server edit.
 
 **Required closure:** Accept an agent-resolved exact argv/cwd/environment and verified output paths
-through one provider-independent owned-process path. Keep named detection only as convenience.
-Inherit network access by default so missing dependencies may be acquired; retain offline guards as
-an explicit option. Closure is tracked by `docs/universal-native-build-command-spec.md` and
+through one provider-independent owned-process path. Remove named provider detection, fixed
+SDK/compiler discovery, target synthesis, and provider-specific output conventions from the general
+helper and public build guidance. Inherit network access by default so missing dependencies may be
+acquired; retain offline guards as an explicit option. Closure is tracked by
+`docs/universal-native-build-command-spec.md` and
 `docs/universal-native-build-command-plan.md`.
+
+## GAP-37 - Symbol tools silently selected reference-board firmware
+
+**Observed:** A fresh Luna bare-metal run restarted its MCP process before live debugging. Despite
+the agent supplying and breakpoint-validating the current project ELF, `find_symbol` and
+`read_memory_symbol` searched the BYO repository's `firmware/nrf52840dk/reference/build/firmware.elf`
+and refused every exported application symbol. Generic boards without a packaged reference image
+have no symbol route at all.
+
+**Required closure:** Let the agent supply the current project ELF to find/read/write symbol paths,
+digest-recheck it, retain same-run flashed binding as convenience, and remove silent packaged-image
+substitution. Nullable raw-address write plans must not require an irrelevant ELF. Closure is tracked
+by `docs/generic-symbol-artifact-selection-spec.md` and
+`docs/generic-symbol-artifact-selection-plan.md`.
+## GAP-38 — Recoverable tool errors destroyed healthy debug sessions
+
+**Observed:** During the STM32 ThreadX repair acceptance, reading `PC` while the
+core was running correctly produced a pyOCD register-state error. Generic
+operation cleanup then closed the healthy connection, so the next action was
+forced through reconnect and revalidation.
+
+**Required:** Preserve the active connection and validation state after an
+ordinary handler exception. Continue closing on cancellation and timeout, where
+backend completion is uncertain, and on a typed target-connection failure where
+the stored session is stale. Classify a core-register state refusal separately
+so it remains recoverable. See
+`docs/nonfatal-operation-failure-connection-spec.md`.
+
+## GAP-39 - CMSIS-SVD default access was treated as inaccessible
+
+**Observed:** A fresh verified-pack STM32L476 setup omitted RCC.CFGR from its
+schema-v3 safety map and refused a live read at `0x40021008` as unknown. The
+exact verified pack SVD contains RCC.CFGR, but omits its `<access>` element.
+
+**Diagnosis:** The generic SVD resolver preserved explicit and inherited access
+values but converted a fully absent value to `unspecified`, which was later
+dropped as neither readable nor writable. CMSIS-SVD instead defines the absent
+default as read-write. Vendor SVDs that rely on the schema default therefore
+lost valid register authority.
+
+**Required closure:** Resolve access using register, peripheral, and device
+inheritance, then the CMSIS-SVD `read-write` default. Preserve explicit
+read-only/write-only declarations, overlap intersection, memory overlays, and
+all prohibited ranges. See `docs/cmsis-svd-default-access-spec.md` and
+`docs/cmsis-svd-default-access-plan.md`.
+
+## GAP-40 - Function symbols leaked backend alignment assertions
+
+**Observed:** A Luna debug run passed a Thumb function symbol to scalar memory
+read. The odd code address reached pyOCD, leaked an `AssertionError`, and made a
+recoverable request look like transport failure.
+
+**Required closure:** Classify functions and unaligned scalar objects before
+containment or backend I/O, return stable actionable refusals, and preserve the
+healthy session. Guarded writes must make the same refusal before plan debit.
+See `docs/function-symbol-memory-refusal-spec.md` and plan.
+
+## GAP-41 - Production UART inventory fabricated probe association
+
+**Observed:** Production setup constructed every enumerated serial endpoint as
+`provably_mapped=True` and `external_adapter=False`, making the external-adapter
+confirmation route unreachable for unrelated USB UARTs.
+
+**Required closure:** Derive direct association only from equal stable USB
+identity with the selected probe. Treat all other selected UART endpoints as
+external and require the existing explicit association confirmation.
+
+## GAP-42 - Built-in pyOCD targets were rejected without a CMSIS-Pack
+
+**Observed:** Generic setup accepted the agent's target research only as a lead
+and always demanded a vendor pack, even when the exact target was already an
+installed pyOCD built-in with a deterministic memory map and flash driver.
+
+**Required closure:** Accept an exact agent-resolved installed built-in target,
+live-connect it, capture a truthfully labeled compatible CPUID proof, and
+persist/replay its target and canonical static geometry. Pack-backed support
+remains available but is not a universal prerequisite.
+
+## GAP-43 - Generic attach fallback was a fixed three-attempt ladder
+
+**Observed:** Generic setup tried only attach/default, attach/1 MHz, and
+under-reset/1 MHz. Parts requiring JTAG, an evidence-derived clock, halt, or
+pre-reset had no agent-supplied recovery path.
+
+**Required closure:** Accept a closed typed protocol/mode/clock tuple from the
+agent's target/probe research, verify it through the same bounded live attach,
+and persist it for validation and reconnection. Keep the short automatic ladder
+as a convenience, never as the ceiling. See
+`docs/unsupported-path-audit-remediation-spec.md` and plan.
+
+## GAP-44 - Replacement setup retained rejected run-scoped research state
+
+**Observed:** Replacing an accepted setup plan cleared the plan but could retain the previous
+continuation's research budget, candidate, or attachment policy. A rejected attempt could therefore
+poison an otherwise fresh retry.
+
+**Required closure:** One board-scoped replacement closes the paired action and clears continuation,
+candidate, attachment, and research-tracker state together. It creates no durable permission.
+
+## GAP-45 - AXF build outputs were not accepted consistently downstream
+
+**Observed:** The build helper correctly recognized a loadable ELF by structure regardless of its
+filename, but flash, symbol, and breakpoint paths still used an `.elf` suffix allowlist. Common ARM
+toolchains emitting `.axf` therefore failed after a successful generic build.
+
+**Required closure:** Treat `.elf` and `.axf` as equivalent loadable ELF containers through plan
+binding, containment, flashing, symbols, and breakpoints. HEX companion selection accepts exactly
+one same-stem ELF/AXF and remains ambiguity-safe.
+
+## GAP-46 - Cortex-M compatibility used a closed model table
+
+**Observed:** Live CPUID acceptance depended on a finite list of known Cortex-M part numbers, making
+future or uncommon standards-compliant cores require a server edit.
+
+**Required closure:** Validate the architectural Arm implementer and architecture fields plus a
+nonzero part field, bind their masked live value, and replay it canonically. A pack whose processor
+name is unknown may retain this server-captured proof in its profile; validation and CPU-system map
+authority must replay it rather than becoming permanently ineligible.
+
+## GAP-47 - Valid multi-bank pack geometry was rejected as ambiguous
+
+**Observed:** A verified PDSC with multiple flash banks and no unique default/boot marker could not
+complete setup even though every physical range was described exactly.
+
+**Required closure:** Preserve all disjoint banks and choose the lowest-addressed bank only as a
+deterministic compatibility/read representative. Never derive erase/program authority from address
+ordering; require a unique default/boot bank for that authority. Never merge gaps or infer a
+deployment partition.
+
+## GAP-48 - Setup could complete without peripheral/register authority
+
+**Observed:** Some exact built-in targets expose flash and RAM but no device/SVD ranges, leaving
+ordinary peripheral tools unusable after setup claimed completion.
+
+**Required closure:** Include built-in device regions and use only explicitly readable/writable PDSC
+device regions when detailed SVD registers are absent. Unknown access must never fall through to
+write-only authority. If a built-in target still has no peripheral metadata, complete setup with the
+verified capabilities it does have and report peripheral access unavailable rather than requiring a
+pack.
+
+## GAP-49 - PDSC peripheral aliases could grant the less restrictive access
+
+**Observed:** Same-range PDSC `Device` aliases were deduplicated by alphabetical name. When aliases
+disagreed on access, a read-write row could win over a read-only row.
+
+**Required closure:** Segment overlapping fallback regions and intersect access across every
+covering description, exactly as for SVD aliases. Omit segments whose sources permit no common
+operation; unknown access never grants writes.
+
+## GAP-50 - Valid pack attachment failures were misclassified as bad packages
+
+**Observed:** An exact pack and target could pass archive, digest, part-leaf, and target validation
+but fail the short default attachment ladder. Setup then told the agent to find a materially
+different package instead of researching the probe policy.
+
+**Required closure:** Keep the continuation live, ask for the same full pack response plus exact
+typed protocol/mode/clock, and live-test that pair before promotion. Do not advertise the pack as a
+rejected material candidate merely because its attachment defaults failed.

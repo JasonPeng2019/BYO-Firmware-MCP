@@ -4,7 +4,6 @@ param(
     [string[]]$BoardId = @(),
     [switch]$SkipUvSync,
     [switch]$SkipHostBootstrap,
-    [switch]$EnsureZephyrBuildEnv,
     [switch]$DryRun
 )
 
@@ -341,22 +340,6 @@ function Run-HostBootstrap {
     }
 }
 
-function Run-ZephyrBuildBootstrap {
-    if (-not $EnsureZephyrBuildEnv) {
-        Write-Status 'INFO' 'Skipping Zephyr build bootstrap (use -EnsureZephyrBuildEnv when this host must rebuild firmware locally)'
-        return
-    }
-
-    Write-Section 'Zephyr build bootstrap'
-    $cmd = @('uv', 'run', 'pyocd-zephyr-build', '--ensure-only')
-    Invoke-Step ($cmd -join ' ') {
-        & $cmd[0] @($cmd[1..($cmd.Count - 1)])
-        if ($LASTEXITCODE -ne 0) {
-            throw 'pyocd-zephyr-build --ensure-only did not complete successfully.'
-        }
-    }
-}
-
 try {
     Write-Section 'Windows host setup'
     if ([System.Environment]::OSVersion.Platform -ne [System.PlatformID]::Win32NT) {
@@ -386,7 +369,6 @@ try {
         [void](Ensure-Stm32CubeProgrammerPath)
     }
 
-    Run-ZephyrBuildBootstrap
     Run-HostBootstrap -Boards $boards
 
     Write-Section 'Done'

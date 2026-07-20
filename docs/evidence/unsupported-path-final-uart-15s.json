@@ -1,0 +1,10 @@
+﻿{
+    "port":  "COM11",
+    "baud":  115200,
+    "duration_seconds":  15.08,
+    "line_count":  42,
+    "contains_status":  true,
+    "contains_led":  true,
+    "contains_heartbeat":  true,
+    "transcript":  "@3064988 STATUS tick 3064988\r\n@3064988 STATUS led_ms 500\r\n@3064991 STATUS print_ms 2000\r\n@3065004 LED toggle 6131\r\n@3065504 LED toggle 6132\r\n@3066004 LED toggle 6133\r\n@3066012 PRINT heartbeat 3066012\r\n@3066504 LED toggle 6134\r\n@3067004 LED toggle 6135\r\n@3067504 LED toggle 6136\r\n@3068004 LED toggle 6137\r\n@3068012 PRINT heartbeat 3068012\r\n@3068504 LED toggle 6138\r\n@3069004 LED toggle 6139\r\n@3069504 LED toggle 6140\r\n@3070004 LED toggle 6141\r\n@3070012 PRINT heartbeat 3070012\r\n@3070504 LED toggle 6142\r\n@3071004 LED toggle 6143\r\n@3071504 LED toggle 6144\r\n@3072004 LED toggle 6145\r\n@3072012 PRINT heartbeat 3072012\r\n@3072504 LED toggle 6146\r\n@3073004 LED toggle 6147\r\n@3073504 LED toggle 6148\r\n@3074004 LED toggle 6149\r\n@3074012 PRINT heartbeat 3074012\r\n@3074504 LED toggle 6150\r\n@3075004 LED toggle 6151\r\n@3075504 LED toggle 6152\r\n@3076004 LED toggle 6153\r\n@3076012 PRINT heartbeat 3076012\r\n@3076504 LED toggle 6154\r\n@3077004 LED toggle 6155\r\n@3077504 LED toggle 6156\r\n@3078004 LED toggle 6157\r\n@3078012 PRINT heartbeat 3078012\r\n@3078504 LED toggle 6158\r\n@3079004 LED toggle 6159\r\n@3079504 LED toggle 6160\r\n@3080004 LED toggle 6161\r\n@3080012 PRINT heartbeat 3080012\r\n"
+}

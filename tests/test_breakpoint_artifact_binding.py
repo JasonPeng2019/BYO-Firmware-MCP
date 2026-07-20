@@ -33,8 +33,8 @@ def _services(
 def test_set_breakpoint_uses_plan_selected_elf_for_resolution_and_containment(
     tmp_path: Path,
 ) -> None:
-    elf = tmp_path / "current.elf"
-    elf.write_bytes(b"current ELF")
+    elf = tmp_path / "current.axf"
+    elf.write_bytes(b"\x7fELFcurrent")
     calls: list[tuple[object, ...]] = []
     checked: list[tuple[str, int, Path]] = []
     handler = build_breakpoint_handlers(_services(calls, checked))["set_breakpoint"]
@@ -51,7 +51,7 @@ def test_set_breakpoint_uses_plan_selected_elf_for_resolution_and_containment(
 
 def test_set_breakpoint_checks_explicit_address_against_selected_elf(tmp_path: Path) -> None:
     elf = tmp_path / "current.elf"
-    elf.write_bytes(b"current ELF")
+    elf.write_bytes(b"\x7fELFcurrent")
     calls: list[tuple[object, ...]] = []
     checked: list[tuple[str, int, Path]] = []
     handler = build_breakpoint_handlers(_services(calls, checked))["set_breakpoint"]

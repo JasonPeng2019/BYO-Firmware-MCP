@@ -24,8 +24,62 @@ from pyocd_debug_mcp.setup_flow.preflight import (
     ProbeCandidate,
     SetupUserInput,
 )
+from pyocd_debug_mcp.setup_flow.packs import PackCandidateError
 from pyocd_debug_mcp.setup_flow.setup import RunAssignmentStore, SetupPhaseContext
 from pyocd_debug_mcp.setup_flow.validate import ValidationInventory, ValidationProbe
+
+
+def test_fresh_root_builtin_without_peripheral_metadata_degrades_gracefully(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    store = FirmStore(tmp_path / "builtin-project")
+    datasheet = store.layout.project_root / "datasheet.pdf"
+    datasheet.parent.mkdir(parents=True)
+    datasheet.write_bytes(b"%PDF-1.7\nofficial part datasheet\n")
+    board_id = "builtin_generic"
+    user_input = SetupUserInput(
+        board_id,
+        "probe:PROBE-BUILTIN",
+        "Unknown nRF carrier",
+        "nRF52840-QIAA",
+        None,
+        datasheet_path=str(datasheet),
+        requires_uart=False,
+    )
+    monkeypatch.setattr(server, "_firm_store", store)
+    monkeypatch.setattr(
+        server._setup_workflow,
+        "continuation_context",
+        lambda _token: (user_input, "setup_research_required", None),
+    )
+    monkeypatch.setattr(
+        server,
+        "_resolve_setup_support",
+        server._resolve_setup_support,
+    )
+    server._setup_builtin_candidates.pop(board_id, None)
+    server._setup_target_overrides.pop(board_id, None)
+    monkeypatch.setattr(
+        server,
+        "_live_test_builtin_setup_target",
+        lambda **kwargs: (
+            kwargs["candidate"].with_identity_proof(0x410FC241),
+            kwargs["requested_policy"] or (None, "attach", None),
+        ),
+    )
+    routed = server._setup_continue(
+        board_id,
+        "builtin-fresh",
+        {
+            "pyocd_target": "nrf52840",
+            "evidence": [{"source": "official pyOCD", "claim": "built-in target"}],
+            "reasoning_summary": "The installed built-in target matches the exact part.",
+        },
+    )
+    assert routed["status"] == "setup_continuation_accepted"
+    assert routed["pyocd_target"] == "nrf52840"
+    assert board_id in server._setup_builtin_candidates
+    assert server._setup_attachment_overrides[board_id] == (None, "attach", None)
 
 
 def test_fresh_root_agent_pack_reply_builds_generic_profile_and_map(
@@ -99,6 +153,7 @@ def test_fresh_root_agent_pack_reply_builds_generic_profile_and_map(
     assert store.layout.pack_manifest.is_file()
     assert not list(store.layout.boards.glob("*.yaml"))
 
+
     context = cast(
         SetupPhaseContext,
         SimpleNamespace(
@@ -122,9 +177,7 @@ def test_fresh_root_agent_pack_reply_builds_generic_profile_and_map(
     assert profile.device_support is not None
     assert profile.board.pyocd_target == "stm32l476vgtx"
     assert profile.board.silicon_id_label == "Cortex-M4 CPUID compatibility identity"
-    assert profile.to_document()["datasheet_ref"].startswith(
-        ".firm/evidence/datasheets/"
-    )
+    assert profile.to_document()["datasheet_ref"].startswith(".firm/evidence/datasheets/")
 
     document = server._build_automatic_catalog_safety(context)
     assert isinstance(document, GenericSafetyMapDocument)
@@ -157,11 +210,7 @@ def test_fresh_root_agent_pack_reply_builds_generic_profile_and_map(
         server,
         "_validation_inventory",
         lambda: ValidationInventory(
-            probes=(
-                ValidationProbe(
-                    "PROBE-NEW", "Generic CMSIS-DAP", "cmsisdap", "PROBE-NEW"
-                ),
-            )
+            probes=(ValidationProbe("PROBE-NEW", "Generic CMSIS-DAP", "cmsisdap", "PROBE-NEW"),)
         ),
     )
     overview = server._setup_overview(["Fresh Generic Board"])
@@ -187,7 +236,9 @@ def test_fresh_root_agent_pack_reply_builds_generic_profile_and_map(
 
     # The same fresh-root composition exercises the allocation builder boundary:
     # containment and driver checks happen before a pending allocation exists.
-    artifact = Path(__file__).resolve().parents[1] / "firmware/nucleo_l476rg/reference/build/firmware.elf"
+    artifact = (
+        Path(__file__).resolve().parents[1] / "firmware/nucleo_l476rg/reference/build/firmware.elf"
+    )
     handle = TargetSessionHandle(
         session=SimpleNamespace(),  # type: ignore[arg-type]
         board=profile.board,
@@ -195,7 +246,9 @@ def test_fresh_root_agent_pack_reply_builds_generic_profile_and_map(
         route_used="test",
         target_override=profile.board.pyocd_target,
     )
-    monkeypatch.setattr(server, "_safety_policy", SafetyPolicy(safety, authority_verifier=lambda _doc: None))
+    monkeypatch.setattr(
+        server, "_safety_policy", SafetyPolicy(safety, authority_verifier=lambda _doc: None)
+    )
     monkeypatch.setattr(server, "_current_target", lambda _board: profile.board.pyocd_target)
     monkeypatch.setattr(
         server.connection_manager,
@@ -216,9 +269,7 @@ def test_fresh_root_agent_pack_reply_builds_generic_profile_and_map(
     server._pending_generic_allocations.clear()
 
     server._stage_generic_allocation(board_id, artifact, handle)
-    pending = server._prepare_generic_allocation(
-        "flash_application", board_id, artifact, handle
-    )
+    pending = server._prepare_generic_allocation("flash_application", board_id, artifact, handle)
     assert pending is not None
     assert safety.load_current(board_id).partitions.application is None
     server._commit_generic_allocation(board_id, pending)
@@ -226,22 +277,18 @@ def test_fresh_root_agent_pack_reply_builds_generic_profile_and_map(
     assert isinstance(allocated, GenericSafetyMapDocument)
     assert allocated.partitions.application is not None
 
-    original_geometry_resolver = server.resolve_registered_pack_geometry
+    original_geometry_resolver = server.resolve_device_support_geometry
     current_geometry = original_geometry_resolver(
         server.resolve_available_pack_support(store, part), store
     )
     monkeypatch.setattr(
         server,
-        "resolve_registered_pack_geometry",
-        lambda *_args, **_kwargs: replace(
-            current_geometry, driver_proof_digest="0" * 64
-        ),
+        "resolve_device_support_geometry",
+        lambda *_args, **_kwargs: replace(current_geometry, driver_proof_digest="0" * 64),
     )
     with pytest.raises(SafetyMapError, match="bounded flash driver"):
         server._derive_generic_safety_map(board_id)
-    monkeypatch.setattr(
-        server, "resolve_registered_pack_geometry", original_geometry_resolver
-    )
+    monkeypatch.setattr(server, "resolve_device_support_geometry", original_geometry_resolver)
 
     # A previously programmed device uses the same artifact-derived allocation path.
     safety.commit(board_id, document)
@@ -249,3 +296,99 @@ def test_fresh_root_agent_pack_reply_builds_generic_profile_and_map(
     server._stage_generic_allocation(board_id, artifact, handle)
     assert board_id in server._pending_generic_allocations
     assert safety.load_current(board_id).partitions.application is None
+def test_pack_default_attach_failure_requests_same_pack_with_explicit_policy(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    store = FirmStore(tmp_path / "attachment-project")
+    source = verified_registry_pack_for_target("stm32l476rgtx")
+    assert source is not None
+    part = "STM32L476VGT6"
+    board_id = "attachment_generic"
+    user_input = SetupUserInput(
+        board_id,
+        "probe:PROBE-ATTACH",
+        "Attachment Generic Board",
+        part,
+        None,
+        datasheet_path=str(store.layout.project_root / "datasheet.pdf"),
+        requires_uart=False,
+    )
+    store.layout.project_root.mkdir(parents=True, exist_ok=True)
+    Path(user_input.datasheet_path).write_bytes(b"%PDF-1.7\nofficial part datasheet\n")
+    monkeypatch.setattr(server, "_firm_store", store)
+    monkeypatch.setattr(
+        server._setup_workflow,
+        "continuation_context",
+        lambda _token: (user_input, "setup_research_required", None),
+    )
+    policies: list[tuple[str | None, str, int | None] | None] = []
+
+    class Pipeline:
+        def __init__(self, *, fail: bool) -> None:
+            self.fail = fail
+
+        def validate_device(self, *_args: object, **_kwargs: object) -> object:
+            if self.fail:
+                raise PackCandidateError(
+                    "package/live-connect-failed", "default attachment policies failed"
+                )
+            return object()
+
+        def promote(self, _validated: object, *, board_id: str) -> None:
+            assert board_id == "attachment_generic"
+
+    def pipeline(
+        _board_id: str,
+        _continuation: str,
+        _probe_uid: str,
+        requested_policy: tuple[str | None, str, int | None] | None,
+    ) -> tuple[Pipeline, list[tuple[str | None, str, int | None]]]:
+        policies.append(requested_policy)
+        return (
+            Pipeline(fail=requested_policy is None),
+            [] if requested_policy is None else [requested_policy],
+        )
+
+    monkeypatch.setattr(server, "_setup_pack_pipeline", pipeline)
+    base_response: dict[str, object] = {
+        "pack_id": source.spec.id,
+        "version": source.spec.version,
+        "filename": source.spec.filename,
+        "url": source.spec.url,
+        "source_path": str(source.path),
+        "official_sha256": source.spec.sha256,
+        "evidence": [{"source": "official pack index", "claim": "exact part support"}],
+        "reasoning_summary": "The exact PDSC leaf matches the supplied part.",
+    }
+
+    retry = server._setup_continue(board_id, "attachment-retry", base_response)
+
+    assert retry["status"] == "setup_research_required"
+    assert "Keep this same package" in cast(str, retry["agent_prompt"])
+    assert set(cast(list[str], retry["exact_response_fields"])) >= {
+        "pack_id",
+        "debug_protocol",
+        "debug_connect_mode",
+        "debug_clock_hz",
+    }
+    assert retry["rejected_candidates"] == []
+
+    accepted = server._setup_continue(
+        board_id,
+        "attachment-retry",
+        base_response
+        | {
+            "debug_protocol": "swd",
+            "debug_connect_mode": "pre-reset",
+            "debug_clock_hz": 500_000,
+        },
+    )
+
+    assert accepted["status"] == "setup_continuation_accepted"
+    assert policies == [None, ("swd", "pre-reset", 500_000)]
+    assert server._setup_attachment_overrides.pop(board_id) == (
+        "swd",
+        "pre-reset",
+        500_000,
+    )
+    server._setup_target_overrides.pop(board_id, None)

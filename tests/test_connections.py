@@ -59,8 +59,13 @@ BOARD_FACING_TOOL_ARGUMENTS: dict[str, dict[str, object]] = {
         "mask": "0xff",
         "value": "1",
     },
-    "find_symbol": {"board_id": "board-b", "query": "value"},
-    "read_memory_symbol": {"board_id": "board-b", "symbol": "value", "width": 32},
+    "find_symbol": {"board_id": "board-b", "query": "value", "elf_artifact": None},
+    "read_memory_symbol": {
+        "board_id": "board-b",
+        "symbol": "value",
+        "width": 32,
+        "elf_artifact": None,
+    },
     "read_memory_address": {
         "board_id": "board-b",
         "address": "0x20000000",
@@ -74,6 +79,7 @@ BOARD_FACING_TOOL_ARGUMENTS: dict[str, dict[str, object]] = {
         "width": 32,
         "allow_address_fallback": True,
         "reason": "The address is pointer-derived.",
+        "elf_artifact": None,
     },
     "set_breakpoint": {"board_id": "board-b", "symbol_or_address": "0x08000000"},
     "remove_breakpoint": {"board_id": "board-b", "address": "0x08000000"},

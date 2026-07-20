@@ -63,6 +63,12 @@ The server provides a guarded board-development surface:
 - **Firmware deployment:** bind the selected build output in a flash plan, verify it against the
   reviewed stable map at execution time, and flash the approved application. A successful flash
   is deployment evidence, not proof of behavior.
+
+`find_symbol`, `read_memory_symbol`, and symbol-backed `write_memory` accept the current project's
+ELF explicitly. Pass `elf_artifact` after a server restart; within one uninterrupted Server Run, a
+successful application flash also creates a temporary convenience binding. The server never swaps
+in packaged reference firmware as another project's symbol table, and symbol addresses remain
+subject to the board's memory-map containment policy.
 - **Guarded mutation and recovery:** writes, execution changes, bootloader work, and recovery
   require the current board gate, the exact `*-plan` action, and any required human permission.
 - **Per-board safety:** validation, plans, permissions, budgets, and results never transfer between
@@ -100,24 +106,24 @@ For a server-directed build, inspect the project's own build files and use the
 `pyocd_debug_mcp.native_build` argv template from `get_setup_status.build_guidance`. Put the exact
 native build argv after `--`; the helper runs it directly without a shell and reports its cwd,
 network policy, exit code, ELF/HEX format checks, and map provenance. It does not invent universal
-ELF/map coherence where linker-map formats cannot prove it. `--cwd`, repeatable `--env KEY=VALUE`, and
-explicit ELF/map/optional HEX paths cover arbitrary SDKs, vendor CLIs, IDE wrappers, and future build
-systems without a server adapter. Prefer a compatible installed toolchain, but acquire one normally
+ELF/map coherence where linker-map formats cannot prove it. `--cwd`, repeatable `--env KEY=VALUE`,
+`--timeout-seconds`, and repeatable `--artifact ROLE=PATH` declarations cover arbitrary SDKs,
+vendor CLIs, IDE wrappers, output formats, and future build systems without a server adapter. Known
+ELF/HEX formats receive structural checks; opaque formats are reported only as existing nonempty
+files. Prefer a compatible installed toolchain, but acquire one normally
 when none exists. Network access is inherited by default; `--offline` is an intentional best-effort
-set of common-client environment guards, not an OS network sandbox or implicit policy. Zephyr/west
-and GNU Make detection remain shortcuts only. The helper never
-accesses hardware or grants safety authority.
-
-`pyocd_debug_mcp.zephyr_build` remains an optional Zephyr convenience. It uses generated sysbuild
-domain metadata to keep the application ELF and linker map together instead of guessing by path,
-and it exports the same canonical bundle without deleting the incremental native build tree.
-It is not the normal generalized build path returned by `get_setup_status`.
+set of common-client environment guards, not an OS network sandbox or implicit policy. The server
+does not detect or select a provider, SDK root, compiler, board target, or installation layout.
+Every build system uses the same exact-argv path. The helper never accesses hardware or grants
+safety authority.
 
 Fresh boards do not need a checked-in board YAML. Given an exact MCU ordering code and local PDF,
-setup first replays verified local support and otherwise asks the agent for one official CMSIS-Pack.
-The server—not the agent—bounds and hashes the archive, proves the exact PDSC leaf, derives the
-pyOCD target, tests a non-destructive live attach, and only then records the project-local support
-binding. It captures the exact datasheet bytes as immutable source evidence and creates a
+setup first replays verified local support and otherwise asks the agent to research either an exact
+installed pyOCD target or one official CMSIS-Pack. The server—not the agent—replays built-in static
+geometry or bounds and hashes the archive, proves its exact PDSC leaf, and derives the pack target.
+It tests a non-destructive live attach before recording project-local support; a built-in target
+with partial metadata remains usable for only the capabilities it can prove. Setup captures the
+exact datasheet bytes as immutable source evidence and creates a
 schema-v3 map from separate pack flash/RAM/ROM ranges and optional SVD peripheral blocks. Unknown
 identity, erase, peripheral, deployment, or recovery facts disable only the dependent capability;
 they are never guessed from a part name. Core-compatibility identity permits bounded read/debug and
