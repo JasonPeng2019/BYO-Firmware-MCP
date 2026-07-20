@@ -1,0 +1,90 @@
+{
+  "attempt_id": "validation-f63e0882643e9d0a",
+  "board_id": "test_1_nucleo",
+  "code": "validation/safety-missing",
+  "created_at": "2026-07-20T22:41:30.097609Z",
+  "message": "Safety map is missing or inconsistent; run board_safety_refresh: current memory map is missing; run board_safety_refresh",
+  "observed": {
+    "board_id": "test_1_nucleo",
+    "expected_mcu": "STM32L476RGTB",
+    "inventory": {
+      "probes": [
+        {
+          "description": "STM32 STLink NUCLEO-L476RG",
+          "probe_family": "stlink",
+          "probe_id": "066FFF514988525067233337",
+          "usb_serial": "066FFF514988525067233337"
+        },
+        {
+          "description": "Segger J-Link OB-SAM3U128-V2-NordicSem",
+          "probe_family": "jlink",
+          "probe_id": "683377322",
+          "usb_serial": "683377322"
+        }
+      ]
+    },
+    "observed_mcu": "Cortex-M4 CPUID compatibility identity 0x410FC241",
+    "probe_identity": "066FFF514988525067233337",
+    "silicon_actual": 1091551809,
+    "silicon_expected": 49728,
+    "silicon_mask": 65520
+  },
+  "profile_unchanged": true,
+  "report_type": "validation",
+  "schema_version": 1,
+  "steps": [
+    {
+      "details": {
+        "map_reason": "Safety map is missing or inconsistent; run board_safety_refresh: current memory map is missing; run board_safety_refresh",
+        "profile": "test_1_nucleo.yaml"
+      },
+      "name": "Load profile and safety map",
+      "number": 1,
+      "outcome": "missing"
+    },
+    {
+      "details": {},
+      "name": "Enumerate debug probes",
+      "number": 2,
+      "outcome": "passed"
+    },
+    {
+      "details": {
+        "probe_id": "066FFF514988525067233337",
+        "probe_identity": "066FFF514988525067233337"
+      },
+      "name": "Resolve intended stable probe identity",
+      "number": 3,
+      "outcome": "passed"
+    },
+    {
+      "details": {},
+      "name": "Confirm verified target support",
+      "number": 4,
+      "outcome": "passed"
+    },
+    {
+      "details": {},
+      "name": "Connect without target mutation",
+      "number": 5,
+      "outcome": "passed"
+    },
+    {
+      "details": {
+        "observed_mcu": "Cortex-M4 CPUID compatibility identity 0x410FC241"
+      },
+      "name": "Read and compare reviewed silicon identity",
+      "number": 6,
+      "outcome": "passed"
+    },
+    {
+      "details": {
+        "reason": "Safety map is missing or inconsistent; run board_safety_refresh: current memory map is missing; run board_safety_refresh"
+      },
+      "name": "Associate current safety map",
+      "number": 7,
+      "outcome": "incomplete"
+    }
+  ],
+  "terminal_status": "validation_incomplete"
+}
