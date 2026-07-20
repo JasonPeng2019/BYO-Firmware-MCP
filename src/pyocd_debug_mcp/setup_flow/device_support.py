@@ -765,29 +765,25 @@ class DeviceSupportResolver:
 
 
 def has_available_pack_binding(store: FirmStore, part_number: str) -> bool:
-    """Detect repository or project bindings without accepting their payload bytes."""
+    """Detect project bindings without accepting their payload bytes."""
 
     requested = normalize_part_number(part_number)
-    manifests = [MANIFEST_PATH]
-    if store.layout.pack_manifest.resolve() != MANIFEST_PATH.resolve():
-        manifests.append(store.layout.pack_manifest)
     return any(
         normalize_part_number(binding.part_number) == requested
-        for manifest in manifests
-        for spec in load_manifest(manifest)
+        for spec in load_manifest(store.layout.pack_manifest)
         for binding in spec.device_bindings
     )
 
 
 def resolve_registered_pack_support(part_number: str) -> DeviceSupportCandidate:
-    """Resolve one exact local CMSIS-Pack support record from server authority."""
+    """Resolve one exact project-local CMSIS-Pack support record."""
 
     return _resolve_manifest_pack_support(
         MANIFEST_PATH,
         PACKS_DIR,
         part_number,
-        missing_label="server-registered",
-        allow_reviewed_identity_proof=True,
+        missing_label="project",
+        allow_reviewed_identity_proof=False,
     )
 
 
@@ -853,10 +849,6 @@ def _resolve_manifest_pack_support(
 def resolve_project_pack_support(store: FirmStore, part_number: str) -> DeviceSupportCandidate:
     """Replay one dynamically promoted binding from bytes, never manifest claims alone."""
 
-    if store.layout.pack_manifest.resolve() == MANIFEST_PATH.resolve():
-        raise PackProvisionError(
-            "No server-registered project device-support record matches the exact MCU part"
-        )
     return _resolve_manifest_pack_support(
         store.layout.pack_manifest,
         store.layout.pack_files,
@@ -867,25 +859,9 @@ def resolve_project_pack_support(store: FirmStore, part_number: str) -> DeviceSu
 
 
 def resolve_available_pack_support(store: FirmStore, part_number: str) -> DeviceSupportCandidate:
-    """Resolve one exact repository or project candidate, refusing conflicts."""
+    """Resolve one exact candidate from the active project's verified bytes."""
 
-    candidates: list[DeviceSupportCandidate] = []
-    for resolve in (
-        lambda: resolve_registered_pack_support(part_number),
-        lambda: resolve_project_pack_support(store, part_number),
-    ):
-        try:
-            candidate = resolve()
-        except PackProvisionError as exc:
-            if "No server-registered" not in str(exc):
-                raise
-        else:
-            if candidate.support_id not in {item.support_id for item in candidates}:
-                candidates.append(candidate)
-    if len(candidates) != 1:
-        reason = "No" if not candidates else "More than one"
-        raise PackProvisionError(f"{reason} verified exact device-support candidate is available")
-    return candidates[0]
+    return resolve_project_pack_support(store, part_number)
 
 
 def resolve_persisted_pack_support(
@@ -1138,8 +1114,6 @@ def verified_pack_for_candidate(
             ):
                 continue
             roots = [packs_dir]
-            if packs_dir.resolve() == PACKS_DIR.resolve():
-                roots.append(FirmStore(PACKS_DIR.parent).layout.pack_files)
             if any((root / spec.filename).is_file() for root in roots):
                 matches.append((spec, packs_dir))
     if not matches:

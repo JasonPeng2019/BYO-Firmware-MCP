@@ -13,7 +13,7 @@ This module provides a deterministic repair path:
 4. Rebuild the local `index.json` / `aliases.json` from every cached PDSC.
 
 It exists for operators and diagnostics. The shipped runtime still prefers the
-repo's pinned `.pack` manifest for target support.
+active project's pinned `.pack` manifest for target support.
 """
 
 from __future__ import annotations

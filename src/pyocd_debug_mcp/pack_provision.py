@@ -23,9 +23,13 @@ from typing import Any
 
 from pyocd_debug_mcp.firmstore.store import FirmStore
 
-REPO_ROOT = Path(__file__).resolve().parents[2]
-PACKS_DIR = REPO_ROOT / "packs"
-MANIFEST_PATH = PACKS_DIR / "manifest.yaml"
+_artifact_root = os.environ.get("BYO_MCP_ARTIFACT_ROOT", "").strip()
+_DEFAULT_PROJECT_ROOT = (
+    Path(_artifact_root).expanduser().resolve() if _artifact_root else Path.cwd().resolve()
+)
+_DEFAULT_STORE = FirmStore(_DEFAULT_PROJECT_ROOT)
+PACKS_DIR = _DEFAULT_STORE.layout.pack_files
+MANIFEST_PATH = _DEFAULT_STORE.layout.pack_manifest
 _CHUNK = 1 << 16
 MAX_CMSIS_PACK_ARCHIVE_BYTES = 128 * 1024 * 1024
 
@@ -324,8 +328,6 @@ def verified_pack_for_spec(
     """Load one exact manifest-selected package without target-wide provider lookup."""
 
     roots = [packs_dir]
-    if packs_dir.resolve() == PACKS_DIR.resolve():
-        roots.append(FirmStore(REPO_ROOT).layout.pack_files)
     candidates: list[Path] = []
     for root in roots:
         candidate = root / spec.filename
@@ -403,10 +405,7 @@ def discover_local_packs(packs_dir: Path = PACKS_DIR) -> list[Path]:
     fetches them; runtime just loads whatever is present so a connect never
     depends on the live pack index.
     """
-    roots = [packs_dir, FirmStore(REPO_ROOT).layout.pack_files]
-    artifact_root = os.environ.get("BYO_MCP_ARTIFACT_ROOT", "").strip()
-    if artifact_root:
-        roots.append(FirmStore(Path(artifact_root).expanduser().resolve()).layout.pack_files)
+    roots = [packs_dir]
     discovered = {
         pack.resolve()
         for root in roots
@@ -422,7 +421,6 @@ def verified_pack_for_target(
     *,
     manifest_path: Path = MANIFEST_PATH,
     packs_dir: Path = PACKS_DIR,
-    allow_active_project_manifest: bool = True,
 ) -> VerifiedPack | None:
     """Return the sole pinned local pack that authoritatively provides ``target``.
 
@@ -434,26 +432,13 @@ def verified_pack_for_target(
 
     normalized = target.strip().casefold()
     sources = [(manifest_path, packs_dir)]
-    artifact_root = os.environ.get("BYO_MCP_ARTIFACT_ROOT", "").strip()
-    if (
-        allow_active_project_manifest
-        and manifest_path == MANIFEST_PATH
-        and packs_dir == PACKS_DIR
-        and artifact_root
-    ):
-        active_store = FirmStore(Path(artifact_root).expanduser().resolve())
-        active_source = (active_store.layout.pack_manifest, active_store.layout.pack_files)
-        if active_source not in sources and active_source[0].is_file():
-            sources.append(active_source)
     matching_sources = [
         (spec, source_packs)
         for source_manifest, source_packs in sources
         for spec in load_manifest(source_manifest)
         if normalized in {item.casefold() for item in spec.provides_targets}
     ]
-    # Repository and project manifests may index different exact MCU leaves or
-    # board consumers from the same immutable package. Those bookkeeping
-    # differences do not create two target providers; package identity does.
+    # Multiple entries for the same immutable package do not create two providers.
     unique: dict[
         tuple[str, str, str, str, str, tuple[str, ...]],
         tuple[PackSpec, list[Path]],
@@ -479,12 +464,8 @@ def verified_pack_for_target(
         )
     spec, provider_roots = matches[0]
 
-    # Preserve deployment flexibility: a packaged server may hold packs beside
-    # the source tree, in the shared FirmStore, or in an invocation-scoped
-    # artifact root. Only the exact manifest filename and digest are eligible.
+    # Only exact bytes beneath the selected project store are eligible.
     roots = list(provider_roots)
-    if manifest_path == MANIFEST_PATH and packs_dir == PACKS_DIR:
-        roots.append(FirmStore(REPO_ROOT).layout.pack_files)
     candidates: list[Path] = []
     for root in roots:
         candidate = root / spec.filename
@@ -495,7 +476,7 @@ def verified_pack_for_target(
     if not candidates:
         raise PackProvisionError(
             f"Pinned pack for target {target!r} is absent: expected {spec.filename}. "
-            "Run the host bootstrap pack provisioning step."
+            "Complete project-local pack setup first."
         )
     payloads: list[tuple[Path, bytes]] = []
     for candidate in candidates:

@@ -356,7 +356,7 @@ class ProfileRepository:
         self.legacy_board_dir = (
             Path(legacy_board_dir).expanduser().resolve()
             if legacy_board_dir is not None
-            else store.layout.project_root / "boards"
+            else None
         )
         self._device_support_verifier = device_support_verifier or (
             lambda part, board, source: _verify_registered_device_support(
@@ -369,6 +369,8 @@ class ProfileRepository:
         return preview_board_config_paths(self.store.layout.boards)
 
     def _legacy_paths(self) -> list[Path]:
+        if self.legacy_board_dir is None:
+            return []
         return [
             path
             for path in preview_board_config_paths(self.legacy_board_dir)

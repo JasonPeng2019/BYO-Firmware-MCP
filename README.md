@@ -101,9 +101,8 @@ guarded artifact-contained application programming; bootloader and recovery auth
 separate, and setup status reports that distinction before deployment planning.
 
 The checkout ships no board catalog, pack manifest, board profile, reference firmware, or generated
-runtime state. Missing facts stay missing and setup/validation names the repair. Optional external
-reviewed catalogs or serial-helper registries must be configured explicitly; generic USB identity and
-manual serial selection remain available without them. Destructive recovery
+runtime state. Missing facts stay missing and setup/validation names the repair. An optional external serial-helper registry may be configured explicitly; generic USB identity and
+manual serial selection remain available without it. Destructive recovery
 uses the target-neutral `backend_mass_erase` capability after live-backend support, complete erase
 disclosure, and fresh one-time permission checks; `manual_only` remains fail-closed.
 

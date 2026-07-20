@@ -8,7 +8,6 @@ ranges through the MCP schema.
 from __future__ import annotations
 
 import json
-import os
 from dataclasses import dataclass
 from hashlib import sha256
 from pathlib import Path
@@ -71,7 +70,7 @@ class CatalogBoard:
     no_protected_resident_bootloader: bool
     hardware_regions: tuple[CatalogHardwareRegion, ...]
     datasheet_sha256: tuple[str, ...] = ()
-    document_revision: str = "repository-reviewed board support v1"
+    document_revision: str = "explicit reviewed board support v1"
     zephyr_board_target: str | None = None
     device_support_evidence_resource: str | None = None
     device_support_evidence_sha256: str | None = None
@@ -374,12 +373,9 @@ def _load_catalog(path: Path | None = None) -> dict[str, CatalogBoard]:
     return result
 
 
-_configured_catalog = os.environ.get("PYOCD_REVIEWED_BOARD_CATALOG", "").strip()
-_CATALOG = (
-    _load_catalog(Path(_configured_catalog).expanduser().resolve())
-    if _configured_catalog
-    else {}
-)
+# The fresh-start distribution intentionally contains no board catalog.
+# Normal onboarding uses project-local generic device support.
+_CATALOG: dict[str, CatalogBoard] = {}
 
 
 @dataclass(frozen=True, slots=True)
@@ -463,7 +459,7 @@ def resolve_reviewed_support_from_datasheet(
 
 
 def catalog_board(board_type: str) -> CatalogBoard:
-    """Return one reviewed catalog entry by its internal repository identifier."""
+    """Return one explicitly supplied reviewed catalog entry by identifier."""
 
     key = board_type.strip().casefold()
     try:

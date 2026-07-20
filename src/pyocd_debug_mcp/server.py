@@ -283,6 +283,13 @@ from pyocd_debug_mcp.tools.unlock import (
 
 load_local_env()
 
+_artifact_root_value = os.environ.get("BYO_MCP_ARTIFACT_ROOT", "").strip()
+_project_root = (
+    Path(_artifact_root_value).expanduser().resolve()
+    if _artifact_root_value
+    else Path.cwd().resolve()
+)
+
 mcp = RegistryFastMCP("pyocd-debug")
 tool_registry = mcp.registry
 server_run = create_server_run()
@@ -292,7 +299,7 @@ connection_manager = ConnectionManager()
 gate_manager = GateManager(server_run.gates)
 permission_store = PermissionStore(server_run)
 _current_symbol_artifacts: dict[str, tuple[Path, str]] = {}
-_session_store = InMemorySessionStore()
+_session_store = InMemorySessionStore(_project_root / ".firm" / "runs")
 _watcher = ConvergenceWatcher()
 _staged_server_timeouts = default_server_timeout_config()
 NO_BOARD_CONFIG_MESSAGE = (
@@ -366,7 +373,7 @@ def _validate_plan_scope(
     connection = connection_manager.maybe_connection(board_id)
     if definition.action_name == "board_setup":
         try:
-            profile = _profile_repository.load(board_id, include_legacy=True)
+            profile = _profile_repository.load(board_id, include_legacy=False)
         except ProfileError:
             profile = None
         existing_profile_paths = tuple(
@@ -2459,7 +2466,14 @@ def _validation_target_supported(target: str) -> bool | None:
     if normalized in _built_in_target_names():
         return True
     try:
-        return verified_pack_for_target(normalized) is not None
+        return (
+            verified_pack_for_target(
+                normalized,
+                manifest_path=_firm_store.layout.pack_manifest,
+                packs_dir=_firm_store.layout.pack_files,
+            )
+            is not None
+        )
     except PackProvisionError:
         # A declaration or stale process-global registration is not authority.
         # Missing, changed, or ambiguous pinned bytes must fail closed.
@@ -2627,12 +2641,6 @@ def _validation_capture(
     ).text
 
 
-_artifact_root_value = os.environ.get("BYO_MCP_ARTIFACT_ROOT", "").strip()
-_project_root = (
-    Path(_artifact_root_value).expanduser().resolve()
-    if _artifact_root_value
-    else Path.cwd().resolve()
-)
 _firm_store = FirmStore(_project_root)
 _profile_repository = ProfileRepository(_firm_store)
 _attachment_cache = AttachmentCache(_firm_store)
@@ -3296,7 +3304,7 @@ def _resolve_setup_support(user_input: SetupUserInput):
         # catalog-backed profiles can still be repaired through their original
         # authority path.
         try:
-            existing = _profile_repository.load(user_input.board_id, include_legacy=True)
+            existing = _profile_repository.load(user_input.board_id, include_legacy=False)
         except ProfileError:
             existing = None
         if existing is None or existing.device_support is not None:
@@ -3391,7 +3399,7 @@ def _setup_inventory(user_input: SetupUserInput) -> PreflightInventory:
             ],
         )
     targets = _target_names()
-    manifest_specs = (*load_manifest(), *load_manifest(_firm_store.layout.pack_manifest))
+    manifest_specs = tuple(load_manifest(_firm_store.layout.pack_manifest))
     manifest_targets = tuple(
         sorted({target.casefold() for pack in manifest_specs for target in pack.provides_targets})
     )
@@ -3501,7 +3509,7 @@ def _setup_connection_phase(context: SetupPhaseContext) -> SetupPhaseOutcome:
             f"The exact MCU and server-hashed datasheet did not match verified device support: {exc}",
         )
     try:
-        existing = _profile_repository.load(context.user_input.board_id, include_legacy=True)
+        existing = _profile_repository.load(context.user_input.board_id, include_legacy=False)
     except ProfileError:
         existing = None
     target = context.preflight.selected_target
@@ -4366,7 +4374,7 @@ def _setup_overview(
     """Give an agent the complete startup route without asking the user for internals."""
 
     try:
-        profiles = _profile_repository.load_all(include_legacy=True)
+        profiles = _profile_repository.load_all(include_legacy=False)
     except ProfileError as exc:
         return {
             "status": "setup_overview_blocked",
@@ -5291,7 +5299,7 @@ def _setup_plan_eligibility(board_id: str) -> tuple[bool, str]:
     """Expose populated setup only for first setup or an exact live mismatch route."""
 
     try:
-        profile = _profile_repository.load(board_id, include_legacy=True)
+        profile = _profile_repository.load(board_id, include_legacy=False)
     except ProfileError as exc:
         existing_profile_paths = tuple(
             _profile_repository.store.layout.board_profile(board_id, suffix=suffix)

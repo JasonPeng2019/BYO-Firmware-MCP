@@ -344,8 +344,7 @@ output can enter through the same visible collector.
 ## Target and host de-biasing boundaries
 
 The package ships no reviewed board identities, device evidence, geometry, or attach facts.
-An operator may explicitly configure an external reviewed catalog, but the default empty state uses
-generic onboarding, which derives exact target/core/physical memory/flash
+The empty state uses generic onboarding, which derives exact target/core/physical memory/flash
 algorithm facts from the verified PDSC leaf and records actual probe/attach
 facts from the live setup transaction. Production setup code contains no
 branches for a particular board name or device address. Missing identity,
@@ -365,6 +364,6 @@ The live MCP `tools/list` schemas, tool descriptions, and the plan definitions i
 `guardrails/plan_defs.py` are the runtime contract. The generated
 [plan-tool contract](plan-tool-contract.md) is the corresponding human-readable reference.
 
-The server is supported operationally from the complete checkout. Wheels and
-sdists prove metadata, entry points, and importability; they do not include the
-board, pack, firmware, or evidence roots needed for board control.
+The checkout, wheel, and sdist contain the same generic runtime. Board profiles, pack bytes,
+firmware, and evidence are created or selected in the active project; none is bundled with the
+server.
