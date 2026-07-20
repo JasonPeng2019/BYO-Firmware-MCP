@@ -6,47 +6,29 @@ only. Any compatible MCP client can use it; the server, not the client, owns
 plans, permissions, board routing, validation, safety containment, timeouts,
 and cleanup.
 
-## Run from the checkout
+## Start the server
 
-Operational use is checkout-only and requires the complete checkout because board profiles, pack
-metadata, and reference artifacts are not wheel package data. Runtime `.firm` state is generated
-inside the selected project root and is never shipped as authority. Python
-3.12 is the repository pin; package metadata supports Python 3.10 and newer.
-
-1. Read [init.md](init.md) for host prerequisites.
-2. Follow [stage0_setup.md](stage0_setup.md) for board readiness.
-3. Register this command with an MCP client:
-
-   ```json
-   {
-     "mcpServers": {
-       "pyocd-debug": {
-         "command": "uv",
-         "args": [
-           "run",
-           "--project",
-           "<absolute-path-to-BYO-Server>",
-           "--locked",
-           "pyocd-debug-mcp"
-         ]
-       }
-     }
-   }
-   ```
-
-Replace the placeholder with this checkout. Stdout is reserved for MCP
-framing. `pyocd-debug-mcp` intentionally has no conventional `--help` mode.
-This transport is provider-neutral: any MCP client that can launch the command
-over stdio can use the server. Vendor-specific headless flags and registration
-formats belong to the client, not BYO Server.
-
-Checkout utilities include:
+The repository is intentionally a fresh-start distribution: it contains no board profiles, packs,
+reference firmware, reviewed-device catalog, or generated `.firm` state. Install the locked
+environment, then register the stdio command with any MCP-compatible client:
 
 ```text
-uv run --locked python host_bootstrap.py --help
-uv run --locked python stage0_check.py --help
+uv sync --locked
+uv run --project <absolute-path-to-BYO-Server> --locked pyocd-debug-mcp
+```
+
+The client-specific registration wrapper varies, but the command and arguments do not. Stdout is
+reserved for MCP framing. Each project should set `BYO_MCP_ARTIFACT_ROOT` when it needs state outside
+its default project `.firm` directory. Setup creates project-local profiles and verified pack
+metadata only after an agent supplies the user's exact part number, datasheet, and researched target
+or pack candidate.
+
+Generic command-line utilities are available without any bundled board data:
+
+```text
 uv run --locked pyocd-pack-repair --help
 uv run --locked pyocd-native-build --help
+uv run --locked pyocd-collect-artifacts --help
 ```
 
 After setup validation, `get_setup_status` returns advisory, provider-neutral

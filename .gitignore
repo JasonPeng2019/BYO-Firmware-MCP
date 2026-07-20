@@ -20,8 +20,10 @@ pyocd.local.yaml
 # Runtime and local work output
 /runs/
 /scratch/
-/.firm/cache/
-/.firm/packs/files/
+/.firm/
+/packs/
+/boards/
+/firmware/
 
 # OS and editor metadata
 .DS_Store

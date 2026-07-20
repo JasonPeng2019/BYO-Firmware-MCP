@@ -11,9 +11,6 @@ from typing import Iterable
 
 from pyocd_debug_mcp.probe_families import probe_family_hints, probe_family_label
 
-DEFAULT_BOARD_CONFIG_DIR = (
-    Path(__file__).resolve().parents[2] / "boards"
-)  # PROJECT-DEFINED (repo layout)
 BOARD_CONFIG_SUFFIXES = frozenset({".json", ".yaml", ".yml"})  # PROJECT-DEFINED (supported formats)
 
 # Typed recover-mode selector — board YAML names a backend, never a raw shell command.
@@ -185,7 +182,7 @@ def make_board_config(raw: dict[str, object], source_path: Path | None) -> Board
     present_forbidden = sorted(field for field in forbidden_session_fields if field in raw)
     if present_forbidden:
         raise ConfigError(
-            "Board config contains project/session-scoped fields that do not belong in boards/<board>.yaml: "
+            "Board config contains project/session-scoped fields that do not belong in a durable board profile: "
             f"{', '.join(present_forbidden)}. Supply these later as runtime/session inputs instead."
         )
 
@@ -208,7 +205,7 @@ def make_board_config(raw: dict[str, object], source_path: Path | None) -> Board
         source = f" in {source_path}" if source_path is not None else ""
         warnings.warn(
             "Legacy field 'pack_name'"
-            f"{source} is deprecated and ignored; packs/manifest.yaml is the "
+            f"{source} is deprecated and ignored; the project-local verified pack registry is the "
             "authoritative owner of device-support package metadata.",
             LegacyPackNameWarning,
             stacklevel=2,

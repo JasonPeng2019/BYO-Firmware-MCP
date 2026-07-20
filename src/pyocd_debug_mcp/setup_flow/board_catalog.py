@@ -8,9 +8,9 @@ ranges through the MCP schema.
 from __future__ import annotations
 
 import json
+import os
 from dataclasses import dataclass
 from hashlib import sha256
-from importlib import resources
 from pathlib import Path
 
 from pyocd_debug_mcp.safety.regions import AddressRange, RegionKind
@@ -189,8 +189,6 @@ class CatalogBoard:
         }
 
 
-_CATALOG_RESOURCE_NAME = "reviewed_boards.json"
-
 
 def _required_string(raw: dict[str, object], name: str) -> str:
     value = raw.get(name)
@@ -240,19 +238,16 @@ def _string_tuple(raw: dict[str, object], name: str, *, required: bool = False) 
 
 
 def _load_catalog(path: Path | None = None) -> dict[str, CatalogBoard]:
-    """Load reviewed board facts from the packaged, server-owned data document."""
+    """Load reviewed board facts from an explicitly configured external document."""
 
     try:
-        text = (
-            path.read_text(encoding="utf-8")
-            if path is not None
-            else resources.files(__package__)
-            .joinpath(_CATALOG_RESOURCE_NAME)
-            .read_text(encoding="utf-8")
-        )
-        document = json.loads(text)
+        if path is None:
+            return {}
+        document = json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError as exc:
+        raise BoardCatalogError(f"Reviewed board catalog is unreadable: {path}") from exc
     except (OSError, json.JSONDecodeError) as exc:
-        source = str(path) if path is not None else _CATALOG_RESOURCE_NAME
+        source = str(path) if path is not None else "configured catalog"
         raise BoardCatalogError(f"Reviewed board catalog is unreadable: {source}") from exc
     if not isinstance(document, dict) or document.get("schema_version") != 2:
         raise BoardCatalogError("Reviewed board catalog must use schema_version 2")
@@ -379,7 +374,12 @@ def _load_catalog(path: Path | None = None) -> dict[str, CatalogBoard]:
     return result
 
 
-_CATALOG = _load_catalog()
+_configured_catalog = os.environ.get("PYOCD_REVIEWED_BOARD_CATALOG", "").strip()
+_CATALOG = (
+    _load_catalog(Path(_configured_catalog).expanduser().resolve())
+    if _configured_catalog
+    else {}
+)
 
 
 @dataclass(frozen=True, slots=True)

@@ -33,10 +33,10 @@ from elftools.common.exceptions import ELFError
 
 from pyocd_debug_mcp.adapters.swd_interface import TargetSessionHandle
 from pyocd_debug_mcp.board_config import (
-    DEFAULT_BOARD_CONFIG_DIR,
     BoardConfig,
     ConfigError,
-    load_selected_board_configs,
+    load_board_configs_from_paths,
+    select_boards_by_id,
 )
 from pyocd_debug_mcp.guardrails.flash_gate import resolve_flash_request
 from pyocd_debug_mcp.guardrails.gate import GateManager, GateRefusal
@@ -296,8 +296,8 @@ _session_store = InMemorySessionStore()
 _watcher = ConvergenceWatcher()
 _staged_server_timeouts = default_server_timeout_config()
 NO_BOARD_CONFIG_MESSAGE = (
-    "No board config loaded for this session. Pass `board_id` to `connect` "
-    "(or set PYOCD_BOARD_ID) to load boards/<board>.yaml facts."
+    "No project board profile is loaded for this session. Run setup for a new board, or pass an "
+    "explicit board-config path through the guarded launch-time override."
 )
 
 
@@ -873,17 +873,10 @@ def resolve_board_config(
     *,
     allow_environment_overrides: bool = True,
 ) -> BoardConfig | None:
-    """Load one board definition through the shared loader, or None if unselected.
+    """Resolve a project-local profile or an explicit guarded config file.
 
-    This is the server's single path to ``boards/<board>.yaml`` — the same loader
-    the Stage 0 CLI uses — so a custom ST/nRF board's facts (pyOCD target, recover
-    policy, silicon id, baud) reach the MCP tools, not just the CLI.
-
-    When ``allow_environment_overrides`` is true, ``board_id``/``board_config``
-    fall back to the ``PYOCD_BOARD_ID`` / ``PYOCD_BOARD_CONFIG`` environment
-    variables (the stdio-launch config channel). Public profile-only ``connect``
-    disables that fallback. Returns ``None`` when no board is named. Raises
-    ``ConfigError`` if a named board cannot be found or a config file is malformed.
+    The checkout intentionally ships no board-profile fallback. Environment
+    overrides participate only in guarded/manual launch paths.
     """
     environment_board = os.environ.get("PYOCD_BOARD_ID") if allow_environment_overrides else None
     bid = (board_id or environment_board or "").strip()
@@ -894,22 +887,17 @@ def resolve_board_config(
     )
     extra = board_config or environment_config or None
     if extra is None:
-        # Schema-v2 project-local profiles are the authoritative result of the
-        # setup workflow.  Resolve them before the checkout's legacy boards/
-        # compatibility directory so a clean artifact root can subsequently
-        # connect by its new logical board id.
         repository = globals().get("_profile_repository")
         if isinstance(repository, ProfileRepository):
             try:
                 return repository.load(bid, include_legacy=False).board
             except ProfileError:
                 pass
-    extra_paths = [Path(extra)] if extra else []
-    boards = load_selected_board_configs(
-        DEFAULT_BOARD_CONFIG_DIR,
-        extra_paths=extra_paths,
-        requested_ids=[bid],
-    )
+        raise ConfigError(
+            f"Board profile '{bid}' was not found in the configured artifact root. "
+            "Run board setup first."
+        )
+    boards = select_boards_by_id(load_board_configs_from_paths([Path(extra)]), [bid])
     return boards[0]
 
 
@@ -972,7 +960,7 @@ def _resolve_probe_uid_for_connect(
         # On this Windows host, the risky path is the subprocess fallback
         # behind probe resolution, not the direct pyOCD API enumeration. Keep
         # using API-derived UIDs when available so J-Link stdio attaches still
-        # work on boards like nrf52840dk, but never pre-run the subprocess
+        # work with probes whose API and CLI identities differ, but never pre-run the subprocess
         # probe-listing path for implicit J-Link selection.
         allow_subprocess_fallback = False
 
@@ -1022,10 +1010,10 @@ def _connect_impl(
     """Assign one connected probe session to the required logical board.
 
     Args:
-        board_id: Required logical board identity. It also selects facts from
-            ``boards/<board_id>.yaml`` through the shared board-config loader.
+        board_id: Required logical board identity. It selects the project-local
+            profile previously created by setup.
         unique_id: Whole or partial probe serial/unique ID for the guarded override path.
-        target: Target type override, e.g. "stm32f407vg" or "nrf52833". Takes
+        target: Target type override, e.g. the exact agent-resolved pyOCD target name. Takes
             precedence over a board config. Omit to use the selected board's
             target (when ``board_id`` is given), else the ``PYOCD_TARGET``
             environment variable, else pyOCD auto-detection.
@@ -1392,7 +1380,7 @@ def disconnect(board_id: str) -> str:
 def get_board_info(board_id: str) -> str:
     """Return the facts from the board config the session was opened with.
 
-    Reports the ``boards/<board>.yaml`` definition active for this session —
+    Reports the project-local profile active for this session —
     pyOCD target, MCU and probe family, recover policy, silicon-id expectation,
     default UART baud, and the smoke-test read address. Returns a notice when
     ``connect`` was called without a ``board_id`` (raw-target mode), where these
@@ -1743,7 +1731,7 @@ def _symbol_artifact_for_handle(handle: TargetSessionHandle) -> Path:
         return artifact
     raise ReferenceArtifactError(
         "No current-project ELF/AXF is bound in this Server Run. Pass the project's local symbol "
-        "artifact as elf_artifact; packaged reference firmware is never substituted for project "
+        "artifact as elf_artifact; no implicit firmware is substituted for project "
         "symbols."
     )
 
@@ -2639,13 +2627,14 @@ def _validation_capture(
     ).text
 
 
-_checkout_root = Path(__file__).resolve().parents[2]
 _artifact_root_value = os.environ.get("BYO_MCP_ARTIFACT_ROOT", "").strip()
 _project_root = (
-    Path(_artifact_root_value).expanduser().resolve() if _artifact_root_value else _checkout_root
+    Path(_artifact_root_value).expanduser().resolve()
+    if _artifact_root_value
+    else Path.cwd().resolve()
 )
 _firm_store = FirmStore(_project_root)
-_profile_repository = ProfileRepository(_firm_store, legacy_board_dir=_checkout_root / "boards")
+_profile_repository = ProfileRepository(_firm_store)
 _attachment_cache = AttachmentCache(_firm_store)
 _report_writer = ReportWriter(_firm_store)
 _safety_repository = SafetyMapRepository(_firm_store)

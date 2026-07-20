@@ -6,7 +6,6 @@ import re
 import shutil
 import sys
 from dataclasses import dataclass
-from importlib import resources
 from pathlib import Path
 from typing import Callable, Protocol
 
@@ -137,23 +136,16 @@ class SerialFallbackSpec:
     preferred_label: str | None = None
 
 
-_FALLBACK_RESOURCE_NAME = "serial_fallbacks.json"
 _SUPPORTED_FALLBACK_PARSERS = frozenset({"nrfjprog_com", "stm32_programmer_list"})
 
 
-def _load_serial_fallbacks(path: Path | None = None) -> tuple[SerialFallbackSpec, ...]:
+def _load_serial_fallbacks(path: Path) -> tuple[SerialFallbackSpec, ...]:
+    """Load an optional operator-supplied helper registry strictly."""
+
     try:
-        text = (
-            path.read_text(encoding="utf-8")
-            if path is not None
-            else resources.files(__package__).joinpath(_FALLBACK_RESOURCE_NAME).read_text(
-                encoding="utf-8"
-            )
-        )
-        document = json.loads(text)
+        document = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as exc:
-        source = str(path) if path is not None else _FALLBACK_RESOURCE_NAME
-        raise RuntimeError(f"Serial fallback registry is unreadable: {source}") from exc
+        raise RuntimeError(f"Serial fallback registry is unreadable: {path}") from exc
     if not isinstance(document, dict) or document.get("schema_version") != 1:
         raise RuntimeError("Serial fallback registry must use schema_version 1")
     rows = document.get("providers")
@@ -199,7 +191,12 @@ def _load_serial_fallbacks(path: Path | None = None) -> tuple[SerialFallbackSpec
     return tuple(specs)
 
 
-SERIAL_FALLBACKS = _load_serial_fallbacks()
+_configured_fallback_registry = os.environ.get("PYOCD_SERIAL_FALLBACK_REGISTRY", "").strip()
+SERIAL_FALLBACKS = (
+    _load_serial_fallbacks(Path(_configured_fallback_registry).expanduser().resolve())
+    if _configured_fallback_registry
+    else ()
+)
 
 
 def resolve_command_path(name: str, env_var: str | None = None) -> str | None:

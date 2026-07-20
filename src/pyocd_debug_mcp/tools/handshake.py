@@ -55,8 +55,7 @@ server also enforces physical handler locks and all board-specific safety checks
 Before downloading any large SDK, RTOS, toolchain, device pack, or library, perform a bounded
 local-first discovery. Check explicit paths and environment variables, the current project and
 its parents, and normal vendor install locations in the user's home and application directories.
-This includes existing NCS/Zephyr installs and STM32CubeIDE-provided STM32Cube, ThreadX, and
-toolchain trees. Validate the discovered product, version, target support, and executable tools
+This includes any existing vendor SDK, RTOS, compiler, debugger, and toolchain trees. Validate the discovered product, version, target support, and executable tools
 before reuse; never trust a folder name alone and never recursively crawl the whole disk. Use a
 network download only when no compatible local copy exists, and tell the user what was missing
 before fetching a large dependency. Do not copy or persist unrelated files found during discovery.

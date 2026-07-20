@@ -647,7 +647,7 @@ _LOCAL_FIRST_DEPENDENCY_PROTOCOL = (
     "Before downloading a large SDK, RTOS, toolchain, device pack, or library, do bounded "
     "local-first discovery in explicit/environment paths, the project and its parents, and "
     "normal vendor locations under the user's home/application directories. Reuse validated "
-    "NCS/Zephyr, STM32CubeIDE/STM32Cube/ThreadX, and equivalent vendor installations when "
+    "vendor SDK, RTOS, compiler, debugger, and equivalent installations when "
     "their version, target support, and executable tools are compatible. Never trust a name "
     "alone or recursively scan the whole disk. Download only as a fallback after no compatible "
     "local copy is found, and explain what is missing before fetching a large dependency."
@@ -714,19 +714,19 @@ _GUIDANCE: Final = MappingProxyType(
                 "mode": "setup",
                 "connection_id": "connection_1",
                 "display_name": "left controller",
-                "mcu_part_number": "nRF52840-QIAA",
+                "mcu_part_number": "EXACT-PACKAGE-PART",
                 "requires_uart": True,
                 "serial_baudrate": 115200,
-                "serial_id": "683377322",
-                "datasheet_path": "C:/firmware/docs/nRF52840_PS_v1.1.pdf",
+                "serial_id": "probe-associated-serial-id",
+                "datasheet_path": "C:/project/docs/datasheet.pdf",
             },
             "PAIRED ALLOWANCE: if the first setup call fails, its one paired board_fix_setup call "
             "is already authorized even under one-time permission. A further attempt requires a "
             "replacement plan and, for one-time permission, a fresh user prompt.",
             example_hypothesis=(
-                "The board the user calls 'left controller' is a new nRF52840-QIAA build with no "
+                "The board the user calls 'left controller' is a new exact-package MCU build with no "
                 "existing profile; setup should resolve exact device support from the supplied "
-                "datasheet plus verified support and bind it to the attached J-Link."
+                "datasheet plus verified support and bind it to the selected attached probe."
             ),
             example_strategy=(
                 "Run board_setup once; if it reports a failed phase, use the paired "
@@ -753,8 +753,8 @@ _GUIDANCE: Final = MappingProxyType(
             ),
             "The resulting session behaves like a normal connection; disconnect cleanly when done.",
             {
-                "probe_uid": "066EFF534951877567174226",
-                "target_override": "stm32l476rgtx",
+                "probe_uid": "probe-unique-id",
+                "target_override": "agent-resolved-pyocd-target",
                 "external_board_config": None,
             },
         ),

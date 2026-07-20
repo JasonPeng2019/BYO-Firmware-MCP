@@ -176,7 +176,7 @@ def _reject_package_metadata(document: Mapping[str, object], *, location: str) -
     if present:
         raise ProfileError(
             f"{location} must not contain device-support package metadata fields "
-            f"{present}; packs/manifest.yaml is authoritative"
+            f"{present}; the project-local verified pack registry is authoritative"
         )
 
 

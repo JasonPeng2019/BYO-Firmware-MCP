@@ -1,6 +1,0 @@
-# Downloaded CMSIS-Pack files are provisioned per-host (pinned + sha256-verified
-# from manifest.yaml). Do not commit the binaries; keep the manifest + docs.
-*
-!.gitignore
-!manifest.yaml
-!README.md

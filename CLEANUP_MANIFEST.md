@@ -878,3 +878,17 @@ This is the first same-round zero-valid-finding result and closes the required d
 - Empty-directory scan outside protected local tooling roots: passed.
 - Tests retained: none; no CI configuration exists in the tracked tree, so no test was required for shipment build.
 - Hardware was not touched. The MCP/probe processes were stopped again after the bounded stdio-only smoke so physical boards remain available to the user.
+# Fresh-start shipment contract
+
+The `chore/ship-cleanup` shipment contains the generic MCP implementation only. It ships no
+generated `.firm` state, board/profile files, CMSIS-Pack manifests or archives, reference firmware,
+reviewed-device catalog, device-specific evidence, or vendor-specific serial fallback registry.
+Unknown hardware is onboarded at runtime from the user's part number and datasheet plus an
+agent-resolved pyOCD target or CMSIS-Pack. Successful setup persists only beneath that project's
+configured artifact root, so later runs can reuse it without modifying this checkout.
+
+The absence of bundled data is a supported empty state, not an installation error. Explicit files
+remain strictly parsed. Flashing has no implicit checkout artifact: a current ELF/AXF/HEX must be
+selected through the normal artifact/plan workflow. Generic probe discovery, protocol adapters,
+pack verification, project-local profiles, and run-scoped gates remain product code rather than
+preconfiguration.

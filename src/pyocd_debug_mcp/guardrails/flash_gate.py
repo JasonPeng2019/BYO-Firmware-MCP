@@ -8,9 +8,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from pyocd_debug_mcp.adapters.swd_interface import TargetSessionHandle
-from pyocd_debug_mcp.reference_artifacts import resolve_reference_artifacts
 from pyocd_debug_mcp.services.session_runtime import ActionContext, PolicyRefusal
-from pyocd_debug_mcp.target_errors import ReferenceArtifactError
 
 SUPPORTED_FLASH_SUFFIXES = frozenset({".axf", ".elf", ".hex"})
 _URL_LIKE = re.compile(r"^[A-Za-z][A-Za-z0-9+.-]*://")
@@ -74,18 +72,12 @@ def resolve_flash_request(
         )
 
     if explicit_path is None:
-        if handle.board is None:
-            raise _refuse(
-                "flash/no-board-config",
-                "Default flash resolution requires a loaded board config.",
-                action_context,
-            )
-        try:
-            artifact_path = resolve_reference_artifacts(handle.board).flash_artifact
-        except ReferenceArtifactError as exc:
-            raise _refuse("flash/missing-default-artifact", str(exc), action_context) from exc
-        identity = _build_identity(artifact_path, source="default")
-        return ResolvedFlashRequest(artifact_path=artifact_path, identity=identity)
+        raise _refuse(
+            "flash/artifact-required",
+            "Flash requires the current project ELF, AXF, or HEX selected by the accepted plan; "
+            "this server ships no implicit reference firmware.",
+            action_context,
+        )
 
     if isinstance(explicit_path, str) and not explicit_path.strip():
         raise _refuse("flash/empty-path", "Flash path must not be empty.", action_context)

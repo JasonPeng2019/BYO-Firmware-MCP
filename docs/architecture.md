@@ -37,11 +37,10 @@ physical handler lock and receives the same prerequisite refusal.
 adapters. Business rules live in their owning modules rather than in the
 composition root.
 
-Profiles in the selected project `.firm/boards/` root are the primary
-normal-connection source. The checkout `boards/` directory is a read-only
-compatibility fallback. Fresh setup accepts an exact MCU ordering code and local
-PDF without requiring a checked-in board record. It first replays verified
-repository/project support. If none exists, it issues a bounded research request
+Profiles in the selected project `.firm/boards/` root are the only normal-connection
+source. The checkout ships no board-profile fallback. Fresh setup accepts an exact MCU
+ordering code and local PDF without requiring a checked-in board record. It first replays
+verified project support. If none exists, it issues a bounded research request
 for one official CMSIS-Pack; the server quarantines and hashes the bytes, bounds
 archive/XML parsing, proves the exact PDSC leaf, derives the pyOCD target, loads
 only that pack, and performs a non-destructive live attach before promotion.
@@ -165,7 +164,7 @@ The resulting action policy is:
 
 Symbol tools use either an explicit project `elf_artifact` or the ELF bound by a successful
 application flash in the same Server Run. The binding is only a convenience: it is not persisted,
-does not grant address authority, and packaged reference firmware is never silently substituted
+does not grant address authority, and implicit checkout firmware is never silently substituted
 after restart. Explicit symbol-write ELFs are digest-bound by the accepted plan; every resolved
 address still passes the stable memory-map containment check before target access.
 
@@ -260,9 +259,9 @@ and friendly choices, never structured payloads, continuation tokens, internal
 field names, or machine identifiers unless a destructive approval explicitly
 requires the exact live identity. See [agent-contract.md](agent-contract.md).
 
-The CLI `stage0_check.py` and MCP validation both adapt inputs into the same
-`setup_flow.validate.BoardValidator`; they do not maintain parallel validation
-implementations.
+MCP setup and validation adapt inputs into the single
+`setup_flow.validate.BoardValidator`; there is no parallel checkout-specific
+validation implementation.
 
 ## Durable `.firm` artifacts
 
@@ -344,9 +343,9 @@ output can enter through the same visible collector.
 
 ## Target and host de-biasing boundaries
 
-Reviewed board identities, parts, geometry, attach facts, and evidence hashes
-remain in packaged `setup_flow/reviewed_boards.json` only for compatibility.
-Generic onboarding instead derives exact target/core/physical memory/flash
+The package ships no reviewed board identities, device evidence, geometry, or attach facts.
+An operator may explicitly configure an external reviewed catalog, but the default empty state uses
+generic onboarding, which derives exact target/core/physical memory/flash
 algorithm facts from the verified PDSC leaf and records actual probe/attach
 facts from the live setup transaction. Production setup code contains no
 branches for a particular board name or device address. Missing identity,
@@ -354,10 +353,9 @@ peripheral, erase, deployment, or recovery facts remain missing; no MCU prefix
 invents them. Capability-specific operations then refuse before backend access.
 
 Serial association uses stable USB identity and generic metadata scoring first.
-Optional vendor helpers are selected from the packaged
-`serial_fallbacks.json` registry only when generic evidence stays ambiguous;
-their executables come from an explicit environment path or `PATH`, never a
-compiled host installation path. Recovery exposes only `backend_mass_erase` or
+Optional vendor helpers may be selected from an explicitly configured external registry when
+generic evidence stays ambiguous; their executables come from an explicit environment path or
+`PATH`, never a compiled host installation path. Recovery exposes only `backend_mass_erase` or
 `manual_only`, checks the connected backend capability before disclosure, and
 retains the existing exact-map disclosure and fresh one-time approval boundary.
 

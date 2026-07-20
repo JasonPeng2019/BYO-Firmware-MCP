@@ -37,7 +37,7 @@ The server provides a guarded board-development surface:
 `find_symbol`, `read_memory_symbol`, and symbol-backed `write_memory` accept the current project's
 ELF explicitly. Pass `elf_artifact` after a server restart; within one uninterrupted Server Run, a
 successful application flash also creates a temporary convenience binding. The server never swaps
-in packaged reference firmware as another project's symbol table, and symbol addresses remain
+in implicit checkout firmware as another project's symbol table, and symbol addresses remain
 subject to the board's memory-map containment policy.
 - **Guarded mutation and recovery:** writes, execution changes, bootloader work, and recovery
   require the current board gate, the exact `*-plan` action, and any required human permission.
@@ -100,9 +100,10 @@ they are never guessed from a part name. Core-compatibility identity permits bou
 guarded artifact-contained application programming; bootloader and recovery authority remain
 separate, and setup status reports that distinction before deployment planning.
 
-Reviewed board geometry and attach facts remain packaged compatibility data, not Python board-name
-branches. Missing facts stay missing and setup/validation names the repair. Serial resolution uses generic USB
-identity first, with configured vendor helpers only as ambiguity fallbacks. Destructive recovery
+The checkout ships no board catalog, pack manifest, board profile, reference firmware, or generated
+runtime state. Missing facts stay missing and setup/validation names the repair. Optional external
+reviewed catalogs or serial-helper registries must be configured explicitly; generic USB identity and
+manual serial selection remain available without them. Destructive recovery
 uses the target-neutral `backend_mass_erase` capability after live-backend support, complete erase
 disclosure, and fresh one-time permission checks; `manual_only` remains fail-closed.
 

@@ -5,7 +5,7 @@ The shipped server must not depend on the live cmsis-pack-manager index
 descriptors and silently skips any that fail or time out, producing a partial
 index that drops whole families (e.g. STM32L4) on restrictive networks.
 
-Instead, packs are pinned in ``packs/manifest.yaml`` by URL + sha256, fetched on
+Instead, packs are pinned in a project-local verified manifest by URL + sha256, fetched on
 demand, verified, and loaded by pyOCD via its ``pack`` option in the shared
 backend. ``ensure_all`` does the provisioning (network);
 ``verified_pack_for_target`` is the network-free runtime selector that binds one

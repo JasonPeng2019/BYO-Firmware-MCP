@@ -249,7 +249,7 @@ class FirmStore:
         """Atomically replace the project-local promoted-support index.
 
         Package bytes and their index both remain below ``.firm/packs``. The
-        checkout registry at ``packs/manifest.yaml`` is never a FirmStore write
+        external or project pack registry is never a FirmStore write
         target.
         """
 
