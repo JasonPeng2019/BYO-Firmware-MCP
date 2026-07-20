@@ -11,6 +11,17 @@ Evidence labels are intentionally separate:
 
 ## Current non-hardware evidence
 
+### Universal onboarding live acceptance (2026-07-19)
+
+Two isolated `gpt-5.6-luna` medium runs started from new project roots containing only a board
+name, exact MCU part, and datasheet. The nRF52840 run dynamically researched and promoted the
+official Nordic CMSIS-Pack; the STM32L476 run correctly reused exact verified local support. Both
+completed setup and live validation, reached `setup_ready`, disconnected, then routed directly to
+validation and reached ready again without repeated setup/research/refresh. All destructive plan
+surfaces were teaching-only and no target mutation occurred. The complete timeline, exact support
+identities, hashes, failure loops, and scope statement are in
+[`evidence/universal-onboarding-live-acceptance-2026-07-19.md`](evidence/universal-onboarding-live-acceptance-2026-07-19.md).
+
 ### P4-07 consolidated software checkpoint (2026-07-17)
 
 The post-gap-fix repository checkpoint is green on Windows, branch `Jason-v3-BYO`, baseline

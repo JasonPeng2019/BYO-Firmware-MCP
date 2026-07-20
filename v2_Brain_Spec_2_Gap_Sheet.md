@@ -321,3 +321,32 @@ preflight and reviewed-evidence construction. Refuse mismatches before connectio
 tests for all four mismatches, and rerun focused checks followed by the complete suite. This narrows
 only an unintended authority mismatch; ordinary built-in targets and correctly pinned packs keep
 the same workflow.
+
+## GAP-33 - Valid pack memory/SVD overlays left generic setup permanently not ready
+
+**Observed:** Fresh nRF52840 onboarding dynamically found and persisted the official Nordic pack,
+validated live identity, and built a schema-v3 map, but the map reported 63 conflicts. The pack
+describes UICR as separately erasable flash while its SVD also names UICR registers at those same
+addresses. Refresh deterministically recreated the same conflict, so reuse never reached ready.
+
+**Required closure:** Treat verified PDSC/pyOCD flash, RAM, and ROM classification as authoritative
+when SVD register metadata overlays the same address. Exclude only overlapping SVD rows before map
+construction, retain all non-overlapping peripheral rows and access modes, and keep strict conflict
+detection for genuinely incompatible sources. The rule must be address-based and vendor-neutral.
+Closure is tracked by `docs/universal-onboarding-memory-overlay-spec.md` and
+`docs/universal-onboarding-memory-overlay-plan.md`.
+
+## GAP-34 - Setup overview ignored project-local generic pack authority
+
+**Observed:** The real refresh callback now associates a generic profile with its canonical map,
+but automated audit found no end-to-end proof that the next overview routes to validation. Main
+inspection found the deeper cause: overview called the repository-only generic authority resolver,
+whereas validation and currentness replay the active project's exact persisted pack. A part learned
+only during agent-led onboarding could therefore be refreshed forever despite valid local evidence.
+
+**Required closure:** Reuse one server-owned authority-verification path that resolves generic maps
+from their exact active-project manifest and pack bytes. Add a real refresh-to-overview integration
+test for a part absent from repository bindings and require a direct validation route with no new
+research or setup. Closure is tracked by
+`docs/universal-onboarding-project-authority-reuse-spec.md` and
+`docs/universal-onboarding-project-authority-reuse-plan.md`.

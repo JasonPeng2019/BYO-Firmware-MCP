@@ -188,3 +188,30 @@ def test_failed_derivation_never_replaces_current_map(tmp_path: Path) -> None:
     assert result.status == "safety_refresh_blocked"
     assert result.remedy[-1] == "board_safety_refresh"
     assert repository.load_current("board") == original
+
+
+def test_post_commit_association_failure_is_explicit_and_retryable(tmp_path: Path) -> None:
+    attempts = 0
+
+    def associate(_board: str, _digest: str, _identity_changed: bool) -> None:
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise RuntimeError("concurrent profile update")
+
+    refresher = SafetyRefresher(
+        FirmStore(tmp_path),
+        derive=lambda _board: SafetyMapBuilder(SafetyMapRepository(FirmStore(tmp_path))).derive(
+            _request()
+        ),
+        on_commit=associate,
+    )
+
+    blocked = refresher.refresh(SafetyRefreshRequest("board", "refresh-blocked"))
+    completed = refresher.refresh(SafetyRefreshRequest("board", "refresh-retry"))
+
+    assert blocked.status == "safety_refresh_blocked"
+    assert "profile association" in str(blocked.reason)
+    assert blocked.remedy[-1] == "board_safety_refresh"
+    assert completed.status == "safety_refresh_completed"
+    assert attempts == 2

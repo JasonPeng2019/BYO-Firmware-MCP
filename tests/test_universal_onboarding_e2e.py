@@ -18,12 +18,14 @@ from pyocd_debug_mcp.safety.map_build import (
     SafetyMapError,
     SafetyMapRepository,
 )
+from pyocd_debug_mcp.safety.refresh import SafetyRefresher
 from pyocd_debug_mcp.setup_flow.preflight import (
     PreflightDecision,
     ProbeCandidate,
     SetupUserInput,
 )
-from pyocd_debug_mcp.setup_flow.setup import SetupPhaseContext
+from pyocd_debug_mcp.setup_flow.setup import RunAssignmentStore, SetupPhaseContext
+from pyocd_debug_mcp.setup_flow.validate import ValidationInventory, ValidationProbe
 
 
 def test_fresh_root_agent_pack_reply_builds_generic_profile_and_map(
@@ -130,6 +132,51 @@ def test_fresh_root_agent_pack_reply_builds_generic_profile_and_map(
     assert document.deployment_policy == {"kind": "none"}
     assert document.geometry.erase_available is True
     assert safety.load_current(board_id) == document
+
+    assert profiles.load(board_id, include_legacy=False).safety_ref is None
+    monkeypatch.setattr(
+        server,
+        "_safety_refresher",
+        SafetyRefresher(
+            store,
+            derive=server._derive_safety_map,
+            has_live_identity=lambda _board: False,
+            on_commit=server._restamp_after_refresh,
+        ),
+    )
+    monkeypatch.setattr(server, "_safety_continuation", lambda _prefix: "refresh-test")
+    monkeypatch.setattr(server.connection_manager, "maybe_connection", lambda _board: None)
+
+    refreshed = server._run_board_safety_refresh(board_id)
+
+    assert refreshed["status"] == "safety_refresh_completed"
+    profile = profiles.load(board_id, include_legacy=False)
+    assert profile.safety_ref == ".firm/safety/fresh_generic/memory_map.yaml"
+    monkeypatch.setattr(server, "assignment_store", RunAssignmentStore({}))
+    monkeypatch.setattr(
+        server,
+        "_validation_inventory",
+        lambda: ValidationInventory(
+            probes=(
+                ValidationProbe(
+                    "PROBE-NEW", "Generic CMSIS-DAP", "cmsisdap", "PROBE-NEW"
+                ),
+            )
+        ),
+    )
+    overview = server._setup_overview(["Fresh Generic Board"])
+    routes = cast(list[dict[str, object]], overview["routes"])
+    assert routes[0]["route"] == "validate"
+
+    stale = replace(
+        document,
+        source_digests=replace(document.source_digests, semantic_profile="0" * 64),
+    )
+    safety.commit(board_id, stale)
+    stale_overview = server._setup_overview(["Fresh Generic Board"])
+    stale_routes = cast(list[dict[str, object]], stale_overview["routes"])
+    assert stale_routes[0]["route"] == "refresh"
+    safety.commit(board_id, document)
 
     safety.path(board_id).write_text("not: [valid", encoding="utf-8")
     with pytest.raises(

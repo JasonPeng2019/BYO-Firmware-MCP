@@ -2814,8 +2814,8 @@ def _derive_generic_safety_map(board_id: str) -> GenericSafetyMapDocument:
     )
 
 
-def _require_current_reviewed_map(document) -> None:
-    """Reject a valid but stale map without consulting any build output."""
+def _require_map_authority(document) -> None:
+    """Replay one map's exact reviewed or active-project device authority."""
 
     if isinstance(document, GenericSafetyMapDocument):
         require_reconciled_authority(
@@ -2826,6 +2826,12 @@ def _require_current_reviewed_map(document) -> None:
         )
     else:
         require_reconciled_authority(document)
+
+
+def _require_current_reviewed_map(document) -> None:
+    """Reject a valid but stale map without consulting any build output."""
+
+    _require_map_authority(document)
     candidate = (
         _derive_generic_safety_map(document.board_id)
         if isinstance(document, GenericSafetyMapDocument)
@@ -2925,19 +2931,7 @@ def _missing_base_safety_kinds(
 def _load_validation_safety_map(profile) -> SafetyMapSnapshot:
     try:
         document = _safety_repository.load_current(profile.board_id)
-        generic_resolver = (
-            (
-                lambda part: resolve_persisted_pack_support(
-                    _profile_repository.store, part, document.authority_source
-                )
-            )
-            if isinstance(document, GenericSafetyMapDocument)
-            else None
-        )
-        require_reconciled_authority(
-            document,
-            generic_support_resolver=generic_resolver,
-        )
+        _require_map_authority(document)
         missing_kinds = _missing_base_safety_kinds(
             document.regions, generic=isinstance(document, GenericSafetyMapDocument)
         )
@@ -4183,7 +4177,7 @@ def _setup_overview(
             route_kind = "refresh"
             try:
                 artifacts = _safety_repository.load_current(profile.board_id)
-                require_reconciled_authority(artifacts)
+                _require_current_reviewed_map(artifacts)
                 complete = not region_conflicts(artifacts.regions)
                 route_kind = "validate" if complete else "refresh"
                 reason = (

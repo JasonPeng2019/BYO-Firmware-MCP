@@ -1,11 +1,23 @@
 from __future__ import annotations
 
 import sys
+from collections.abc import Callable
 from types import SimpleNamespace
 
 from pyocd_debug_mcp.adapters.uart_pyserial import PySerialUARTInterface
 from pyocd_debug_mcp.adapters.uart_interface import UARTInterface, UARTPortHandle
 from pyocd_debug_mcp.services import uart_capture
+
+
+class FakeClock:
+    def __init__(self) -> None:
+        self.now = 0.0
+
+    def monotonic(self) -> float:
+        return self.now
+
+    def advance(self, seconds: float) -> None:
+        self.now += seconds
 
 
 class FakeUARTAdapter(UARTInterface):
@@ -14,9 +26,11 @@ class FakeUARTAdapter(UARTInterface):
         sessions: list[list[bytes | Exception]],
         *,
         open_error: Exception | None = None,
+        on_read: Callable[[UARTPortHandle], None] | None = None,
     ) -> None:
         self._sessions = [list(session) for session in sessions]
         self._open_error = open_error
+        self._on_read = on_read
         self.open_count = 0
         self.reset_count = 0
         self.close_count = 0
@@ -43,6 +57,8 @@ class FakeUARTAdapter(UARTInterface):
         self.reset_count += 1
 
     def read(self, handle: UARTPortHandle, size: int) -> bytes:
+        if self._on_read is not None:
+            self._on_read(handle)
         session = handle.handle
         if session:
             item = session.pop(0)
@@ -50,6 +66,21 @@ class FakeUARTAdapter(UARTInterface):
                 raise item
             return item
         return b""
+
+    def read_with_timeout(
+        self,
+        handle: UARTPortHandle,
+        size: int,
+        *,
+        timeout_seconds: float,
+    ) -> bytes:
+        assert timeout_seconds > 0
+        previous_timeout = handle.timeout_seconds
+        try:
+            handle.timeout_seconds = timeout_seconds
+            return self.read(handle, size)
+        finally:
+            handle.timeout_seconds = previous_timeout
 
     def write(self, handle: UARTPortHandle, data: bytes) -> int:
         self.writes.append(data)
@@ -125,8 +156,15 @@ def test_capture_default_preserves_state_with_exactly_one_open() -> None:
     assert adapter.open_count == 1
 
 
-def test_capture_uart_output_without_expected_text_reports_any_output() -> None:
-    adapter = FakeUARTAdapter([[b"hello world\r\n"]])
+def test_capture_uart_output_without_expected_text_accumulates_the_full_window(
+    monkeypatch,
+) -> None:
+    clock = FakeClock()
+    adapter = FakeUARTAdapter(
+        [[b"hello ", b"world\r\n"]],
+        on_read=lambda _handle: clock.advance(0.01),
+    )
+    monkeypatch.setattr(uart_capture.time, "monotonic", clock.monotonic)
 
     result = uart_capture.capture_uart_output(
         "COM1",
@@ -141,6 +179,35 @@ def test_capture_uart_output_without_expected_text_reports_any_output() -> None:
     assert result.has_output is True
     assert result.matched is True
     assert result.excerpt == "hello world"
+    assert result.duration_seconds == 0.05
+    assert adapter.open_count == 1
+    assert adapter.close_count == 1
+
+
+def test_capture_uart_output_final_reopen_uses_remaining_overall_window(monkeypatch) -> None:
+    clock = FakeClock()
+    adapter = FakeUARTAdapter(
+        [[b""], [b"noise only\r\n"]],
+        on_read=lambda handle: clock.advance(handle.timeout_seconds),
+    )
+    monkeypatch.setattr(uart_capture.time, "monotonic", clock.monotonic)
+
+    result = uart_capture.capture_uart_output(
+        "COM1",
+        115200,
+        0.03,
+        "never appears",
+        reopen_attempts=1,
+        reopen_delay_seconds=0,
+        per_open_window_seconds=0.01,
+        adapter=adapter,
+    )
+
+    assert result.matched is False
+    assert result.duration_seconds == 0.03
+    assert result.reopen_count == 1
+    assert adapter.open_count == 2
+    assert "noise only" in result.text
 
 
 def test_capture_uart_output_surfaces_open_failures() -> None:
@@ -481,6 +548,146 @@ def test_pyserial_open_sets_read_and_write_timeouts(monkeypatch) -> None:
         "timeout": 0.2,
         "write_timeout": 0.2,
     }
+    assert handle.timeout_seconds == 0.2
+
+
+def test_pyserial_timed_read_restores_the_live_timeout(monkeypatch) -> None:
+    class FakeSerial:
+        def __init__(
+            self, device: str, *, baudrate: int, timeout: float, write_timeout: float
+        ) -> None:
+            self.timeout = timeout
+
+        def read(self, size: int) -> bytes:
+            assert size == 8
+            return b"ok"
+
+    monkeypatch.setitem(sys.modules, "serial", SimpleNamespace(Serial=FakeSerial))
+
+    adapter = PySerialUARTInterface()
+    handle = adapter.open("COM9", baudrate=115200, timeout_seconds=0.2)
+
+    assert adapter.read_with_timeout(handle, 8, timeout_seconds=0.03) == b"ok"
+    assert handle.handle.timeout == 0.2
+    assert handle.timeout_seconds == 0.2
+    assert adapter.read(handle, 8) == b"ok"
+
+
+def test_uart_interface_preserves_legacy_adapter_read_signature() -> None:
+    seen_timeouts: list[tuple[float, float]] = []
+
+    class LegacyAdapter(UARTInterface):
+        def open(
+            self, device: str, *, baudrate: int, timeout_seconds: float
+        ) -> UARTPortHandle:
+            return UARTPortHandle(
+                SimpleNamespace(timeout=timeout_seconds),
+                device,
+                baudrate,
+                timeout_seconds,
+            )
+
+        def close(self, handle: UARTPortHandle) -> None:
+            pass
+
+        def reset_input_buffer(self, handle: UARTPortHandle) -> None:
+            pass
+
+        def read(self, handle: UARTPortHandle, size: int) -> bytes:
+            seen_timeouts.append((handle.timeout_seconds, handle.handle.timeout))
+            return b"legacy"
+
+        def write(self, handle: UARTPortHandle, data: bytes) -> int:
+            return len(data)
+
+    adapter = LegacyAdapter()
+    handle = adapter.open("COM9", baudrate=115200, timeout_seconds=0.2)
+
+    assert adapter.read_with_timeout(handle, 8, timeout_seconds=0.03) == b"legacy"
+    assert seen_timeouts == [(0.03, 0.03)]
+    assert handle.timeout_seconds == 0.2
+    assert handle.handle.timeout == 0.2
+
+
+def test_uart_interface_rejects_legacy_transport_with_read_only_timeout() -> None:
+    class ReadOnlyTimeout:
+        @property
+        def timeout(self) -> float:
+            return 0.2
+
+    class LegacyAdapter(UARTInterface):
+        def open(
+            self, device: str, *, baudrate: int, timeout_seconds: float
+        ) -> UARTPortHandle:
+            return UARTPortHandle(ReadOnlyTimeout(), device, baudrate, timeout_seconds)
+
+        def close(self, handle: UARTPortHandle) -> None:
+            pass
+
+        def reset_input_buffer(self, handle: UARTPortHandle) -> None:
+            pass
+
+        def read(self, handle: UARTPortHandle, size: int) -> bytes:
+            raise AssertionError("read must not start without a bounded timeout")
+
+        def write(self, handle: UARTPortHandle, data: bytes) -> int:
+            return len(data)
+
+    adapter = LegacyAdapter()
+    handle = adapter.open("COM9", baudrate=115200, timeout_seconds=0.2)
+
+    try:
+        adapter.read_with_timeout(handle, 8, timeout_seconds=0.03)
+    except RuntimeError as exc:
+        assert "override read_with_timeout" in str(exc)
+    else:
+        raise AssertionError("expected an honest unsupported-adapter error")
+    assert handle.timeout_seconds == 0.2
+    assert handle.handle.timeout == 0.2
+
+
+def test_uart_interface_preserves_read_error_when_timeout_restore_fails() -> None:
+    class RestoreFails:
+        def __init__(self) -> None:
+            self._timeout = 0.2
+
+        @property
+        def timeout(self) -> float:
+            return self._timeout
+
+        @timeout.setter
+        def timeout(self, value: float) -> None:
+            if value == 0.2:
+                raise RuntimeError("restore failed")
+            self._timeout = value
+
+    class LegacyAdapter(UARTInterface):
+        def open(
+            self, device: str, *, baudrate: int, timeout_seconds: float
+        ) -> UARTPortHandle:
+            return UARTPortHandle(RestoreFails(), device, baudrate, timeout_seconds)
+
+        def close(self, handle: UARTPortHandle) -> None:
+            pass
+
+        def reset_input_buffer(self, handle: UARTPortHandle) -> None:
+            pass
+
+        def read(self, handle: UARTPortHandle, size: int) -> bytes:
+            raise OSError("read failed")
+
+        def write(self, handle: UARTPortHandle, data: bytes) -> int:
+            return len(data)
+
+    adapter = LegacyAdapter()
+    handle = adapter.open("COM9", baudrate=115200, timeout_seconds=0.2)
+
+    try:
+        adapter.read_with_timeout(handle, 8, timeout_seconds=0.03)
+    except OSError as exc:
+        assert str(exc) == "read failed"
+    else:
+        raise AssertionError("expected original read error")
     assert handle.timeout_seconds == 0.2
 
 

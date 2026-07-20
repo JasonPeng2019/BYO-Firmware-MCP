@@ -1,5 +1,5 @@
 {
-  "contract_version": 57,
+  "contract_version": 60,
   "status": "active",
   "milestone": "post-M10-debiased-runtime-round-6",
   "supersedes": "adversarial-usability-server-tools.json",
@@ -12,6 +12,8 @@
     "scripts/validate_autonomous_acceptance.py": "ed6f560edd746a3f5387dfae427a58ec5f9723335ddab623c53081c102d5845e",
     "src/pyocd_debug_mcp/adapters/swd_interface.py": "37cefbbed3a308e177790e75cffacdbfcb6b5b7183309d91e8c3757031c6b7f3",
     "src/pyocd_debug_mcp/adapters/swd_pyocd.py": "d4c5a83fefd5b8a16c2622515236da9e04e61d73af4756ed00f5a6e1d78069ea",
+    "src/pyocd_debug_mcp/adapters/uart_interface.py": "46bafdc514c042ec9a4a3fa17850539470952c3260cb4709971f4ca33a2462c2",
+    "src/pyocd_debug_mcp/adapters/uart_pyserial.py": "d857932b1bb0e927c24cfefb7a9e840855059d7656176814eb8075a4269eb949",
     "src/pyocd_debug_mcp/artifact_collector.py": "a881c3a2a58b62244e51f9434d1f667031481ada8bd56735ca1b5f8d0f98942b",
     "src/pyocd_debug_mcp/firmstore/cache.py": "1dd891bbec770170c2382b479b8cc2f505fb5933ee9d14a7effaa30d87ec20a7",
     "src/pyocd_debug_mcp/firmstore/reports.py": "e90afc5cc6c41e5d88b8278c904d6e0965adb14178a3b1d1b1fb45ee11e8ac85",
@@ -29,13 +31,13 @@
     "src/pyocd_debug_mcp/safety/enforce.py": "5371ff7e4f0fa1f430a2a0cc6857ee9171344a73142286fbfeb087de992e9295",
     "src/pyocd_debug_mcp/safety/linker.py": "97f5241d859c3e82bf1c2d9e884ac5ac705f0daa1d07621d1f8d5c24afca33c9",
     "src/pyocd_debug_mcp/safety/map_build.py": "9a95ce4b230f1b40048b30350ba162f9ef66137ce9b323e776101b99c808dedf",
-    "src/pyocd_debug_mcp/safety/refresh.py": "5b96ebae58d2ec2d854ecb39572fa8012ebbadccc509aeb47d80cc01629dcd82",
+    "src/pyocd_debug_mcp/safety/refresh.py": "138f585daaebc4aea65c399c1b3dad29da3486b52f2505740850c4afcb694ae8",
     "src/pyocd_debug_mcp/safety/regions.py": "1e329286b4c0d5233c137dc96ca1c4d20d5ae87f49cb7f73c0f327cf64b1cf90",
     "src/pyocd_debug_mcp/safety/verify2.py": "937f5a86a9461d7dfe681c6e656a2b3285ffab8983991495dcb6f6a944daaca3",
-    "src/pyocd_debug_mcp/server.py": "fa7b8bbcce8df7512a755c087417f3f52449c363f84fe4c9a3f5168d367c4bd7",
+    "src/pyocd_debug_mcp/server.py": "afb2af761cab593d971af167d206cdbf1772975d00a75620e342f57e7db528f8",
     "src/pyocd_debug_mcp/services/convergence_watcher.py": "5090b2fb7204dd8de772d75d60e783d18c8941e05456d28afab9b68dbf2ca7ce",
     "src/pyocd_debug_mcp/services/target_control.py": "d3162a734a95602526e9a8faffd7b63aa29ab1d12f256386fd0a72305d03cfdb",
-    "src/pyocd_debug_mcp/services/uart_capture.py": "270a66d831212faec875080c2fb721eb5d2a04b73275ecfa39eea1fef8155f1f",
+    "src/pyocd_debug_mcp/services/uart_capture.py": "0ab8b27d9edd100b3ee95abd0d8cafd7928bb154f378f9e754d14ffd579fb562",
     "src/pyocd_debug_mcp/services/uart_exchange_schema.py": "99cc6b54313b5667f5ab3a59910dfdd586472719d23c33d735311c837f959770",
     "src/pyocd_debug_mcp/setup_flow/board_catalog.py": "854c925386411ae259620860bb51c57e06dc0d6a428a8f91f6f500b5efb7e75c",
     "src/pyocd_debug_mcp/setup_flow/packs.py": "ce4fa03b4de1394a1c31b05166d5bbe41c1405375f5dbf847f90d40b7001a85b",
@@ -64,7 +66,7 @@
     "src/pyocd_debug_mcp/native_build.py": "78fa8d86ff36cd964393ae578518062e3ca9faa432e0c0869c3dc27e748f0f53",
     "src/pyocd_debug_mcp/firmstore/profiles.py": "fe1ac1bf1edd0807e88cf6343a6dde840f16365a70357dead7f2ec4c5b4604a1",
     "src/pyocd_debug_mcp/firmstore/store.py": "617dd83752c4f98b355f38cec1d935bc8c6b0d8fc487efc01545b303a82ed7d3",
-    "src/pyocd_debug_mcp/setup_flow/device_support.py": "368eec918e94fe761501c3b054a1b174095690e3add04f618b8fecc843affc38",
+    "src/pyocd_debug_mcp/setup_flow/device_support.py": "848c7cd48b21c494b6db22a6c664990747cef788ed8d7d503b5eeb70efa989a8",
     "src/pyocd_debug_mcp/setup_flow/datasheet_evidence.py": "216b6978afe34c463d8ce4736b03fc28c820aa4316a67362fc7e841713ff36c8"
   },
   "tool_contract_sha256_overrides": {
@@ -193,6 +195,9 @@
     "Version 54 binds quarantined live attach and target enumeration to bounded exact pack bytes, keeps unpromoted packs out of the global cache, requires exact live identity for flash, and persists generic allocation ownership before backend mutation.",
     "Version 55 keeps discovery agent-led while validating exact pack/PDSC/target bytes, maps pack RAM/ROM/flash and SVD peripherals, permits compatible-identity application programming, and replaces blank-only first flash with server-derived monotonic artifact allocation.",
     "Version 56 lets a project route only the requested boards among multiple visible probes while preserving explicit, run-scoped one-to-one assignments for every selected board.",
-    "Version 57 makes successful deterministic safety refresh associate the profile with its canonical map so first-map recovery becomes reusable setup state."
+    "Version 57 makes successful deterministic safety refresh associate the profile with its canonical map so first-map recovery becomes reusable setup state.",
+    "Version 58 normalizes verified memory/SVD overlays and replays active-project exact pack authority during overview so agent-resolved generic profiles route directly to validation on reuse.",
+    "Version 59 synchronizes the final geometry API documentation and makes overview require semantic map currentness before direct validation routing; public tool schemas are unchanged.",
+    "Version 60 makes read_serial honor its requested full capture window when no match arrives, preserves one-open state, and narrows each blocking UART read to the remaining deadline without changing public tool schemas."
   ]
 }

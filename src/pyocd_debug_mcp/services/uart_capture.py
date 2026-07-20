@@ -127,8 +127,13 @@ def capture_uart_output(
         if remaining <= 0:
             break
 
-        open_deadline = min(deadline, time.monotonic() + min(per_open_window_seconds, remaining))
-        timeout = min(0.2, max(0.05, min(per_open_window_seconds, remaining)))
+        is_final_attempt = attempt == total_attempts - 1
+        open_deadline = (
+            deadline
+            if is_final_attempt
+            else min(deadline, time.monotonic() + min(per_open_window_seconds, remaining))
+        )
+        timeout = min(0.2, per_open_window_seconds, remaining)
         port_handle = None
         try:
             port_handle = backend.open(device, baudrate=baudrate, timeout_seconds=timeout)
@@ -137,19 +142,19 @@ def capture_uart_output(
                 on_port_open()
             while time.monotonic() < open_deadline:
                 cancellation_checkpoint()
-                chunk = backend.read(port_handle, 256)
+                read_remaining = open_deadline - time.monotonic()
+                if read_remaining <= 0:
+                    break
+                chunk = backend.read_with_timeout(
+                    port_handle,
+                    256,
+                    timeout_seconds=min(0.2, read_remaining),
+                )
                 if chunk:
                     if max_bytes is not None:
                         chunk = chunk[: max(0, max_bytes - len(captured))]
                     captured.extend(chunk)
                     text = captured.decode("utf-8", errors="replace")
-                    if expected_text is None and text.strip():
-                        return UARTCaptureResult(
-                            text=text,
-                            expected_text=expected_text,
-                            reopen_count=reopen_count,
-                            duration_seconds=time.monotonic() - started,
-                        )
                     if expected_text and expected_text in text:
                         return UARTCaptureResult(
                             text=text,

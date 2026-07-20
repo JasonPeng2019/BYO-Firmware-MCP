@@ -165,7 +165,11 @@ def test_geometry_accepts_pack_flashinfo_sector_driver_without_flm(
     monkeypatch.setattr(
         device_support, "verified_pack_for_candidate", lambda _candidate, _store: selected
     )
-    monkeypatch.setattr(device_support, "CmsisPack", lambda _stream: SimpleNamespace(devices=(device,)))
+    monkeypatch.setattr(
+        device_support,
+        "CmsisPack",
+        lambda _stream: SimpleNamespace(devices=(device,)),
+    )
 
     geometry = resolve_registered_pack_geometry(candidate)
 
@@ -175,6 +179,101 @@ def test_geometry_accepts_pack_flashinfo_sector_driver_without_flm(
     )
     assert geometry.driver_proof_digest is not None
     assert geometry.peripheral_regions == ()
+
+
+def test_geometry_prefers_pack_memory_kind_over_overlapping_svd_register(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    binding = DeviceBinding("PART123", "PART123", "device-target")
+    selected = _selected(bindings=(binding,))
+    selected = VerifiedPack(selected.path, selected.spec, _pack_payload())
+    candidate = DeviceSupportCandidate.from_verified_pack(selected, binding)
+
+    class FakeFlash:
+        pass
+
+    flash = SimpleNamespace(
+        type="MemoryType.FLASH",
+        name="configuration flash",
+        start=0x10000004,
+        length=0x1000,
+        access="rx",
+        is_default=True,
+        is_boot_memory=True,
+        flm=None,
+        submap=SimpleNamespace(regions=()),
+        sector_size=0x1000,
+        page_size=0x100,
+        erased_byte_value=0xFF,
+        flash_class=FakeFlash,
+        is_erasable=True,
+    )
+    ram = SimpleNamespace(
+        type="MemoryType.RAM",
+        name="RAM",
+        start=0x20000000,
+        length=0x1000,
+        access="rwx",
+        is_default=True,
+        is_boot_memory=False,
+        is_writable=True,
+    )
+    device = SimpleNamespace(
+        part_number="PART123",
+        memory_map=SimpleNamespace(regions=(flash, ram)),
+        svd=io.BytesIO(b"<device/>"),
+        processors_map={"core": SimpleNamespace(name="Cortex-M4")},
+    )
+    parsed = SimpleNamespace(
+        width=32,
+        access=None,
+        peripherals=(
+            SimpleNamespace(
+                name="CONFIG",
+                base_address=0x10000000,
+                access=None,
+                address_block=None,
+                registers=(
+                    SimpleNamespace(
+                        name="WIDE", address_offset=0, size=64, access="read-write"
+                    ),
+                    SimpleNamespace(
+                        name="ALIAS", address_offset=0, size=32, access="read-only"
+                    ),
+                ),
+            ),
+            SimpleNamespace(
+                name="GPIO",
+                base_address=0x40020000,
+                access=None,
+                address_block=None,
+                registers=(
+                    SimpleNamespace(
+                        name="INPUT", address_offset=0, size=32, access="read-only"
+                    ),
+                ),
+            ),
+        ),
+    )
+    monkeypatch.setattr(
+        device_support, "verified_pack_for_candidate", lambda _candidate, _store: selected
+    )
+    monkeypatch.setattr(device_support, "CmsisPack", lambda _stream: SimpleNamespace(devices=(device,)))
+    monkeypatch.setattr(
+        device_support,
+        "SVDParser",
+        lambda _tree: SimpleNamespace(get_device=lambda: parsed),
+    )
+
+    geometry = resolve_registered_pack_geometry(candidate)
+
+    assert [
+        (item.name, item.start, item.end, item.access)
+        for item in geometry.peripheral_regions
+    ] == [
+        ("CONFIG.ALIAS", 0x10000000, 0x10000004, "read-only"),
+        ("GPIO.INPUT", 0x40020000, 0x40020004, "read-only"),
+    ]
 
 
 def test_svd_register_spans_preserve_resolved_access(

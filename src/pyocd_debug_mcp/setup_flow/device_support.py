@@ -651,7 +651,19 @@ def resolve_persisted_pack_support(
     return next(iter(candidates.values()))
 
 
-def _svd_peripheral_regions(device: object) -> tuple[PackAddressRegion, ...]:
+def _overlaps_memory(
+    region: PackAddressRegion, memory_regions: tuple[PackAddressRegion, ...]
+) -> bool:
+    return any(
+        region.start < memory.end and memory.start < region.end
+        for memory in memory_regions
+    )
+
+
+def _svd_peripheral_regions(
+    device: object,
+    memory_regions: tuple[PackAddressRegion, ...] = (),
+) -> tuple[PackAddressRegion, ...]:
     """Return non-overlapping, access-aware register spans from an optional SVD."""
 
     try:
@@ -691,7 +703,8 @@ def _svd_peripheral_regions(device: object) -> tuple[PackAddressRegion, ...]:
                         continue
                     if start < 0xE0100000 and end > 0xE0000000:
                         continue
-                    rows.add(row)
+                    if not _overlaps_memory(row, memory_regions):
+                        rows.add(row)
                 continue
             block = peripheral.address_block
             if block is None:
@@ -707,7 +720,8 @@ def _svd_peripheral_regions(device: object) -> tuple[PackAddressRegion, ...]:
                 continue
             if start < 0xE0100000 and end > 0xE0000000:
                 continue
-            rows.add(row)
+            if not _overlaps_memory(row, memory_regions):
+                rows.add(row)
 
         if not rows:
             return ()
@@ -792,12 +806,12 @@ def verified_pack_for_candidate(
 def resolve_registered_pack_geometry(
     candidate: DeviceSupportCandidate, store: FirmStore | None = None
 ) -> PackMemoryGeometry:
-    """Read the default flash/RAM pair from the selected verified PDSC leaf.
+    """Read physical memory facts from the selected verified PDSC leaf.
 
-    A device can expose several RAM banks.  The generic v3 map deliberately
-    exposes only the PDSC default RAM bank until a richer multi-bank authority
-    is available; withholding a valid bank is safe, whereas joining disjoint
-    banks would fabricate writable addresses across a gap.
+    The scalar fields retain one deterministic default flash/RAM pair for
+    compatibility and programming-domain selection. The region collections
+    preserve every independently described flash, writable RAM, and ROM range;
+    disjoint banks are never joined across gaps.
     """
 
     selected = verified_pack_for_candidate(candidate, store)
@@ -974,7 +988,13 @@ def resolve_registered_pack_geometry(
         if _compatible_core_identity(device) is not None
         else ()
     )
-    svd_regions = _svd_peripheral_regions(device)
+    canonical_flash = canonical_memory_regions(flash_candidates)
+    canonical_ram = canonical_memory_regions(ram_candidates)
+    canonical_rom = canonical_memory_regions(rom_candidates)
+    svd_regions = _svd_peripheral_regions(
+        device,
+        (*canonical_flash, *canonical_ram, *canonical_rom),
+    )
     return PackMemoryGeometry(
         int(flash.start),
         int(flash.start + flash.length),
@@ -983,9 +1003,9 @@ def resolve_registered_pack_geometry(
         tuple(sectors),
         driver_digest,
         erased_byte,
-        canonical_memory_regions(flash_candidates),
-        canonical_memory_regions(ram_candidates),
-        canonical_memory_regions(rom_candidates),
+        canonical_flash,
+        canonical_ram,
+        canonical_rom,
         svd_regions,
         cpu_system_regions,
     )

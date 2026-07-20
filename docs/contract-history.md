@@ -2,7 +2,7 @@
 
 The active product contract is
 `tests/contracts/product-server-tools.json`, introduced at M10 and revised through
-version 55 for universal device onboarding flexibility and hardening. It names the active milestone, imports
+version 60 for universal device onboarding flexibility and hardening. It names the active milestone, imports
 `tests/contracts/plan-prompt-server-tools.json` by SHA-256, and records the
 hardening and prompt-contract evidence that now guards the product. The active
 file is a cumulative, explicit delta over the frozen M9 baseline. Version 29
@@ -30,6 +30,11 @@ pack/PDSC/target bytes, maps disjoint pack memory and SVD peripheral evidence, p
 processor-compatible live identity for ordinary application programming, and replaces the
 blank-only first-flash rule with a server-derived monotonic artifact allocation. Bootloader,
 unlock, mass-erase, and recovery authority remain separate.
+
+Version 60 corrects bounded UART observation semantics: a capture without an expected-text
+sentinel now remains open for the requested window, unmatched sentinels are not truncated by the
+reopen window, and blocking reads are narrowed to the remaining deadline. The one-open default and
+public MCP schema are unchanged.
 
 `tests/contracts/source-server-tools.json` is the final extraction-named
 baseline. It is preserved byte-for-byte as historical evidence and is no

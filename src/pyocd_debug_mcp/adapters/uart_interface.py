@@ -36,6 +36,50 @@ class UARTInterface(ABC):
     def read(self, handle: UARTPortHandle, size: int) -> bytes:
         """Read up to ``size`` bytes from the live port."""
 
+    def read_with_timeout(
+        self,
+        handle: UARTPortHandle,
+        size: int,
+        *,
+        timeout_seconds: float,
+    ) -> bytes:
+        """Read with a temporary narrower timeout while preserving legacy adapters."""
+
+        if timeout_seconds <= 0:
+            raise ValueError("timeout_seconds must be > 0")
+        previous_recorded_timeout = handle.timeout_seconds
+        transport = handle.handle
+        transport_timeout_changed = False
+        if not hasattr(transport, "timeout"):
+            raise RuntimeError(
+                "UART adapter cannot narrow a read deadline; override read_with_timeout"
+            )
+        previous_transport_timeout = transport.timeout
+        read_failed = False
+        try:
+            handle.timeout_seconds = timeout_seconds
+            try:
+                transport.timeout = timeout_seconds
+                transport_timeout_changed = True
+            except (AttributeError, TypeError) as exc:
+                raise RuntimeError(
+                    "UART adapter cannot narrow a read deadline; override read_with_timeout"
+                ) from exc
+            return self.read(handle, size)
+        except BaseException:
+            read_failed = True
+            raise
+        finally:
+            try:
+                if transport_timeout_changed:
+                    try:
+                        transport.timeout = previous_transport_timeout
+                    except Exception:
+                        if not read_failed:
+                            raise
+            finally:
+                handle.timeout_seconds = previous_recorded_timeout
+
     @abstractmethod
     def write(self, handle: UARTPortHandle, data: bytes) -> int:
         """Write bytes to the live port and return the number of bytes accepted."""
