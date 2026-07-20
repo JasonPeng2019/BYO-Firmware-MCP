@@ -350,3 +350,31 @@ test for a part absent from repository bindings and require a direct validation 
 research or setup. Closure is tracked by
 `docs/universal-onboarding-project-authority-reuse-spec.md` and
 `docs/universal-onboarding-project-authority-reuse-plan.md`.
+
+## GAP-35 - Reviewed nRF map omitted ordinary peripheral read authority
+
+**Observed:** During the fresh bare-metal nRF52840 acceptance run, Luna needed the live UARTE
+`SHORTS` register to diagnose a one-byte receive failure. The server refused `0x40002200` as
+unknown and recommended `board_safety_refresh`; refresh succeeded but reproduced the same omission.
+The pinned datasheet and device-support evidence described only the writable GPIO window even though
+the product specification documents the APB/AHB peripheral spaces.
+
+**Required closure:** Add non-overlapping read-only peripheral coverage from the two pinned
+authorities, split around the existing prohibited NVMC/ACL and writable GPIO windows. Preserve the
+narrow write policy, prove UARTE reads work, and prove NVMC remains prohibited. Unknown devices keep
+using the existing verified pack/SVD path. Closure is tracked by
+`docs/reviewed-peripheral-read-coverage-spec.md` and
+`docs/reviewed-peripheral-read-coverage-plan.md`.
+
+## GAP-36 - General native build helper was a closed provider ladder
+
+**Observed:** `detect_provider` recognized only Zephyr/west and GNU Make and raised for every other
+project. The helper also selected only server-known local environments and unconditionally blocked
+network access, so PlatformIO, ESP-IDF, plain CMake/Ninja, Cargo, SCons, Bazel, IAR, Keil, vendor
+wrappers, and novel build systems could not use the advertised general path without a server edit.
+
+**Required closure:** Accept an agent-resolved exact argv/cwd/environment and verified output paths
+through one provider-independent owned-process path. Keep named detection only as convenience.
+Inherit network access by default so missing dependencies may be acquired; retain offline guards as
+an explicit option. Closure is tracked by `docs/universal-native-build-command-spec.md` and
+`docs/universal-native-build-command-plan.md`.

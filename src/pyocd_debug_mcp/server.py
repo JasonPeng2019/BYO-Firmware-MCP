@@ -3978,11 +3978,16 @@ def _get_setup_status(board_id: str) -> Mapping[str, object]:
             "authority": "advisory_only",
             "primary_workflow": "general_native_build_helper",
             "guidance": (
-                "Use the exact general-helper argv template below after replacing its three "
-                "angle-bracket values. The helper detects the native provider from project files, "
-                "uses a complete local environment, never provisions toolchains, and applies "
-                "standard offline guards to the native child build. Inspect only the returned "
-                "resolved local environment; do not scan for or download another SDK."
+                "First inspect the project's build files and discover its real build executable, "
+                "SDK/toolchain, arguments, working directory, and outputs. Prefer a compatible "
+                "local installation; if none exists, normal network acquisition is allowed. Then "
+                "replace the generic template values and put the exact build argv after '--'. "
+                "The helper executes it directly without a shell, inherits the environment and "
+                "network by default, accepts repeatable --env KEY=VALUE overrides, verifies "
+                "ELF/HEX formats, and reports map provenance without claiming unprovable ELF/map "
+                "coherence. Use --offline only when intentionally requested; "
+                "it applies best-effort common-client environment guards, not a network sandbox. "
+                "Zephyr/west and GNU Make detection are optional conveniences, never the ceiling."
             ),
             "general_build_helper": command_template(),
             "artifact_collection": {
@@ -4008,7 +4013,11 @@ def _get_setup_status(board_id: str) -> Mapping[str, object]:
                 "application (bootloader/recovery authority remains separate). Use "
                 "board_safety_refresh only for a stable-map problem."
             ),
-            "toolchain_fallback": None,
+            "toolchain_fallback": (
+                "If bounded local discovery finds no compatible build environment, the agent may "
+                "use the normal installation or network acquisition path for the project's actual "
+                "toolchain, then pass that exact command/environment to the generic helper."
+            ),
         }
     return {
         "status": "setup_ready" if live_session_ready else "setup_not_ready",

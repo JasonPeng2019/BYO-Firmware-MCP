@@ -119,6 +119,30 @@
           "kind": "cpu_system",
           "start": 3758096384,
           "end": 3759144960
+        },
+        {
+          "name": "volatile APB peripherals before NVMC",
+          "kind": "peripheral_read_only",
+          "start": 1073741824,
+          "end": 1073864704
+        },
+        {
+          "name": "volatile APB peripherals after NVMC",
+          "kind": "peripheral_read_only",
+          "start": 1073868800,
+          "end": 1342177280
+        },
+        {
+          "name": "volatile AHB peripherals before writable GPIO",
+          "kind": "peripheral_read_only",
+          "start": 1342177280,
+          "end": 1342178560
+        },
+        {
+          "name": "volatile AHB peripherals after writable GPIO",
+          "kind": "peripheral_read_only",
+          "start": 1342179584,
+          "end": 1610612736
         }
       ],
       "datasheet_sha256": [
@@ -127,9 +151,9 @@
       "document_revision": "nRF52840 PS v1.1 plus nRF52840 DK reviewed deployment policy v1",
       "zephyr_board_target": "nrf52840dk/nrf52840",
       "device_support_evidence_resource": "evidence/nrf52840_device_support.json",
-      "device_support_evidence_sha256": "8ffa48e16fb03d491660c93faaa1a34f9654873e7c27b7113cc23216fe47a8e7",
+      "device_support_evidence_sha256": "04972bb6d0a21fa051bdcba8f03b9b702e22eb68859d5f3fd32f121d69347e04",
       "official_evidence_resource": "evidence/nrf52840_official_document.json",
-      "official_evidence_sha256": "c159d4eec5af036fcca72c06ea620db370750b88a086de965040235317f74daa",
+      "official_evidence_sha256": "423b473567c832315725f523921a743fc92d493ad33a8a140b659c5a96165d0d",
       "pyocd_version": "0.45.0",
       "pyocd_target_module": "pyocd.target.builtin.target_nRF52840_xxAA",
       "pyocd_target_module_sha256": "c4713dea41facd880a92eb3b4a12924305290b36753e1fe592a463b856b9b29f",

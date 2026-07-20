@@ -323,8 +323,15 @@ interruptible. Stdio EOF and normal shutdown use the same cleanup ownership.
 ## Build artifact intake
 
 Firmware builds remain native-project work. The server returns an exact parameterized invocation of
-the provider-neutral `pyocd_debug_mcp.native_build` helper, which detects the provider, uses only a
-complete local SDK/toolchain, and executes one native command without provisioning. The always-visible
+the provider-neutral `pyocd_debug_mcp.native_build` helper. The agent resolves the project's real
+executable, argv, cwd, environment, and outputs; the helper executes that argv directly without a
+shell, inherits network access by default, verifies ELF/HEX formats, and records whether the linker
+map was explicit, provider-conventional, or uniquely discovered without claiming universal ELF/map
+coherence. Outputs may be discovered under a caller-selected artifact root. Existing incremental
+and in-source layouts are supported. Local
+toolchains are preferred, acquisition is allowed when none is compatible, and best-effort offline
+environment guards are explicit rather than an OS network-sandbox claim. Optional Zephyr/west and
+GNU Make detection never limit the generic path. The always-visible
 `collect_build_artifacts` MCP tool then provides an optional build-system-neutral
 handoff for explicit ELF, HEX, BIN, and linker-map outputs. It performs no build,
 search, subprocess, download, or hardware access. Collection stages a canonical
@@ -336,8 +343,9 @@ artifact and runtime containment parses it immediately before execution.
 The Zephyr helper is a separate terminal convenience, not an MCP hardware action.
 It reuses the same collector after selecting the declared sysbuild default domain,
 which keeps the application ELF and linker map coherent and preserves the native
-incremental build tree. Other build systems need no provider adapter: their normal
-build output can enter through the same visible collector.
+incremental build tree. Other build systems need no provider adapter: their exact command runs
+through the same owned-process helper and their normal output can enter through the same visible
+collector.
 
 ## Target and host de-biasing boundaries
 

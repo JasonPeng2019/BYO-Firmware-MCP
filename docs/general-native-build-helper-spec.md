@@ -1,5 +1,9 @@
 # General Native Build Helper Specification
 
+> Superseded for universal command behavior and network policy by
+> `docs/universal-native-build-command-spec.md`. The local/offline behavior below describes the
+> original acceptance constraint, not the current generic-path ceiling.
+
 ## Problem
 
 `get_setup_status.build_guidance` currently describes a native build but does not return an exact

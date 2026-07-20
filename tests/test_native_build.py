@@ -9,6 +9,10 @@ import pytest
 from pyocd_debug_mcp import native_build
 
 
+def _elf_bytes(elf_type: int = 2, payload: bytes = b"") -> bytes:
+    return b"\x7fELF\x01\x01\x01" + (b"\x00" * 9) + elf_type.to_bytes(2, "little") + payload
+
+
 def _write_toolchain_environment(root: Path) -> Path:
     metadata = root / "toolchains" / "toolchain-a" / "environment.json"
     metadata.parent.mkdir(parents=True)
@@ -67,6 +71,7 @@ def test_run_build_executes_one_native_command_and_reports_artifacts(
     (project / "prj.conf").write_text("CONFIG_GPIO=y\n", encoding="utf-8")
     (project / "CMakeLists.txt").write_text("find_package(Zephyr REQUIRED)\n", encoding="utf-8")
     build = tmp_path / "build"
+    (tmp_path / "ncs").mkdir()
     environment = native_build.LocalBuildEnvironment(
         provider="zephyr-west",
         workspace_dir=tmp_path / "ncs",
@@ -90,7 +95,7 @@ def test_run_build_executes_one_native_command_and_reports_artifacts(
         calls.append((argv, cwd, env))
         assert timeout == native_build.BUILD_TIMEOUT_SECONDS
         (build / "zephyr").mkdir(parents=True)
-        (build / "zephyr" / "zephyr.elf").write_bytes(b"elf")
+        (build / "zephyr" / "zephyr.elf").write_bytes(_elf_bytes())
         (build / "zephyr" / "zephyr.map").write_text("map", encoding="utf-8")
         return Namespace(returncode=0)
 
@@ -104,7 +109,8 @@ def test_run_build_executes_one_native_command_and_reports_artifacts(
     assert result == 0
     assert len(calls) == 1
     assert calls[0][0][1:4] == ["build", "--board", "board/soc"]
-    assert evidence["offline_guards"] is True
+    assert evidence["offline_guards"] is False
+    assert evidence["network_policy"] == "inherited"
     assert evidence["helper_provisioning"] is False
     assert evidence["artifacts"]["elf"].endswith("zephyr.elf")
 
@@ -135,35 +141,32 @@ def test_build_rejects_nonempty_output_before_environment_discovery(
 
 
 def test_command_template_is_general_and_parameterized(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    selected = native_build.LocalBuildEnvironment(
-        provider="zephyr-west",
-        workspace_dir=tmp_path / "ncs" / "v3.3.1",
-        toolchain_env=tmp_path / "ncs" / "toolchains" / "one" / "environment.json",
-        executable=tmp_path / "ncs" / "toolchains" / "one" / "bin" / "west",
-        environment={},
-    )
     monkeypatch.setattr(
-        native_build, "discover_local_environment", lambda **_kwargs: selected
+        native_build,
+        "discover_local_environment",
+        lambda **_kwargs: pytest.fail("guidance must not preselect a named environment"),
     )
     template = native_build.command_template()
     argv = template["argv_template"]
     assert isinstance(argv, list)
     assert argv[1:3] == ["-m", "pyocd_debug_mcp.native_build"]
     assert "zephyr_build" not in " ".join(argv)
-    assert template["offline_guards"] is True
+    assert template["offline_guards"] is False
+    assert template["network_policy"] == "inherited_by_default"
+    assert template["provider_selection"] == "agent_argv_or_optional_detection"
+    assert "<build-executable>" in argv
+    assert "'<project-dir>'" in str(template["powershell_template"])
     assert template["helper_provisioning"] is False
     assert template["resolved_local_environment"] == {
-        "status": "ready",
-        "provider": "zephyr-west",
-        "workspace_dir": str(selected.workspace_dir),
-        "toolchain_env": str(selected.toolchain_env),
-        "build_executable": str(selected.executable),
+        "status": "not_selected",
+        "reason": "Resolve the project's real build command before choosing an environment.",
     }
+    assert template["optional_convenience_providers"] == ["zephyr-west", "gnu-make"]
 
 
-def test_command_template_reports_missing_local_environment(
+def test_command_template_does_not_probe_missing_local_environment(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     def unavailable(**_kwargs: object) -> native_build.LocalBuildEnvironment:
@@ -173,10 +176,9 @@ def test_command_template_reports_missing_local_environment(
 
     template = native_build.command_template()
 
-    assert template["resolved_local_environment"] == {
-        "status": "unavailable",
-        "error": "no complete local install",
-    }
+    selected = template["resolved_local_environment"]
+    assert isinstance(selected, dict)
+    assert selected["status"] == "not_selected"
 
 
 def test_global_west_fallback_is_rejected(
@@ -246,22 +248,6 @@ def test_posix_defaults_never_reinterpret_windows_path() -> None:
     assert "C:/ncs" not in defaults
 
 
-def test_command_template_contains_filesystem_discovery_failure(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    def inaccessible(**_kwargs: object) -> native_build.LocalBuildEnvironment:
-        raise PermissionError("blocked install root")
-
-    monkeypatch.setattr(native_build, "discover_local_environment", inaccessible)
-
-    template = native_build.command_template()
-
-    assert template["resolved_local_environment"] == {
-        "status": "unavailable",
-        "error": "blocked install root",
-    }
-
-
 def test_make_provider_uses_fresh_build_variable_and_reports_generic_artifacts(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -301,9 +287,9 @@ def test_make_provider_uses_fresh_build_variable_and_reports_generic_artifacts(
         del check, timeout
         calls.append((argv, cwd, env))
         build.mkdir(parents=True, exist_ok=True)
-        (build / "firmware.elf").write_bytes(b"elf")
+        (build / "firmware.elf").write_bytes(_elf_bytes(payload=b"firmware"))
         (build / "firmware.map").write_text("map", encoding="utf-8")
-        (build / "firmware.hex").write_text("hex", encoding="utf-8")
+        (build / "firmware.hex").write_text(":00000001FF\n", encoding="ascii")
         return Namespace(returncode=0)
 
     monkeypatch.setattr(native_build, "run_owned", fake_run)
@@ -360,7 +346,7 @@ def test_make_artifact_discovery_rejects_ambiguity(tmp_path: Path) -> None:
     build = tmp_path / "build"
     build.mkdir()
     for name in ("one.elf", "two.elf"):
-        (build / name).write_bytes(b"elf")
+        (build / name).write_bytes(_elf_bytes())
 
     with pytest.raises(RuntimeError, match="exactly one ELF"):
         native_build._artifact_paths(build, "gnu-make")
@@ -406,7 +392,7 @@ def test_native_target_rejects_make_option_or_variable_injection(target: str) ->
 def test_make_artifacts_reject_extra_unrelated_map(tmp_path: Path) -> None:
     build = tmp_path / "build"
     build.mkdir()
-    (build / "firmware.elf").write_bytes(b"elf")
+    (build / "firmware.elf").write_bytes(_elf_bytes())
     (build / "firmware.map").write_text("map", encoding="utf-8")
     (build / "stale.map").write_text("stale", encoding="utf-8")
 
@@ -461,3 +447,392 @@ def test_vendor_discovery_supports_windows_macos_and_linux_layouts(
     )
 
     assert matches == (executable.resolve(),)
+
+
+def test_agent_command_supports_unknown_provider_cwd_env_and_declared_outputs(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    project = tmp_path / "platformio-app"
+    project.mkdir()
+    (project / "platformio.ini").write_text("[env:board]\n", encoding="utf-8")
+    working = project / "scripts"
+    working.mkdir()
+    build = tmp_path / "out"
+    monkeypatch.setenv("HTTPS_PROXY", "http://real-proxy")
+    monkeypatch.setattr(
+        native_build,
+        "detect_provider",
+        lambda _project: pytest.fail("explicit argv must bypass provider detection"),
+    )
+    monkeypatch.setattr(
+        native_build,
+        "discover_local_environment",
+        lambda **_kwargs: pytest.fail("explicit argv must bypass environment discovery"),
+    )
+    calls: list[tuple[list[str], Path, dict[str, str]]] = []
+
+    def fake_run(
+        argv: list[str],
+        *,
+        cwd: Path,
+        env: dict[str, str],
+        check: bool,
+        timeout: float,
+    ) -> object:
+        del check, timeout
+        calls.append((argv, cwd, env))
+        build.mkdir(parents=True, exist_ok=True)
+        (build / "firmware.axf").write_bytes(_elf_bytes(payload=b"payload"))
+        (build / "linker-output.txt").write_text("map", encoding="utf-8")
+        return Namespace(returncode=0)
+
+    monkeypatch.setattr(native_build, "run_owned", fake_run)
+
+    result = native_build.run_build(
+        Namespace(
+            project_dir=str(project),
+            build_dir=str(build),
+            target=None,
+            cwd=str(working),
+            env=["BOARD=novel-part"],
+            offline=False,
+            artifact_elf="firmware.axf",
+            artifact_map="linker-output.txt",
+            artifact_hex=None,
+            command=["--", "platformio", "run", "--environment", "board"],
+        )
+    )
+
+    evidence = json.loads(capsys.readouterr().out)
+    assert result == 0
+    assert calls[0][0] == ["platformio", "run", "--environment", "board"]
+    assert calls[0][1] == working.resolve()
+    assert calls[0][2]["BOARD"] == "novel-part"
+    assert calls[0][2]["HTTPS_PROXY"] == "http://real-proxy"
+    assert evidence["provider"] == "agent-command"
+    assert evidence["provider_selection"] == "agent-supplied-argv"
+    assert evidence["cwd"] == str(working.resolve())
+    assert evidence["environment_overrides"] == ["BOARD"]
+    assert evidence["artifacts"] == {
+        "elf": str((build / "firmware.axf").resolve()),
+        "hex": None,
+        "map": str((build / "linker-output.txt").resolve()),
+    }
+    assert evidence["artifact_assurance"]["elf"] == "loadable-elf-header-verified"
+    assert evidence["artifact_assurance"]["map"] == "agent-declared-existing"
+
+
+def test_agent_command_discovers_extension_independent_elf(tmp_path: Path) -> None:
+    build = tmp_path / "out"
+    build.mkdir()
+    (build / "firmware.out").write_bytes(_elf_bytes(payload=b"payload"))
+    (build / "firmware.map").write_text("map", encoding="utf-8")
+
+    artifacts = native_build._artifact_paths(build, "agent-command")
+
+    assert artifacts["elf"] == str((build / "firmware.out").resolve())
+    assert artifacts["map"] == str((build / "firmware.map").resolve())
+
+
+def test_discovery_ignores_relocatable_object_elf_files(tmp_path: Path) -> None:
+    build = tmp_path / "out"
+    build.mkdir()
+    (build / "main.o").write_bytes(_elf_bytes(elf_type=1))
+    (build / "firmware.axf").write_bytes(_elf_bytes())
+    (build / "firmware.map").write_text("map", encoding="utf-8")
+
+    artifacts = native_build._artifact_paths(build, "agent-command")
+
+    assert artifacts["elf"] == str((build / "firmware.axf").resolve())
+
+
+def test_discovery_never_reuses_elf_bytes_as_linker_map(tmp_path: Path) -> None:
+    build = tmp_path / "out"
+    build.mkdir()
+    (build / "firmware.map").write_bytes(_elf_bytes(payload=b"payload"))
+
+    with pytest.raises(RuntimeError, match="exactly one linker map"):
+        native_build._artifact_paths(build, "agent-command")
+
+
+def test_unknown_project_without_command_teaches_universal_recovery(tmp_path: Path) -> None:
+    project = tmp_path / "unknown"
+    project.mkdir()
+    build = tmp_path / "out"
+
+    with pytest.raises(RuntimeError, match="supply its exact argv after '--'"):
+        native_build.run_build(
+            Namespace(project_dir=str(project), build_dir=str(build), target=None)
+        )
+
+
+def test_offline_mode_is_explicit_and_preserves_agent_command(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    project = tmp_path / "app"
+    project.mkdir()
+    build = tmp_path / "out"
+    seen_environment: dict[str, str] = {}
+
+    def fake_run(
+        _argv: list[str],
+        *,
+        cwd: Path,
+        env: dict[str, str],
+        check: bool,
+        timeout: float,
+    ) -> object:
+        del cwd, check, timeout
+        seen_environment.update(env)
+        build.mkdir(parents=True, exist_ok=True)
+        (build / "app.elf").write_bytes(_elf_bytes())
+        (build / "app.map").write_text("map", encoding="utf-8")
+        return Namespace(returncode=0)
+
+    monkeypatch.setattr(native_build, "run_owned", fake_run)
+    result = native_build.run_build(
+        Namespace(
+            project_dir=str(project),
+            build_dir=str(build),
+            target=None,
+            offline=True,
+            command=["--", "custom-builder"],
+        )
+    )
+
+    evidence = json.loads(capsys.readouterr().out)
+    assert result == 0
+    assert seen_environment["PIP_NO_INDEX"] == "1"
+    assert seen_environment["HTTP_PROXY"] == "http://127.0.0.1:9"
+    assert evidence["offline_guards"] is True
+    assert evidence["network_policy"] == "best_effort_offline_guards"
+
+
+@pytest.mark.parametrize("content", [":0000009967\n:00000001FF\n", ":00000101FE\n"])
+def test_intel_hex_rejects_unknown_record_type_or_nonzero_eof_address(
+    tmp_path: Path, content: str
+) -> None:
+    output = tmp_path / "firmware.hex"
+    output.write_text(content, encoding="ascii")
+
+    assert native_build._is_intel_hex(output) is False
+
+
+def test_agent_command_accepts_existing_in_source_build_and_external_outputs(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    project = tmp_path / "app"
+    project.mkdir()
+    (project / "existing-object.o").write_bytes(b"old")
+    outputs = tmp_path / "vendor-fixed-output"
+    elf = outputs / "firmware.axf"
+    linker_map = outputs / "firmware.map"
+
+    def fake_run(*_args: object, **_kwargs: object) -> object:
+        outputs.mkdir()
+        elf.write_bytes(_elf_bytes())
+        linker_map.write_text("map", encoding="utf-8")
+        return Namespace(returncode=0)
+
+    monkeypatch.setattr(native_build, "run_owned", fake_run)
+
+    result = native_build.run_build(
+        Namespace(
+            project_dir=str(project),
+            build_dir=str(project),
+            target=None,
+            artifact_elf=str(elf),
+            artifact_map=str(linker_map),
+            command=["--", "vendor-ide-cli", "--incremental-build"],
+        )
+    )
+
+    evidence = json.loads(capsys.readouterr().out)
+    assert result == 0
+    assert evidence["artifacts"]["elf"] == str(elf.resolve())
+    assert evidence["artifacts"]["map"] == str(linker_map.resolve())
+    assert (project / "existing-object.o").read_bytes() == b"old"
+
+
+def test_parser_accepts_literal_command_without_target() -> None:
+    args = native_build.build_parser().parse_args(
+        [
+            "--project-dir",
+            "project",
+            "--build-dir",
+            "build",
+            "--",
+            "cmake",
+            "--build",
+            "build",
+        ]
+    )
+
+    assert args.target is None
+    assert args.command == ["--", "cmake", "--build", "build"]
+
+
+@pytest.mark.parametrize(
+    ("failure", "message"),
+    [
+        (FileNotFoundError("missing"), "Cannot start build executable"),
+        (
+            native_build.subprocess.TimeoutExpired(["builder"], 1),
+            "Build command exceeded",
+        ),
+    ],
+)
+def test_agent_command_reports_process_start_and_timeout_recovery(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    failure: BaseException,
+    message: str,
+) -> None:
+    project = tmp_path / "app"
+    project.mkdir()
+
+    def fail(*_args: object, **_kwargs: object) -> object:
+        raise failure
+
+    monkeypatch.setattr(native_build, "run_owned", fail)
+
+    with pytest.raises(RuntimeError, match=message):
+        native_build.run_build(
+            Namespace(
+                project_dir=str(project),
+                build_dir=str(tmp_path / "out"),
+                target=None,
+                command=["--", "builder"],
+            )
+        )
+
+
+def test_successful_child_with_ambiguous_outputs_reports_execution_evidence(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    project = tmp_path / "app"
+    project.mkdir()
+    build = tmp_path / "out"
+
+    def fake_run(*_args: object, **_kwargs: object) -> object:
+        build.mkdir(exist_ok=True)
+        (build / "one.axf").write_bytes(_elf_bytes())
+        (build / "two.out").write_bytes(_elf_bytes())
+        (build / "firmware.map").write_text("map", encoding="utf-8")
+        return Namespace(returncode=0)
+
+    monkeypatch.setattr(native_build, "run_owned", fake_run)
+    monkeypatch.setattr(
+        native_build.sys,
+        "argv",
+        [
+            "native_build",
+            "--project-dir",
+            str(project),
+            "--build-dir",
+            str(build),
+            "--",
+            "custom-builder",
+            "build",
+        ],
+    )
+
+    with pytest.raises(SystemExit) as stopped:
+        native_build.main()
+
+    evidence = json.loads(capsys.readouterr().err)
+    assert stopped.value.code == 2
+    assert evidence["argv"] == ["custom-builder", "build"]
+    assert evidence["cwd"] == str(project.resolve())
+    assert evidence["exit_code"] == 0
+    assert evidence["artifacts"] == {"elf": None, "hex": None, "map": None}
+    assert "exactly one ELF" in evidence["artifact_validation_error"]
+    assert evidence["error"] == evidence["artifact_validation_error"]
+
+
+def test_declared_artifact_roles_must_be_distinct(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    project = tmp_path / "app"
+    project.mkdir()
+    build = tmp_path / "out"
+
+    def fake_run(*_args: object, **_kwargs: object) -> object:
+        build.mkdir(exist_ok=True)
+        (build / "firmware.axf").write_bytes(_elf_bytes())
+        return Namespace(returncode=0)
+
+    monkeypatch.setattr(native_build, "run_owned", fake_run)
+
+    with pytest.raises(native_build.BuildEvidenceError, match="must be different files"):
+        native_build.run_build(
+            Namespace(
+                project_dir=str(project),
+                build_dir=str(build),
+                target=None,
+                artifact_elf="firmware.axf",
+                artifact_map="firmware.axf",
+                command=["--", "builder"],
+            )
+        )
+
+
+def test_declared_hex_must_be_checksum_valid_intel_hex(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    project = tmp_path / "app"
+    project.mkdir()
+    build = tmp_path / "out"
+
+    def fake_run(*_args: object, **_kwargs: object) -> object:
+        build.mkdir(exist_ok=True)
+        (build / "firmware.elf").write_bytes(_elf_bytes())
+        (build / "firmware.map").write_text("map", encoding="utf-8")
+        (build / "firmware.hex").write_text("not Intel HEX", encoding="utf-8")
+        return Namespace(returncode=0)
+
+    monkeypatch.setattr(native_build, "run_owned", fake_run)
+
+    with pytest.raises(native_build.BuildEvidenceError, match="not valid Intel HEX"):
+        native_build.run_build(
+            Namespace(
+                project_dir=str(project),
+                build_dir=str(build),
+                target=None,
+                artifact_elf="firmware.elf",
+                artifact_map="firmware.map",
+                artifact_hex="firmware.hex",
+                command=["--", "builder"],
+            )
+        )
+
+
+def test_agent_command_can_use_home_as_explicit_artifact_search_context(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    project = tmp_path / "app"
+    project.mkdir()
+    elf = tmp_path / "firmware.elf"
+    linker_map = tmp_path / "firmware.map"
+
+    def fake_run(*_args: object, **_kwargs: object) -> object:
+        elf.write_bytes(_elf_bytes())
+        linker_map.write_text("map", encoding="utf-8")
+        return Namespace(returncode=0)
+
+    monkeypatch.setattr(native_build, "run_owned", fake_run)
+
+    result = native_build.run_build(
+        Namespace(
+            project_dir=str(project),
+            build_dir=str(Path.home()),
+            target=None,
+            artifact_elf=str(elf),
+            artifact_map=str(linker_map),
+            command=["--", "builder"],
+        )
+    )
+
+    assert result == 0

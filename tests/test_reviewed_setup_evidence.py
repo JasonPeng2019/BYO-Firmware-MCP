@@ -35,8 +35,12 @@ def test_reviewed_evidence_checks_runtime_and_reconciles_distinct_authorities() 
         ("writable_ram", "ram"),
         ("uicr", "prohibited"),
         ("ficr", "rom"),
+        ("apb_before_nvmc", "peripheral_read_only"),
         ("safe_gpio", "peripheral"),
         ("nvmc_acl", "prohibited"),
+        ("apb_after_nvmc", "peripheral_read_only"),
+        ("ahb_before_gpio", "peripheral_read_only"),
+        ("ahb_after_gpio", "peripheral_read_only"),
         ("cpu_system", "cpu_system"),
     }
     record = bundle.source_record()
@@ -132,6 +136,21 @@ def test_reviewed_nrf_gpio_register_write_window_remains_available() -> None:
     )
 
     assert isinstance(result, Allowed)
+
+
+def test_reviewed_nrf_uarte_registers_are_readable_but_not_writable() -> None:
+    bundle = reviewed_evidence.load_reviewed_evidence(
+        catalog_board("nrf52840dk"), _datasheet()
+    )
+    safety_map = SafetyMap(
+        [item.to_safety_region() for item in bundle.reconciliation.regions]
+    )
+    register = AddressRange.from_start_size(0x40002200, 4)
+
+    assert isinstance(safety_map.check(ActionCategory.MEMORY_READ, [register]), Allowed)
+    write = safety_map.check(ActionCategory.REGISTER_WRITE, [register])
+    assert isinstance(write, Refusal)
+    assert write.code == "safety/wrong-region-kind"
 
 
 def test_persisted_reviewed_authority_rejects_self_asserted_documents() -> None:

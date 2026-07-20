@@ -1,4 +1,8 @@
-﻿# Generic Make Native-Build Provider Specification
+# Generic Make Native-Build Provider Specification
+
+> This named convenience remains valid, but it is not the generic-path contract. See
+> `docs/universal-native-build-command-spec.md` for agent-supplied commands, arbitrary output
+> layouts, and default network inheritance.
 
 ## Problem
 

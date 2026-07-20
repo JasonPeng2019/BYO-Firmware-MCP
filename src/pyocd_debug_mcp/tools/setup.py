@@ -545,10 +545,12 @@ def build_setup_handlers(services: SetupToolServices) -> dict[str, Callable[...,
         a connection or gate and never treats persisted reports as authority. UART readiness is
         reported separately so a project that does not need a console is not blocked, while a
         console-dependent workflow can require ready_for_uart_work before it starts. For a known
-        MCU, build_guidance returns the exact parameterized general native-build helper and
-        collect_build_artifacts workflow. The helper detects the project provider and uses only a
-        complete local environment; it never provisions dependencies itself and applies standard
-        offline guards. All build guidance is
+        MCU, build_guidance returns the parameterized general native-build helper and
+        collect_build_artifacts workflow. Inspect the project and supply its exact executable,
+        argv, cwd, environment overrides, and outputs after preferring a compatible local toolchain.
+        The helper accepts any build system, inherits network access when acquisition is needed, and
+        applies best-effort common-client guards only when `--offline` is explicitly selected; it
+        does not claim an OS network sandbox. All build guidance is
         advisory only: inspect the resulting ELF/HEX through the flash plan; refresh is only for
         stable-map problems.
         """

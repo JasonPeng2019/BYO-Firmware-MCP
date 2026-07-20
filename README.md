@@ -96,14 +96,17 @@ response returns canonical paths plus the flash-plan handoff. For guarded firmwa
 supply the coherent ELF and linker map with `expected_roles=["elf", "map"]`. The standalone CLI
 remains useful to developers and terminal-driven agents outside an MCP session.
 
-For a server-directed local build, use the exact `pyocd_debug_mcp.native_build` argv template from
-`get_setup_status.build_guidance`. The general helper detects the native provider from project
-files, selects an already-installed complete environment, executes one native command, and emits
-JSON evidence with the selected environment, argv, result, and artifact paths. It never downloads,
-installs, or upgrades an SDK/toolchain itself, applies standard offline guards to the native child,
-and never accesses hardware or grants safety authority. Because project-owned build scripts are
-arbitrary code, acceptance still inspects live logs for attempted downloads rather than claiming an
-OS-level network sandbox.
+For a server-directed build, inspect the project's own build files and use the
+`pyocd_debug_mcp.native_build` argv template from `get_setup_status.build_guidance`. Put the exact
+native build argv after `--`; the helper runs it directly without a shell and reports its cwd,
+network policy, exit code, ELF/HEX format checks, and map provenance. It does not invent universal
+ELF/map coherence where linker-map formats cannot prove it. `--cwd`, repeatable `--env KEY=VALUE`, and
+explicit ELF/map/optional HEX paths cover arbitrary SDKs, vendor CLIs, IDE wrappers, and future build
+systems without a server adapter. Prefer a compatible installed toolchain, but acquire one normally
+when none exists. Network access is inherited by default; `--offline` is an intentional best-effort
+set of common-client environment guards, not an OS network sandbox or implicit policy. Zephyr/west
+and GNU Make detection remain shortcuts only. The helper never
+accesses hardware or grants safety authority.
 
 `pyocd_debug_mcp.zephyr_build` remains an optional Zephyr convenience. It uses generated sysbuild
 domain metadata to keep the application ELF and linker map together instead of guessing by path,

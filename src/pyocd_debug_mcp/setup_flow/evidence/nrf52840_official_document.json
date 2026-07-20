@@ -113,6 +113,54 @@
       "address_aliases": [],
       "bank": "system",
       "block": "SCS"
+    },
+    {
+      "fact_id": "apb_before_nvmc",
+      "name": "volatile APB peripherals before NVMC",
+      "name_aliases": ["APB peripheral register space before NVMC/ACL"],
+      "kind": "peripheral_read_only",
+      "start": 1073741824,
+      "end": 1073864704,
+      "range_convention": "half_open",
+      "address_aliases": [],
+      "bank": "apb",
+      "block": "APB_PERIPHERALS"
+    },
+    {
+      "fact_id": "apb_after_nvmc",
+      "name": "volatile APB peripherals after NVMC",
+      "name_aliases": ["APB peripheral register space after NVMC/ACL"],
+      "kind": "peripheral_read_only",
+      "start": 1073868800,
+      "end": 1342177280,
+      "range_convention": "half_open",
+      "address_aliases": [],
+      "bank": "apb",
+      "block": "APB_PERIPHERALS"
+    },
+    {
+      "fact_id": "ahb_before_gpio",
+      "name": "volatile AHB peripherals before writable GPIO",
+      "name_aliases": ["AHB peripheral register space before GPIO write window"],
+      "kind": "peripheral_read_only",
+      "start": 1342177280,
+      "end": 1342178560,
+      "range_convention": "half_open",
+      "address_aliases": [],
+      "bank": "ahb",
+      "block": "AHB_PERIPHERALS"
+    },
+    {
+      "fact_id": "ahb_after_gpio",
+      "name": "volatile AHB peripherals after writable GPIO",
+      "name_aliases": ["AHB peripheral register space after GPIO write window"],
+      "kind": "peripheral_read_only",
+      "start": 1342179584,
+      "end": 1610612736,
+      "range_convention": "half_open",
+      "address_aliases": [],
+      "bank": "ahb",
+      "block": "AHB_PERIPHERALS"
     }
   ]
 }
