@@ -658,7 +658,8 @@ _VALIDATION_TRIGGER_PROTOCOL = (
     "Validation has exactly three trigger categories: (1) no live proof after initial setup or "
     "server restart; (2) connection identity change after disconnect, reconnect, probe change, "
     "or target override; and (3) possible hardware identity change after identity repair, "
-    "mismatch, or destructive recovery. Ordinary build or relink, flash, reset or halt, UART "
+    "mismatch, or destructive recovery. There is no idle validation timeout, and work on another "
+    "board does not invalidate this board. Ordinary build or relink, flash, reset or halt, UART "
     "work, safety refresh or full map reconstruction, artifact collection, report, cache, and "
     "bookkeeping changes are not validation triggers."
 )

@@ -34,7 +34,7 @@ DEFAULT_OPERATION_TIMEOUT_SECONDS = 30.0
 FLASH_OPERATION_TIMEOUT_SECONDS = 120.0
 VALIDATION_OPERATION_TIMEOUT_SECONDS = 120.0
 RECOVERY_OPERATION_TIMEOUT_SECONDS = 300.0
-SERIAL_TIMEOUT_GRACE_SECONDS = 5.0
+ARGUMENT_TIMEOUT_GRACE_SECONDS = 5.0
 BATCH_TIMEOUT_GRACE_SECONDS = 5.0
 CANCELLATION_CLEANUP_GRACE_SECONDS = 1.0
 BOARD_LOCK_POLL_SECONDS = 0.02
@@ -479,19 +479,36 @@ def operation_timeout_seconds(
         return VALIDATION_OPERATION_TIMEOUT_SECONDS
     if tool_name in _RECOVERY_TOOLS:
         return RECOVERY_OPERATION_TIMEOUT_SECONDS
-    if tool_name in {"read_serial", "serial_exchange"}:
+    if tool_name == "read_serial":
         requested = _positive_finite_number(values.get("read_seconds"))
         if requested is not None:
             return max(
                 float(planned_timeout or DEFAULT_OPERATION_TIMEOUT_SECONDS),
-                requested + SERIAL_TIMEOUT_GRACE_SECONDS,
+                requested + ARGUMENT_TIMEOUT_GRACE_SECONDS,
+            )
+    if tool_name == "serial_exchange":
+        per_step = _positive_finite_number(values.get("read_seconds"))
+        steps = values.get("steps")
+        step_count = min(len(steps), 8) if isinstance(steps, list) and steps else 1
+        ready = _positive_finite_number(values.get("ready_seconds")) or 0.0
+        if per_step is not None:
+            return max(
+                float(planned_timeout or DEFAULT_OPERATION_TIMEOUT_SECONDS),
+                ready + step_count * per_step + ARGUMENT_TIMEOUT_GRACE_SECONDS,
             )
     if tool_name == "write_serial":
         requested = _positive_finite_number(values.get("timeout_seconds"))
         if requested is not None:
             return max(
                 float(planned_timeout or DEFAULT_OPERATION_TIMEOUT_SECONDS),
-                requested + SERIAL_TIMEOUT_GRACE_SECONDS,
+                requested + ARGUMENT_TIMEOUT_GRACE_SECONDS,
+            )
+    if tool_name == "wait":
+        requested_ms = _positive_finite_number(values.get("ms"))
+        if requested_ms is not None:
+            return max(
+                DEFAULT_OPERATION_TIMEOUT_SECONDS,
+                requested_ms / 1000.0 + ARGUMENT_TIMEOUT_GRACE_SECONDS,
             )
     if planned_timeout is not None:
         return float(planned_timeout)

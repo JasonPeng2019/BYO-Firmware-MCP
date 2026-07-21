@@ -4268,14 +4268,48 @@ def _profile_needs_repair(profile: BoardProfile) -> bool:
     return profile.read_only or profile.safety_ref != expected_ref or not isinstance(digest, str)
 
 
-def _replace_setup_assignments(bindings: Mapping[str, str], reason: str) -> None:
+def _replace_setup_assignments(
+    bindings: Mapping[str, str],
+    reason: str,
+    *,
+    drop_omitted_active: bool = False,
+) -> None:
     """Replace provisional routing and revoke authority whose binding changed."""
 
     previous = assignment_store.bindings()
     replacement = dict(bindings)
+
+    # setup_overview may legitimately be called for one board while other boards are already
+    # connected and validated. Omission is not a disconnect request: retain every omitted active
+    # one-to-one binding unless the new overview explicitly reuses that board or connection.
+    # This keeps independent multi-board sessions alive while the agent works on them in turn.
+    if not drop_omitted_active:
+        replacement_boards = set(replacement.values())
+        for connected_board in connection_manager.assigned_board_ids():
+            if connected_board in replacement_boards:
+                continue
+            previous_connection = next(
+                (
+                    connection_id
+                    for connection_id, board_id in previous.items()
+                    if board_id == connected_board
+                ),
+                None,
+            )
+            if previous_connection is None or previous_connection in replacement:
+                continue
+            replacement[previous_connection] = connected_board
     if previous == replacement:
         return
-    affected = set(previous.values()) | set(replacement.values())
+    previous_by_board = {board_id: connection_id for connection_id, board_id in previous.items()}
+    replacement_by_board = {
+        board_id: connection_id for connection_id, board_id in replacement.items()
+    }
+    affected = {
+        board_id
+        for board_id in set(previous_by_board) | set(replacement_by_board)
+        if previous_by_board.get(board_id) != replacement_by_board.get(board_id)
+    }
     workflow = globals().get("_setup_workflow")
     if isinstance(workflow, SetupWorkflow):
         for board_id in affected:
@@ -4738,7 +4772,11 @@ def _setup_overview(
         _replace_setup_assignments(provisional_bindings, "setup overview assignment replaced")
 
     if board_names == [] or (no_board_sentinel and len(validated_names) == 1):
-        _replace_setup_assignments({}, "setup overview reported no board")
+        _replace_setup_assignments(
+            {},
+            "setup overview reported no board",
+            drop_omitted_active=True,
+        )
         status = "setup_no_board"
         prompt = (
             "The user reported no connected boards using the literal 'no board' sentinel. "
@@ -5487,13 +5525,29 @@ def _bind_managed_board_resources(operation: ManagedOperation) -> None:
     read reboot the application during cleanup and destroyed volatile state before the next
     call.  Successful actions now preserve the state their documented semantics produce.
     Explicit reset/resume tools and structured ``on_exit.reset_and_run`` remain available.
-    Cancellation and timeout still close the connection because backend completion is
-    uncertain. An ordinary handler error is reported without assuming that the healthy
-    connection itself became unsafe.
+    Cancellation and timeout close a debug connection only for operations that use it, because
+    backend completion is then uncertain. UART-only, metadata-only, and wait operations do not
+    own that independent transport. An ordinary handler error is reported without assuming that
+    the healthy connection itself became unsafe.
     """
 
     board_id = operation.board_id
     if board_id is None or operation.tool_name in {"connect", "disconnect", "action_batch"}:
+        return
+
+    # These tools use profile files, ELF metadata, wall-clock sleep, or UART only. A client
+    # cancellation or their own finite timeout says nothing about the independent SWD/JTAG
+    # transport, so it must not tear down the validated debug connection. Validation remains
+    # live until an actual debug transport failure, explicit disconnect/reassignment, or server
+    # termination.
+    if operation.tool_name in {
+        "get_board_info",
+        "find_symbol",
+        "read_serial",
+        "write_serial",
+        "serial_exchange",
+        "wait",
+    }:
         return
     connection = connection_manager.maybe_connection(board_id)
     if connection is None:

@@ -114,6 +114,7 @@ actions.
 Validation has exactly three trigger categories: no live proof after initial setup or server
 restart; connection identity change after disconnect, reconnect, probe change, or target override;
 and possible hardware identity change after identity repair, mismatch, or destructive recovery.
+There is no idle validation timeout, and working on another board does not invalidate this one.
 Do not validate merely because of an ordinary build or relink, flash, reset or halt, UART work,
 safety refresh or full map reconstruction, artifact collection, report, cache, or bookkeeping
 change.
