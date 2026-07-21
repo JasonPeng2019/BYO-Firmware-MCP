@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import contextlib
 import io
+import logging
 import os
 import subprocess
 import sys
@@ -39,7 +40,10 @@ from pyocd_debug_mcp.pack_provision import (
     sha256_bytes,
     verified_pack_for_target,
 )
-from pyocd_debug_mcp.probe_inventory import list_connected_probes
+from pyocd_debug_mcp.probe_inventory import (
+    list_connected_probes,
+    probe_family_from_pyocd_probe,
+)
 from pyocd_debug_mcp.target_errors import (
     LockedTargetError,
     ProbeNotFoundError,
@@ -60,6 +64,10 @@ ROUTE_PYOCD_NATIVE = "pyocd-native"
 SUPPORTED_FLASH_SUFFIXES = frozenset({".axf", ".elf", ".hex"})
 _PACK_OBJECTS: dict[str, tuple[bytes, CmsisPack]] = {}
 _PACK_TARGET_LOCK = threading.RLock()
+_JLINK_SESSION_LOCK = threading.RLock()
+_ACTIVE_JLINK_SESSIONS: dict[int, object] = {}
+_NORMAL_JLINK_SESSION: object | None = None
+_JLINK_TRACE = logging.getLogger("pyocd.probe.jlink_probe.trace")
 _MISSING_TARGET = object()
 
 
@@ -223,6 +231,82 @@ def _typed_backend_error(exc: Exception) -> TargetControlError:
     return TargetConnectionError(message)
 
 
+def _breakpoint_kind(breakpoint: object) -> str:
+    """Return the stable pyOCD breakpoint type name without binding to its enum class."""
+
+    return str(getattr(getattr(breakpoint, "type", None), "name", "")).casefold()
+
+
+def _breakpoint_recovery_instruction(breakpoint: object | None) -> str:
+    kind = _breakpoint_kind(breakpoint) if breakpoint is not None else ""
+    if kind == "sw":
+        return (
+            "Disconnect, restore/reflash code memory, reconnect/revalidate, and do not resume "
+            "execution until restoration is proven."
+        )
+    if kind == "hw":
+        return (
+            "Disconnect, power-cycle the target, reconnect, and revalidate before further "
+            "target control."
+        )
+    return (
+        "Disconnect, power-cycle the target, reconnect/revalidate, and reflash/restore code "
+        "memory before further target control."
+    )
+
+
+def _read_unfiltered_instruction16(target: Any, address: int) -> tuple[int | None, str | None]:
+    """Read physical code memory through the selected core AP, bypassing BP filtering."""
+
+    try:
+        value = target.selected_core_or_raise.ap.read_memory(address, 16, now=True)
+    except Exception as exc:  # noqa: BLE001 - returned as explicit provider-state evidence
+        return None, f"raw instruction read failed: {type(exc).__name__}: {exc}"
+    if type(value) is not int:
+        return None, f"raw instruction read returned {type(value).__name__}, not an integer"
+    return value & 0xFFFF, None
+
+
+def _removed_breakpoint_provider_failure(
+    target: Any,
+    breakpoint: object | None,
+    address: int,
+) -> str | None:
+    """Return why provider-level removal is unproven, or None when it is proven."""
+
+    if breakpoint is None:
+        return None
+    kind = _breakpoint_kind(breakpoint)
+    if kind == "sw":
+        original = getattr(breakpoint, "original_instr", None)
+        if type(original) is not int:
+            return "software breakpoint has no valid saved original instruction"
+        observed, error = _read_unfiltered_instruction16(target, address)
+        if error is not None:
+            return error
+        expected = original & 0xFFFF
+        if observed != expected:
+            return (
+                f"raw instruction is 0x{observed:04X}, expected restored original "
+                f"0x{expected:04X}"
+            )
+        return None
+    if kind == "hw":
+        comparator = getattr(breakpoint, "comp_register_addr", None)
+        if type(comparator) is not int:
+            return "hardware breakpoint has no valid comparator register address"
+        try:
+            value = target.selected_core_or_raise.ap.read_memory(comparator, 32, now=True)
+        except Exception as exc:  # noqa: BLE001 - provider state is uncertain
+            return f"raw hardware comparator read failed: {type(exc).__name__}: {exc}"
+        if type(value) is not int:
+            return f"raw hardware comparator read returned {type(value).__name__}, not an integer"
+        if value & 0xFFFFFFFF:
+            return f"hardware comparator remains programmed with 0x{value & 0xFFFFFFFF:08X}"
+        return None
+    return f"breakpoint provider type {kind or '<unknown>'} cannot be verified"
+
+
 def _looks_like_jlink_serial_open_failure(exc: Exception) -> bool:
     lowered = f"{type(exc).__name__}: {exc}".lower()
     return "no emulator with serial number" in lowered
@@ -287,6 +371,146 @@ def build_session_options(
     return options or None
 
 
+def _session_uses_jlink(session: object, board: BoardConfig | None) -> bool:
+    probe = getattr(session, "probe", None)
+    detected = probe_family_from_pyocd_probe(probe)
+    if detected != "unknown":
+        return detected == "jlink"
+    return board is not None and board.probe_family == "jlink"
+
+
+def _isolate_jlink_session(session: object, board: BoardConfig | None) -> None:
+    """Give each J-Link session independent DLL state before opening it.
+
+    pylink documents ``use_tmpcpy=True`` as required when one process accesses multiple J-Links.
+    pyOCD does not expose that constructor option, so replace only its still-unopened provider
+    handle while preserving pyOCD's callbacks and unsecure policy.
+    """
+
+    if not _session_uses_jlink(session, board):
+        return
+    probe = getattr(session, "probe", None)
+    current_link = getattr(probe, "_link", None)
+    if current_link is None:
+        raise TargetConnectionError("pyOCD J-Link session has no provider handle to isolate.")
+    try:
+        isolated_link = type(current_link)(
+            log=_JLINK_TRACE.info,
+            detailed_log=_JLINK_TRACE.debug,
+            error=_JLINK_TRACE.error,
+            warn=_JLINK_TRACE.warning,
+            unsecure_hook=getattr(current_link, "_unsecure_hook", None),
+            use_tmpcpy=True,
+        )
+    except Exception as exc:  # noqa: BLE001 - normalize provider construction failures
+        raise TargetConnectionError(f"Could not isolate J-Link DLL state: {exc}") from exc
+    setattr(probe, "_link", isolated_link)
+
+
+def _prepare_jlink_session_for_open(session: object, board: BoardConfig | None) -> bool:
+    """Prepare provider state and return whether this session claims the normal DLL slot."""
+
+    if not _session_uses_jlink(session, board):
+        return False
+    if _NORMAL_JLINK_SESSION is None:
+        return True
+    _isolate_jlink_session(session, board)
+    return False
+
+
+def _record_jlink_session_reservation(
+    session: object,
+    board: BoardConfig | None,
+    *,
+    uses_normal_slot: bool,
+) -> None:
+    global _NORMAL_JLINK_SESSION
+    if not _session_uses_jlink(session, board):
+        return
+    session_id = id(session)
+    if uses_normal_slot:
+        if _NORMAL_JLINK_SESSION is not None:
+            raise TargetConnectionError("The normal J-Link DLL slot is already occupied.")
+        _NORMAL_JLINK_SESSION = session
+    _ACTIVE_JLINK_SESSIONS[session_id] = session
+
+
+def _forget_jlink_session(session: object) -> None:
+    global _NORMAL_JLINK_SESSION
+    session_id = id(session)
+    _ACTIVE_JLINK_SESSIONS.pop(session_id, None)
+    if _NORMAL_JLINK_SESSION is session:
+        _NORMAL_JLINK_SESSION = None
+
+
+def _jlink_provider_is_closed(session: object, board: BoardConfig | None) -> bool:
+    """Return true only when the selected J-Link provider confirms it is closed."""
+
+    if not _session_uses_jlink(session, board):
+        return True
+    probe = getattr(session, "probe", None)
+    try:
+        open_state = getattr(probe, "is_open")
+        if callable(open_state):
+            open_state = open_state()
+        return not bool(open_state)
+    except Exception:  # noqa: BLE001 - unknown provider state must remain reserved
+        return False
+
+
+def _close_jlink_provider_directly(session: object) -> Exception | None:
+    """Best-effort provider close after pyOCD has made Session.close() non-retryable."""
+
+    probe = getattr(session, "probe", None)
+    close = getattr(probe, "close", None)
+    if not callable(close):
+        return TargetConnectionError("The J-Link probe does not expose provider close control.")
+    try:
+        with _quiet_backend_streams():
+            close()
+    except Exception as exc:  # noqa: BLE001 - returned so the caller can preserve primary failure
+        return exc
+    return None
+
+
+def _close_session_and_update_jlink_allocator(
+    session: object,
+    board: BoardConfig | None,
+) -> Exception | None:
+    """Close one session and release its allocator role only after confirmed provider closure."""
+
+    close_error: Exception | None = None
+    try:
+        close = getattr(session, "close", None)
+        if callable(close):
+            with _quiet_backend_streams():
+                close()
+    except Exception as exc:  # noqa: BLE001 - returned so callers preserve primary failures
+        close_error = exc
+
+    provider_close_error: Exception | None = None
+    is_jlink = _session_uses_jlink(session, board)
+    if is_jlink and not _jlink_provider_is_closed(session, board):
+        provider_close_error = _close_jlink_provider_directly(session)
+
+    provider_closed = _jlink_provider_is_closed(session, board)
+    if not is_jlink or provider_closed:
+        _forget_jlink_session(session)
+
+    if close_error is not None:
+        return close_error
+    if not provider_closed:
+        detail = f": {provider_close_error}" if provider_close_error is not None else ""
+        reservation = (
+            "normal DLL slot" if _NORMAL_JLINK_SESSION is session else "isolated J-Link session"
+        )
+        return TargetConnectionError(
+            "Could not confirm that the J-Link provider closed; "
+            f"the {reservation} remains reserved{detail}"
+        )
+    return None
+
+
 class PyOCDSWDInterface(SWDInterface):
     """Single native pyOCD route used during the early shared-service phase."""
 
@@ -304,15 +528,26 @@ class PyOCDSWDInterface(SWDInterface):
             options=options,
         )
 
-    @staticmethod
-    def _close_quietly(session: object) -> None:
-        try:
-            close = getattr(session, "close", None)
-            if callable(close):
-                with _quiet_backend_streams():
-                    close()
-        except Exception:  # noqa: BLE001 - do not hide the original open failure
-            pass
+    def _open_and_verify_session(
+        self,
+        session: object,
+        board: BoardConfig | None,
+        target: str | None,
+        pack: CmsisPack | None,
+        pdsc_device: str | None,
+    ) -> None:
+        """Open and register one selected session while the session-open lock is held."""
+
+        uses_normal_slot = _prepare_jlink_session_for_open(session, board)
+        _record_jlink_session_reservation(
+            session,
+            board,
+            uses_normal_slot=uses_normal_slot,
+        )
+        self._verify_session_pack_source(session, target, pack, pdsc_device)
+        with _quiet_backend_streams():
+            getattr(session, "open")()
+        self._verify_session_pack_source(session, target, pack, pdsc_device)
 
     @staticmethod
     def _verify_session_pack_source(
@@ -390,45 +625,39 @@ class PyOCDSWDInterface(SWDInterface):
         if pack_object is not None:
             options = dict(options or {})
             options["pack"] = [pack_object]
-        with _pack_target_scope(pack_object, target_override, pdsc_device):
-            session = self._choose_session(probe_uid=probe_uid, options=options)
-        if session is None:
-            raise ProbeNotFoundError("No matching debug probe found.")
+        with _JLINK_SESSION_LOCK:
+            with _pack_target_scope(pack_object, target_override, pdsc_device):
+                session = self._choose_session(probe_uid=probe_uid, options=options)
+            if session is None:
+                raise ProbeNotFoundError("No matching debug probe found.")
 
-        try:
-            self._verify_session_pack_source(session, target_override, pack_object, pdsc_device)
-            with _quiet_backend_streams():
-                session.open()
-            self._verify_session_pack_source(session, target_override, pack_object, pdsc_device)
-        except Exception as exc:  # noqa: BLE001 - preserve backend context
-            self._close_quietly(session)
-            if _should_retry_without_uid(board, probe_uid, exc):
+            try:
+                self._open_and_verify_session(
+                    session, board, target_override, pack_object, pdsc_device
+                )
+            except Exception as exc:  # noqa: BLE001 - preserve backend context
+                _close_session_and_update_jlink_allocator(session, board)
+                if not _should_retry_without_uid(board, probe_uid, exc):
+                    raise _typed_backend_error(exc) from exc
                 with _pack_target_scope(pack_object, target_override, pdsc_device):
                     retry_session = self._choose_session(probe_uid=None, options=options)
                 if retry_session is None:
                     raise ProbeNotFoundError("No matching debug probe found.") from exc
                 retry_uid = getattr(getattr(retry_session, "probe", None), "unique_id", None)
                 if not _same_probe_uid(probe_uid, retry_uid):
-                    self._close_quietly(retry_session)
+                    _close_session_and_update_jlink_allocator(retry_session, board)
                     raise ProbeNotFoundError(
                         "The selected J-Link was not the sole probe returned by UID-less retry; "
                         "refusing to open a different physical probe."
                     ) from exc
                 try:
-                    self._verify_session_pack_source(
-                        retry_session, target_override, pack_object, pdsc_device
-                    )
-                    with _quiet_backend_streams():
-                        retry_session.open()
-                    self._verify_session_pack_source(
-                        retry_session, target_override, pack_object, pdsc_device
+                    self._open_and_verify_session(
+                        retry_session, board, target_override, pack_object, pdsc_device
                     )
                 except Exception as retry_exc:  # noqa: BLE001 - preserve backend context
-                    self._close_quietly(retry_session)
+                    _close_session_and_update_jlink_allocator(retry_session, board)
                     raise _typed_backend_error(retry_exc) from retry_exc
                 session = retry_session
-            else:
-                raise _typed_backend_error(exc) from exc
         return TargetSessionHandle(
             session=session,
             board=board,
@@ -438,8 +667,13 @@ class PyOCDSWDInterface(SWDInterface):
         )
 
     def close(self, handle: TargetSessionHandle) -> None:
-        with _quiet_backend_streams():
-            handle.session.close()
+        with _JLINK_SESSION_LOCK:
+            close_error = _close_session_and_update_jlink_allocator(
+                handle.session,
+                handle.board,
+            )
+            if close_error is not None:
+                raise close_error
 
     def connect_under_reset(
         self,
@@ -474,59 +708,68 @@ class PyOCDSWDInterface(SWDInterface):
             pack_object = _cmsis_pack_for(selected_pack) if selected_pack is not None else None
         if pack_object is not None:
             options["pack"] = [pack_object]
-        with _pack_target_scope(pack_object, target_override, pdsc_device):
-            session = self._choose_session(probe_uid=probe_uid, options=options)
-        if session is None:
-            raise ProbeNotFoundError("No matching debug probe found.")
-        assert_reset = getattr(session.probe, "assert_reset", None)
-        if not callable(assert_reset):
-            self._close_quietly(session)
-            raise ResetLineUnavailableError(
-                "The selected probe does not expose wired reset-line control; "
-                "connect_under_reset cannot degrade to an ordinary attach."
-            )
-        try:
-            self._verify_session_pack_source(session, target_override, pack_object, pdsc_device)
-            with _quiet_backend_streams():
-                # pyOCD's under-reset init sequence owns assertion, reset catch,
-                # halt, and release. Calling assert_reset() before Session.open()
-                # is invalid for probes that have not been opened yet and would
-                # also duplicate pyOCD's reset sequence. Some real targets start
-                # running again as nRESET is released, so explicitly halt once
-                # more after open and verify the observable postcondition before
-                # returning. The bounded retry covers probes where the first halt
-                # command races reset release.
-                session.open()
-                self._verify_session_pack_source(session, target_override, pack_object, pdsc_device)
-                halt_deadline = time.monotonic() + 0.5
-                while True:
-                    session.target.halt()
-                    state = str(session.target.get_state().name).casefold()
-                    if state == "halted":
-                        break
-                    if time.monotonic() >= halt_deadline:
-                        raise TargetConnectionError(
-                            "connect_under_reset released reset but could not leave "
-                            "the target halted"
-                        )
-                    time.sleep(0.01)
-        except Exception as exc:  # noqa: BLE001 - preserve backend context
-            # If initialisation failed after pyOCD asserted nRESET, release it
-            # best-effort before closing the partially opened session.
-            try:
-                with _quiet_backend_streams():
-                    assert_reset(False)
-            except Exception:
-                pass
-            self._close_quietly(session)
-            if isinstance(exc, ResetLineUnavailableError):
-                raise
-            if isinstance(exc, NotImplementedError):
+        with _JLINK_SESSION_LOCK:
+            with _pack_target_scope(pack_object, target_override, pdsc_device):
+                session = self._choose_session(probe_uid=probe_uid, options=options)
+            if session is None:
+                raise ProbeNotFoundError("No matching debug probe found.")
+            assert_reset = getattr(session.probe, "assert_reset", None)
+            if not callable(assert_reset):
+                _close_session_and_update_jlink_allocator(session, board)
                 raise ResetLineUnavailableError(
-                    "The selected probe does not support wired reset-line control; "
+                    "The selected probe does not expose wired reset-line control; "
                     "connect_under_reset cannot degrade to an ordinary attach."
-                ) from exc
-            raise _typed_backend_error(exc) from exc
+                )
+            uses_normal_slot = _prepare_jlink_session_for_open(session, board)
+            _record_jlink_session_reservation(
+                session,
+                board,
+                uses_normal_slot=uses_normal_slot,
+            )
+            try:
+                self._verify_session_pack_source(session, target_override, pack_object, pdsc_device)
+                with _quiet_backend_streams():
+                    # pyOCD's under-reset init sequence owns assertion, reset catch,
+                    # halt, and release. Calling assert_reset() before Session.open()
+                    # is invalid for probes that have not been opened yet and would
+                    # also duplicate pyOCD's reset sequence. Some real targets start
+                    # running again as nRESET is released, so explicitly halt once
+                    # more after open and verify the observable postcondition before
+                    # returning. The bounded retry covers probes where the first halt
+                    # command races reset release.
+                    session.open()
+                    self._verify_session_pack_source(
+                        session, target_override, pack_object, pdsc_device
+                    )
+                    halt_deadline = time.monotonic() + 0.5
+                    while True:
+                        session.target.halt()
+                        state = str(session.target.get_state().name).casefold()
+                        if state == "halted":
+                            break
+                        if time.monotonic() >= halt_deadline:
+                            raise TargetConnectionError(
+                                "connect_under_reset released reset but could not leave "
+                                "the target halted"
+                            )
+                        time.sleep(0.01)
+            except Exception as exc:  # noqa: BLE001 - preserve backend context
+                # If initialisation failed after pyOCD asserted nRESET, release it
+                # best-effort before closing the partially opened session.
+                try:
+                    with _quiet_backend_streams():
+                        assert_reset(False)
+                except Exception:
+                    pass
+                _close_session_and_update_jlink_allocator(session, board)
+                if isinstance(exc, ResetLineUnavailableError):
+                    raise
+                if isinstance(exc, NotImplementedError):
+                    raise ResetLineUnavailableError(
+                        "The selected probe does not support wired reset-line control; "
+                        "connect_under_reset cannot degrade to an ordinary attach."
+                    ) from exc
+                raise _typed_backend_error(exc) from exc
         return TargetSessionHandle(
             session=session,
             board=board,
@@ -677,15 +920,193 @@ class PyOCDSWDInterface(SWDInterface):
         )
 
     def set_breakpoint(self, handle: TargetSessionHandle, address: int) -> None:
-        try:
-            with _quiet_backend_streams():
-                handle.session.target.set_breakpoint(address)
-        except Exception as exc:  # noqa: BLE001 - preserve backend context
-            raise _typed_backend_error(exc) from exc
+        with _quiet_backend_streams():
+            address &= ~1
+            target = handle.session.target
+            manager_flush_succeeded = False
+            try:
+                existing = target.find_breakpoint(address)
+                if existing is not None:
+                    # find_breakpoint() also returns queued UnrealizedBreakpoint
+                    # entries. Only an enabled provider object proves an already
+                    # installed breakpoint. Flush a pre-existing queued request,
+                    # but never claim ownership of or roll back that request.
+                    if bool(getattr(existing, "enabled", False)):
+                        return
+                    try:
+                        target.selected_core_or_raise.bp_manager.flush()
+                        target.flush()
+                        realized = target.find_breakpoint(address)
+                    except Exception as exc:  # noqa: BLE001 - pre-existing state is unowned
+                        raise TargetStateError(
+                            f"Pre-existing breakpoint state at 0x{address:08X} could not be "
+                            f"realized or verified. {_breakpoint_recovery_instruction(existing)}"
+                        ) from exc
+                    if realized is not None and bool(getattr(realized, "enabled", False)):
+                        return
+                    raise TargetStateError(
+                        f"Pre-existing breakpoint state at 0x{address:08X} remains unrealized "
+                        "or unverifiable; it was not removed because this call does not own it. "
+                        f"{_breakpoint_recovery_instruction(existing)}"
+                    )
+                accepted = target.set_breakpoint(address)
+            except TargetControlError:
+                raise
+            except Exception as exc:  # noqa: BLE001 - preserve backend context
+                raise _typed_backend_error(exc) from exc
+            if not accepted:
+                raise TargetControlError(
+                    f"pyOCD could not allocate a breakpoint at 0x{address:08X}. "
+                    "Remove an existing breakpoint or choose a supported executable address, "
+                    "then retry."
+                )
+
+            realized: object | None = None
+            try:
+                # Target.set_breakpoint() queues an UnrealizedBreakpoint. Match
+                # pyOCD's own breakpoint command by flushing the selected core's
+                # manager before flushing pending target transfers.
+                target.selected_core_or_raise.bp_manager.flush()
+                manager_flush_succeeded = True
+                realized = target.find_breakpoint(address)
+                if realized is None:
+                    raise TargetStateError(
+                        f"pyOCD did not return a realized breakpoint at 0x{address:08X}; "
+                        "a suppressed software-provider write failure may have changed code "
+                        f"memory. {_breakpoint_recovery_instruction(None)}"
+                    )
+                target.flush()
+                if _breakpoint_kind(realized) == "sw":
+                    observed, error = _read_unfiltered_instruction16(target, address)
+                    if error is not None or observed != 0xBE00:
+                        detail = error or f"raw instruction is 0x{observed:04X}, expected 0xBE00"
+                        raise TargetStateError(
+                            f"Software breakpoint installation at 0x{address:08X} could not be "
+                            f"proven in physical code memory ({detail}). "
+                            f"{_breakpoint_recovery_instruction(realized)}"
+                        )
+            except Exception as primary:  # noqa: BLE001 - transaction rollback is best effort
+                rollback_failures: list[str] = []
+                try:
+                    target.remove_breakpoint(address)
+                except Exception as exc:  # noqa: BLE001 - collect every cleanup failure
+                    rollback_failures.append(f"remove_breakpoint: {type(exc).__name__}: {exc}")
+                try:
+                    target.selected_core_or_raise.bp_manager.flush()
+                except Exception as exc:  # noqa: BLE001 - collect every cleanup failure
+                    rollback_failures.append(f"breakpoint manager flush: {type(exc).__name__}: {exc}")
+                try:
+                    target.flush()
+                except Exception as exc:  # noqa: BLE001 - collect every cleanup failure
+                    rollback_failures.append(f"target flush: {type(exc).__name__}: {exc}")
+                try:
+                    remaining = target.find_breakpoint(address)
+                except Exception as exc:  # noqa: BLE001 - absence could not be verified
+                    rollback_failures.append(f"absence verification: {type(exc).__name__}: {exc}")
+                else:
+                    if remaining is not None:
+                        rollback_failures.append("breakpoint remains present after rollback")
+                provider_failure = _removed_breakpoint_provider_failure(
+                    target,
+                    realized,
+                    address,
+                )
+                if provider_failure is not None:
+                    rollback_failures.append(f"provider-level rollback: {provider_failure}")
+
+                # A provider can program an FPB comparator and then throw before
+                # the breakpoint manager records the realized object. In that
+                # case manager absence after cleanup is not physical absence proof.
+                if not manager_flush_succeeded:
+                    rollback_failures.append(
+                        "initial breakpoint manager/provider flush failed before physical "
+                        "comparator state could be proven"
+                    )
+
+                if rollback_failures:
+                    primary_detail = f"{type(primary).__name__}: {primary}"
+                    rollback_detail = "; ".join(rollback_failures)
+                    raise TargetStateError(
+                        f"Breakpoint state at 0x{address:08X} is uncertain after a failed "
+                        f"installation ({primary_detail}); rollback could not be proven "
+                        f"complete ({rollback_detail}). "
+                        f"{_breakpoint_recovery_instruction(realized)}"
+                    ) from primary
+                if isinstance(primary, TargetControlError):
+                    raise
+                raise _typed_backend_error(primary) from primary
 
     def remove_breakpoint(self, handle: TargetSessionHandle, address: int) -> None:
-        try:
-            with _quiet_backend_streams():
-                handle.session.target.remove_breakpoint(address)
-        except Exception as exc:  # noqa: BLE001 - preserve backend context
-            raise _typed_backend_error(exc) from exc
+        with _quiet_backend_streams():
+            address &= ~1
+            target = handle.session.target
+            try:
+                realized = target.find_breakpoint(address)
+            except Exception as exc:  # noqa: BLE001 - no removal was requested yet
+                raise _typed_backend_error(exc) from exc
+            try:
+                target.remove_breakpoint(address)
+                target.selected_core_or_raise.bp_manager.flush()
+                target.flush()
+                if target.find_breakpoint(address) is not None:
+                    raise TargetControlError(
+                        f"pyOCD did not remove the breakpoint at 0x{address:08X}; "
+                        "the breakpoint remains installed."
+                    )
+                provider_failure = _removed_breakpoint_provider_failure(
+                    target,
+                    realized,
+                    address,
+                )
+                if provider_failure is not None:
+                    raise TargetStateError(
+                        f"Breakpoint removal at 0x{address:08X} is uncertain "
+                        f"({provider_failure}). {_breakpoint_recovery_instruction(realized)}"
+                    )
+                return
+            except TargetControlError:
+                raise
+            except Exception as primary:  # noqa: BLE001 - establish provider state if possible
+                verification_failures: list[str] = []
+                try:
+                    target.selected_core_or_raise.bp_manager.flush()
+                except Exception as exc:  # noqa: BLE001 - collect every verification failure
+                    verification_failures.append(
+                        f"breakpoint manager flush: {type(exc).__name__}: {exc}"
+                    )
+                try:
+                    target.flush()
+                except Exception as exc:  # noqa: BLE001 - collect every verification failure
+                    verification_failures.append(f"target flush: {type(exc).__name__}: {exc}")
+                try:
+                    remaining = target.find_breakpoint(address)
+                except Exception as exc:  # noqa: BLE001 - provider state is unknown
+                    verification_failures.append(
+                        f"absence verification: {type(exc).__name__}: {exc}"
+                    )
+                    remaining = None
+                provider_failure = _removed_breakpoint_provider_failure(
+                    target,
+                    realized,
+                    address,
+                )
+                if provider_failure is not None:
+                    verification_failures.append(
+                        f"provider-level removal: {provider_failure}"
+                    )
+
+                if not verification_failures and remaining is None:
+                    return
+                if not verification_failures:
+                    raise TargetControlError(
+                        f"pyOCD did not remove the breakpoint at 0x{address:08X}; "
+                        "the breakpoint remains installed."
+                    ) from primary
+
+                primary_detail = f"{type(primary).__name__}: {primary}"
+                verification_detail = "; ".join(verification_failures)
+                raise TargetStateError(
+                    f"Breakpoint state at 0x{address:08X} is uncertain after a failed "
+                    f"removal ({primary_detail}); provider state could not be verified "
+                    f"({verification_detail}). {_breakpoint_recovery_instruction(realized)}"
+                ) from primary

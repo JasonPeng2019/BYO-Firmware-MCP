@@ -36,6 +36,12 @@ def _parse_address(value: str | int) -> int:
     return parsed
 
 
+def canonicalize_breakpoint_address(address: int) -> int:
+    """Return an ARM code address without the Thumb-state indicator bit."""
+
+    return address & ~1
+
+
 def build_breakpoint_handlers(
     services: BreakpointToolServices,
 ) -> dict[str, Callable[..., str]]:
@@ -115,6 +121,7 @@ def build_breakpoint_handlers(
                     runtime,
                 )
             address = services.resolve_symbol(artifact, symbol_or_address).address
+        address = canonicalize_breakpoint_address(address)
         if services.check_breakpoint is not None:
             services.check_breakpoint(board_id, address, artifact)
         services.set_target_breakpoint(handle, address)
@@ -137,7 +144,7 @@ def build_breakpoint_handlers(
         runtime = services.runtime_for(board_id)
         args = {"board_id": board_id, "address": address}
         try:
-            parsed = _parse_address(address)
+            parsed = canonicalize_breakpoint_address(_parse_address(address))
         except (TypeError, ValueError) as exc:
             return refuse(
                 "remove_breakpoint",
@@ -155,6 +162,7 @@ def build_breakpoint_handlers(
             outcome_kind=ToolOutcome.SUCCESS,
             error_code=None,
             duration_ms=services.duration_ms(started),
+            details={"resolved_address": parsed},
             board_id=board_id,
             session=runtime,
         )

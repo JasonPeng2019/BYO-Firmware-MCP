@@ -243,6 +243,7 @@ from pyocd_debug_mcp.tools.artifacts import build_artifact_handlers
 from pyocd_debug_mcp.tools.breakpoints import (
     BreakpointToolServices,
     build_breakpoint_handlers,
+    canonicalize_breakpoint_address,
 )
 from pyocd_debug_mcp.tools.batch import build_batch_handlers
 from pyocd_debug_mcp.tools.execution import ExecutionToolServices, build_execution_handlers
@@ -623,6 +624,7 @@ def _enforce_action_containment(
                 if not isinstance(target, str) or not target.strip():
                     raise ValueError("symbol_or_address must be a symbol or address")
                 address = resolve_symbol(elf_path, target).address
+            address = canonicalize_breakpoint_address(address)
             _safety_policy.check_breakpoint(board_id, address, elf_path)
         elif tool_name in {"flash_application", "flash_bootloader"}:
             handle = _maybe_handle(board_id)
@@ -979,6 +981,11 @@ def _resolve_probe_uid_for_connect(
     )
     if resolution.probe is None:
         if not allow_subprocess_fallback:
+            if resolution.probes:
+                raise RuntimeError(
+                    f"Probe resolution failed for {board.display_name}: {resolution.note}. "
+                    "Rerun setup routing to choose the current physical connection."
+                )
             return None
         raise RuntimeError(f"Probe resolution failed for {board.display_name}: {resolution.note}")
     if not resolution.probe.uid:
@@ -992,6 +999,27 @@ def _resolve_probe_uid_for_connect(
             f"Probe resolution for {board.display_name} did not yield a unique id. {remedy}"
         )
     return resolution.probe.uid
+
+
+def _assigned_probe_uid_for_connect(board_id: str) -> str | None:
+    """Return this run's explicit setup probe UID, never a broad-profile fallback.
+
+    Assumption: setup_overview's assignment is the user's current physical binding
+    for this server run.  Normal connect must honor it; reconnecting a missing
+    binding must fail rather than silently selecting a similarly described probe.
+    """
+
+    assigned = assignment_store.connection_for(board_id)
+    if assigned is None:
+        return None
+    candidate = assigned.split(":", 1)[1] if assigned.casefold().startswith("probe:") else assigned
+    inventory = _validation_inventory()
+    if not any(_connection_matches_probe(candidate, probe) for probe in inventory.probes):
+        raise RuntimeError(
+            f"The assigned probe for {board_id} is no longer present; rerun setup routing "
+            "to choose the current physical connection."
+        )
+    return candidate
 
 
 def _handle(board_id: str) -> TargetSessionHandle:
@@ -1065,9 +1093,14 @@ def _connect_impl(
                 if not allow_missing_profile or not target:
                     raise
                 board = None
+            assigned_uid = (
+                _assigned_probe_uid_for_connect(board_id)
+                if not allow_environment_overrides and unique_id is None
+                else None
+            )
             uid = _resolve_probe_uid_for_connect(
                 board,
-                unique_id,
+                assigned_uid or unique_id,
                 allow_environment_override=allow_environment_overrides,
             )
             tgt = (
@@ -3223,7 +3256,10 @@ def _stable_identity_equal(left: str | None, right: str | None) -> bool:
     return False
 
 
-def _connection_matches_probe(connection_id: str, probe: ProbeCandidate) -> bool:
+def _connection_matches_probe(
+    connection_id: str,
+    probe: ProbeCandidate | ValidationProbe,
+) -> bool:
     candidate = connection_id.strip()
     if candidate.casefold().startswith("probe:"):
         candidate = candidate.split(":", 1)[1]

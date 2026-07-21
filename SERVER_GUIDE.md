@@ -120,6 +120,17 @@ Same-board calls serialize while different boards can execute concurrently.
 Guarded requests are scoped to their run, board, session, exact parameters,
 plan budget, and permission.
 
+When multiple SEGGER J-Link probes are used from one server process, the server
+detects the selected probe provider dynamically. The first live J-Link session
+uses the provider's normal DLL instance; each additional simultaneous J-Link
+session gets an isolated temporary DLL instance, as required by pylink. Closing
+the normal owner releases that fast path immediately, even if isolated sessions
+remain live. This allocation does not depend on board names, probe serials,
+target types, USB locations, or host-specific library paths.
+If provider closure cannot be confirmed, the server keeps the affected DLL/session
+reservation and reports the close failure; later J-Links remain safely isolated.
+Restart the server after resolving the probe/USB fault to reclaim the normal fast path.
+
 Only successful `board_validate` opens the in-memory gate. Writes recheck the
 current aggregate safety fingerprint on every call and apply typed containment
 before backend mutation. Disconnect and restart clear live assignments, plans,
