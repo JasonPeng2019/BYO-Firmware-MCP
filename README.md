@@ -15,9 +15,11 @@ Register the following stdio command in any MCP-compatible client:
 
 Setup in .codex/config.toml:
 ```text
+
+[mcp_servers]
 [mcp_servers.pyocd-debug]
 command = "uv"
-args = ["run", "--project", "C:\\Users\\Jason\\Documents\\Jason\\FirmCLI_Tester\\BYO-Firmware-MCP", "--locked", "pyocd-debug-mcp"]
+args = ["run", "--project", "<path-to-server>", "--locked", "pyocd-debug-mcp"]
 
 [mcp_servers.pyocd-debug.tools]
 
