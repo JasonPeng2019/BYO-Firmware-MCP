@@ -13,6 +13,22 @@ uv sync --locked
 
 Register the following stdio command in any MCP-compatible client:
 
+Setup in .codex/config.toml:
+```text
+[mcp_servers.pyocd-debug]
+command = "uv"
+args = ["run", "--project", "C:\\Users\\Jason\\Documents\\Jason\\FirmCLI_Tester\\BYO-Firmware-MCP", "--locked", "pyocd-debug-mcp"]
+
+[mcp_servers.pyocd-debug.tools]
+
+[mcp_servers.pyocd-debug.tools.initialization_handshake]
+approval_mode = "approve"
+[mcp_servers.pyocd-debug.tools.setup_overview]
+approval_mode = "approve"
+``` 
+
+or setup via:
+
 ```text
 uv run --project <absolute-path-to-BYO-Server> --locked pyocd-debug-mcp
 ```
