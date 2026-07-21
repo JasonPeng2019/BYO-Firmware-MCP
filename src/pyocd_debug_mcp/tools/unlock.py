@@ -173,7 +173,7 @@ class UnlockCoordinator:
         self._guard = threading.RLock()
 
     def _identity(self, board_id: str) -> tuple[LiveUnlockIdentity, SafetyMapDocument]:
-        profile = self.services.profiles.load(board_id, include_legacy=False)
+        profile = self.services.profiles.load(board_id)
         handle = self.services.handle_for(board_id)
         probe = (handle.probe_uid or "").strip()
         if not probe:

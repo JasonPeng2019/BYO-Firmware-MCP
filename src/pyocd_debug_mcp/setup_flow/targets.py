@@ -177,7 +177,7 @@ class ProfileCommitCoordinator:
 
     def commit_optional(self, board_id: str, result: EnrichmentResult) -> BoardProfile:
         if not result.fields:
-            return self._repository.load(board_id, include_legacy=False)
+            return self._repository.load(board_id)
         staged = self._repository.stage_optional(board_id, result.fields)
         self._before_commit()
         return self._repository.commit_optional(staged)

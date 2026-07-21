@@ -1,4 +1,4 @@
-"""Schema-v2 board profiles layered over the legacy board-config parser."""
+"""Schema-v2 board profiles stored in the project-local FirmStore."""
 
 from __future__ import annotations
 
@@ -303,7 +303,7 @@ def _validate_safety_ref(value: object, expected_prefix: PurePosixPath) -> str |
 
 @dataclass(frozen=True)
 class BoardProfile:
-    """A loaded v2 profile or read-only legacy compatibility view."""
+    """A validated schema-v2 board profile."""
 
     schema_version: int
     mcu_part_number: str | None
@@ -313,7 +313,6 @@ class BoardProfile:
     safety_ref: str | None
     device_support: Mapping[str, str] | None
     source_path: Path
-    read_only: bool
     _document: dict[str, Any] = field(repr=False, compare=False)
 
     @property
@@ -337,7 +336,7 @@ class BoardProfile:
 class StagedProfile:
     """Validated profile content awaiting one atomic repository commit."""
 
-    operation: Literal["core", "migration", "optional", "safety_ref"]
+    operation: Literal["core", "optional", "safety_ref"]
     profile: BoardProfile
     expected_updated_at: str | None
 
@@ -349,15 +348,9 @@ class ProfileRepository:
         self,
         store: FirmStore,
         *,
-        legacy_board_dir: Path | None = None,
         device_support_verifier: DeviceSupportVerifier | None = None,
     ) -> None:
         self.store = store
-        self.legacy_board_dir = (
-            Path(legacy_board_dir).expanduser().resolve()
-            if legacy_board_dir is not None
-            else None
-        )
         self._device_support_verifier = device_support_verifier or (
             lambda part, board, source: _verify_registered_device_support(
                 part, board, source, store=self.store
@@ -367,15 +360,6 @@ class ProfileRepository:
 
     def _v2_paths(self) -> list[Path]:
         return preview_board_config_paths(self.store.layout.boards)
-
-    def _legacy_paths(self) -> list[Path]:
-        if self.legacy_board_dir is None:
-            return []
-        return [
-            path
-            for path in preview_board_config_paths(self.legacy_board_dir)
-            if not path.stem.startswith("example_")
-        ]
 
     def _from_v2_document(self, raw: Mapping[str, object], path: Path) -> BoardProfile:
         document = copy.deepcopy(dict(raw))
@@ -446,7 +430,6 @@ class ProfileRepository:
             safety_ref=safety_ref,
             device_support=device_support,
             source_path=path,
-            read_only=False,
             _document=document,
         )
 
@@ -456,32 +439,6 @@ class ProfileRepository:
         except ConfigError as exc:
             raise ProfileError(f"Invalid schema-v2 profile {path.name}: {exc}") from exc
         return self._from_v2_document(document, path)
-
-    def _load_legacy_path(self, path: Path) -> BoardProfile:
-        raw = load_board_config_document(path)
-        board = _make_profile_board(raw, path)
-        if path.stem != board.board_id:
-            raise ProfileError(
-                f"Legacy profile filename stem '{path.stem}' does not match "
-                f"board_id '{board.board_id}'"
-            )
-        document = copy.deepcopy(raw)
-        for field_name in _PACKAGE_METADATA_FIELDS:
-            document.pop(field_name, None)
-        part_value = document.get("mcu_part_number")
-        part_number = part_value if isinstance(part_value, str) and part_value.strip() else None
-        return BoardProfile(
-            schema_version=1,
-            mcu_part_number=part_number,
-            board=board,
-            created_at=None,
-            updated_at=None,
-            safety_ref=None,
-            device_support=None,
-            source_path=path,
-            read_only=True,
-            _document=document,
-        )
 
     @staticmethod
     def _validate_unique(profiles: list[BoardProfile]) -> None:
@@ -504,7 +461,7 @@ class ProfileRepository:
                 )
             display_names[display_key] = profile
 
-    def load_all(self, *, include_legacy: bool = True) -> list[BoardProfile]:
+    def load_all(self) -> list[BoardProfile]:
         v2_profiles = [self._load_v2_path(path) for path in self._v2_paths()]
         profiles_by_id: dict[str, BoardProfile] = {}
         for profile in v2_profiles:
@@ -512,26 +469,15 @@ class ProfileRepository:
                 raise ProfileError(f"Duplicate board_id '{profile.board_id}' in profile store")
             profiles_by_id[profile.board_id] = profile
 
-        if include_legacy:
-            legacy_ids: set[str] = set()
-            for path in self._legacy_paths():
-                legacy = self._load_legacy_path(path)
-                if legacy.board_id in legacy_ids:
-                    raise ProfileError(
-                        f"Duplicate board_id '{legacy.board_id}' in legacy boards directory"
-                    )
-                legacy_ids.add(legacy.board_id)
-                profiles_by_id.setdefault(legacy.board_id, legacy)
-
         profiles = list(profiles_by_id.values())
         self._validate_unique(profiles)
         return sorted(profiles, key=lambda profile: profile.board_id)
 
-    def load(self, board_id: str, *, include_legacy: bool = True) -> BoardProfile:
+    def load(self, board_id: str) -> BoardProfile:
         identity = _require_board_id(board_id)
         matches = [
             profile
-            for profile in self.load_all(include_legacy=include_legacy)
+            for profile in self.load_all()
             if profile.board_id == identity
         ]
         if not matches:
@@ -617,57 +563,6 @@ class ProfileRepository:
             self._assert_display_available(staged.profile)
             return self._write(staged.profile, create_only=True)
 
-    def stage_legacy_migration(
-        self,
-        board_id: str,
-        mcu_part_number: str,
-    ) -> StagedProfile:
-        """Prepare a v2 profile from a legacy file and an explicit exact part number."""
-
-        identity = _require_board_id(board_id)
-        legacy_matches = [path for path in self._legacy_paths() if path.stem == identity]
-        if len(legacy_matches) != 1:
-            raise ProfileError(
-                f"Expected exactly one legacy profile for '{identity}', found {len(legacy_matches)}"
-            )
-        if not isinstance(mcu_part_number, str) or not mcu_part_number.strip():
-            raise ProfileError(
-                f"Migration requires an explicit exact mcu_part_number for '{identity}'"
-            )
-
-        legacy = self._load_legacy_path(legacy_matches[0])
-        source = legacy.to_document()
-        patterns = source.pop("reference_uart_patterns", None)
-        core_fields = {key: value for key, value in source.items() if key in _CORE_INPUT_FIELDS}
-        core_fields["mcu_part_number"] = mcu_part_number
-        document = self._materialize_core_document(core_fields)
-        for field_name in _OPTIONAL_FIELDS:
-            if field_name in source:
-                document[field_name] = copy.deepcopy(source[field_name])
-        if "expected_uart_substring" not in document and isinstance(patterns, (list, tuple)):
-            first_pattern = next(
-                (str(pattern).strip() for pattern in patterns if str(pattern).strip()),
-                None,
-            )
-            if first_pattern is not None:
-                document["expected_uart_substring"] = first_pattern
-
-        target = self.store.layout.board_profile(identity)
-        profile = self._from_v2_document(document, target)
-        self._assert_display_available(profile)
-        return StagedProfile("migration", profile, None)
-
-    def commit_legacy_migration(self, staged: StagedProfile) -> BoardProfile:
-        if staged.operation != "migration" or staged.expected_updated_at is not None:
-            raise ProfileError("commit_legacy_migration requires a migration StagedProfile")
-        with self._commit_lock:
-            if self._paths_for_board(staged.profile.board_id):
-                raise ProfileError(
-                    f"Schema-v2 profile already exists for '{staged.profile.board_id}'"
-                )
-            self._assert_display_available(staged.profile)
-            return self._write(staged.profile, create_only=True)
-
     def stage_optional(
         self,
         board_id: str,
@@ -677,7 +572,7 @@ class ProfileRepository:
         if unknown:
             raise ProfileError(f"Optional profile stage contains unsupported fields: {unknown}")
         ensure_no_persisted_authority(fields, location="profile optional fields")
-        current = self.load(board_id, include_legacy=False)
+        current = self.load(board_id)
         document = current.to_document()
         document.update(copy.deepcopy(dict(fields)))
         document["updated_at"] = utc_timestamp()
@@ -688,7 +583,7 @@ class ProfileRepository:
         if staged.operation != operation or staged.expected_updated_at is None:
             raise ProfileError(f"commit_{operation} requires a matching StagedProfile")
         with self._commit_lock:
-            current = self.load(staged.profile.board_id, include_legacy=False)
+            current = self.load(staged.profile.board_id)
             if current.updated_at != staged.expected_updated_at:
                 raise StaleProfileStageError(
                     f"Profile '{current.board_id}' changed after the update was staged"
@@ -700,7 +595,7 @@ class ProfileRepository:
         return self._commit_existing(staged, "optional")
 
     def stage_safety_ref(self, board_id: str, safety_ref: str) -> StagedProfile:
-        current = self.load(board_id, include_legacy=False)
+        current = self.load(board_id)
         reference = _validate_safety_ref(
             safety_ref,
             self.store.layout.safety_reference_prefix(current.board_id),

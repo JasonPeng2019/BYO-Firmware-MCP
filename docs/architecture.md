@@ -4,8 +4,8 @@
 
 BYO Server is a local, checkout-operated MCP server for board setup, debug,
 flash, serial, and recovery through pyOCD and pyserial. The only server
-transport is stdio. It does not listen on a socket, embed an agent, or trust an
-MCP client as a safety authority.
+transport is stdio. It does not listen on a socket or trust an MCP client as a
+safety authority.
 
 ```text
 MCP client over stdio
@@ -44,7 +44,7 @@ verified project support. If none exists, it issues a bounded research request
 for one official CMSIS-Pack; the server quarantines and hashes the bytes, bounds
 archive/XML parsing, proves the exact PDSC leaf, derives the pyOCD target, loads
 only that pack, and performs a non-destructive live attach before promotion.
-Agent strings and the project manifest are indices, not authority. Every later
+Client-supplied strings and the project manifest are indices, not authority. Every later
 load re-hashes the pack and datasheet and replays the exact binding. Validation
 promotes only the exact live connection; no pseudo-connection stamp can satisfy
 the readiness barrier.
@@ -85,7 +85,7 @@ use/not-use cases, fields, validation, budget, permission, preconditions,
 warnings, soft guardrails, exit state, and a complete example from
 the same definition. `docs/plan-tool-contract.md` is a deterministic human-readable
 rendering of every live plan/action field, budget, and permission mode. Archived
-design prose is historical evidence rather than a second runtime authority.
+documentation explains the live product surface without creating a second runtime authority.
 After a populated plan is accepted, the response switches to a compact structured unlock payload:
 the unlocked action, exact preferred call, unchanged static-client fallback, bounded usage guidance,
 and reminders. It never repeats the initialization tutorial.
@@ -173,13 +173,13 @@ required remedy.
 
 Normal connection is structurally separate from manual override. The visible
 `connect(board_id)` schema and handler resolve only the named project profile,
-disable legacy launch-environment probe/config fallbacks, and reject unknown
+disable launch-environment probe/config fallbacks, and reject unknown
 fields before backend dispatch. The hidden `connect_override` retains explicit
 run-scoped probe, target, and external-config values behind its plan. Batch
 children traverse the same strict FastMCP argument model, so batching cannot
 reintroduce the removed public override channel.
 
-## Setup and agent relay boundary
+## Setup and client relay boundary
 
 Setup deterministically inventories probes, serial ports, cache matches,
 targets, builds, and exact verified pack bindings before requesting research.
@@ -223,7 +223,7 @@ application programming; bootloader/recovery authority remains separate. Status 
 identity capability and flash-planning readiness. A new or expanded generic allocation is persisted
 before programming so a partial failure remains inside a durable owner. Schema-v2 reviewed application and bootloader partitions
 exist only when an explicit reviewed partition policy authorizes them; the
-historical full-flash ceiling is never reinterpreted as partition authority. Legacy source
+full-flash capacity is never reinterpreted as partition authority. Source
 manifest and safety report siblings are deleted during map load/commit and are
 never read.
 
@@ -253,11 +253,11 @@ reviewed partition, and erase sectors; HEX also requires its matching ELF.
 Breakpoint containment uses executable segments from the selected current ELF,
 not blanket partition executability.
 
-Setup and validation return structured control payloads for the agent plus an
-`agent_prompt` written as ordinary prose. The agent must relay only that prose
+Setup and validation return structured control payloads for the MCP client plus an
+`agent_prompt` field written as ordinary prose. The client must relay only that prose
 and friendly choices, never structured payloads, continuation tokens, internal
 field names, or machine identifiers unless a destructive approval explicitly
-requires the exact live identity. See [agent-contract.md](agent-contract.md).
+requires the exact live identity. See [client-contract.md](client-contract.md).
 
 MCP setup and validation adapt inputs into the single
 `setup_flow.validate.BoardValidator`; there is no parallel checkout-specific
@@ -282,7 +282,7 @@ Writes are project-local, atomic, and checked for authority-bearing keys.
 Profiles preserve the exact user-supplied MCU part number and Unicode display
 name. The project pack manifest indexes exact immutable bytes and server-derived
 bindings; every load replays those bytes rather than trusting manifest claims.
-Profiles bind the resulting canonical support ID, not an agent path or target
+Profiles bind the resulting canonical support ID, not a client path or target
 proposal. Cache records contain only stable attachment hints.
 
 The following are deliberately never persisted: live connections and
@@ -319,7 +319,7 @@ interruptible. Stdio EOF and normal shutdown use the same cleanup ownership.
 ## Build artifact intake
 
 Firmware builds remain native-project work. The server returns an exact parameterized invocation of
-the provider-neutral `pyocd_debug_mcp.native_build` helper. The agent resolves the project's real
+the provider-neutral `pyocd_debug_mcp.native_build` helper. The client resolves the project's real
 executable, argv, cwd, environment, and outputs; the helper executes that argv directly without a
 shell, inherits network access by default, verifies ELF/HEX formats, and records whether the linker
 map was explicit or uniquely discovered without claiming universal ELF/map
@@ -338,7 +338,7 @@ manifest contains provenance but no allowed ranges, plans, permissions, or gate
 state. Safety refresh never consumes build outputs. The flash plan binds the selected
 artifact and runtime containment parses it immediately before execution.
 
-All build systems use the same owned-process helper with exact agent-resolved argv, and their normal
+All build systems use the same owned-process helper with exact client-resolved argv, and their normal
 output can enter through the same visible collector.
 
 ## Target and host de-biasing boundaries

@@ -6,7 +6,6 @@ import copy
 import secrets
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import asdict, dataclass, field
-from pathlib import Path
 from typing import Any, Literal
 
 from pyocd_debug_mcp.firmstore.cache import SerialEndpoint
@@ -243,7 +242,7 @@ class BoardValidator:
                 raise ValidationBackendError(
                     "validation_incomplete", "validation/profile-missing", str(exc)
                 ) from exc
-            if profile.schema_version < 2 or profile.mcu_part_number is None:
+            if profile.mcu_part_number is None:
                 raise ValidationBackendError(
                     "validation_incomplete",
                     "validation/profile-incomplete",
@@ -559,18 +558,3 @@ class BoardValidator:
                 validation_id, {"step": 0, "name": "validation", "outcome": status}
             )
         return paths
-
-
-def profile_from_board_config(board: Any, source_path: Path) -> BoardProfile:
-    """Build a read-only compatibility view for the Stage 0 shared engine."""
-
-    part_number = getattr(board, "mcu_part_number", None) or board.pyocd_target
-    document = {
-        "board_id": board.board_id,
-        "display_name": board.display_name,
-        "mcu_part_number": part_number,
-        "mcu_family": board.mcu_family,
-        "probe_family": board.probe_family,
-        "pyocd_target": board.pyocd_target,
-    }
-    return BoardProfile(2, part_number, board, None, None, None, None, source_path, True, document)

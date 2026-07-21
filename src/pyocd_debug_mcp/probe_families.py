@@ -130,7 +130,7 @@ def probe_family_hints(provider_id: str) -> tuple[str, ...]:
 
 
 def match_probe_family_text(text: str) -> str:
-    """Return one configured legacy text match, or ``unknown`` if ambiguous/absent."""
+    """Return one configured text match, or ``unknown`` if ambiguous or absent."""
 
     normalized = text.casefold()
     matches = {

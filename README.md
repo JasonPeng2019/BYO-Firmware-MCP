@@ -11,31 +11,21 @@ Install the locked environment from the checkout:
 uv sync --locked
 ```
 
-Register the following stdio command in any MCP-compatible client:
-
-Setup in .codex/config.toml:
-```text
-
-[mcp_servers]
-[mcp_servers.pyocd-debug]
-command = "uv"
-args = ["run", "--project", "<path-to-server>", "--locked", "pyocd-debug-mcp"]
-
-[mcp_servers.pyocd-debug.tools]
-
-[mcp_servers.pyocd-debug.tools.initialization_handshake]
-approval_mode = "approve"
-[mcp_servers.pyocd-debug.tools.setup_overview]
-approval_mode = "approve"
-``` 
-
-or setup via:
+Register this stdio command in any MCP-compatible client:
 
 ```text
 uv run --project <absolute-path-to-BYO-Server> --locked pyocd-debug-mcp
 ```
 
-The server is client-neutral and never launches an agent or silently connects to hardware. See
+For example:
+
+```text
+codex mcp add byo-firmware -- uv run --project C:\Users\Jason\Documents\Jason\FirmCLI_Tester\BYO-Firmware-MCP --locked pyocd-debug-mcp
+```
+
+-> For the user Jason, using codex, where the server is stored at \FirmCLI_Tester\BYO-Firmware-MCP, this is the registration command.
+
+The server is client-neutral and never launches a client workflow or silently connects to hardware. See
 [SERVER_GUIDE.md](SERVER_GUIDE.md) for the full setup and tool workflow.
 
 ## Firmware MCP capabilities
@@ -84,11 +74,11 @@ does not run a build, discover memory permissions, access hardware, or authorize
 canonical output in the matching flash plan; safety refresh accepts no build artifacts, and a raw
 BIN has no trusted load address.
 
-Agents connected through MCP can use the same behavior through the always-visible
+MCP clients can use the same behavior through the always-visible
 `collect_build_artifacts` tool. Its indexed description gives the exact call contract and its
 response returns canonical paths plus the flash-plan handoff. For guarded firmware, normally
 supply the coherent ELF and linker map with `expected_roles=["elf", "map"]`. The standalone CLI
-remains useful to developers and terminal-driven agents outside an MCP session.
+remains useful to developers and terminal-driven workflows outside an MCP session.
 
 For a server-directed build, inspect the project's own build files and use the
 `pyocd_debug_mcp.native_build` argv template from `get_setup_status.build_guidance`. Put the exact
@@ -106,8 +96,8 @@ Every build system uses the same exact-argv path. The helper never accesses hard
 safety authority.
 
 Fresh boards do not need a checked-in board YAML. Given an exact MCU ordering code and local PDF,
-setup first replays verified local support and otherwise asks the agent to research either an exact
-installed pyOCD target or one official CMSIS-Pack. The server—not the agent—replays built-in static
+setup first replays verified local support and otherwise requests either an exact
+installed pyOCD target or one official CMSIS-Pack. The server—not the client—replays built-in static
 geometry or bounds and hashes the archive, proves its exact PDSC leaf, and derives the pack target.
 It tests a non-destructive live attach before recording project-local support; a built-in target
 with partial metadata remains usable for only the capabilities it can prove. Setup captures the
@@ -127,7 +117,7 @@ disclosure, and fresh one-time permission checks; `manual_only` remains fail-clo
 ## Further documentation
 
 - [Server operation and recovery](SERVER_GUIDE.md)
-- [Agent interaction contract](docs/agent-contract.md)
+- [MCP client contract](docs/client-contract.md)
 - [Architecture and state ownership](docs/architecture.md)
 - [Plan-tool contract](docs/plan-tool-contract.md)
 

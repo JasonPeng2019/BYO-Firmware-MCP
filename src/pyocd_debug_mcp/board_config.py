@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import json
 import re
-import warnings
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable
@@ -21,19 +20,8 @@ SUPPORTED_RECOVER_MODES = {
     RECOVER_MODE_BACKEND_MASS_ERASE,
     RECOVER_MODE_MANUAL_ONLY,
 }
-_LEGACY_RECOVER_MODE_ALIASES = {"nrf_pyocd_unlock": RECOVER_MODE_BACKEND_MASS_ERASE}
-
-
 class ConfigError(Exception):
     """Raised when a tracked board-config file is malformed."""
-
-
-class LegacyPackNameWarning(UserWarning):
-    """A legacy profile tried to own package metadata."""
-
-
-class LegacyRecoverModeWarning(UserWarning):
-    """A legacy MCU-named recovery selector was normalized on read."""
 
 
 @dataclass(frozen=True)
@@ -106,22 +94,13 @@ def resolve_recover_mode(
     """Resolve the typed recover-mode selector for a board.
 
     An explicit ``recover_mode`` is honored and validated against
-    ``SUPPORTED_RECOVER_MODES``. Legacy MCU-named selectors are accepted only as
-    a non-authorizing read compatibility alias. Missing recovery policy never
-    infers behavior from a part or family name.
+    ``SUPPORTED_RECOVER_MODES``. Missing recovery policy never infers behavior
+    from a part or family name.
     """
     if raw_mode is not None:
         recover_mode = str(raw_mode).strip().lower()
         if not recover_mode:
             return None
-        legacy = _LEGACY_RECOVER_MODE_ALIASES.get(recover_mode)
-        if legacy is not None:
-            warnings.warn(
-                f"Legacy recover_mode '{recover_mode}' is deprecated; use '{legacy}'.",
-                LegacyRecoverModeWarning,
-                stacklevel=2,
-            )
-            recover_mode = legacy
         if recover_mode not in SUPPORTED_RECOVER_MODES:
             supported = ", ".join(sorted(SUPPORTED_RECOVER_MODES))
             raise ConfigError(f"Field 'recover_mode' must be one of: {supported}")
@@ -203,12 +182,9 @@ def make_board_config(raw: dict[str, object], source_path: Path | None) -> Board
     pyocd_target = str(raw["pyocd_target"]).strip()
     if "pack_name" in raw:
         source = f" in {source_path}" if source_path is not None else ""
-        warnings.warn(
-            "Legacy field 'pack_name'"
-            f"{source} is deprecated and ignored; the project-local verified pack registry is the "
-            "authoritative owner of device-support package metadata.",
-            LegacyPackNameWarning,
-            stacklevel=2,
+        raise ConfigError(
+            "Field 'pack_name' is unsupported"
+            f"{source}; the project-local verified pack registry owns device-support metadata."
         )
     probe_type = str(raw.get("probe_type") or probe_family_label(probe_family)).strip()
 

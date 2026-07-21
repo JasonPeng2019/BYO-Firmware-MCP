@@ -43,7 +43,7 @@ class UARTInterface(ABC):
         *,
         timeout_seconds: float,
     ) -> bytes:
-        """Read with a temporary narrower timeout while preserving legacy adapters."""
+        """Read with a temporary narrower timeout when the transport supports it."""
 
         if timeout_seconds <= 0:
             raise ValueError("timeout_seconds must be > 0")

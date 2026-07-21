@@ -374,7 +374,7 @@ def _validate_plan_scope(
     connection = connection_manager.maybe_connection(board_id)
     if definition.action_name == "board_setup":
         try:
-            profile = _profile_repository.load(board_id, include_legacy=False)
+            profile = _profile_repository.load(board_id)
         except ProfileError:
             profile = None
         existing_profile_paths = tuple(
@@ -899,7 +899,7 @@ def resolve_board_config(
         repository = globals().get("_profile_repository")
         if isinstance(repository, ProfileRepository):
             try:
-                return repository.load(bid, include_legacy=False).board
+                return repository.load(bid).board
             except ProfileError:
                 pass
         raise ConfigError(
@@ -1110,7 +1110,7 @@ def _connect_impl(
                 or None
             )
             try:
-                stored_profile = _profile_repository.load(board_id, include_legacy=False)
+                stored_profile = _profile_repository.load(board_id)
             except ProfileError:
                 if _profile_repository.store.layout.board_profile(board_id).is_file():
                     raise
@@ -1266,7 +1266,7 @@ def _connect_under_reset_impl(
             or None
         )
         try:
-            stored_profile = _profile_repository.load(board_id, include_legacy=False)
+            stored_profile = _profile_repository.load(board_id)
         except ProfileError:
             if _profile_repository.store.layout.board_profile(board_id).is_file():
                 raise
@@ -2152,7 +2152,7 @@ def _stage_generic_allocation(
         artifact,
         current_target=_current_target(board_id),
     )
-    profile = _profile_repository.load(board_id, include_legacy=False)
+    profile = _profile_repository.load(board_id)
     if profile.mcu_part_number is None:
         raise SafetyMapError("generic profile has no exact MCU part number")
     if profile.device_support is None:
@@ -2541,7 +2541,7 @@ def _replay_profile_device_support(profile) -> DeviceSupportAuthority:
 
 
 def _verified_pack_for_profile(profile):
-    """Return the exact replayed pack for a generic profile, or ``None`` for legacy support."""
+    """Return the exact replayed pack for a generic profile, if one is required."""
 
     device_support = getattr(profile, "device_support", None)
     if device_support is None:
@@ -2689,7 +2689,7 @@ def _safety_continuation(prefix: str) -> str:
 def _derive_reviewed_safety_map(board_id: str):
     """Reproduce one complete candidate from profile plus packaged reviewed evidence."""
 
-    profile = _profile_repository.load(board_id, include_legacy=False)
+    profile = _profile_repository.load(board_id)
     profile_document = profile.to_document()
     datasheet_digest = profile_document.get("datasheet_sha256")
     if not isinstance(datasheet_digest, str) or not datasheet_digest.strip():
@@ -2745,7 +2745,7 @@ def _derive_reviewed_safety_map(board_id: str):
 def _derive_generic_safety_map(board_id: str) -> GenericSafetyMapDocument:
     """Build a read/debug-only schema-v3 map from a replayed pack binding."""
 
-    profile = _profile_repository.load(board_id, include_legacy=False)
+    profile = _profile_repository.load(board_id)
     if profile.mcu_part_number is None or profile.device_support is None:
         raise SafetyMapError("profile lacks a resolved generic device-support source")
     candidate = _replay_profile_device_support(profile)
@@ -2991,7 +2991,7 @@ def _require_current_reviewed_map(document) -> None:
 def _derive_safety_map(board_id: str):
     """Re-derive the sole map using the profile's recorded authority kind."""
 
-    profile = _profile_repository.load(board_id, include_legacy=False)
+    profile = _profile_repository.load(board_id)
     return (
         _derive_generic_safety_map(board_id)
         if profile.device_support is not None
@@ -3009,7 +3009,7 @@ def _restamp_after_refresh(board_id: str, map_digest: str, identity_changed: boo
     expected_ref = (
         _firm_store.layout.safety_reference_prefix(board_id) / "memory_map.yaml"
     ).as_posix()
-    profile = _profile_repository.load(board_id, include_legacy=False)
+    profile = _profile_repository.load(board_id)
     if profile.safety_ref != expected_ref:
         _profile_repository.commit_safety_ref(
             _profile_repository.stage_safety_ref(board_id, expected_ref)
@@ -3127,7 +3127,7 @@ def _stamp_validation_session(
         return False
     provisional_connection_id = f"probe:{probe_uid or probe_id}"
     try:
-        profile = _profile_repository.load(board_id, include_legacy=False)
+        profile = _profile_repository.load(board_id)
         capability = "exact"
         if profile.device_support is not None and profile.mcu_part_number is not None:
             proof = _replay_profile_device_support(profile).identity_proof
@@ -3300,7 +3300,7 @@ def _is_generic_support(value: object) -> bool:
 
 
 def _resolve_setup_support(user_input: SetupUserInput):
-    """Resolve generic registered support before legacy catalog compatibility."""
+    """Resolve registered device support for setup."""
 
     path, digest = hash_local_datasheet(Path(user_input.datasheet_path))
     pending_builtin = _setup_builtin_candidates.get(user_input.board_id)
@@ -3311,7 +3311,7 @@ def _resolve_setup_support(user_input: SetupUserInput):
             raise PackProvisionError("pending built-in target belongs to a different MCU part")
         return _ResolvedGenericSetupSupport(pending_builtin, path, digest)
     try:
-        existing_generic = _profile_repository.load(user_input.board_id, include_legacy=False)
+        existing_generic = _profile_repository.load(user_input.board_id)
     except ProfileError:
         existing_generic = None
     if existing_generic is not None and existing_generic.device_support is not None:
@@ -3340,7 +3340,7 @@ def _resolve_setup_support(user_input: SetupUserInput):
         # catalog-backed profiles can still be repaired through their original
         # authority path.
         try:
-            existing = _profile_repository.load(user_input.board_id, include_legacy=False)
+            existing = _profile_repository.load(user_input.board_id)
         except ProfileError:
             existing = None
         if existing is None or existing.device_support is not None:
@@ -3545,7 +3545,7 @@ def _setup_connection_phase(context: SetupPhaseContext) -> SetupPhaseOutcome:
             f"The exact MCU and server-hashed datasheet did not match verified device support: {exc}",
         )
     try:
-        existing = _profile_repository.load(context.user_input.board_id, include_legacy=False)
+        existing = _profile_repository.load(context.user_input.board_id)
     except ProfileError:
         existing = None
     target = context.preflight.selected_target
@@ -3831,16 +3831,7 @@ def _setup_connection_phase(context: SetupPhaseContext) -> SetupPhaseOutcome:
             # A repair never trusts the old partial commit as current hardware proof.
             # Re-run the same bounded live identity/read checks before enriching it.
             connect(target, None)
-            if existing.read_only:
-                cancellation_checkpoint()
-                committed = _profile_repository.commit_legacy_migration(
-                    _profile_repository.stage_legacy_migration(
-                        context.user_input.board_id,
-                        context.user_input.mcu_part_number,
-                    )
-                )
-            else:
-                committed = existing
+            committed = existing
         if generic:
             protocol, mode, frequency = _setup_attachment_overrides[context.user_input.board_id]
             if protocol is not None:
@@ -3931,7 +3922,7 @@ def _setup_validation_phase(context: SetupPhaseContext) -> SetupPhaseOutcome:
 def _build_automatic_catalog_safety(context: SetupPhaseContext):
     """Build the first v2 map only after pinned independent authorities agree."""
 
-    profile = _profile_repository.load(context.user_input.board_id, include_legacy=False)
+    profile = _profile_repository.load(context.user_input.board_id)
     if getattr(profile, "device_support", None) is not None:
         _datasheet_path, current_digest = hash_local_datasheet(
             Path(context.user_input.datasheet_path)
@@ -4040,7 +4031,7 @@ def _setup_commit_phase(context: SetupPhaseContext) -> SetupPhaseOutcome:
         _firm_store.layout.safety_reference_prefix(board_id) / "memory_map.yaml"
     ).as_posix()
     try:
-        profile = _profile_repository.load(board_id, include_legacy=False)
+        profile = _profile_repository.load(board_id)
         if profile.safety_ref != expected_ref:
             cancellation_checkpoint()
             profile = _profile_repository.commit_safety_ref(
@@ -4105,7 +4096,7 @@ def _get_setup_status(board_id: str) -> Mapping[str, object]:
     aggregate: str | None = None
     profile: BoardProfile | None = None
     try:
-        profile = _profile_repository.load(board_id, include_legacy=False)
+        profile = _profile_repository.load(board_id)
         artifacts = _safety_repository.load_current(board_id)
         if (
             profile.safety_ref
@@ -4301,7 +4292,7 @@ def _profile_needs_repair(profile: BoardProfile) -> bool:
     expected_ref = (
         _firm_store.layout.safety_reference_prefix(profile.board_id) / "memory_map.yaml"
     ).as_posix()
-    return profile.read_only or profile.safety_ref != expected_ref or not isinstance(digest, str)
+    return profile.safety_ref != expected_ref or not isinstance(digest, str)
 
 
 def _replace_setup_assignments(
@@ -4444,7 +4435,7 @@ def _setup_overview(
     """Give an agent the complete startup route without asking the user for internals."""
 
     try:
-        profiles = _profile_repository.load_all(include_legacy=False)
+        profiles = _profile_repository.load_all()
     except ProfileError as exc:
         return {
             "status": "setup_overview_blocked",
@@ -4460,7 +4451,7 @@ def _setup_overview(
     by_name: dict[str, tuple[BoardProfile, str, str]] = {}
     for profile in profiles:
         complete = False
-        reason = "legacy or incomplete profile; repair is required"
+        reason = "incomplete profile; repair is required"
         route_kind = "repair"
         if not _profile_needs_repair(profile):
             route_kind = "refresh"
@@ -5373,7 +5364,7 @@ def _setup_plan_eligibility(board_id: str) -> tuple[bool, str]:
     """Expose populated setup only for first setup or an exact live mismatch route."""
 
     try:
-        profile = _profile_repository.load(board_id, include_legacy=False)
+        profile = _profile_repository.load(board_id)
     except ProfileError as exc:
         existing_profile_paths = tuple(
             _profile_repository.store.layout.board_profile(board_id, suffix=suffix)
@@ -5556,10 +5547,7 @@ for _batch_name, _batch_handler in batch_tool_handlers.items():
 def _bind_managed_board_resources(operation: ManagedOperation) -> None:
     """Bind the current connection to interruption cleanup without changing normal state.
 
-    A prior implementation appended an unconditional reset-and-run final-state callback to
-    every ordinary operation.  That made a successful UART command, memory read, or register
-    read reboot the application during cleanup and destroyed volatile state before the next
-    call.  Successful actions now preserve the state their documented semantics produce.
+    Successful actions preserve the state their documented semantics produce.
     Explicit reset/resume tools and structured ``on_exit.reset_and_run`` remain available.
     Cancellation and timeout close a debug connection only for operations that use it, because
     backend completion is then uncertain. UART-only, metadata-only, and wait operations do not

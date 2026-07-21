@@ -1,6 +1,6 @@
-# Agent contract
+# MCP client contract
 
-This document defines how an MCP agent must interact with BYO Server. The live
+This document defines how an MCP client must interact with BYO Server. The live
 tool schema and server enforcement remain authoritative.
 
 ## Start and discovery
@@ -52,7 +52,7 @@ board, session, tool, and canonical parameter set.
 
 An accepted plan returns machine-readable `preferred_call` and
 `stable_client_fallback` objects plus only concise unlock guidance and reminders. It does not
-repeat the all-NULL planning tutorial or ask the agent to construct the plan again. Prefer the direct action when the client
+repeat the all-NULL planning tutorial or require the client to construct the plan again. Prefer the direct action when the client
 exposes it. If it does not, submit the fallback's exact `action_batch`
 arguments. Never edit its board, child name, or arguments, and never combine a
 primary setup call with its separately conditioned paired-repair fallback.

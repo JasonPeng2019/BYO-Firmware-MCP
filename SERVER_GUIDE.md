@@ -20,7 +20,7 @@ uv run --project <absolute-path-to-BYO-Server> --locked pyocd-debug-mcp
 The client-specific registration wrapper varies, but the command and arguments do not. Stdout is
 reserved for MCP framing. Each project should set `BYO_MCP_ARTIFACT_ROOT` when it needs state outside
 its default project `.firm` directory. Setup creates project-local profiles and verified pack
-metadata only after an agent supplies the user's exact part number, datasheet, and researched target
+metadata only after the client supplies the user's exact part number, datasheet, and researched target
 or pack candidate.
 
 Generic command-line utilities are available without any bundled board data:
@@ -32,7 +32,7 @@ uv run --locked pyocd-collect-artifacts --help
 ```
 
 After setup validation, `get_setup_status` returns advisory, provider-neutral
-build guidance. The agent inspects the project's own build metadata, resolves
+build guidance. The client inspects the project's own build metadata, resolves
 its actual toolchain and target, and supplies exact argv to
 `<server-python> -m pyocd_debug_mcp.native_build ... -- <command>`. The server
 does not choose an SDK, compiler, provider, or target. Compatible local tools
@@ -43,7 +43,7 @@ Plan fields, budgets, and permission modes are listed in
 [`docs/plan-tool-contract.md`](docs/plan-tool-contract.md), which is derived
 from the same definitions used by the live MCP schemas. Setup resolves the
 current UART port from the selected stable identity and computes the datasheet
-SHA-256 itself; agents never need to bind a COM path or run a hash command.
+SHA-256 itself; clients never need to bind a COM path or run a hash command.
 
 ## Tool surface
 
@@ -109,9 +109,8 @@ the requested setup tool. If setup or validation returns a friendly choice,
 relay its prose and copy its exact `accepted_response`; do not scrape labels,
 invent a target, or ask the user for internal IDs.
 
-Superseded unified reset/core-register/memory/flash tools and
-`unlock_recover` are absent. Exact schemas and status payload behavior are in
-[docs/agent-contract.md](docs/agent-contract.md) and the live MCP descriptions.
+Exact schemas and status payload behavior are in
+[docs/client-contract.md](docs/client-contract.md) and the live MCP descriptions.
 
 ## Safety model
 
@@ -153,7 +152,7 @@ uv run --locked python -c "import pyocd_debug_mcp; import pyocd_debug_mcp.server
 ## More detail
 
 - [Architecture and state ownership](docs/architecture.md)
-- [Agent interaction contract](docs/agent-contract.md)
+- [MCP client contract](docs/client-contract.md)
 - [Plan-tool contract](docs/plan-tool-contract.md)
 
 ## Runtime guarantees
@@ -161,7 +160,7 @@ uv run --locked python -c "import pyocd_debug_mcp; import pyocd_debug_mcp.server
 `InMemorySessionStore` is the process-local session implementation; durable reports are
 evidence only and cannot restore live authority. The MCP server is provider-neutral over stdio.
 
-For project build dependencies, the agent inspects the project's own metadata and available host
+For project build dependencies, the client inspects the project's own metadata and available host
 resources, prefers a compatible existing SDK/toolchain/library, and uses the project's ordinary
 installation or network acquisition path when none is usable. The server does not prescribe vendor
 locations, select a provider, or manage a build-environment fallback. Device-support packs used as
