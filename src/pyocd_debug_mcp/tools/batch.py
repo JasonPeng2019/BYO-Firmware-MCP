@@ -4,21 +4,18 @@ from __future__ import annotations
 
 import json
 from collections.abc import Awaitable, Callable
-from typing import Any, Final
+from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, JsonValue
 
 from pyocd_debug_mcp.kernel.operations import SAFE_EXIT_REMINDER
-
-MAX_BATCH_CHILDREN: Final = 64
-
 
 class BatchChild(BaseModel):
     """One JSON-only MCP child call with no extra or authority-bearing fields."""
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
-    tool_name: str = Field(min_length=1, max_length=128)
+    tool_name: str = Field(min_length=1)
     arguments: dict[str, JsonValue]
 
 
@@ -43,11 +40,6 @@ def _validate_children(
         raise BatchValidationError("board_id must not contain surrounding whitespace")
     if not children:
         raise BatchValidationError("actions must contain at least one child call")
-    if len(children) > MAX_BATCH_CHILDREN:
-        raise BatchValidationError(
-            f"actions must contain no more than {MAX_BATCH_CHILDREN} child calls"
-        )
-
     validated: list[BatchChild] = []
     for index, child in enumerate(children):
         name = child.tool_name.strip()
@@ -144,7 +136,6 @@ def build_batch_handlers(
 
 
 __all__ = [
-    "MAX_BATCH_CHILDREN",
     "BatchChild",
     "BatchValidationError",
     "build_batch_handlers",

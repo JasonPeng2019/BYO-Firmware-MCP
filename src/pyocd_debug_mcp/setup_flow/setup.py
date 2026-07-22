@@ -320,10 +320,7 @@ class SetupWorkflow:
         on_allowance_closed: AllowanceClosed | None = None,
         on_cache_confirmation: CacheConfirmationHandler | None = None,
         cancellation_checkpoint: CancellationCheckpoint | None = None,
-        max_plan_cycles_per_board: int = 3,
     ) -> None:
-        if max_plan_cycles_per_board < 1:
-            raise ValueError("max_plan_cycles_per_board must be positive")
         self.reports = reports
         self.inventory_provider = inventory_provider
         self.preflight = preflight or PreflightEngine()
@@ -342,10 +339,8 @@ class SetupWorkflow:
         self.on_allowance_closed = on_allowance_closed or (lambda board_id, reason: None)
         self.on_cache_confirmation = on_cache_confirmation or (lambda user_input, decision: None)
         self.cancellation_checkpoint = cancellation_checkpoint or (lambda: None)
-        self.max_plan_cycles_per_board = max_plan_cycles_per_board
         self._allowances: dict[str, _SetupAllowance] = {}
         self._current_allowance_by_board: dict[str, str] = {}
-        self._cycles_by_board: dict[str, int] = {}
         self._states: dict[str, _SetupState] = {}
         self._continuation_by_allowance: dict[str, str] = {}
         self._guard = threading.RLock()
@@ -367,11 +362,6 @@ class SetupWorkflow:
         with self._guard:
             if normalized_id in self._allowances:
                 raise SetupWorkflowError(f"Setup allowance '{normalized_id}' already exists")
-            cycles = self._cycles_by_board.get(user_input.board_id, 0)
-            if cycles >= self.max_plan_cycles_per_board:
-                raise SetupWorkflowError(
-                    f"Setup retry limit reached for '{user_input.board_id}'; stop rather than loop"
-                )
             previous_id = self._current_allowance_by_board.get(user_input.board_id)
             if previous_id is not None:
                 self._close_allowance_locked(previous_id, "replaced by a new setup plan")
@@ -382,7 +372,6 @@ class SetupWorkflow:
                 mode,
             )
             self._current_allowance_by_board[user_input.board_id] = normalized_id
-            self._cycles_by_board[user_input.board_id] = cycles + 1
 
     def board_setup(
         self,

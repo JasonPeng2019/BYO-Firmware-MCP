@@ -4,9 +4,10 @@ from __future__ import annotations
 
 import copy
 import secrets
+from contextlib import nullcontext
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import asdict, dataclass, field
-from typing import Any, Literal
+from typing import Any, ContextManager, Literal
 
 from pyocd_debug_mcp.firmstore.cache import SerialEndpoint
 from pyocd_debug_mcp.firmstore.profiles import BoardProfile, ProfileError, ProfileRepository
@@ -33,6 +34,11 @@ ValidationStatus = Literal[
 ]
 
 DEFAULT_STEP_TIMEOUT_SECONDS = 5.0
+PROVIDER_BUDGET_RECOVERY = (
+    "The five-second provider budget is enforced by the parent process. If a worker does not return, "
+    "the server terminates that worker, invalidates only the affected connection, and requires that "
+    "board to reconnect and revalidate before retrying."
+)
 
 
 class ValidationBackendError(RuntimeError):
@@ -55,6 +61,13 @@ class ValidationProbe:
     usb_serial: str | None = None
 
     def choice(self) -> FriendlyChoice:
+        if self.usb_serial is None:
+            return FriendlyChoice(
+                self.probe_id,
+                f"{self.description} (session-local live connection)",
+                "Currently connected debug probe; this token is not a hardware-stable "
+                "identifier and is not stable across reconnects.",
+            )
         suffix = self.usb_serial[-6:] if self.usb_serial else "unknown serial"
         return FriendlyChoice(
             self.probe_id,
@@ -168,7 +181,7 @@ class ValidationResult:
             "choices": [asdict(choice) for choice in self.choices],
             "observed": copy.deepcopy(dict(self.observed)),
             "constraints": [
-                "Validation is bounded and non-destructive.",
+                PROVIDER_BUDGET_RECOVERY,
                 "Validation never uses UART, installs packages, flashes, recovers, or rewrites profiles.",
                 "A successful result stamps only this board and connection in memory.",
             ],
@@ -208,6 +221,7 @@ class BoardValidator:
         hooks: ValidationHooks | None = None,
         step_timeout_seconds: float = DEFAULT_STEP_TIMEOUT_SECONDS,
         cancellation_checkpoint: Callable[[], None] | None = None,
+        lock_for_board: Callable[[str], ContextManager[object]] | None = None,
     ) -> None:
         if step_timeout_seconds <= 0:
             raise ValueError("step timeout must be positive")
@@ -217,8 +231,15 @@ class BoardValidator:
         self._hooks = hooks or ValidationHooks.closed_placeholders()
         self._step_timeout_seconds = step_timeout_seconds
         self._cancellation_checkpoint = cancellation_checkpoint or (lambda: None)
+        self._lock_for_board = lock_for_board or (lambda _board_id: nullcontext())
 
     def validate(self, request: ValidationRequest) -> ValidationResult:
+        """Run one complete validation while serializing its logical board."""
+
+        with self._lock_for_board(request.board_id):
+            return self._validate_locked(request)
+
+    def _validate_locked(self, request: ValidationRequest) -> ValidationResult:
         validation_id = f"validation-{secrets.token_hex(8)}"
         steps: list[ValidationStep] = []
         observed: dict[str, Any] = {"board_id": request.board_id}
@@ -280,13 +301,25 @@ class BoardValidator:
                     "Ask which friendly probe is connected to the intended board.",
                 )
             probe_identity = selected_probe.usb_serial or selected_probe.probe_id
+            probe_identity_scope = (
+                "hardware-stable" if selected_probe.usb_serial is not None else "session-local"
+            )
             observed["probe_identity"] = probe_identity
+            observed["probe_identity_scope"] = probe_identity_scope
             steps.append(
                 ValidationStep(
                     3,
-                    "Resolve intended stable probe identity",
+                    (
+                        "Resolve intended stable hardware probe identity"
+                        if selected_probe.usb_serial is not None
+                        else "Resolve intended live session-local probe identity"
+                    ),
                     "passed",
-                    {"probe_id": selected_probe.probe_id, "probe_identity": probe_identity},
+                    {
+                        "probe_id": selected_probe.probe_id,
+                        "probe_identity": probe_identity,
+                        "identity_scope": probe_identity_scope,
+                    },
                 )
             )
 
@@ -442,13 +475,15 @@ class BoardValidator:
             status, code, message = (
                 "validation_blocked",
                 "validation/backend-unavailable",
-                f"The debug backend could not establish the bounded validation connection: {exc}",
+                f"The debug backend could not establish the bounded validation connection: {exc} "
+                f"{PROVIDER_BUDGET_RECOVERY}",
             )
         except Exception as exc:  # noqa: BLE001 - every validation attempt needs a report
             status, code, message = (
                 "validation_blocked",
                 f"validation/{type(exc).__name__}",
-                f"Validation stopped at a bounded backend operation: {exc}",
+                f"Validation stopped at a bounded provider operation: {exc} "
+                f"{PROVIDER_BUDGET_RECOVERY}",
             )
         finally:
             if connection is not None:

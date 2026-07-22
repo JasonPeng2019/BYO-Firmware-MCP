@@ -4,18 +4,16 @@ from __future__ import annotations
 
 import contextlib
 import io
-import logging
 import os
 import subprocess
 import sys
-import tempfile
 import threading
 import time
 from collections.abc import Iterator
 from pathlib import Path
 
 from pyocd_debug_mcp.kernel.processes import run_owned
-from typing import Any, BinaryIO, TextIO, cast
+from typing import Any, cast
 
 from pyocd.core.exceptions import (  # type: ignore[import-untyped]
     CoreRegisterAccessError,
@@ -36,13 +34,13 @@ from pyocd_debug_mcp.board_config import BoardConfig
 from pyocd_debug_mcp.pack_provision import (
     PackProvisionError,
     VerifiedPack,
-    read_bounded_pack_bytes,
+    read_pack_bytes,
     sha256_bytes,
     verified_pack_for_target,
 )
 from pyocd_debug_mcp.probe_inventory import (
-    list_connected_probes,
-    probe_family_from_pyocd_probe,
+    _probe_info_from_pyocd_probe,
+    list_connected_probes_cli,
 )
 from pyocd_debug_mcp.target_errors import (
     LockedTargetError,
@@ -64,10 +62,6 @@ ROUTE_PYOCD_NATIVE = "pyocd-native"
 SUPPORTED_FLASH_SUFFIXES = frozenset({".axf", ".elf", ".hex"})
 _PACK_OBJECTS: dict[str, tuple[bytes, CmsisPack]] = {}
 _PACK_TARGET_LOCK = threading.RLock()
-_JLINK_SESSION_LOCK = threading.RLock()
-_ACTIVE_JLINK_SESSIONS: dict[int, object] = {}
-_NORMAL_JLINK_SESSION: object | None = None
-_JLINK_TRACE = logging.getLogger("pyocd.probe.jlink_probe.trace")
 _MISSING_TARGET = object()
 
 
@@ -90,7 +84,7 @@ def _quarantined_cmsis_pack(path: Path, expected_sha256: str) -> CmsisPack:
     """Load one setup candidate without retaining unpromoted bytes globally."""
 
     try:
-        payload = read_bounded_pack_bytes(path)
+        payload = read_pack_bytes(path)
     except PackProvisionError as exc:
         raise TargetConnectionError(f"Quarantined CMSIS-Pack cannot be read: {exc}") from exc
     if sha256_bytes(payload) != expected_sha256:
@@ -155,6 +149,7 @@ def _run_cmd(
     try:
         result = run_owned(
             cmd,
+            stdin=subprocess.DEVNULL,
             capture_output=True,
             text=True,
             timeout=timeout_seconds,
@@ -172,44 +167,36 @@ def _run_cmd(
 
 
 @contextlib.contextmanager
-def _quiet_backend_streams() -> Iterator[None]:
-    """Keep backend chatter off the MCP stdio transport.
+def _backend_stdout_to_stderr() -> Iterator[None]:
+    """Keep worker stdout protocol-only while preserving all backend diagnostics."""
 
-    On Windows, the pyOCD J-Link path can misbehave when the process stdout/stderr
-    are pipe-backed handles, which is exactly how MCP stdio launches the server.
-    Swapping the process-level descriptors to temp files during backend calls
-    avoids both protocol corruption and the attach hang/failure seen under stdio.
-    """
-
-    redirected: list[tuple[TextIO, int]] = []
-    temp_files: list[BinaryIO] = []
+    saved_stdout_fd: int | None = None
+    stdout_fd: int | None = None
     try:
-        for stream in (sys.stdout, sys.stderr):
-            try:
-                stream.flush()
-                stream_fd = stream.fileno()
-                saved_fd = os.dup(stream_fd)
-                temp_file = tempfile.TemporaryFile(mode="w+b")
-                os.dup2(temp_file.fileno(), stream_fd)
-            except (AttributeError, io.UnsupportedOperation, OSError):
-                continue
-            redirected.append((stream, saved_fd))
-            temp_files.append(cast(BinaryIO, temp_file))
-
-        with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+        sys.stdout.flush()
+        sys.stderr.flush()
+        try:
+            current_stdout_fd = sys.stdout.fileno()
+            stderr_fd = sys.stderr.fileno()
+            saved_stdout_fd = os.dup(current_stdout_fd)
+            os.dup2(stderr_fd, current_stdout_fd)
+            stdout_fd = current_stdout_fd
+        except (AttributeError, io.UnsupportedOperation, OSError):
+            if saved_stdout_fd is not None:
+                os.close(saved_stdout_fd)
+                saved_stdout_fd = None
+            stdout_fd = None
+        with contextlib.redirect_stdout(sys.stderr):
             yield
     finally:
-        for stream, saved_fd in reversed(redirected):
-            try:
-                stream.flush()
-            except Exception:
-                pass
-            try:
-                os.dup2(saved_fd, stream.fileno())
-            finally:
-                os.close(saved_fd)
-        for opened_file in temp_files:
-            opened_file.close()
+        try:
+            sys.stdout.flush()
+        finally:
+            if saved_stdout_fd is not None and stdout_fd is not None:
+                try:
+                    os.dup2(saved_stdout_fd, stdout_fd)
+                finally:
+                    os.close(saved_stdout_fd)
 
 
 def _typed_backend_error(exc: Exception) -> TargetControlError:
@@ -329,7 +316,20 @@ def _same_probe_uid(expected: str | None, observed: str | None) -> bool:
 
 
 def _single_matching_probe_visible_for_board_family(board: BoardConfig) -> bool:
-    probes = list_connected_probes(_run_cmd)
+    probes = []
+    try:
+        with _backend_stdout_to_stderr():
+            for probe in ConnectHelper.get_all_connected_probes(
+                blocking=False,
+                print_wait_message=False,
+            ):
+                parsed = _probe_info_from_pyocd_probe(probe)
+                if parsed is not None:
+                    probes.append(parsed)
+    except Exception:
+        probes = []
+    if not probes:
+        probes = list_connected_probes_cli(_run_cmd)
     matching = [probe for probe in probes if probe.family == board.probe_family]
     return len(matching) == 1
 
@@ -360,8 +360,8 @@ def build_session_options(
         options["target_override"] = target
     options.update((server_timeouts or default_server_timeout_config()).pyocd_options())
     if board and board.probe_family == "jlink":
-        # J-Link sessions require opening the selected probe by serial number.
-        options["jlink.non_interactive"] = False
+        # This MCP server is headless: never wait for a J-Link provider dialog or control panel.
+        options["jlink.non_interactive"] = True
     if board and board.debug_protocol:
         options["dap_protocol"] = board.debug_protocol
     if board and board.debug_connect_mode:
@@ -371,148 +371,17 @@ def build_session_options(
     return options or None
 
 
-def _session_uses_jlink(session: object, board: BoardConfig | None) -> bool:
-    probe = getattr(session, "probe", None)
-    detected = probe_family_from_pyocd_probe(probe)
-    if detected != "unknown":
-        return detected == "jlink"
-    return board is not None and board.probe_family == "jlink"
+def _close_session(session: object) -> None:
+    """Ask pyOCD to close; process death remains the native cleanup authority."""
 
-
-def _isolate_jlink_session(session: object, board: BoardConfig | None) -> None:
-    """Give each J-Link session independent DLL state before opening it.
-
-    pylink documents ``use_tmpcpy=True`` as required when one process accesses multiple J-Links.
-    pyOCD does not expose that constructor option, so replace only its still-unopened provider
-    handle while preserving pyOCD's callbacks and unsecure policy.
-    """
-
-    if not _session_uses_jlink(session, board):
-        return
-    probe = getattr(session, "probe", None)
-    current_link = getattr(probe, "_link", None)
-    if current_link is None:
-        raise TargetConnectionError("pyOCD J-Link session has no provider handle to isolate.")
-    try:
-        isolated_link = type(current_link)(
-            log=_JLINK_TRACE.info,
-            detailed_log=_JLINK_TRACE.debug,
-            error=_JLINK_TRACE.error,
-            warn=_JLINK_TRACE.warning,
-            unsecure_hook=getattr(current_link, "_unsecure_hook", None),
-            use_tmpcpy=True,
-        )
-    except Exception as exc:  # noqa: BLE001 - normalize provider construction failures
-        raise TargetConnectionError(f"Could not isolate J-Link DLL state: {exc}") from exc
-    setattr(probe, "_link", isolated_link)
-
-
-def _prepare_jlink_session_for_open(session: object, board: BoardConfig | None) -> bool:
-    """Prepare provider state and return whether this session claims the normal DLL slot."""
-
-    if not _session_uses_jlink(session, board):
-        return False
-    if _NORMAL_JLINK_SESSION is None:
-        return True
-    _isolate_jlink_session(session, board)
-    return False
-
-
-def _record_jlink_session_reservation(
-    session: object,
-    board: BoardConfig | None,
-    *,
-    uses_normal_slot: bool,
-) -> None:
-    global _NORMAL_JLINK_SESSION
-    if not _session_uses_jlink(session, board):
-        return
-    session_id = id(session)
-    if uses_normal_slot:
-        if _NORMAL_JLINK_SESSION is not None:
-            raise TargetConnectionError("The normal J-Link DLL slot is already occupied.")
-        _NORMAL_JLINK_SESSION = session
-    _ACTIVE_JLINK_SESSIONS[session_id] = session
-
-
-def _forget_jlink_session(session: object) -> None:
-    global _NORMAL_JLINK_SESSION
-    session_id = id(session)
-    _ACTIVE_JLINK_SESSIONS.pop(session_id, None)
-    if _NORMAL_JLINK_SESSION is session:
-        _NORMAL_JLINK_SESSION = None
-
-
-def _jlink_provider_is_closed(session: object, board: BoardConfig | None) -> bool:
-    """Return true only when the selected J-Link provider confirms it is closed."""
-
-    if not _session_uses_jlink(session, board):
-        return True
-    probe = getattr(session, "probe", None)
-    try:
-        open_state = getattr(probe, "is_open")
-        if callable(open_state):
-            open_state = open_state()
-        return not bool(open_state)
-    except Exception:  # noqa: BLE001 - unknown provider state must remain reserved
-        return False
-
-
-def _close_jlink_provider_directly(session: object) -> Exception | None:
-    """Best-effort provider close after pyOCD has made Session.close() non-retryable."""
-
-    probe = getattr(session, "probe", None)
-    close = getattr(probe, "close", None)
-    if not callable(close):
-        return TargetConnectionError("The J-Link probe does not expose provider close control.")
-    try:
-        with _quiet_backend_streams():
+    close = getattr(session, "close", None)
+    if callable(close):
+        with _backend_stdout_to_stderr():
             close()
-    except Exception as exc:  # noqa: BLE001 - returned so the caller can preserve primary failure
-        return exc
-    return None
-
-
-def _close_session_and_update_jlink_allocator(
-    session: object,
-    board: BoardConfig | None,
-) -> Exception | None:
-    """Close one session and release its allocator role only after confirmed provider closure."""
-
-    close_error: Exception | None = None
-    try:
-        close = getattr(session, "close", None)
-        if callable(close):
-            with _quiet_backend_streams():
-                close()
-    except Exception as exc:  # noqa: BLE001 - returned so callers preserve primary failures
-        close_error = exc
-
-    provider_close_error: Exception | None = None
-    is_jlink = _session_uses_jlink(session, board)
-    if is_jlink and not _jlink_provider_is_closed(session, board):
-        provider_close_error = _close_jlink_provider_directly(session)
-
-    provider_closed = _jlink_provider_is_closed(session, board)
-    if not is_jlink or provider_closed:
-        _forget_jlink_session(session)
-
-    if close_error is not None:
-        return close_error
-    if not provider_closed:
-        detail = f": {provider_close_error}" if provider_close_error is not None else ""
-        reservation = (
-            "normal DLL slot" if _NORMAL_JLINK_SESSION is session else "isolated J-Link session"
-        )
-        return TargetConnectionError(
-            "Could not confirm that the J-Link provider closed; "
-            f"the {reservation} remains reserved{detail}"
-        )
-    return None
 
 
 class PyOCDSWDInterface(SWDInterface):
-    """Single native pyOCD route used during the early shared-service phase."""
+    """Child-local native pyOCD route for one provider-owned session."""
 
     @staticmethod
     def _choose_session(
@@ -520,13 +389,14 @@ class PyOCDSWDInterface(SWDInterface):
         probe_uid: str | None,
         options: dict[str, object] | None,
     ) -> Any:
-        return ConnectHelper.session_with_chosen_probe(
-            blocking=False,
-            return_first=True,
-            unique_id=probe_uid,
-            auto_open=False,
-            options=options,
-        )
+        with _backend_stdout_to_stderr():
+            return ConnectHelper.session_with_chosen_probe(
+                blocking=False,
+                return_first=True,
+                unique_id=probe_uid,
+                auto_open=False,
+                options=options,
+            )
 
     def _open_and_verify_session(
         self,
@@ -536,18 +406,12 @@ class PyOCDSWDInterface(SWDInterface):
         pack: CmsisPack | None,
         pdsc_device: str | None,
     ) -> None:
-        """Open and register one selected session while the session-open lock is held."""
+        """Open and verify one selected native session."""
 
-        uses_normal_slot = _prepare_jlink_session_for_open(session, board)
-        _record_jlink_session_reservation(
-            session,
-            board,
-            uses_normal_slot=uses_normal_slot,
-        )
-        self._verify_session_pack_source(session, target, pack, pdsc_device)
-        with _quiet_backend_streams():
+        with _backend_stdout_to_stderr():
+            self._verify_session_pack_source(session, target, pack, pdsc_device)
             getattr(session, "open")()
-        self._verify_session_pack_source(session, target, pack, pdsc_device)
+            self._verify_session_pack_source(session, target, pack, pdsc_device)
 
     @staticmethod
     def _verify_session_pack_source(
@@ -585,7 +449,9 @@ class PyOCDSWDInterface(SWDInterface):
         pack_sha256: str | None = None,
         pdsc_device: str | None = None,
         frequency_hz: int | None = None,
+        operation_timeout_seconds: float | None = None,
     ) -> TargetSessionHandle:
+        del operation_timeout_seconds
         probe_uid = unique_id or os.environ.get("PYOCD_PROBE_UID") or None
         target_override = (
             target
@@ -625,55 +491,58 @@ class PyOCDSWDInterface(SWDInterface):
         if pack_object is not None:
             options = dict(options or {})
             options["pack"] = [pack_object]
-        with _JLINK_SESSION_LOCK:
+        with _pack_target_scope(pack_object, target_override, pdsc_device):
+            session = self._choose_session(probe_uid=probe_uid, options=options)
+        if session is None:
+            raise ProbeNotFoundError("No matching debug probe found.")
+        try:
+            self._open_and_verify_session(
+                session, board, target_override, pack_object, pdsc_device
+            )
+        except Exception as exc:  # noqa: BLE001 - preserve backend context
+            try:
+                _close_session(session)
+            except Exception:
+                pass
+            if not _should_retry_without_uid(board, probe_uid, exc):
+                raise _typed_backend_error(exc) from exc
             with _pack_target_scope(pack_object, target_override, pdsc_device):
-                session = self._choose_session(probe_uid=probe_uid, options=options)
-            if session is None:
-                raise ProbeNotFoundError("No matching debug probe found.")
-
+                retry_session = self._choose_session(probe_uid=None, options=options)
+            if retry_session is None:
+                raise ProbeNotFoundError("No matching debug probe found.") from exc
+            retry_uid = getattr(getattr(retry_session, "probe", None), "unique_id", None)
+            if not _same_probe_uid(probe_uid, retry_uid):
+                try:
+                    _close_session(retry_session)
+                except Exception:
+                    pass
+                raise ProbeNotFoundError(
+                    "The selected J-Link was not the sole probe returned by UID-less retry; "
+                    "refusing to open a different physical probe."
+                ) from exc
             try:
                 self._open_and_verify_session(
-                    session, board, target_override, pack_object, pdsc_device
+                    retry_session, board, target_override, pack_object, pdsc_device
                 )
-            except Exception as exc:  # noqa: BLE001 - preserve backend context
-                _close_session_and_update_jlink_allocator(session, board)
-                if not _should_retry_without_uid(board, probe_uid, exc):
-                    raise _typed_backend_error(exc) from exc
-                with _pack_target_scope(pack_object, target_override, pdsc_device):
-                    retry_session = self._choose_session(probe_uid=None, options=options)
-                if retry_session is None:
-                    raise ProbeNotFoundError("No matching debug probe found.") from exc
-                retry_uid = getattr(getattr(retry_session, "probe", None), "unique_id", None)
-                if not _same_probe_uid(probe_uid, retry_uid):
-                    _close_session_and_update_jlink_allocator(retry_session, board)
-                    raise ProbeNotFoundError(
-                        "The selected J-Link was not the sole probe returned by UID-less retry; "
-                        "refusing to open a different physical probe."
-                    ) from exc
+            except Exception as retry_exc:  # noqa: BLE001 - preserve backend context
                 try:
-                    self._open_and_verify_session(
-                        retry_session, board, target_override, pack_object, pdsc_device
-                    )
-                except Exception as retry_exc:  # noqa: BLE001 - preserve backend context
-                    _close_session_and_update_jlink_allocator(retry_session, board)
-                    raise _typed_backend_error(retry_exc) from retry_exc
-                session = retry_session
+                    _close_session(retry_session)
+                except Exception:
+                    pass
+                raise _typed_backend_error(retry_exc) from retry_exc
+            session = retry_session
+        with _backend_stdout_to_stderr():
+            observed_probe_uid = session.probe.unique_id or probe_uid
         return TargetSessionHandle(
             session=session,
             board=board,
-            probe_uid=session.probe.unique_id or probe_uid,
+            probe_uid=observed_probe_uid,
             route_used=ROUTE_PYOCD_NATIVE,
             target_override=target_override,
         )
 
     def close(self, handle: TargetSessionHandle) -> None:
-        with _JLINK_SESSION_LOCK:
-            close_error = _close_session_and_update_jlink_allocator(
-                handle.session,
-                handle.board,
-            )
-            if close_error is not None:
-                raise close_error
+        _close_session(handle.session)
 
     def connect_under_reset(
         self,
@@ -685,7 +554,9 @@ class PyOCDSWDInterface(SWDInterface):
         pack_path: Path | None = None,
         pack_sha256: str | None = None,
         pdsc_device: str | None = None,
+        operation_timeout_seconds: float | None = None,
     ) -> TargetSessionHandle:
+        del operation_timeout_seconds
         probe_uid = unique_id or os.environ.get("PYOCD_PROBE_UID") or None
         target_override = (
             target
@@ -708,86 +579,100 @@ class PyOCDSWDInterface(SWDInterface):
             pack_object = _cmsis_pack_for(selected_pack) if selected_pack is not None else None
         if pack_object is not None:
             options["pack"] = [pack_object]
-        with _JLINK_SESSION_LOCK:
-            with _pack_target_scope(pack_object, target_override, pdsc_device):
-                session = self._choose_session(probe_uid=probe_uid, options=options)
-            if session is None:
-                raise ProbeNotFoundError("No matching debug probe found.")
-            assert_reset = getattr(session.probe, "assert_reset", None)
-            if not callable(assert_reset):
-                _close_session_and_update_jlink_allocator(session, board)
-                raise ResetLineUnavailableError(
-                    "The selected probe does not expose wired reset-line control; "
-                    "connect_under_reset cannot degrade to an ordinary attach."
-                )
-            uses_normal_slot = _prepare_jlink_session_for_open(session, board)
-            _record_jlink_session_reservation(
-                session,
-                board,
-                uses_normal_slot=uses_normal_slot,
-            )
+        with _pack_target_scope(pack_object, target_override, pdsc_device):
+            session = self._choose_session(probe_uid=probe_uid, options=options)
+        if session is None:
+            raise ProbeNotFoundError("No matching debug probe found.")
+        assert_reset = getattr(session.probe, "assert_reset", None)
+        if not callable(assert_reset):
             try:
-                self._verify_session_pack_source(session, target_override, pack_object, pdsc_device)
-                with _quiet_backend_streams():
-                    # pyOCD's under-reset init sequence owns assertion, reset catch,
-                    # halt, and release. Calling assert_reset() before Session.open()
-                    # is invalid for probes that have not been opened yet and would
-                    # also duplicate pyOCD's reset sequence. Some real targets start
-                    # running again as nRESET is released, so explicitly halt once
-                    # more after open and verify the observable postcondition before
-                    # returning. The bounded retry covers probes where the first halt
-                    # command races reset release.
-                    session.open()
-                    self._verify_session_pack_source(
-                        session, target_override, pack_object, pdsc_device
-                    )
-                    halt_deadline = time.monotonic() + 0.5
-                    while True:
-                        session.target.halt()
-                        state = str(session.target.get_state().name).casefold()
-                        if state == "halted":
-                            break
-                        if time.monotonic() >= halt_deadline:
-                            raise TargetConnectionError(
-                                "connect_under_reset released reset but could not leave "
-                                "the target halted"
-                            )
-                        time.sleep(0.01)
-            except Exception as exc:  # noqa: BLE001 - preserve backend context
-                # If initialisation failed after pyOCD asserted nRESET, release it
-                # best-effort before closing the partially opened session.
-                try:
-                    with _quiet_backend_streams():
-                        assert_reset(False)
-                except Exception:
-                    pass
-                _close_session_and_update_jlink_allocator(session, board)
-                if isinstance(exc, ResetLineUnavailableError):
-                    raise
-                if isinstance(exc, NotImplementedError):
-                    raise ResetLineUnavailableError(
-                        "The selected probe does not support wired reset-line control; "
-                        "connect_under_reset cannot degrade to an ordinary attach."
-                    ) from exc
-                raise _typed_backend_error(exc) from exc
+                _close_session(session)
+            except Exception:
+                pass
+            raise ResetLineUnavailableError(
+                "The selected probe does not expose wired reset-line control; "
+                "connect_under_reset cannot degrade to an ordinary attach."
+            )
+        try:
+            with _backend_stdout_to_stderr():
+                self._verify_session_pack_source(
+                    session,
+                    target_override,
+                    pack_object,
+                    pdsc_device,
+                )
+                # pyOCD's under-reset init sequence owns assertion, reset catch,
+                # halt, and release. Calling assert_reset() before Session.open()
+                # is invalid for probes that have not been opened yet and would
+                # also duplicate pyOCD's reset sequence. Some real targets start
+                # running again as nRESET is released, so explicitly halt once
+                # more after open and verify the observable postcondition before
+                # returning. The bounded retry covers probes where the first halt
+                # command races reset release.
+                session.open()
+                self._verify_session_pack_source(
+                    session, target_override, pack_object, pdsc_device
+                )
+                halt_deadline = time.monotonic() + 0.5
+                while True:
+                    session.target.halt()
+                    state = str(session.target.get_state().name).casefold()
+                    if state == "halted":
+                        break
+                    if time.monotonic() >= halt_deadline:
+                        raise TargetConnectionError(
+                            "connect_under_reset released reset but could not leave "
+                            "the target halted"
+                        )
+                    time.sleep(0.01)
+        except Exception as exc:  # noqa: BLE001 - preserve backend context
+            # If initialisation failed after pyOCD asserted nRESET, release it
+            # best-effort before closing the partially opened session.
+            try:
+                with _backend_stdout_to_stderr():
+                    assert_reset(False)
+            except Exception:
+                pass
+            try:
+                _close_session(session)
+            except Exception:
+                pass
+            if isinstance(exc, ResetLineUnavailableError):
+                raise
+            if isinstance(exc, NotImplementedError):
+                raise ResetLineUnavailableError(
+                    "The selected probe does not support wired reset-line control; "
+                    "connect_under_reset cannot degrade to an ordinary attach."
+                ) from exc
+            raise _typed_backend_error(exc) from exc
+        with _backend_stdout_to_stderr():
+            observed_probe_uid = session.probe.unique_id or probe_uid
         return TargetSessionHandle(
             session=session,
             board=board,
-            probe_uid=session.probe.unique_id or probe_uid,
+            probe_uid=observed_probe_uid,
             route_used=ROUTE_PYOCD_NATIVE,
             target_override=target_override,
         )
 
     def get_state(self, handle: TargetSessionHandle) -> str:
         try:
-            with _quiet_backend_streams():
+            with _backend_stdout_to_stderr():
                 return cast(str, handle.session.target.get_state().name)
         except Exception as exc:  # noqa: BLE001 - preserve backend context
             raise _typed_backend_error(exc) from exc
 
-    def read_memory(self, handle: TargetSessionHandle, address: int, width_bits: int) -> int:
+    def read_memory(
+        self,
+        handle: TargetSessionHandle,
+        address: int,
+        width_bits: int,
+        *,
+        operation_timeout_seconds: float | None = None,
+    ) -> int:
+        del operation_timeout_seconds
         try:
-            with _quiet_backend_streams():
+            with _backend_stdout_to_stderr():
                 return cast(int, handle.session.target.read_memory(address, width_bits))
         except Exception as exc:  # noqa: BLE001 - preserve backend context
             raise _typed_backend_error(exc) from exc
@@ -796,7 +681,7 @@ class PyOCDSWDInterface(SWDInterface):
         self, handle: TargetSessionHandle, address: int, length: int
     ) -> list[int]:
         try:
-            with _quiet_backend_streams():
+            with _backend_stdout_to_stderr():
                 return list(
                     cast(list[int], handle.session.target.read_memory_block8(address, length))
                 )
@@ -811,64 +696,81 @@ class PyOCDSWDInterface(SWDInterface):
         width_bits: int,
     ) -> None:
         try:
-            with _quiet_backend_streams():
+            with _backend_stdout_to_stderr():
                 handle.session.target.write_memory(address, value, width_bits)
         except Exception as exc:  # noqa: BLE001 - preserve backend context
             raise _typed_backend_error(exc) from exc
 
     def read_core_register(self, handle: TargetSessionHandle, name: str) -> int:
         try:
-            with _quiet_backend_streams():
+            with _backend_stdout_to_stderr():
                 return cast(int, handle.session.target.read_core_register(name))
         except Exception as exc:  # noqa: BLE001 - preserve backend context
             raise _typed_backend_error(exc) from exc
 
     def write_core_register(self, handle: TargetSessionHandle, name: str, value: int) -> None:
         try:
-            with _quiet_backend_streams():
+            with _backend_stdout_to_stderr():
                 handle.session.target.write_core_register(name, value)
         except Exception as exc:  # noqa: BLE001 - preserve backend context
             raise _typed_backend_error(exc) from exc
 
     def supported_core_registers(self, handle: TargetSessionHandle) -> tuple[str, ...]:
         try:
-            registers = handle.session.target.core_registers.by_name
-            return tuple(sorted(str(name).casefold() for name in registers))
+            with _backend_stdout_to_stderr():
+                registers = handle.session.target.core_registers.by_name
+                return tuple(sorted(str(name).casefold() for name in registers))
         except Exception as exc:  # noqa: BLE001 - preserve backend context
             raise _typed_backend_error(exc) from exc
 
     def halt(self, handle: TargetSessionHandle) -> None:
         try:
-            with _quiet_backend_streams():
+            with _backend_stdout_to_stderr():
                 handle.session.target.halt()
         except Exception as exc:  # noqa: BLE001 - preserve backend context
             raise _typed_backend_error(exc) from exc
 
     def resume(self, handle: TargetSessionHandle) -> None:
         try:
-            with _quiet_backend_streams():
+            with _backend_stdout_to_stderr():
                 handle.session.target.resume()
         except Exception as exc:  # noqa: BLE001 - preserve backend context
             raise _typed_backend_error(exc) from exc
 
     def step(self, handle: TargetSessionHandle) -> None:
         try:
-            with _quiet_backend_streams():
+            with _backend_stdout_to_stderr():
                 handle.session.target.step()
         except Exception as exc:  # noqa: BLE001 - preserve backend context
             raise _typed_backend_error(exc) from exc
 
     def reset(self, handle: TargetSessionHandle) -> None:
         try:
-            with _quiet_backend_streams():
+            with _backend_stdout_to_stderr():
                 handle.session.target.reset()
         except Exception as exc:  # noqa: BLE001 - preserve backend context
             raise _typed_backend_error(exc) from exc
 
     def reset_and_halt(self, handle: TargetSessionHandle) -> None:
         try:
-            with _quiet_backend_streams():
+            with _backend_stdout_to_stderr():
                 handle.session.target.reset_and_halt()
+        except Exception as exc:  # noqa: BLE001 - preserve backend context
+            raise _typed_backend_error(exc) from exc
+
+    def release_reset(self, handle: TargetSessionHandle) -> None:
+        assert_reset = getattr(getattr(handle.session, "probe", None), "assert_reset", None)
+        if not callable(assert_reset):
+            raise ResetLineUnavailableError(
+                "The selected probe does not expose wired reset-line control."
+            )
+        try:
+            with _backend_stdout_to_stderr():
+                assert_reset(False)
+        except NotImplementedError as exc:
+            raise ResetLineUnavailableError(
+                "The selected probe does not support wired reset-line control."
+            ) from exc
         except Exception as exc:  # noqa: BLE001 - preserve backend context
             raise _typed_backend_error(exc) from exc
 
@@ -889,7 +791,7 @@ class PyOCDSWDInterface(SWDInterface):
         # Match `pyocd load`'s proven pre-reset sequence. On STM32/ST-Link, skipping
         # this can make the Python API flash path fail even though the CLI succeeds.
         try:
-            with _quiet_backend_streams():
+            with _backend_stdout_to_stderr():
                 target.reset_and_halt()
                 # Containment pre-computes and validates every implied erase sector.
                 # Force pyOCD to honor that sector scope even when a host/session option
@@ -908,19 +810,20 @@ class PyOCDSWDInterface(SWDInterface):
 
     def recover(self, handle: TargetSessionHandle) -> None:
         try:
-            with _quiet_backend_streams():
+            with _backend_stdout_to_stderr():
                 FlashEraser(handle.session, FlashEraser.Mode.MASS).erase()
         except Exception as exc:  # noqa: BLE001 - preserve backend context
             raise _typed_backend_error(exc) from exc
 
     def supports_recovery(self, handle: TargetSessionHandle, mechanism: str) -> bool:
-        return (
-            mechanism == "backend_mass_erase"
-            and getattr(handle.session, "target", None) is not None
-        )
+        with _backend_stdout_to_stderr():
+            return (
+                mechanism == "backend_mass_erase"
+                and getattr(handle.session, "target", None) is not None
+            )
 
     def set_breakpoint(self, handle: TargetSessionHandle, address: int) -> None:
-        with _quiet_backend_streams():
+        with _backend_stdout_to_stderr():
             address &= ~1
             target = handle.session.target
             manager_flush_succeeded = False
@@ -1037,7 +940,7 @@ class PyOCDSWDInterface(SWDInterface):
                 raise _typed_backend_error(primary) from primary
 
     def remove_breakpoint(self, handle: TargetSessionHandle, address: int) -> None:
-        with _quiet_backend_streams():
+        with _backend_stdout_to_stderr():
             address &= ~1
             target = handle.session.target
             try:

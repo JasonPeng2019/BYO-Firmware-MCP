@@ -5,11 +5,10 @@ Design notes
 * Debug sessions are *stateful* (halt state, breakpoints, and live target
   connections persist across calls), so each logical board owns one explicit
   connection until it is disconnected.
-* pyOCD's target access is blocking and **not thread-safe**. FastMCP may invoke
-  tools concurrently, so accesses to the same board share a serialization lock.
-* pyOCD calls block; for fast operations (register/memory reads) that is fine.
-  Long operations such as flashing should be offloaded (e.g. ``anyio.to_thread``)
-  so they don't stall the event loop — left out here to keep the starter small.
+* pyOCD's target access is blocking and **not thread-safe**. Each live session
+  therefore has one serialized worker process.
+* A missed provider deadline terminates that worker without poisoning another
+  board or the MCP transport.
 """
 
 from __future__ import annotations
@@ -20,7 +19,6 @@ import hashlib
 import re
 import secrets
 import subprocess
-import sys
 import time
 import unicodedata
 from collections.abc import Callable, Mapping
@@ -31,7 +29,7 @@ from typing import Any, cast
 from pyocd.target.pack.cmsis_pack import CmsisPack  # type: ignore[import-untyped]
 from elftools.common.exceptions import ELFError
 
-from pyocd_debug_mcp.adapters.swd_interface import TargetSessionHandle
+from pyocd_debug_mcp.adapters.swd_interface import TargetSessionHandle, session_metadata
 from pyocd_debug_mcp.board_config import (
     BoardConfig,
     ConfigError,
@@ -67,14 +65,13 @@ from pyocd_debug_mcp.kernel.run_state import create_server_run
 from pyocd_debug_mcp.pack_provision import (
     PackProvisionError,
     load_manifest,
-    read_bounded_pack_bytes,
+    read_pack_bytes,
     sha256_bytes,
     verified_pack_for_target,
 )
 from pyocd_debug_mcp.probe_inventory import (
-    list_connected_probes,
-    probe_family_from_pyocd_probe,
-    resolve_probe_for_board,
+    list_connected_probes_cli,
+    resolve_probe_for_board_cli,
 )
 from pyocd_debug_mcp.serial_resolver import (
     BoardLike,
@@ -460,7 +457,7 @@ def _current_target(board_id: str) -> str:
     handle = _handle(board_id)
     if handle.board is not None:
         return handle.board.pyocd_target
-    return (handle.target_override or "").strip()
+    return (session_metadata(handle).target_override or "").strip()
 
 
 def _check_memory_safety(board_id: str, address: int, width: int) -> None:
@@ -860,6 +857,7 @@ def _run_cmd(
     try:
         result = run_owned(
             cmd,
+            stdin=subprocess.DEVNULL,
             capture_output=True,
             text=True,
             timeout=timeout_seconds,
@@ -939,17 +937,6 @@ def format_board_info(b: BoardConfig) -> str:
     return "\n".join(lines)
 
 
-def _should_bypass_jlink_probe_resolution(
-    board: BoardConfig | None,
-    *,
-    platform_name: str | None = None,
-) -> bool:
-    if board is None or board.probe_family != "jlink":
-        return False
-    current_platform = platform_name or sys.platform
-    return current_platform.startswith("win")
-
-
 def _resolve_probe_uid_for_connect(
     board: BoardConfig | None,
     unique_id: str | None,
@@ -964,30 +951,20 @@ def _resolve_probe_uid_for_connect(
     if board is None:
         return None
 
-    allow_subprocess_fallback = True
-    if _should_bypass_jlink_probe_resolution(board):
-        # On this Windows host, the risky path is the subprocess fallback
-        # behind probe resolution, not the direct pyOCD API enumeration. Keep
-        # using API-derived UIDs when available so J-Link stdio attaches still
-        # work with probes whose API and CLI identities differ, but never pre-run the subprocess
-        # probe-listing path for implicit J-Link selection.
-        allow_subprocess_fallback = False
-
-    resolution = resolve_probe_for_board(
+    resolution = resolve_probe_for_board_cli(
         board,
         run_cmd=_run_cmd,
         allow_single_fallback=True,
-        allow_subprocess_fallback=allow_subprocess_fallback,
     )
     if resolution.probe is None:
-        if not allow_subprocess_fallback:
-            if resolution.probes:
-                raise RuntimeError(
-                    f"Probe resolution failed for {board.display_name}: {resolution.note}. "
-                    "Rerun setup routing to choose the current physical connection."
-                )
-            return None
-        raise RuntimeError(f"Probe resolution failed for {board.display_name}: {resolution.note}")
+        reroute = (
+            " Rerun setup routing to choose the current physical connection."
+            if resolution.probes
+            else ""
+        )
+        raise RuntimeError(
+            f"Probe resolution failed for {board.display_name}: {resolution.note}.{reroute}"
+        )
     if not resolution.probe.uid:
         remedy = (
             "Initialize connect_override-plan for a deliberate exceptional manual probe "
@@ -1031,6 +1008,65 @@ def _handle(board_id: str) -> TargetSessionHandle:
 def _maybe_handle(board_id: str) -> TargetSessionHandle | None:
     connection = connection_manager.maybe_connection(board_id)
     return connection.handle if connection is not None else None
+
+
+def _promote_open_session(
+    board_id: str,
+    handle: TargetSessionHandle,
+    *,
+    gate_reason: str,
+) -> ManagedConnection:
+    """Atomically promote one newly opened worker into the board connection table.
+
+    The caller transfers ownership of ``handle`` on entry.  Promotion commits only
+    after the runtime record, exact assignment, and gate invalidation all succeed.
+    Any failure rolls back only this transaction's assignment and always attempts to
+    release both the runtime record and worker.  Cleanup diagnostics are chained as
+    the cause of the unchanged primary exception, which keeps the package's Python
+    3.10 contract without hiding either failure.
+    """
+
+    runtime: SessionRecord | None = None
+    assignment: ManagedConnection | None = None
+    try:
+        metadata = session_metadata(handle)
+        connection_id = stable_connection_identity(handle)
+        runtime = _session_store.start_session(
+            board_id=board_id,
+            connection_id=connection_id,
+            probe_uid=metadata.probe_uid,
+            route_used=metadata.route_used,
+        )
+        assignment = connection_manager.assign(
+            board_id,
+            handle,
+            runtime,
+            connection_id=connection_id,
+        )
+        gate_manager.clear(board_id, gate_reason)
+        return assignment
+    except BaseException as primary:
+        cleanup_errors: list[str] = []
+        if assignment is not None:
+            try:
+                connection_manager.clear_if_current(board_id, assignment)
+            except BaseException as exc:  # continue releasing every owned resource
+                cleanup_errors.append(f"assignment rollback: {type(exc).__name__}: {exc}")
+        if runtime is not None:
+            try:
+                _session_store.close_session(runtime)
+            except BaseException as exc:  # the worker still must be released
+                cleanup_errors.append(f"runtime close: {type(exc).__name__}: {exc}")
+        try:
+            target_control.close_session(handle)
+        except BaseException as exc:  # preserve primary and report cleanup uncertainty
+            cleanup_errors.append(f"worker close: {type(exc).__name__}: {exc}")
+        if cleanup_errors:
+            cleanup = RuntimeError(
+                "Post-open promotion cleanup reported: " + "; ".join(cleanup_errors)
+            )
+            raise primary from cleanup
+        raise
 
 
 def _connect_impl(
@@ -1155,40 +1191,35 @@ def _connect_impl(
             )
             raise
 
-        connection_id = stable_connection_identity(handle)
-        runtime_session = _session_store.start_session(
-            board_id=board_id,
-            connection_id=connection_id,
-            probe_uid=handle.probe_uid,
-            route_used=handle.route_used,
-        )
         try:
-            connection_manager.assign(
+            assignment = _promote_open_session(
                 board_id,
                 handle,
-                runtime_session,
-                connection_id=connection_id,
+                gate_reason="new connection requires board_validate",
             )
-            gate_manager.clear(board_id, "new connection requires board_validate")
-        except ConnectionAssignmentError as exc:
+        except Exception as exc:
             _record_event(
                 "connect",
                 normalized_args,
                 outcome_kind=ToolOutcome.FAILED,
-                error_code="connection/already-assigned",
+                error_code=(
+                    "connection/already-assigned"
+                    if isinstance(exc, ConnectionAssignmentError)
+                    else _error_code(exc)
+                ),
                 duration_ms=_duration_ms(started),
                 details={"message": str(exc)[:300]},
                 board_id=board_id,
-                session=runtime_session,
+                probe_uid=session_metadata(handle).probe_uid,
             )
-            _session_store.close_session(runtime_session)
-            target_control.close_session(handle)
             raise
+        runtime_session = assignment.runtime_session
         suffix = f" [board config: {board.board_id}]" if board else ""
-        board_name = handle.session.board.name if handle.session.board is not None else "<unknown>"
+        metadata = session_metadata(handle)
+        board_name = metadata.board_name or "<unknown>"
         result = (
             f"Connected to board '{board_name}' via probe "
-            f"{handle.probe_uid or '(unknown)'} via {handle.route_used}.{suffix} "
+            f"{metadata.probe_uid or '(unknown)'} via {metadata.route_used}.{suffix} "
             f"session_id={runtime_session.session_id}"
         )
         _record_event(
@@ -1298,20 +1329,12 @@ def _connect_under_reset_impl(
                 pack_sha256=(selected_pack.spec.sha256 if selected_pack is not None else None),
                 pdsc_device=selected_pdsc_device,
             )
-            connection_id = stable_connection_identity(handle)
-            runtime = _session_store.start_session(
-                board_id=board_id,
-                connection_id=connection_id,
-                probe_uid=handle.probe_uid,
-                route_used=handle.route_used,
-            )
-            connection_manager.assign(
+            assignment = _promote_open_session(
                 board_id,
                 handle,
-                runtime,
-                connection_id=connection_id,
+                gate_reason="new connection requires board_validate",
             )
-            gate_manager.clear(board_id, "new connection requires board_validate")
+            runtime = assignment.runtime_session
         except Exception as exc:  # noqa: BLE001 - preserve typed backend failure
             _record_event(
                 "connect_under_reset",
@@ -1336,7 +1359,7 @@ def _connect_under_reset_impl(
         )
         return (
             f"Connected under physical reset to board '{board_id}' via "
-            f"{handle.route_used}; target halted and reset line released."
+            f"{session_metadata(handle).route_used}; target halted and reset line released."
         )
 
 
@@ -1373,8 +1396,6 @@ def disconnect(board_id: str) -> str:
             return result
 
         started = time.monotonic()
-        handle = connection.handle
-        runtime_session = connection.runtime_session
         gate_manager.clear(board_id, "board disconnected")
         assignment_store.clear_board(board_id)
         plan_engine.invalidate_board(board_id, "board disconnected")
@@ -1387,33 +1408,70 @@ def disconnect(board_id: str) -> str:
         loader = globals().get("setup_tool_loader")
         if isinstance(loader, SetupToolLoadState):
             loader.clear_allowance(board_id)
-        connection_manager.clear(board_id)
+        cleared = connection_manager.clear_if_current(board_id, connection)
+        if cleared is None:
+            raise RuntimeError(
+                f"Board '{board_id}' connection changed while disconnecting; retry disconnect."
+            )
+        _finish_disconnect_cleanup(board_id, cleared, started=started)
+        return f"Disconnected board '{board_id}'."
+
+
+def _finish_disconnect_cleanup(
+    board_id: str,
+    connection: ManagedConnection,
+    *,
+    started: float,
+) -> None:
+    """Close both resources and report success only after both are confirmed closed."""
+
+    failures: list[tuple[str, Exception]] = []
+    try:
+        target_control.close_session(connection.handle)
+    except Exception as exc:  # noqa: BLE001 - runtime cleanup must still run
+        failures.append(("worker close", exc))
+    try:
+        _session_store.close_session(connection.runtime_session)
+    except Exception as exc:  # noqa: BLE001 - preserve and report cleanup uncertainty
+        failures.append(("runtime close", exc))
+
+    if failures:
+        if len(failures) == 1:
+            failure = failures[0][1]
+        else:
+            failure = RuntimeError(
+                "Disconnect cleanup reported: "
+                + "; ".join(
+                    f"{stage}: {type(error).__name__}: {error}"
+                    for stage, error in failures
+                )
+            )
         try:
-            target_control.close_session(handle)
-        except Exception as exc:  # noqa: BLE001 - preserve the original disconnect error
             _record_event(
                 "disconnect",
                 {"board_id": board_id},
                 outcome_kind=ToolOutcome.FAILED,
-                error_code=_error_code(exc),
+                error_code=_error_code(failure),
                 duration_ms=_duration_ms(started),
-                details={"message": str(exc)[:300]},
+                details={"message": str(failure)},
                 board_id=board_id,
-                session=runtime_session,
+                session=connection.runtime_session,
             )
-            raise
+        except Exception as event_error:  # preserve the resource failure object/type
+            raise failure from event_error
+        if len(failures) == 1:
+            raise failure
+        raise failure from failures[0][1]
 
-        _record_event(
-            "disconnect",
-            {"board_id": board_id},
-            outcome_kind=ToolOutcome.SUCCESS,
-            error_code=None,
-            duration_ms=_duration_ms(started),
-            board_id=board_id,
-            session=runtime_session,
-        )
-        _session_store.close_session(runtime_session)
-        return f"Disconnected board '{board_id}'."
+    _record_event(
+        "disconnect",
+        {"board_id": board_id},
+        outcome_kind=ToolOutcome.SUCCESS,
+        error_code=None,
+        duration_ms=_duration_ms(started),
+        board_id=board_id,
+        session=connection.runtime_session,
+    )
 
 
 @mcp.tool()
@@ -1459,7 +1517,8 @@ def _resolve_serial_port_for_session(
     if not ports:
         raise RuntimeError("No serial ports detected")
 
-    probe = _ProbeHint(handle.probe_uid) if handle.probe_uid else None
+    probe_uid = session_metadata(handle).probe_uid
+    probe = _ProbeHint(probe_uid) if probe_uid else None
     resolution = resolve_serial_port(
         board=cast(BoardLike, board),
         ports=ports,
@@ -1944,7 +2003,10 @@ def flash_firmware(
         )
         if runtime is not None:
             _handle_mutation_event(board_id, event)
-        return f"Flashed {flashed} via {active_handle.route_used}; target left {state}."
+        return (
+            f"Flashed {flashed} via {session_metadata(active_handle).route_used}; "
+            f"target left {state}."
+        )
 
 
 @mcp.tool()
@@ -2455,28 +2517,32 @@ def _validation_inventory() -> ValidationInventory:
             probe.family,
             probe.uid or None,
         )
-        for probe in list_connected_probes(_run_cmd)
+        for probe in list_connected_probes_cli(_run_cmd)
     }
     # pyOCD inventory intentionally omits probes already opened by this process.
     # Validation must still be able to select and stamp the server-owned active
-    # connection, so merge those stable identities without reopening a probe.
+    # connection. A hardware UID remains the stable inventory key; a UID-less
+    # provider is represented only by its exact live, session-local connection ID.
     for board_id in connection_manager.assigned_board_ids():
         connection = connection_manager.connection_for(board_id)
         handle = connection.handle
-        probe_uid = (handle.probe_uid or "").strip()
-        if not probe_uid or probe_uid in probes_by_id:
+        metadata = session_metadata(handle)
+        probe_uid = (metadata.probe_uid or "").strip()
+        probe_id = probe_uid or connection.connection_id
+        if probe_id in probes_by_id:
             continue
         board = handle.board
-        probe = getattr(handle.session, "probe", None)
-        description = str(getattr(probe, "description", "") or "").strip()
+        description = str(metadata.probe_description or "").strip()
         if not description:
-            description = board.display_name if board is not None else f"Active probe {probe_uid}"
-        probe_family = probe_family_from_pyocd_probe(probe)
-        probes_by_id[probe_uid] = ValidationProbe(
-            probe_uid,
+            description = (
+                board.display_name if board is not None else f"Active connection {probe_id}"
+            )
+        probe_family = str(metadata.probe_family or "unknown")
+        probes_by_id[probe_id] = ValidationProbe(
+            probe_id,
             description,
             probe_family,
-            probe_uid,
+            probe_uid or None,
         )
     probes = tuple(probes_by_id[key] for key in sorted(probes_by_id))
     serial_ports = list_serial_ports() or []
@@ -2514,7 +2580,14 @@ def _validation_target_supported(target: str) -> bool | None:
 
 
 class _ValidationConnection:
-    __slots__ = ("handle", "owned", "board_id", "promoted")
+    __slots__ = (
+        "handle",
+        "owned",
+        "board_id",
+        "promoted",
+        "assignment",
+        "transport_lost",
+    )
 
     def __init__(
         self,
@@ -2523,11 +2596,14 @@ class _ValidationConnection:
         *,
         board_id: str | None = None,
         promoted: bool = False,
+        assignment: ManagedConnection | None = None,
     ) -> None:
         self.handle = handle
         self.owned = owned
         self.board_id = board_id
         self.promoted = promoted
+        self.assignment = assignment
+        self.transport_lost = False
 
 
 def _replay_profile_device_support(profile) -> DeviceSupportAuthority:
@@ -2555,10 +2631,19 @@ def _verified_pack_for_profile(profile):
 
 
 def _validation_connect(profile, probe: ValidationProbe, timeout: float) -> object:
-    del timeout
     existing = connection_manager.maybe_connection(profile.board_id)
     if existing is not None:
-        return _ValidationConnection(existing.handle, False, board_id=profile.board_id)
+        if not _connection_matches_probe(existing.connection_id, probe):
+            raise TargetConnectionError(
+                "The selected validation probe does not match the board's exact active "
+                "connection assignment."
+            )
+        return _ValidationConnection(
+            existing.handle,
+            False,
+            board_id=profile.board_id,
+            assignment=existing,
+        )
     saved_policy = (
         getattr(profile.board, "debug_protocol", None),
         profile.board.debug_connect_mode or "attach",
@@ -2580,6 +2665,7 @@ def _validation_connect(profile, probe: ValidationProbe, timeout: float) -> obje
                 protocol=protocol,
                 connect_mode=mode,
                 frequency_hz=frequency,
+                operation_timeout_seconds=timeout,
                 pack_path=(selected_pack.path if selected_pack is not None else None),
                 pack_sha256=(selected_pack.spec.sha256 if selected_pack is not None else None),
                 pdsc_device=(
@@ -2595,44 +2681,68 @@ def _validation_connect(profile, probe: ValidationProbe, timeout: float) -> obje
     if handle is None:
         assert last_error is not None
         raise last_error
-    connection_id = stable_connection_identity(handle)
-    runtime = _session_store.start_session(
-        board_id=profile.board_id,
-        connection_id=connection_id,
-        probe_uid=handle.probe_uid,
-        route_used=handle.route_used,
+    assignment = _promote_open_session(
+        profile.board_id,
+        handle,
+        gate_reason="validation connection not yet stamped",
     )
-    try:
-        connection_manager.assign(
-            profile.board_id,
-            handle,
-            runtime,
-            connection_id=connection_id,
-        )
-        gate_manager.clear(profile.board_id, "validation connection not yet stamped")
-    except Exception:
-        _session_store.close_session(runtime)
-        target_control.close_session(handle)
-        raise
     return _ValidationConnection(
         handle,
         False,
         board_id=profile.board_id,
         promoted=True,
+        assignment=assignment,
     )
 
 
 def _validation_read(connection: object, address: int, width: int, timeout: float) -> int:
-    del timeout
-    return target_control.read_memory(
-        cast(_ValidationConnection, connection).handle, address, width
-    )
+    validation = cast(_ValidationConnection, connection)
+    try:
+        return target_control.read_memory(
+            validation.handle,
+            address,
+            width,
+            operation_timeout_seconds=timeout,
+        )
+    except TargetConnectionError:
+        validation.transport_lost = True
+        raise
+
+
+def _close_evicted_validation_connection(
+    board_id: str,
+    connection: ManagedConnection,
+    *,
+    gate_reason: str,
+) -> None:
+    """Release every resource after exact validation-assignment eviction."""
+
+    try:
+        gate_manager.clear(board_id, gate_reason)
+    finally:
+        try:
+            _session_store.close_session(connection.runtime_session)
+        finally:
+            target_control.close_session(connection.handle)
 
 
 def _validation_close(connection: object) -> None:
     validation = cast(_ValidationConnection, connection)
     if validation.owned:
         target_control.close_session(validation.handle)
+        return
+    if validation.transport_lost and validation.board_id is not None:
+        captured = validation.assignment
+        if captured is None or captured.handle is not validation.handle:
+            return
+        cleared = connection_manager.clear_if_current(validation.board_id, captured)
+        if cleared is None:
+            return
+        _close_evicted_validation_connection(
+            validation.board_id,
+            cleared,
+            gate_reason="validation transport lost",
+        )
         return
     if validation.promoted and validation.board_id is not None:
         # Keep only a connection whose successful validation stamped this exact
@@ -2642,20 +2752,26 @@ def _validation_close(connection: object) -> None:
         stamp = gate_manager.snapshot(validation.board_id)
         mismatch = None
         if assigned is not None:
-            probe_identity = assigned.handle.probe_uid or assigned.connection_id
+            probe_identity = session_metadata(assigned.handle).probe_uid or assigned.connection_id
             mismatch = gate_manager.current_mismatch(
                 validation.board_id,
                 assigned.connection_id,
                 probe_identity,
             )
         if (
-            assigned is not None
+            assigned is validation.assignment
+            and assigned is not None
+            and assigned.handle is validation.handle
             and (stamp is None or stamp.connection_id != assigned.connection_id)
             and mismatch is None
         ):
-            connection_manager.clear(validation.board_id)
-            _session_store.close_session(assigned.runtime_session)
-            target_control.close_session(assigned.handle)
+            cleared = connection_manager.clear_if_current(validation.board_id, assigned)
+            if cleared is not None:
+                _close_evicted_validation_connection(
+                    validation.board_id,
+                    cleared,
+                    gate_reason="validation connection was not stamped",
+                )
 
 
 def _validation_capture(
@@ -3120,12 +3236,14 @@ def _stamp_validation_session(
     stable_probe = (probe_uid or probe_id).strip()
     if connection is None:
         return False
-    if (
-        connection.handle.probe_uid
-        and connection.handle.probe_uid.casefold() != stable_probe.casefold()
-    ):
+    connected_probe_uid = session_metadata(connection.handle).probe_uid
+    if connected_probe_uid and connected_probe_uid.casefold() != stable_probe.casefold():
         return False
-    provisional_connection_id = f"probe:{probe_uid or probe_id}"
+    if connected_probe_uid is None and connection.connection_id != stable_probe:
+        return False
+    provisional_connection_id = (
+        f"probe:{probe_uid}" if probe_uid is not None else probe_id
+    )
     try:
         profile = _profile_repository.load(board_id)
         capability = "exact"
@@ -3189,7 +3307,9 @@ def _record_validation_mismatch(
             validation_run=validation_run,
         )
 
-    provisional_connection_id = f"probe:{probe_uid or probe_id}"
+    provisional_connection_id = (
+        f"probe:{probe_uid}" if probe_uid is not None else probe_id
+    )
     try:
         assignment_store.run_if_current(
             provisional_connection_id,
@@ -3235,6 +3355,7 @@ _board_validator = BoardValidator(
         _rollback_validation_session,
     ),
     cancellation_checkpoint=cancellation_checkpoint,
+    lock_for_board=connection_manager.lock_for,
 )
 
 
@@ -3712,7 +3833,7 @@ def _setup_connection_phase(context: SetupPhaseContext) -> SetupPhaseOutcome:
         opened.append(handle)
         try:
             selected_probe_uid = probe.usb_serial or probe.probe_id
-            if not _stable_identity_equal(selected_probe_uid, handle.probe_uid):
+            if not _stable_identity_equal(selected_probe_uid, session_metadata(handle).probe_uid):
                 raise BoardCatalogError(
                     "Live debug connection identity changed during setup; stop before reading "
                     "silicon or committing a profile. Restart setup_overview with the current "
@@ -4407,7 +4528,7 @@ def _selected_setup_connection_matches(
 
     if _same_setup_connection(selected_connection, connection.connection_id):
         return True
-    probe_uid = (connection.handle.probe_uid or "").strip()
+    probe_uid = (session_metadata(connection.handle).probe_uid or "").strip()
     return bool(probe_uid) and _same_setup_connection(
         selected_connection,
         f"probe:{probe_uid}",
@@ -4482,17 +4603,16 @@ def _setup_overview(
         inventory = _validation_inventory()
         connection_rows_by_identity: dict[str, dict[str, object]] = {}
         for probe in inventory.probes:
-            connection_id = f"probe:{probe.usb_serial or probe.probe_id}"
+            connection_id = (
+                f"probe:{probe.usb_serial}"
+                if probe.usb_serial is not None
+                else probe.probe_id
+            )
             connection_rows_by_identity.setdefault(
                 _setup_connection_key(connection_id),
                 {
                     "connection_id": connection_id,
-                    "friendly_name": ProbeCandidate(
-                        probe.probe_id,
-                        probe.description,
-                        probe.probe_family,
-                        probe.usb_serial,
-                    ).friendly_label(),
+                    "friendly_name": probe.choice().label,
                     "probe_family": probe.probe_family,
                 },
             )
@@ -4679,7 +4799,7 @@ def _setup_overview(
                 mismatch = gate_manager.current_mismatch(
                     profile.board_id,
                     connection.connection_id,
-                    connection.handle.probe_uid or connection.connection_id,
+                    session_metadata(connection.handle).probe_uid or connection.connection_id,
                 )
             if mismatch is not None:
                 routes.append(
@@ -4874,7 +4994,7 @@ def _validated_research_prose(response: Mapping[str, object]) -> tuple[list[obje
 def _enumerate_pack_targets(path: Path, expected_sha256: str) -> tuple[str, ...]:
     from pyocd.target import normalise_target_type_name  # type: ignore[import-untyped]
 
-    payload = read_bounded_pack_bytes(path)
+    payload = read_pack_bytes(path)
     if sha256_bytes(payload) != expected_sha256:
         raise PackProvisionError("quarantined pack changed before target enumeration")
     pack = CmsisPack(io.BytesIO(payload))
@@ -5388,7 +5508,7 @@ def _setup_plan_eligibility(board_id: str) -> tuple[bool, str]:
         mismatch = gate_manager.current_mismatch(
             board_id,
             connection.connection_id,
-            connection.handle.probe_uid or connection.connection_id,
+            session_metadata(connection.handle).probe_uid or connection.connection_id,
         )
         if mismatch is not None:
             return (
@@ -5588,6 +5708,18 @@ def _bind_managed_board_resources(operation: ManagedOperation) -> None:
             current = current.__cause__ or current.__context__
         return False
 
+    def evict_captured_connection(reason: str) -> None:
+        cleared = connection_manager.clear_if_current(board_id, connection)
+        if cleared is None:
+            return
+        try:
+            gate_manager.clear(board_id, reason)
+        finally:
+            try:
+                target_control.close_session(cleared.handle)
+            finally:
+                _session_store.close_session(cleared.runtime_session)
+
     def close_failed_connection() -> None:
         interrupted = operation.cancellation_requested.is_set()
         # Guard/preflight hooks can legitimately touch the backend before the
@@ -5596,26 +5728,28 @@ def _bind_managed_board_resources(operation: ManagedOperation) -> None:
         connection_failed = target_connection_failed()
         if not interrupted and not connection_failed:
             return
-        current = connection_manager.maybe_connection(board_id)
-        if current is not connection:
-            return
-        connection_manager.clear(board_id)
         reason = (
             "operation cancelled or timed out"
             if interrupted
             else "target connection failed during operation"
         )
-        gate_manager.clear(board_id, reason)
-        try:
-            target_control.close_session(handle)
-        finally:
-            _session_store.close_session(connection.runtime_session)
+        evict_captured_connection(reason)
 
     def release_reset() -> None:
-        probe = getattr(handle.session, "probe", None)
-        assert_reset = getattr(probe, "assert_reset", None)
-        if callable(assert_reset):
-            assert_reset(False)
+        try:
+            target_control.release_reset(handle)
+        except TargetConnectionError as release_error:
+            try:
+                evict_captured_connection(
+                    "target connection failed while releasing reset"
+                )
+            except Exception as cleanup_error:  # cleanup still reports the transport loss
+                raise TargetConnectionError(
+                    "Reset release transport failure: "
+                    f"{release_error}. Stale-connection cleanup also failed: "
+                    f"{type(cleanup_error).__name__}: {cleanup_error}"
+                ) from cleanup_error
+            raise
 
     operation.resources.close_debug.append(close_failed_connection)
     operation.resources.release_reset.append(release_reset)

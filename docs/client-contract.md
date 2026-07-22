@@ -219,6 +219,11 @@ partition is never treated as executable.
 Use `serial_exchange` when a console command's immediate acknowledgement or a
 later command depends on volatile application state. UART readiness remains a
 separate `get_setup_status` barrier and never establishes live silicon identity.
+Both `read_serial` and `serial_exchange` return the complete time-bounded UART
+capture as JSON-escaped `captured_text`; exchanges also return complete
+`step_captured_texts` in step order. These fields are not excerpts. Capture is
+bounded by the planned read windows and the server's operation deadline, not by
+an undocumented byte or presentation limit.
 
 Recovery plans use the target-neutral `backend_mass_erase` mechanism. The
 server checks live backend support, renders the complete map-derived erase

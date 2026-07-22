@@ -66,10 +66,12 @@ The kernel provides the protocol and lifecycle boundary:
   cleanup only when the live process identity still matches.
 
 `ConnectionManager` is the only owner of live board handles. It enforces one
-active connection per logical board and one logical board per stable
-connection identity. Calls on one board serialize; different boards can run
-concurrently. Disconnect clears only the named board's connection and
-run-scoped authority.
+active connection per logical board and one logical board per immutable live
+connection identity. A provider UID is the preferred hardware-stable identity;
+when the provider exposes none, an immutable runtime token identifies only that
+live worker/session and is explicitly not stable across reconnects. Calls on
+one board serialize; different boards can run concurrently. Disconnect clears
+only the named board's connection and run-scoped authority.
 
 ## Plans and permissions
 
@@ -113,8 +115,9 @@ empty after restart.
 ## Validation gate and safety
 
 The write gate is default closed. Only successful `board_validate` creates
-live identity proof. The stamp records logical board, current connection, stable
-probe identity, observed MCU evidence, validation run, and canonical map digest.
+live identity proof. The stamp records logical board, current connection, probe
+identity (hardware-stable when exposed, otherwise session-local to the current
+worker), observed MCU evidence, validation run, and canonical map digest.
 It is memory-only; disk artifacts, refresh, setup, plans, permissions, reports,
 and tool visibility cannot create it.
 
@@ -128,7 +131,14 @@ Guarded dispatch applies the standard order before backend mutation:
    writes;
 5. apply action-specific runtime containment;
 6. decrement the plan/permission budget exactly once at execution start; and
-7. call the bounded backend operation.
+7. call the process-isolated backend within the current hard operation deadline.
+
+Native providers run in owned per-session worker processes. The parent enforces a hard
+deadline: an unreturned worker is terminated, its connection is invalidated, and only that
+board must reconnect and revalidate before a retry. Parent inventory merges active UID-less
+workers under their exact session-local connection tokens rather than fabricating probe UIDs.
+Noninteractive probe-inventory CLI children receive null stdin, so neither they nor descendant
+launchers can read or wait on the MCP stdio protocol pipe.
 
 Raw and symbol memory checks cover the exact bytes accessed. UNKNOWN and
 PROHIBITED spans fail closed. `safety/regions.py` uses authoritative non-empty

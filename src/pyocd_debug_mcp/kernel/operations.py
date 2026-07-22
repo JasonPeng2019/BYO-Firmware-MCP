@@ -26,9 +26,12 @@ from typing import Any, ContextManager, TypeVar, cast
 import anyio
 
 from pyocd_debug_mcp.kernel.processes import (
+    MAX_OWNED_PROCESS_CLEANUP_SECONDS,
     ProcessMarkerStore,
     terminate_process_group,
 )
+from pyocd_debug_mcp.probe_families import configured_probe_cli_commands
+from pyocd_debug_mcp.timeouts import DEFAULT_EXTERNAL_COMMAND_TIMEOUT_SECONDS
 
 DEFAULT_OPERATION_TIMEOUT_SECONDS = 30.0
 FLASH_OPERATION_TIMEOUT_SECONDS = 120.0
@@ -46,6 +49,18 @@ SAFE_EXIT_REMINDER = (
 _FLASH_TOOLS = frozenset({"flash_application", "flash_bootloader", "flash_firmware"})
 _VALIDATION_TOOLS = frozenset({"board_validate"})
 _RECOVERY_TOOLS = frozenset({"target_unlock"})
+_PROBE_INVENTORY_TOOLS = frozenset(
+    {
+        "setup_overview",
+        "connect",
+        "connect_override",
+        "get_setup_status",
+        "connect_under_reset",
+        "board_validate",
+        "board_setup",
+        "board_fix_setup",
+    }
+)
 _INTENTIONAL_HALT_TOOLS = frozenset(
     {"halt", "reset_and_halt", "connect_under_reset", "set_breakpoint"}
 )
@@ -474,11 +489,26 @@ def operation_timeout_seconds(
     except KeyError:
         planned_timeout = None
     if tool_name in _FLASH_TOOLS:
-        return FLASH_OPERATION_TIMEOUT_SECONDS
-    if tool_name in _VALIDATION_TOOLS:
-        return VALIDATION_OPERATION_TIMEOUT_SECONDS
-    if tool_name in _RECOVERY_TOOLS:
-        return RECOVERY_OPERATION_TIMEOUT_SECONDS
+        resolved_timeout = FLASH_OPERATION_TIMEOUT_SECONDS
+    elif tool_name in _VALIDATION_TOOLS:
+        resolved_timeout = VALIDATION_OPERATION_TIMEOUT_SECONDS
+    elif tool_name in _RECOVERY_TOOLS:
+        resolved_timeout = RECOVERY_OPERATION_TIMEOUT_SECONDS
+    elif planned_timeout is not None:
+        resolved_timeout = float(planned_timeout)
+    else:
+        resolved_timeout = DEFAULT_OPERATION_TIMEOUT_SECONDS
+    if tool_name in _PROBE_INVENTORY_TOOLS:
+        inventory_timeout = (
+            DEFAULT_OPERATION_TIMEOUT_SECONDS
+            + len(configured_probe_cli_commands())
+            * (
+                DEFAULT_EXTERNAL_COMMAND_TIMEOUT_SECONDS
+                + MAX_OWNED_PROCESS_CLEANUP_SECONDS
+            )
+            + CANCELLATION_CLEANUP_GRACE_SECONDS
+        )
+        resolved_timeout = max(resolved_timeout, inventory_timeout)
     if tool_name == "read_serial":
         requested = _positive_finite_number(values.get("read_seconds"))
         if requested is not None:
@@ -510,9 +540,7 @@ def operation_timeout_seconds(
                 DEFAULT_OPERATION_TIMEOUT_SECONDS,
                 requested_ms / 1000.0 + ARGUMENT_TIMEOUT_GRACE_SECONDS,
             )
-    if planned_timeout is not None:
-        return float(planned_timeout)
-    return DEFAULT_OPERATION_TIMEOUT_SECONDS
+    return resolved_timeout
 
 
 async def _wait_for_done(operation: ManagedOperation) -> None:

@@ -9,7 +9,7 @@ from collections.abc import Callable, Mapping
 from dataclasses import asdict, dataclass
 from typing import Any
 
-from pyocd_debug_mcp.adapters.swd_interface import TargetSessionHandle
+from pyocd_debug_mcp.adapters.swd_interface import TargetSessionHandle, session_metadata
 from pyocd_debug_mcp.board_config import (
     RECOVER_MODE_MANUAL_ONLY,
     RECOVER_MODE_BACKEND_MASS_ERASE,
@@ -175,21 +175,21 @@ class UnlockCoordinator:
     def _identity(self, board_id: str) -> tuple[LiveUnlockIdentity, SafetyMapDocument]:
         profile = self.services.profiles.load(board_id)
         handle = self.services.handle_for(board_id)
-        probe = (handle.probe_uid or "").strip()
+        metadata = session_metadata(handle)
+        probe = (metadata.probe_uid or "").strip()
         if not probe:
             raise PlanRefusal(
                 "unlock/probe-identity-missing",
                 "The active probe has no stable identity; reconnect with an identifiable probe.",
             )
-        target = handle.session.target
-        live_part = str(getattr(target, "part_number", "") or "").strip()
+        live_part = str(metadata.live_part_number or "").strip()
         if not live_part:
             raise PlanRefusal(
                 "unlock/target-identity-missing",
                 "The active target exposes no exact live part identity; recovery stays unavailable.",
             )
         pyocd_target = (
-            str(handle.target_override or "").strip() or profile.board.pyocd_target.strip()
+            str(metadata.target_override or "").strip() or profile.board.pyocd_target.strip()
         )
         map_digest = self.services.current_map_digest(board_id)
         try:

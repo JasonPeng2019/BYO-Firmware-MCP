@@ -141,6 +141,7 @@ Extra instructions: Prefer read_memory_symbol when debug metadata identifies the
 | `on_exit` | `object` | nullable | Optional exact structured uart_write or reset_and_run finalizer. |
 
 Extra instructions: A port path is runtime-only; it is never persisted as attachment identity.
+The result includes complete time-bounded UART output as reversible JSON-escaped `captured_text`.
 
 ## `register_write-plan`
 
@@ -202,7 +203,7 @@ Extra instructions: This reset does not unlock a protected target.
 | `ready_probe_delay_seconds` | `number` | required; >= 0; <= 30 | Optional bounded observation delay before sending the readiness probe; use it after flash/reset so boot output can arrive first. |
 | `clear_input` | `boolean` | required | Discard buffered input after open only when true; false preserves boot/prompt bytes. |
 
-Extra instructions: All steps, readiness input, and the optional pre-probe delay are exact, bounded, and execute through one port open; successful cleanup preserves application state.
+Extra instructions: All steps, readiness input, and the optional pre-probe delay are exact, bounded, and execute through one port open; successful cleanup preserves application state. The result includes complete time-bounded aggregate `captured_text` and complete ordered `step_captured_texts`, reversibly JSON-escaped.
 
 ## `set_breakpoint-plan`
 

@@ -26,8 +26,6 @@ from pyocd_debug_mcp.guardrails.plan_defs import (
 from pyocd_debug_mcp.kernel.run_state import ServerRun
 from pyocd_debug_mcp.services.session_runtime import PolicyRefusal
 
-MAX_FLEXIBLE_CALLS = 20
-MAX_FLEXIBLE_BUFFER = 10
 _BOARD_ID = re.compile(r"[a-z0-9_]{1,64}")
 _PLACEHOLDERS = frozenset({"n/a", "na", "none", "null", "placeholder", "tbd", "todo", "unknown"})
 
@@ -469,7 +467,6 @@ class PlanEngine:
         self.permission_provider = permission_provider or UnavailablePermissionProvider()
         self.scope_validator = scope_validator or (lambda definition, board_id, session_id: None)
         self._initialized_plan_tools: set[str] = set()
-        self._accepted_cycles: dict[tuple[str, str], int] = {}
         self._guard = threading.RLock()
 
     def null_response(self, tool_name: str) -> PlanResult:
@@ -560,19 +557,6 @@ class PlanEngine:
 
         with self._guard:
             key = (definition.action_name, board_id)
-            cycles = self._accepted_cycles.get(key, 0)
-            if (
-                definition.max_plan_cycles_per_board is not None
-                and cycles >= definition.max_plan_cycles_per_board
-            ):
-                self._invalidate_locked(key, "deterministic plan-cycle budget exhausted")
-                raise _refuse(
-                    "plan/retry-exhausted",
-                    f"{definition.plan_tool_name} reached its per-board limit of "
-                    f"{definition.max_plan_cycles_per_board} plan cycles for this Server Run.",
-                    session_id=session_id,
-                )
-
             authorization: object | None = None
             if definition.permission_mode is not PermissionMode.NONE:
                 authorization = self.permission_provider.authorize_plan(
@@ -611,7 +595,6 @@ class PlanEngine:
                 previous.status = PlanStatus.REPLACED
                 previous.close_reason = f"replaced by {state.plan_id}"
                 previous.artifact_binding = None
-            self._accepted_cycles[key] = cycles + 1
             snapshot = state.snapshot()
 
         payload = accepted_plan_payload(snapshot)
@@ -815,13 +798,6 @@ class PlanEngine:
                     f"{definition.plan_tool_name} requires max_calls=1 and max_calls_buffer=0.",
                     session_id=session_id,
                 )
-        elif max_calls > MAX_FLEXIBLE_CALLS or max_calls_buffer > MAX_FLEXIBLE_BUFFER:
-            raise _refuse(
-                "plan/budget-cap",
-                f"Flexible budgets are capped at max_calls<={MAX_FLEXIBLE_CALLS} and "
-                f"max_calls_buffer<={MAX_FLEXIBLE_BUFFER}; submit a smaller plan.",
-                session_id=session_id,
-            )
         return max_calls, max_calls_buffer
 
     def enforce(
@@ -1216,5 +1192,4 @@ class PlanEngine:
                     self._relock_definition(state.definition, state.board_id)
             self.server_run.plans.clear()
             self._initialized_plan_tools.clear()
-            self._accepted_cycles.clear()
         self.permission_provider.reset()

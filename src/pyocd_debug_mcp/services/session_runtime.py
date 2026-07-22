@@ -174,8 +174,8 @@ class InMemorySessionStore:
             log_path=log_path,
             summary_path=summary_path,
         )
-        self._sessions[session_id] = record
         self._write_summary(record)
+        self._sessions[session_id] = record
         return record
 
     def append_event(self, session: SessionRecord, event: ToolEvent) -> None:
@@ -204,8 +204,10 @@ class InMemorySessionStore:
 
     def close_session(self, session: SessionRecord) -> None:
         session.closed_at = utc_now_text()
-        self._write_summary(session)
-        self._sessions.pop(session.session_id, None)
+        try:
+            self._write_summary(session)
+        finally:
+            self._sessions.pop(session.session_id, None)
 
     def _append_jsonl(self, path: Path, record: dict[str, Any]) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)

@@ -31,7 +31,6 @@ _DEFAULT_STORE = FirmStore(_DEFAULT_PROJECT_ROOT)
 PACKS_DIR = _DEFAULT_STORE.layout.pack_files
 MANIFEST_PATH = _DEFAULT_STORE.layout.pack_manifest
 _CHUNK = 1 << 16
-MAX_CMSIS_PACK_ARCHIVE_BYTES = 128 * 1024 * 1024
 
 
 class PackProvisionError(RuntimeError):
@@ -303,15 +302,13 @@ def sha256_file(path: Path) -> str:
     return h.hexdigest()
 
 
-def read_bounded_pack_bytes(path: Path) -> bytes:
-    """Read one pack while bounding agent-controlled archive memory use."""
+def read_pack_bytes(path: Path) -> bytes:
+    """Read one non-empty pack exactly and reject a file changed during the read."""
 
     try:
         size = path.stat().st_size
-        if size <= 0 or size > MAX_CMSIS_PACK_ARCHIVE_BYTES:
-            raise PackProvisionError(
-                "CMSIS-Pack archive size is outside the supported limit"
-            )
+        if size <= 0 or not path.is_file():
+            raise PackProvisionError("CMSIS-Pack archive must be a non-empty regular file")
         payload = path.read_bytes()
     except PackProvisionError:
         raise
@@ -341,7 +338,7 @@ def verified_pack_for_spec(
         )
     selected: VerifiedPack | None = None
     for candidate in candidates:
-        payload = read_bounded_pack_bytes(candidate)
+        payload = read_pack_bytes(candidate)
         if sha256_bytes(payload) != spec.sha256:
             raise PackProvisionError(
                 f"Pinned pack checksum mismatch for {candidate}: expected {spec.sha256}."
@@ -480,7 +477,7 @@ def verified_pack_for_target(
         )
     payloads: list[tuple[Path, bytes]] = []
     for candidate in candidates:
-        payload = read_bounded_pack_bytes(candidate)
+        payload = read_pack_bytes(candidate)
         if sha256_bytes(payload) != spec.sha256:
             raise PackProvisionError(
                 f"Pinned pack checksum mismatch for {candidate}: expected {spec.sha256}."

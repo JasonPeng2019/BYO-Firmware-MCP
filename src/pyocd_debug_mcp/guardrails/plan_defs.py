@@ -319,10 +319,9 @@ _DEFINITIONS = (
             _field(
                 "length",
                 FieldType.INTEGER,
-                "Optional block length up to 64 KiB.",
+                "Optional positive block length.",
                 nullable=True,
                 minimum=1,
-                maximum=65536,
             ),
         ),
         BudgetMode.FLEXIBLE,
@@ -509,16 +508,14 @@ _DEFINITIONS = (
             _field(
                 "steps",
                 FieldType.ARRAY,
-                "One to eight exact {text, expected_text, line_ending} command/response steps.",
+                "One or more exact {text, expected_text, line_ending} command/response steps.",
                 min_items=1,
-                max_items=8,
             ),
             _field(
                 "read_seconds",
                 FieldType.NUMBER,
-                "Positive per-step response window no greater than 30 seconds.",
+                "Positive finite per-step response window.",
                 minimum=0,
-                maximum=30,
                 exclusive_minimum=True,
             ),
             _field("baudrate", FieldType.INTEGER, "Positive baud rate.", nullable=True, minimum=1),
@@ -532,14 +529,13 @@ _DEFINITIONS = (
             _field(
                 "ready_seconds",
                 FieldType.NUMBER,
-                "Bounded pre-send readiness window; zero when ready_text is NULL.",
+                "Pre-send readiness window; zero when ready_text is NULL.",
                 minimum=0,
-                maximum=30,
             ),
             _field(
                 "ready_probe_text",
                 FieldType.TEXT,
-                "Optional exact bounded text sent once to elicit the readiness marker.",
+                "Optional exact text sent once to elicit the readiness marker.",
                 nullable=True,
                 allow_empty=True,
             ),
@@ -552,10 +548,9 @@ _DEFINITIONS = (
             _field(
                 "ready_probe_delay_seconds",
                 FieldType.NUMBER,
-                "Optional bounded observation delay before sending the readiness probe; use it "
+                "Optional observation delay before sending the readiness probe; use it "
                 "after flash/reset so boot output can arrive first.",
                 minimum=0,
-                maximum=30,
             ),
             _field(
                 "clear_input",
@@ -567,7 +562,7 @@ _DEFINITIONS = (
         PermissionMode.NONE,
         SafetyMode.FRESH_WRITE,
         30.0,
-        "All steps, readiness input, and the optional pre-probe delay are exact, bounded, and "
+        "All steps, readiness input, and the optional pre-probe delay are exact and "
         "execute through one port open; "
         "successful cleanup preserves application state.",
         action_validator=validate_serial_exchange_parameters,

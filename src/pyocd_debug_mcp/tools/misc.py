@@ -22,24 +22,24 @@ def build_misc_handlers(services: MiscToolServices) -> dict[str, Callable[..., s
     """Build the bounded always-available wait action."""
 
     def wait(board_id: str, ms: int) -> str:
-        """Pause for 1-60000 milliseconds for one logical board workflow."""
+        """Pause for a positive number of milliseconds for one logical board workflow."""
 
         started = time.monotonic()
         args = {"board_id": board_id, "ms": ms}
         runtime = services.runtime_for(board_id)
-        if isinstance(ms, bool) or not isinstance(ms, int) or not 1 <= ms <= 60_000:
+        if isinstance(ms, bool) or not isinstance(ms, int) or ms < 1:
             services.record_event(
                 "wait",
                 args,
                 outcome_kind=ToolOutcome.REFUSED,
                 error_code="wait/out-of-range",
                 duration_ms=services.duration_ms(started),
-                details={"message": "ms must be an integer from 1 through 60000."},
+                details={"message": "ms must be a positive integer."},
                 board_id=board_id,
                 session=runtime,
             )
             return wrap_layer2_response(
-                "Refused [wait/out-of-range]: ms must be an integer from 1 through 60000."
+                "Refused [wait/out-of-range]: ms must be a positive integer."
             )
         services.sleep(ms / 1000.0)
         services.record_event(

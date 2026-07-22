@@ -13,6 +13,7 @@ from hashlib import sha256
 from pathlib import Path
 
 from pyocd_debug_mcp.safety.regions import AddressRange, RegionKind
+from pyocd_debug_mcp.setup_flow.datasheet_evidence import read_datasheet_pdf
 
 
 class BoardCatalogError(ValueError):
@@ -388,28 +389,20 @@ class ResolvedReviewedSupport:
 
 
 def hash_local_datasheet(path: Path) -> tuple[Path, str]:
-    """Resolve, validate, and hash a bounded local PDF from its actual bytes."""
+    """Resolve, validate, and hash a trusted local PDF from its exact bytes."""
 
     expanded = path.expanduser()
-    if expanded.is_symlink():
-        raise BoardCatalogError("datasheet_path must not be a symbolic link")
     try:
         resolved = expanded.resolve(strict=True)
     except OSError as exc:
         raise BoardCatalogError("datasheet_path must name an existing local PDF") from exc
     if resolved.suffix.casefold() != ".pdf" or not resolved.is_file():
         raise BoardCatalogError("datasheet_path must name an existing local PDF")
-    size = resolved.stat().st_size
-    if not 5 <= size <= 64 * 1024 * 1024:
-        raise BoardCatalogError("datasheet PDF size must be between 5 bytes and 64 MiB")
-    digest = sha256()
-    with resolved.open("rb") as stream:
-        if stream.read(5) != b"%PDF-":
-            raise BoardCatalogError("datasheet_path does not contain a PDF document")
-        stream.seek(0)
-        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return resolved, digest.hexdigest()
+    try:
+        payload = read_datasheet_pdf(resolved)
+    except ValueError as exc:
+        raise BoardCatalogError(str(exc)) from exc
+    return resolved, sha256(payload).hexdigest()
 
 
 def resolve_reviewed_support(

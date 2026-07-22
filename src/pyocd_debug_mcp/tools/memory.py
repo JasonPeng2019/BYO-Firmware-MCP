@@ -16,9 +16,6 @@ from pyocd_debug_mcp.services.session_runtime import PolicyRefusal, SessionRecor
 from pyocd_debug_mcp.services.symbols import ResolvedSymbol, is_elf_artifact
 from pyocd_debug_mcp.target_errors import ReferenceArtifactError, SymbolLookupError
 
-MAX_ADDRESS_READ_BYTES = 64 * 1024
-
-
 @dataclass(frozen=True, slots=True)
 class MemoryToolServices:
     runtime_for: Callable[[str], SessionRecord | None]
@@ -415,9 +412,7 @@ def build_memory_handlers(
                 started,
                 runtime,
             )
-        if length is not None and (
-            isinstance(length, bool) or length < 1 or length > MAX_ADDRESS_READ_BYTES
-        ):
+        if length is not None and (isinstance(length, bool) or length < 1):
             return _record_refusal(
                 services,
                 "read_memory_address",
@@ -425,7 +420,7 @@ def build_memory_handlers(
                 args,
                 PolicyRefusal(
                     "memory/invalid-length",
-                    f"length must be between 1 and {MAX_ADDRESS_READ_BYTES} bytes.",
+                    "length must be a positive integer.",
                 ),
                 started,
                 runtime,

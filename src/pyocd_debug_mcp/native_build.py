@@ -21,7 +21,7 @@ from pyocd_debug_mcp.kernel.processes import run_owned
 
 
 BUILD_TIMEOUT_SECONDS = 1800.0
-_ARTIFACT_ROLE = re.compile(r"[A-Za-z][A-Za-z0-9_.-]{0,63}\Z")
+_ARTIFACT_ROLE = re.compile(r"[A-Za-z][A-Za-z0-9_.-]*\Z")
 
 
 class BuildEvidenceError(RuntimeError):
@@ -276,7 +276,7 @@ def _declared_artifacts(args: argparse.Namespace) -> dict[str, str | None] | Non
         role, separator, path = declaration.partition("=")
         if not separator or not _ARTIFACT_ROLE.fullmatch(role) or not path or "\x00" in path:
             raise RuntimeError(
-                "Named artifacts must use ROLE=PATH with a 1-64 character alphanumeric role."
+                "Named artifacts must use ROLE=PATH with a non-empty alphanumeric role."
             )
         normalized = role.casefold()
         if normalized in values and values[normalized] is not None:
@@ -374,8 +374,8 @@ def _timeout_seconds(value: str | int | float) -> float:
         timeout = float(value)
     except (TypeError, ValueError) as exc:
         raise RuntimeError("Build timeout must be a positive number of seconds.") from exc
-    if not 0 < timeout <= 86400:
-        raise RuntimeError("Build timeout must be greater than zero and at most 86400 seconds.")
+    if not 0 < timeout < float("inf"):
+        raise RuntimeError("Build timeout must be a positive finite number of seconds.")
     return timeout
 
 
@@ -564,7 +564,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--timeout-seconds",
         default=BUILD_TIMEOUT_SECONDS,
-        help="Positive build timeout in seconds (default: 1800; maximum: 86400)",
+        help="Positive finite build timeout in seconds (default: 1800)",
     )
     parser.add_argument(
         "--artifact",
@@ -637,7 +637,7 @@ def command_template() -> dict[str, object]:
             ),
             "cwd": "Optional child working directory; defaults to project_dir.",
             "env": "Repeatable KEY=VALUE child-environment overrides.",
-            "timeout_seconds": "Positive child-process timeout, up to 86400 seconds.",
+            "timeout_seconds": "Positive finite child-process timeout.",
             "artifact": (
                 "Repeatable ROLE=PATH for any output format. Every path must exist and be "
                 "nonempty after the build; unknown formats are reported as opaque, not validated."

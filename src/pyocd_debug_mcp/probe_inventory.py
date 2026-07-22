@@ -6,7 +6,6 @@ import re
 from dataclasses import dataclass
 from typing import Any, Callable
 
-from pyocd.core.helpers import ConnectHelper  # type: ignore[import-untyped]
 from pyocd.probe.aggregator import PROBE_CLASSES  # type: ignore[import-untyped]
 
 from pyocd_debug_mcp.board_config import BoardConfig
@@ -93,18 +92,6 @@ def _probe_info_from_pyocd_probe(probe: Any) -> ProbeInfo | None:
         family=family,
         family_source="pyocd_api" if family != "unknown" else "unknown",
     )
-
-
-def _list_connected_probes_via_pyocd_api() -> list[ProbeInfo]:
-    probes: list[ProbeInfo] = []
-    for probe in ConnectHelper.get_all_connected_probes(
-        blocking=False,
-        print_wait_message=False,
-    ):
-        parsed = _probe_info_from_pyocd_probe(probe)
-        if parsed is not None:
-            probes.append(parsed)
-    return probes
 
 
 def parse_pyocd_probe_listing(output: str) -> list[ProbeInfo]:
@@ -196,21 +183,8 @@ def parse_pyocd_probe_listing(output: str) -> list[ProbeInfo]:
     return probes
 
 
-def list_connected_probes(
-    run_cmd: RunCommand,
-    *,
-    allow_subprocess_fallback: bool = True,
-) -> list[ProbeInfo]:
-    """Return the connected probes visible to pyOCD."""
-
-    try:
-        probes = _list_connected_probes_via_pyocd_api()
-    except Exception:
-        probes = []
-    if probes:
-        return probes
-    if not allow_subprocess_fallback:
-        return []
+def list_connected_probes_cli(run_cmd: RunCommand) -> list[ProbeInfo]:
+    """Return probes reported by bounded, server-owned CLI child processes."""
 
     for command in configured_probe_cli_commands():
         _rc, out, err = run_cmd(list(command))
@@ -276,19 +250,15 @@ def pick_probe_for_board(
     )
 
 
-def resolve_probe_for_board(
+def resolve_probe_for_board_cli(
     board: BoardConfig,
     *,
     run_cmd: RunCommand,
     allow_single_fallback: bool,
-    allow_subprocess_fallback: bool = True,
 ) -> ProbeResolution:
-    """List probes and select the best match for the given board."""
+    """Select a board probe from explicit CLI inventory only."""
 
-    probes = list_connected_probes(
-        run_cmd,
-        allow_subprocess_fallback=allow_subprocess_fallback,
-    )
+    probes = list_connected_probes_cli(run_cmd)
     return pick_probe_for_board(
         board,
         probes,

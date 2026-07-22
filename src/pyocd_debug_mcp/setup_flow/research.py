@@ -11,7 +11,6 @@ from typing import Any, Literal
 
 from pyocd_debug_mcp.setup_flow.preflight import NO_INTERNALS_RELAY_INSTRUCTION
 
-MAX_CANDIDATES_PER_FACT = 3
 BLOCKED_CONDITIONS = frozenset(
     {"locked_target", "missing_probe", "missing_driver", "probe_disconnected"}
 )
@@ -88,10 +87,7 @@ def candidate_fingerprint(candidate: Mapping[str, Any]) -> str:
 class ResearchTracker:
     """Track candidate attempts in memory for one server run."""
 
-    def __init__(self, *, max_candidates: int = MAX_CANDIDATES_PER_FACT) -> None:
-        if max_candidates < 1:
-            raise ValueError("max_candidates must be positive")
-        self._max_candidates = max_candidates
+    def __init__(self) -> None:
         self._failures: dict[tuple[str, str], list[CandidateFailure]] = {}
 
     @staticmethod
@@ -170,9 +166,6 @@ class ResearchTracker:
                 failure=previous,
                 duplicate=True,
             )
-        if len(failures) >= self._max_candidates:
-            return ResearchResult(status="setup_unresolved", fingerprint=fingerprint)
-
         outcome = validator(candidate)
         if outcome.accepted:
             return ResearchResult(status="accepted", fingerprint=fingerprint, candidate=candidate)
@@ -183,12 +176,9 @@ class ResearchTracker:
             observed=copy.deepcopy(dict(outcome.observed)),
         )
         failures.append(failure)
-        status: Literal["setup_research_required", "setup_unresolved"] = (
-            "setup_unresolved"
-            if len(failures) >= self._max_candidates
-            else "setup_research_required"
+        return ResearchResult(
+            status="setup_research_required", fingerprint=fingerprint, failure=failure
         )
-        return ResearchResult(status=status, fingerprint=fingerprint, failure=failure)
 
 
 def make_research_request(
