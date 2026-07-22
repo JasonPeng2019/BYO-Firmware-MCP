@@ -29,7 +29,7 @@ from pyocd_debug_mcp.pack_provision import (
     sha256_bytes,
 )
 from pyocd_debug_mcp.services import symbols
-from pyocd_debug_mcp.services.session_runtime import PolicyRefusal
+from pyocd_debug_mcp.services.session_runtime import ActionContext, PolicyRefusal
 from pyocd_debug_mcp.services.symbols import ResolvedSymbol
 from pyocd_debug_mcp.services.uart_exchange_schema import validate_serial_exchange_parameters
 from pyocd_debug_mcp.safety.map_build import GenericSafetyMapDocument
@@ -88,17 +88,13 @@ def _serial() -> SerialToolServices:
         lambda _: None,
         lambda _: 0,
         lambda *a, **k: None,
-        lambda *a, **k: None,
         lambda refusal, **k: f"{refusal.code}:{refusal.message}",
-        lambda blocked, **k: blocked.message,
-        lambda _: None,
         lambda _: None,
         lambda *a, **k: None,
         lambda *a, **k: None,
         lambda *a, **k: None,
         lambda *a, **k: None,
         lambda _: None,
-        lambda *a: None,
         "no board",
     )
 
@@ -326,16 +322,12 @@ class RoundThreeRegressionTests(unittest.TestCase):
             lambda _: None,
             lambda _: 0,
             events,
-            lambda *a, **k: None,
             lambda r, **k: r.message,
-            lambda b, **k: b.message,
-            lambda _: None,
-            lambda *a: None,
+            lambda tool, board: ActionContext("test", tool, board),
             lambda _: None,
             lambda _: None,
             lambda *a: (_ for _ in ()).throw(RuntimeError(message)),
             lambda *a: Path("unused"),
-            lambda *a: None,
             lambda _: "runtime/error",
         )
         with self.assertRaisesRegex(RuntimeError, suffix):

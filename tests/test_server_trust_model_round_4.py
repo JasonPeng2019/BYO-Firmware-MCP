@@ -34,6 +34,7 @@ from pyocd_debug_mcp.pack_provision import (
     sha256_bytes,
 )
 from pyocd_debug_mcp.services.symbols import ResolvedSymbol, find_symbols
+from pyocd_debug_mcp.services.session_runtime import ActionContext
 from pyocd_debug_mcp.services.uart_exchange_schema import validate_serial_exchange_parameters
 from pyocd_debug_mcp.setup_flow.device_support import DeviceSupportResolver
 from pyocd_debug_mcp.setup_flow.packs import (
@@ -75,17 +76,13 @@ def _serial_services() -> SerialToolServices:
         active_session_id=lambda _board: None,
         duration_ms=lambda _started: 0,
         record_event=lambda *args, **kwargs: None,
-        record_blocked_event=lambda *args, **kwargs: None,
         format_refusal=lambda refusal, **kwargs: f"Refused [{refusal.code}]: {refusal.message}",
-        format_block=lambda blocked, **kwargs: str(blocked),
-        ensure_uart_allowed=lambda _runtime: None,
         handle_for=lambda _board: None,
         resolve_port=lambda *_args, **_kwargs: None,
         capture_uart=lambda *_args, **_kwargs: None,
         write_uart=lambda *_args, **_kwargs: None,
         exchange_uart=lambda *_args, **_kwargs: None,
         reset_target=lambda _handle: None,
-        handle_mutation_event=lambda *_args: None,
         no_board_config_message="no board",
     )
 
@@ -400,18 +397,14 @@ class RoundFourRegressionTests(unittest.TestCase):
             active_session_id=lambda _board: None,
             duration_ms=lambda _started: 0,
             record_event=recorded,
-            record_blocked_event=lambda *args, **kwargs: None,
             format_refusal=lambda refusal, **kwargs: str(refusal),
-            format_block=lambda blocked, **kwargs: str(blocked),
-            ensure_flash_allowed=lambda runtime: None,
-            action_context=lambda *args: None,
+            action_context=lambda tool, board: ActionContext("test", tool, board),
             maybe_handle_for=lambda _board: None,
             handle_for=lambda _board: object(),
             resolve_request=lambda *_args: (_ for _ in ()).throw(
                 RuntimeError("x" * 350 + "FLASH-SUFFIX")
             ),
             flash_target=lambda *_args: Path("unused"),
-            handle_mutation_event=lambda *_args: None,
             error_code=lambda _exc: "flash/test",
         )
         with self.assertRaisesRegex(RuntimeError, "FLASH-SUFFIX"):

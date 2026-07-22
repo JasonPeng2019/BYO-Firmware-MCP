@@ -14,8 +14,8 @@ from pyocd_debug_mcp.services.session_runtime import (
     PolicyRefusal,
     SessionRecord,
     ToolOutcome,
-    WatcherBlocked,
 )
+
 
 @dataclass(frozen=True, slots=True)
 class FlashToolServices:
@@ -23,16 +23,12 @@ class FlashToolServices:
     active_session_id: Callable[[str], str | None]
     duration_ms: Callable[[float], int]
     record_event: Callable[..., object]
-    record_blocked_event: Callable[..., object]
     format_refusal: Callable[..., str]
-    format_block: Callable[..., str]
-    ensure_flash_allowed: Callable[[SessionRecord], None]
     action_context: Callable[[str, str], ActionContext]
     maybe_handle_for: Callable[[str], Any | None]
     handle_for: Callable[[str], Any]
     resolve_request: Callable[[Any | None, str, ActionContext], Any]
     flash_target: Callable[[Any, Path], Path]
-    handle_mutation_event: Callable[[str, object], None]
     error_code: Callable[[Exception], str]
     validate_flash: Callable[[str, str, Path], None] | None = None
     prepare_symbol_artifact: Callable[[str, str, Path], object] | None = None
@@ -58,21 +54,6 @@ def build_flash_handlers(
             "board_id": board_id,
             "artifact": artifact,
         }
-        if runtime is not None:
-            try:
-                services.ensure_flash_allowed(runtime)
-            except WatcherBlocked as blocked:
-                services.record_blocked_event(
-                    tool_name,
-                    args,
-                    blocked,
-                    started=started,
-                    board_id=board_id,
-                    session=runtime,
-                )
-                return wrap_layer2_response(
-                    services.format_block(blocked, session_id=runtime.session_id)
-                )
         pending = services.maybe_handle_for(board_id)
         symbol_binding: object | None = None
         generic_allocation: object | None = None
@@ -91,10 +72,7 @@ def build_flash_handlers(
                     tool_name, board_id, request.artifact_path
                 )
             handle = services.handle_for(board_id)
-            if (
-                generic_allocation is not None
-                and services.commit_generic_allocation is not None
-            ):
+            if generic_allocation is not None and services.commit_generic_allocation is not None:
                 # Persist the one-way ownership boundary before hardware
                 # mutation. If programming then fails, keeping that narrow
                 # allocation is safer than leaving partially written flash
@@ -109,7 +87,7 @@ def build_flash_handlers(
         except PolicyRefusal as refusal:
             if services.clear_generic_allocation is not None:
                 services.clear_generic_allocation(board_id)
-            event = services.record_event(
+            services.record_event(
                 tool_name,
                 args,
                 outcome_kind=ToolOutcome.REFUSED,
@@ -119,8 +97,6 @@ def build_flash_handlers(
                 board_id=board_id,
                 session=runtime,
             )
-            if runtime is not None:
-                services.handle_mutation_event(board_id, event)
             return wrap_layer2_response(
                 services.format_refusal(
                     refusal,
@@ -130,7 +106,7 @@ def build_flash_handlers(
         except Exception as exc:
             if services.clear_generic_allocation is not None:
                 services.clear_generic_allocation(board_id)
-            event = services.record_event(
+            services.record_event(
                 tool_name,
                 args,
                 outcome_kind=ToolOutcome.FAILED,
@@ -140,10 +116,8 @@ def build_flash_handlers(
                 board_id=board_id,
                 session=runtime,
             )
-            if runtime is not None:
-                services.handle_mutation_event(board_id, event)
             raise
-        event = services.record_event(
+        services.record_event(
             tool_name,
             args,
             outcome_kind=ToolOutcome.SUCCESS,
@@ -153,8 +127,6 @@ def build_flash_handlers(
             board_id=board_id,
             session=runtime,
         )
-        if runtime is not None:
-            services.handle_mutation_event(board_id, event)
         return wrap_layer2_response(
             f"Flashed {flashed} as {tool_name} within its mapped partition; target left running."
         )

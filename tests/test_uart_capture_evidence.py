@@ -52,17 +52,13 @@ def _services(*, capture: UARTCaptureResult, exchange: UARTExchangeResult) -> Se
         active_session_id=lambda _board_id: None,
         duration_ms=lambda _started: 0,
         record_event=lambda *args, **kwargs: SimpleNamespace(),
-        record_blocked_event=lambda *args, **kwargs: None,
         format_refusal=lambda *args, **kwargs: "refused",
-        format_block=lambda *args, **kwargs: "blocked",
-        ensure_uart_allowed=lambda _runtime: None,
         handle_for=lambda _board_id: handle,
         resolve_port=lambda _handle, **_kwargs: SimpleNamespace(device="COM_TEST"),
         capture_uart=lambda *args, **kwargs: capture,
         write_uart=lambda *args, **kwargs: None,
         exchange_uart=lambda *args, **kwargs: exchange,
         reset_target=lambda _handle: None,
-        handle_mutation_event=lambda _board_id, _event: None,
         no_board_config_message="no board",
     )
 
@@ -87,7 +83,7 @@ class UARTCaptureEvidenceTests(unittest.TestCase):
         self.assertGreater(len(result.text), 65_536)
 
     def test_read_serial_returns_complete_reversibly_serialized_capture(self) -> None:
-        captured = ('prefix\\nliteral "quote"\r\n' + ("A" * 400) + "\x00TAIL")
+        captured = 'prefix\\nliteral "quote"\r\n' + ("A" * 400) + "\x00TAIL"
         capture = UARTCaptureResult(captured, "TAIL", 0, 0.25)
         exchange = UARTExchangeResult("", "unused", 0, 0.0, 1)
 

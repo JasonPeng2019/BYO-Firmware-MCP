@@ -80,11 +80,6 @@ from pyocd_debug_mcp.serial_resolver import (
     list_serial_ports,
     resolve_serial_port,
 )
-from pyocd_debug_mcp.services.convergence_watcher import (
-    ConvergenceWatcher,
-    FLASH_TOOL,
-    UART_TOOL,
-)
 from pyocd_debug_mcp.services.session_runtime import (
     ActionContext,
     InMemorySessionStore,
@@ -92,7 +87,6 @@ from pyocd_debug_mcp.services.session_runtime import (
     SessionRecord,
     ToolEvent,
     ToolOutcome,
-    WatcherBlocked,
     utc_now_text,
 )
 from pyocd_debug_mcp.services import target_control
@@ -298,7 +292,6 @@ gate_manager = GateManager(server_run.gates)
 permission_store = PermissionStore(server_run)
 _current_symbol_artifacts: dict[str, tuple[Path, str]] = {}
 _session_store = InMemorySessionStore(_project_root / ".firm" / "runs")
-_watcher = ConvergenceWatcher()
 _staged_server_timeouts = default_server_timeout_config()
 NO_BOARD_CONFIG_MESSAGE = (
     "No project board profile is loaded for this session. Run setup for a new board, or pass an "
@@ -792,10 +785,6 @@ def _format_refusal(refusal: PolicyRefusal, *, session_id: str | None) -> str:
     return f"Refused [{refusal.code}]: {refusal.message} session_id={session_id or '(none)'}"
 
 
-def _format_block(blocked: WatcherBlocked, *, session_id: str | None) -> str:
-    return f"Blocked [{blocked.code}]: {blocked.message} session_id={session_id or '(none)'}"
-
-
 def _refuse_invalid_argument(
     tool_name: str,
     normalized_args: Mapping[str, object],
@@ -818,27 +807,6 @@ def _refuse_invalid_argument(
         session=session,
     )
     return _format_refusal(refusal, session_id=_active_session_id(board_id))
-
-
-def _record_blocked_event(
-    tool_name: str,
-    normalized_args: Mapping[str, object],
-    blocked: WatcherBlocked,
-    *,
-    started: float,
-    board_id: str,
-    session: SessionRecord | None,
-) -> ToolEvent:
-    return _record_event(
-        tool_name,
-        normalized_args,
-        outcome_kind=ToolOutcome.BLOCKED,
-        error_code=blocked.code,
-        duration_ms=_duration_ms(started),
-        details={"message": blocked.message},
-        board_id=board_id,
-        session=session,
-    )
 
 
 def _parse_int(text: str) -> int:
@@ -1442,8 +1410,7 @@ def _finish_disconnect_cleanup(
             failure = RuntimeError(
                 "Disconnect cleanup reported: "
                 + "; ".join(
-                    f"{stage}: {type(error).__name__}: {error}"
-                    for stage, error in failures
+                    f"{stage}: {type(error).__name__}: {error}" for stage, error in failures
                 )
             )
         try:
@@ -1531,20 +1498,6 @@ def _resolve_serial_port_for_session(
     if resolution.port is None:
         raise RuntimeError(f"Serial port resolution failed: {resolution.note}")
     return resolution.port
-
-
-def _handle_mutation_event(board_id: str, event: ToolEvent) -> None:
-    runtime = _runtime_for(board_id)
-    if runtime is None:
-        return
-    decision = _watcher.observe_event(runtime, event)
-    if decision is not None:
-        _session_store.set_block(
-            runtime,
-            decision.action_family,
-            decision.code,
-            decision.message,
-        )
 
 
 def _run_logged_tool(
@@ -1932,20 +1885,6 @@ def flash_firmware(
             "artifact_source": "default" if path is None else "explicit",
             "artifact_path": path,
         }
-        if runtime is not None:
-            try:
-                _watcher.ensure_allowed(runtime, FLASH_TOOL)
-            except WatcherBlocked as blocked:
-                _record_blocked_event(
-                    "flash_firmware",
-                    normalized_args,
-                    blocked,
-                    started=started,
-                    board_id=board_id,
-                    session=runtime,
-                )
-                return _format_block(blocked, session_id=runtime.session_id)
-
         handle = connection_manager.maybe_connection(board_id)
         pending_handle = handle.handle if handle is not None else None
         try:
@@ -1962,7 +1901,7 @@ def flash_firmware(
                 halt_after_reset=halt_after_reset,
             )
         except PolicyRefusal as exc:
-            event = _record_event(
+            _record_event(
                 "flash_firmware",
                 normalized_args,
                 outcome_kind=ToolOutcome.REFUSED,
@@ -1972,11 +1911,9 @@ def flash_firmware(
                 board_id=board_id,
                 session=runtime,
             )
-            if runtime is not None:
-                _handle_mutation_event(board_id, event)
             return _format_refusal(exc, session_id=_active_session_id(board_id))
         except Exception as exc:  # noqa: BLE001 - preserve backend failure text
-            event = _record_event(
+            _record_event(
                 "flash_firmware",
                 normalized_args,
                 outcome_kind=ToolOutcome.FAILED,
@@ -1986,12 +1923,10 @@ def flash_firmware(
                 board_id=board_id,
                 session=runtime,
             )
-            if runtime is not None:
-                _handle_mutation_event(board_id, event)
             raise
 
         state = "halted" if halt_after_reset else "running"
-        event = _record_event(
+        _record_event(
             "flash_firmware",
             normalized_args,
             outcome_kind=ToolOutcome.SUCCESS,
@@ -2001,8 +1936,6 @@ def flash_firmware(
             board_id=board_id,
             session=runtime,
         )
-        if runtime is not None:
-            _handle_mutation_event(board_id, event)
         return (
             f"Flashed {flashed} via {session_metadata(active_handle).route_used}; "
             f"target left {state}."
@@ -2025,19 +1958,13 @@ def read_serial(
         active_session_id=_active_session_id,
         duration_ms=_duration_ms,
         record_event=_record_event,
-        record_blocked_event=_record_blocked_event,
         format_refusal=_format_refusal,
-        format_block=_format_block,
-        ensure_uart_allowed=lambda runtime: _watcher.ensure_allowed(runtime, UART_TOOL),
         handle_for=_handle,
         resolve_port=_resolve_serial_port_for_session,
         capture_uart=lambda *args, **kwargs: capture_uart_output(*args, **kwargs),
         write_uart=lambda *args, **kwargs: write_uart_output(*args, **kwargs),
         exchange_uart=lambda *args, **kwargs: exchange_uart_output(*args, **kwargs),
         reset_target=lambda handle: target_control.reset(handle, halt_after=False),
-        handle_mutation_event=lambda selected_board, event: _handle_mutation_event(
-            selected_board, cast(ToolEvent, event)
-        ),
         no_board_config_message=NO_BOARD_CONFIG_MESSAGE,
     )
     return read_serial_action(
@@ -2067,19 +1994,13 @@ def write_serial(
         active_session_id=_active_session_id,
         duration_ms=_duration_ms,
         record_event=_record_event,
-        record_blocked_event=_record_blocked_event,
         format_refusal=_format_refusal,
-        format_block=_format_block,
-        ensure_uart_allowed=lambda runtime: _watcher.ensure_allowed(runtime, UART_TOOL),
         handle_for=_handle,
         resolve_port=_resolve_serial_port_for_session,
         capture_uart=lambda *args, **kwargs: capture_uart_output(*args, **kwargs),
         write_uart=lambda *args, **kwargs: write_uart_output(*args, **kwargs),
         exchange_uart=lambda *args, **kwargs: exchange_uart_output(*args, **kwargs),
         reset_target=lambda handle: target_control.reset(handle, halt_after=False),
-        handle_mutation_event=lambda selected_board, event: _handle_mutation_event(
-            selected_board, cast(ToolEvent, event)
-        ),
         no_board_config_message=NO_BOARD_CONFIG_MESSAGE,
     )
     return write_serial_action(
@@ -2317,10 +2238,7 @@ flash_services = FlashToolServices(
     active_session_id=_active_session_id,
     duration_ms=_duration_ms,
     record_event=_record_event,
-    record_blocked_event=_record_blocked_event,
     format_refusal=_format_refusal,
-    format_block=_format_block,
-    ensure_flash_allowed=lambda runtime: _watcher.ensure_allowed(runtime, FLASH_TOOL),
     action_context=_action_context,
     maybe_handle_for=_maybe_handle,
     handle_for=_handle,
@@ -2333,9 +2251,6 @@ flash_services = FlashToolServices(
         handle,
         artifact,
         halt_after_reset=False,
-    ),
-    handle_mutation_event=lambda selected_board, event: _handle_mutation_event(
-        selected_board, cast(ToolEvent, event)
     ),
     error_code=_error_code,
     validate_flash=_check_flash_safety,
@@ -2352,19 +2267,13 @@ serial_services = SerialToolServices(
     active_session_id=_active_session_id,
     duration_ms=_duration_ms,
     record_event=_record_event,
-    record_blocked_event=_record_blocked_event,
     format_refusal=_format_refusal,
-    format_block=_format_block,
-    ensure_uart_allowed=lambda runtime: _watcher.ensure_allowed(runtime, UART_TOOL),
     handle_for=_handle,
     resolve_port=_resolve_serial_port_for_session,
     capture_uart=lambda *args, **kwargs: capture_uart_output(*args, **kwargs),
     write_uart=lambda *args, **kwargs: write_uart_output(*args, **kwargs),
     exchange_uart=lambda *args, **kwargs: exchange_uart_output(*args, **kwargs),
     reset_target=lambda handle: target_control.reset(handle, halt_after=False),
-    handle_mutation_event=lambda selected_board, event: _handle_mutation_event(
-        selected_board, cast(ToolEvent, event)
-    ),
     no_board_config_message=NO_BOARD_CONFIG_MESSAGE,
 )
 serial_tool_handlers = build_serial_handlers(serial_services)
@@ -2469,9 +2378,7 @@ MEMORY_FLASH_AND_SERIAL_GUARDED_ACTIONS = (
     "write_serial",
     "serial_exchange",
 )
-GUARDED_ACTIONS = (
-    CONNECTION_AND_REGISTER_GUARDED_ACTIONS + MEMORY_FLASH_AND_SERIAL_GUARDED_ACTIONS
-)
+GUARDED_ACTIONS = CONNECTION_AND_REGISTER_GUARDED_ACTIONS + MEMORY_FLASH_AND_SERIAL_GUARDED_ACTIONS
 for _guarded_action in GUARDED_ACTIONS:
     tool_registry.configure(
         _guarded_action,
@@ -2884,9 +2791,7 @@ def _derive_generic_safety_map(board_id: str) -> GenericSafetyMapDocument:
             pass
         else:
             cpu_system_regions = (
-                PackAddressRegion(
-                    "Arm Cortex-M system control space", 0xE0000000, 0xE0100000
-                ),
+                PackAddressRegion("Arm Cortex-M system control space", 0xE0000000, 0xE0100000),
             )
     profile_document = profile.to_document()
     datasheet_digest = profile_document.get("datasheet_sha256")
@@ -3241,9 +3146,7 @@ def _stamp_validation_session(
         return False
     if connected_probe_uid is None and connection.connection_id != stable_probe:
         return False
-    provisional_connection_id = (
-        f"probe:{probe_uid}" if probe_uid is not None else probe_id
-    )
+    provisional_connection_id = f"probe:{probe_uid}" if probe_uid is not None else probe_id
     try:
         profile = _profile_repository.load(board_id)
         capability = "exact"
@@ -3307,9 +3210,7 @@ def _record_validation_mismatch(
             validation_run=validation_run,
         )
 
-    provisional_connection_id = (
-        f"probe:{probe_uid}" if probe_uid is not None else probe_id
-    )
+    provisional_connection_id = f"probe:{probe_uid}" if probe_uid is not None else probe_id
     try:
         assignment_store.run_if_current(
             provisional_connection_id,
@@ -4604,9 +4505,7 @@ def _setup_overview(
         connection_rows_by_identity: dict[str, dict[str, object]] = {}
         for probe in inventory.probes:
             connection_id = (
-                f"probe:{probe.usb_serial}"
-                if probe.usb_serial is not None
-                else probe.probe_id
+                f"probe:{probe.usb_serial}" if probe.usb_serial is not None else probe.probe_id
             )
             connection_rows_by_identity.setdefault(
                 _setup_connection_key(connection_id),
@@ -5734,9 +5633,7 @@ def _bind_managed_board_resources(operation: ManagedOperation) -> None:
             target_control.release_reset(handle)
         except TargetConnectionError as release_error:
             try:
-                evict_captured_connection(
-                    "target connection failed while releasing reset"
-                )
+                evict_captured_connection("target connection failed while releasing reset")
             except Exception as cleanup_error:  # cleanup still reports the transport loss
                 raise TargetConnectionError(
                     "Reset release transport failure: "

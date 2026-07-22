@@ -16,7 +16,6 @@ from pyocd_debug_mcp.services.session_runtime import (
     PolicyRefusal,
     SessionRecord,
     ToolOutcome,
-    WatcherBlocked,
 )
 from pyocd_debug_mcp.services.uart_exchange_schema import (
     validate_serial_exchange_parameters,
@@ -44,17 +43,13 @@ class SerialToolServices:
     active_session_id: Callable[[str], str | None]
     duration_ms: Callable[[float], int]
     record_event: Callable[..., object]
-    record_blocked_event: Callable[..., object]
     format_refusal: Callable[..., str]
-    format_block: Callable[..., str]
-    ensure_uart_allowed: Callable[[SessionRecord], None]
     handle_for: Callable[[str], Any]
     resolve_port: Callable[..., Any]
     capture_uart: Callable[..., Any]
     write_uart: Callable[..., Any]
     exchange_uart: Callable[..., Any]
     reset_target: Callable[[Any], None]
-    handle_mutation_event: Callable[[str, object], None]
     no_board_config_message: str
 
 
@@ -115,7 +110,9 @@ def read_serial(
             "read_serial",
             board_id,
             normalized_args,
-            PolicyRefusal("uart/invalid-read-seconds", "read_seconds must be a positive finite number."),
+            PolicyRefusal(
+                "uart/invalid-read-seconds", "read_seconds must be a positive finite number."
+            ),
             started,
             runtime,
         )
@@ -129,20 +126,6 @@ def read_serial(
             started,
             runtime,
         )
-    if runtime is not None:
-        try:
-            services.ensure_uart_allowed(runtime)
-        except WatcherBlocked as blocked:
-            services.record_blocked_event(
-                "read_serial",
-                normalized_args,
-                blocked,
-                started=started,
-                board_id=board_id,
-                session=runtime,
-            )
-            return services.format_block(blocked, session_id=runtime.session_id)
-
     handle = services.handle_for(board_id)
     if handle.board is None:
         return services.no_board_config_message
@@ -185,7 +168,7 @@ def read_serial(
         f"duration={capture.duration_seconds:.2f}s; "
         f"captured_text={json.dumps(captured_text, ensure_ascii=True)}"
     )
-    event = services.record_event(
+    services.record_event(
         "read_serial",
         normalized_args,
         outcome_kind=ToolOutcome.SUCCESS if capture.matched else ToolOutcome.FAILED,
@@ -200,8 +183,6 @@ def read_serial(
         board_id=board_id,
         session=runtime,
     )
-    if runtime is not None:
-        services.handle_mutation_event(board_id, event)
     return result
 
 
@@ -247,24 +228,12 @@ def write_serial(
             "write_serial",
             board_id,
             normalized_args,
-            PolicyRefusal("uart/invalid-timeout", "timeout_seconds must be a positive finite number."),
+            PolicyRefusal(
+                "uart/invalid-timeout", "timeout_seconds must be a positive finite number."
+            ),
             started,
             runtime,
         )
-    if runtime is not None:
-        try:
-            services.ensure_uart_allowed(runtime)
-        except WatcherBlocked as blocked:
-            services.record_blocked_event(
-                "write_serial",
-                normalized_args,
-                blocked,
-                started=started,
-                board_id=board_id,
-                session=runtime,
-            )
-            return services.format_block(blocked, session_id=runtime.session_id)
-
     handle = services.handle_for(board_id)
     if handle.board is None:
         return services.no_board_config_message
@@ -294,7 +263,7 @@ def write_serial(
         f"at {resolved_baudrate} baud via {session_metadata(handle).route_used}; "
         f"duration={write_result.duration_seconds:.2f}s"
     )
-    event = services.record_event(
+    services.record_event(
         "write_serial",
         normalized_args,
         outcome_kind=ToolOutcome.SUCCESS,
@@ -307,8 +276,6 @@ def write_serial(
         board_id=board_id,
         session=runtime,
     )
-    if runtime is not None:
-        services.handle_mutation_event(board_id, event)
     return result
 
 
@@ -367,19 +334,6 @@ def serial_exchange(
         ending = row["line_ending"]
         assert isinstance(text, str) and isinstance(expected, str) and isinstance(ending, str)
         validated_steps.append((_encode_uart_text(text, ending), expected))
-    if runtime is not None:
-        try:
-            services.ensure_uart_allowed(runtime)
-        except WatcherBlocked as blocked:
-            services.record_blocked_event(
-                "serial_exchange",
-                normalized_args,
-                blocked,
-                started=started,
-                board_id=board_id,
-                session=runtime,
-            )
-            return services.format_block(blocked, session_id=runtime.session_id)
     handle = services.handle_for(board_id)
     if handle.board is None:
         return services.no_board_config_message
@@ -418,7 +372,7 @@ def serial_exchange(
         "step_captured_texts="
         f"{json.dumps([step.text for step in exchange.steps], ensure_ascii=True)}"
     )
-    event = services.record_event(
+    services.record_event(
         "serial_exchange",
         normalized_args,
         outcome_kind=ToolOutcome.SUCCESS if exchange.matched else ToolOutcome.FAILED,
@@ -443,8 +397,6 @@ def serial_exchange(
         board_id=board_id,
         session=runtime,
     )
-    if runtime is not None:
-        services.handle_mutation_event(board_id, event)
     return result
 
 

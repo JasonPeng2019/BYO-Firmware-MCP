@@ -49,7 +49,6 @@ class ToolOutcome(str, Enum):
     SUCCESS = "success"
     REFUSED = "refused"
     FAILED = "failed"
-    BLOCKED = "blocked"
 
 
 @dataclass(frozen=True)
@@ -66,24 +65,6 @@ class PolicyRefusal(RuntimeError):
         super().__init__(message)
         self.code = code
         self.message = message
-        self.session_id = session_id
-
-
-class WatcherBlocked(RuntimeError):
-    """Raised when the convergence watcher blocks a repeated mutation pattern."""
-
-    def __init__(
-        self,
-        code: str,
-        message: str,
-        *,
-        action_family: str,
-        session_id: str | None = None,
-    ) -> None:
-        super().__init__(message)
-        self.code = code
-        self.message = message
-        self.action_family = action_family
         self.session_id = session_id
 
 
@@ -131,7 +112,6 @@ class SessionRecord:
     log_path: Path
     summary_path: Path
     events: list[ToolEvent] = field(default_factory=list)
-    blocked_actions: dict[str, dict[str, str]] = field(default_factory=dict)
     recover_completed: bool = False
     closed_at: str | None = None
 
@@ -187,17 +167,6 @@ class InMemorySessionStore:
         self._global_event_count += 1
         self._append_jsonl(self._global_events_path, event.to_record())
 
-    def set_block(
-        self, session: SessionRecord, action_family: str, code: str, message: str
-    ) -> None:
-        session.blocked_actions[action_family] = {"code": code, "message": message}
-        self._write_summary(session)
-
-    def clear_block(self, session: SessionRecord, action_family: str) -> None:
-        if action_family in session.blocked_actions:
-            session.blocked_actions.pop(action_family, None)
-            self._write_summary(session)
-
     def mark_recover_completed(self, session: SessionRecord) -> None:
         session.recover_completed = True
         self._write_summary(session)
@@ -225,7 +194,6 @@ class InMemorySessionStore:
             "created_at": session.created_at,
             "closed_at": session.closed_at,
             "event_count": session.event_count,
-            "blocked_actions": session.blocked_actions,
             "recover_completed": session.recover_completed,
             "log_path": session.log_path,
         }
