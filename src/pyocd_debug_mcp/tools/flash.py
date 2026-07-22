@@ -136,7 +136,7 @@ def build_flash_handlers(
                 outcome_kind=ToolOutcome.FAILED,
                 error_code=services.error_code(exc),
                 duration_ms=services.duration_ms(started),
-                details={"message": str(exc)[:300]},
+                details={"message": str(exc)},
                 board_id=board_id,
                 session=runtime,
             )

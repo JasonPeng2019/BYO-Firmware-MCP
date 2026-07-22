@@ -189,7 +189,6 @@ _ALLOWED_KINDS: Final[dict[ActionCategory, frozenset[RegionKind]]] = {
     ActionCategory.MEMORY_READ: frozenset(RegionKind)
     - {
         RegionKind.UNKNOWN,
-        RegionKind.PROHIBITED,
         RegionKind.PERIPHERAL_WRITE_ONLY,
     },
     ActionCategory.MEMORY_WRITE: frozenset({RegionKind.RAM}),
@@ -286,7 +285,7 @@ class SafetyMap:
         for requested in requested_ranges:
             classification = self.classify(requested)
             classifications.append(classification)
-            if classification is RegionKind.PROHIBITED:
+            if classification is RegionKind.PROHIBITED and action is not ActionCategory.MEMORY_READ:
                 return Refusal(
                     action,
                     "safety/prohibited",

@@ -170,7 +170,7 @@ class BreakpointInstallationTests(unittest.TestCase):
     def setUp(self) -> None:
         self.quiet_patch = patch.object(
             swd_pyocd,
-            "_quiet_backend_streams",
+            "_backend_stdout_to_stderr",
             contextlib.nullcontext,
         )
         self.quiet_patch.start()

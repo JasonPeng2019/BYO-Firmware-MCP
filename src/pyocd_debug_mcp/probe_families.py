@@ -36,7 +36,7 @@ class ProbeFamilyRegistry:
 
 
 _RESOURCE_NAME = "probe_families.json"
-_PROVIDER_ID_RE = re.compile(r"[a-z][a-z0-9_-]{0,63}")
+_PROVIDER_ID_RE = re.compile(r"[a-z][a-z0-9_-]*")
 
 
 def _nonempty_string(raw: dict[str, object], name: str) -> str:
@@ -72,8 +72,12 @@ def load_probe_family_registry(path: Path | None = None) -> ProbeFamilyRegistry:
         raise ProbeFamilyRegistryError("cli_fallback.inventory_argv must be a non-empty list")
     commands: list[tuple[str, ...]] = []
     for raw_command in raw_commands:
-        if not isinstance(raw_command, list) or not raw_command or not all(
-            isinstance(item, str) and item and "\x00" not in item for item in raw_command
+        if (
+            not isinstance(raw_command, list)
+            or not raw_command
+            or not all(
+                isinstance(item, str) and item and "\x00" not in item for item in raw_command
+            )
         ):
             raise ProbeFamilyRegistryError("Every inventory argv must contain safe strings")
         commands.append(tuple(raw_command))
@@ -90,8 +94,10 @@ def load_probe_family_registry(path: Path | None = None) -> ProbeFamilyRegistry:
         if _PROVIDER_ID_RE.fullmatch(provider_id) is None or provider_id in seen:
             raise ProbeFamilyRegistryError(f"Invalid or duplicate provider_id: {provider_id}")
         raw_aliases = raw_family.get("text_aliases")
-        if not isinstance(raw_aliases, list) or not raw_aliases or not all(
-            isinstance(item, str) and item.strip() for item in raw_aliases
+        if (
+            not isinstance(raw_aliases, list)
+            or not raw_aliases
+            or not all(isinstance(item, str) and item.strip() for item in raw_aliases)
         ):
             raise ProbeFamilyRegistryError("text_aliases must be a non-empty string list")
         aliases = tuple(dict.fromkeys(item.strip().casefold() for item in raw_aliases))

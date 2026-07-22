@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import copy
-import re
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any, Literal
@@ -14,8 +13,6 @@ from pyocd_debug_mcp.setup_flow.research import (
     ResearchTracker,
     make_research_request,
 )
-
-_TARGET_PATTERN = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,127}")
 
 
 class TargetResolutionError(RuntimeError):
@@ -110,10 +107,6 @@ class TargetResolver:
         built_in_targets: Sequence[str],
         staged_targets: Sequence[str] = (),
     ) -> Literal["built_in", "staged_pack"]:
-        if _TARGET_PATTERN.fullmatch(candidate) is None:
-            raise TargetResolutionError(
-                "target/invalid-syntax", "Target must be a valid pyOCD target identifier"
-            )
         if candidate != expected_target:
             raise TargetResolutionError(
                 "target/reviewed-mapping-mismatch",

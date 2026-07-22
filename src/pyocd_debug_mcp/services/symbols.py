@@ -61,16 +61,12 @@ def resolve_symbol(elf_path: Path | str, name: str) -> ResolvedSymbol:
 def find_symbols(
     elf_path: Path | str,
     query: str,
-    *,
-    limit: int = 20,
 ) -> tuple[ResolvedSymbol, ...]:
-    """Return a deterministic bounded case-insensitive ELF symbol search."""
+    """Return every deterministic case-insensitive ELF symbol match."""
 
     normalized_query = query.strip().casefold()
     if not normalized_query:
         raise SymbolLookupError("Symbol query must not be empty.")
-    if limit < 1:
-        raise ValueError("limit must be positive")
     path = _normalize_elf_path(elf_path)
     elf = ELFBinaryFile(str(path))
     try:
@@ -87,7 +83,7 @@ def find_symbols(
     finally:
         elf.close()
     matches.sort(key=lambda item: (item.name.casefold(), item.address, item.name))
-    return tuple(matches[:limit])
+    return tuple(matches)
 
 
 def read_symbol_u32(

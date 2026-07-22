@@ -115,6 +115,8 @@ def _load_guidance(
                     "Choose a returned friendly probe label without exposing its choice_id.",
                     "Use board_safety_refresh only for a stable-map problem.",
                     "For a mismatch, report expected and observed MCU identity and ask the user what to do.",
+                    "If a provider call does not return, the server terminates only that worker; "
+                    "reconnect and revalidate the affected board before retrying.",
                 ],
                 "relay_rule": relay_rule,
             },
@@ -267,7 +269,7 @@ def build_setup_handlers(services: SetupToolServices) -> dict[str, Callable[...,
                 if services.assigned_connection is not None
                 else None
             )
-            if connection_id is None or not connection_id.startswith("probe:"):
+            if connection_id is None or not connection_id.strip():
                 return _json(
                     {
                         "status": "setup_assignment_required",
@@ -280,7 +282,11 @@ def build_setup_handlers(services: SetupToolServices) -> dict[str, Callable[...,
                         ),
                     }
                 )
-            validation_probe_id = connection_id.removeprefix("probe:")
+            validation_probe_id = (
+                connection_id.removeprefix("probe:")
+                if connection_id.startswith("probe:")
+                else connection_id
+            )
         return _json(
             services.loader.load(
                 board_id,
@@ -523,7 +529,26 @@ def build_setup_handlers(services: SetupToolServices) -> dict[str, Callable[...,
                     "board_validate requires the probe_id returned by setup_overview for this "
                     "run-scoped board assignment"
                 )
-            services.require_assignment(board_id, f"probe:{probe_id}")
+            assigned_connection = (
+                services.assigned_connection(board_id)
+                if services.assigned_connection is not None
+                else None
+            )
+            if assigned_connection is None:
+                raise ValueError(
+                    "board_validate requires the exact current setup_overview assignment"
+                )
+            expected_probe_id = (
+                assigned_connection.removeprefix("probe:")
+                if assigned_connection.startswith("probe:")
+                else assigned_connection
+            )
+            if probe_id != expected_probe_id:
+                raise ValueError(
+                    "board_validate probe_id does not match the exact current setup_overview "
+                    "assignment"
+                )
+            services.require_assignment(board_id, assigned_connection)
         result = services.validator.validate(ValidationRequest(board_id, probe_id))
         return _json(result.to_payload())
 

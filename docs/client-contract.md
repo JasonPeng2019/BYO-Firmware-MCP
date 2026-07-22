@@ -170,7 +170,9 @@ Never supply allowed ranges. Stable authority comes from the one strict
 `memory_map.yaml`; selected ELF/HEX bytes are checked again at execution time.
 Guarded reads require current board validation. Writes additionally require a
 live identity proof associated with the current canonical map digest. UNKNOWN
-and PROHIBITED spans are denied before backend access. A refresh never turns a
+or unmapped spans and write-only peripheral reads are denied before backend
+access. An authoritatively mapped PROHIBITED security/provisioning span remains
+readable, but every mutation of it is refused. A refresh never turns a
 deliberately prohibited security/provisioning range into ordinary memory.
 
 Follow the exact remedy named in a refusal:
@@ -219,6 +221,11 @@ partition is never treated as executable.
 Use `serial_exchange` when a console command's immediate acknowledgement or a
 later command depends on volatile application state. UART readiness remains a
 separate `get_setup_status` barrier and never establishes live silicon identity.
+Both `read_serial` and `serial_exchange` return the complete time-bounded UART
+capture as JSON-escaped `captured_text`; exchanges also return complete
+`step_captured_texts` in step order. These fields are not excerpts. Capture is
+bounded by the planned read windows and the server's operation deadline, not by
+an undocumented byte or presentation limit.
 
 Recovery plans use the target-neutral `backend_mass_erase` mechanism. The
 server checks live backend support, renders the complete map-derived erase
@@ -235,7 +242,7 @@ live identity proof.
 
 ## Batch, cancellation, and exit
 
-`action_batch` contains one board and a bounded list of ordinary child calls.
+`action_batch` contains one board and a nonempty list of ordinary child calls.
 Do not nest it. Each child is authorized only when it reaches normal dispatch;
 the batch stops after the first failure. A server-generated static-client plan
 fallback always contains exactly one child and must be submitted unchanged.

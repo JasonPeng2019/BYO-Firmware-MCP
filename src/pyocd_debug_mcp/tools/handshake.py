@@ -25,7 +25,7 @@ def build_initialization_guidance(
     visible_tools = registry.advertised()
     descriptions = tool_descriptions or {}
     tool_index = "\n".join(
-        f"- {name}: {' '.join(descriptions.get(name, 'Visible MCP tool.').split())[:320]}"
+        f"- {name}: {' '.join(descriptions.get(name, 'Visible MCP tool.').split())}"
         for name in visible_tools
     )
     run_evidence = ""

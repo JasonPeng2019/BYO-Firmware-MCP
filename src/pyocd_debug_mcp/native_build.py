@@ -21,7 +21,7 @@ from pyocd_debug_mcp.kernel.processes import run_owned
 
 
 BUILD_TIMEOUT_SECONDS = 1800.0
-_ARTIFACT_ROLE = re.compile(r"[A-Za-z][A-Za-z0-9_.-]{0,63}\Z")
+_ARTIFACT_ROLE = re.compile(r"[A-Za-z][A-Za-z0-9_.-]*\Z")
 
 
 class BuildEvidenceError(RuntimeError):
@@ -36,16 +36,13 @@ def _validate_paths(
     project_value: str, build_value: str, *, require_fresh_build: bool = True
 ) -> tuple[Path, Path]:
     project_dir = Path(project_value).expanduser().resolve()
-    build_dir = Path(build_value).expanduser().resolve()
+    # Preserve the caller's directory link. Its resolved identity is captured
+    # only after the selected path exists, then checked after the build.
+    build_dir = Path(os.path.abspath(str(Path(build_value).expanduser())))
     if not project_dir.is_dir():
         raise RuntimeError(f"Project directory does not exist: {project_dir}")
-    root = Path(build_dir.anchor).resolve()
-    if build_dir == root:
+    if build_dir == Path(build_dir.anchor):
         raise RuntimeError("Build directory must be a dedicated non-root directory.")
-    if require_fresh_build and build_dir == Path.home().resolve():
-        raise RuntimeError("Build directory must be a dedicated non-root, non-home directory.")
-    if require_fresh_build and (project_dir == build_dir or project_dir.is_relative_to(build_dir)):
-        raise RuntimeError("Build directory must not equal or contain the project directory.")
     if build_dir.exists() and not build_dir.is_dir():
         raise RuntimeError(f"Build path exists but is not a directory: {build_dir}")
     if require_fresh_build and build_dir.exists() and any(build_dir.iterdir()):
@@ -55,13 +52,28 @@ def _validate_paths(
     return project_dir, build_dir
 
 
+def _validate_resolved_build_root(
+    project_dir: Path, build_root: Path, *, require_fresh_build: bool
+) -> None:
+    """Validate the captured output-root identity without rejecting a stable link."""
+
+    if build_root == Path(build_root.anchor):
+        raise RuntimeError("Build directory must be a dedicated non-root directory.")
+    if require_fresh_build and build_root == Path.home().resolve():
+        raise RuntimeError("Build directory must be a dedicated non-root, non-home directory.")
+    if require_fresh_build and (
+        project_dir == build_root or project_dir.is_relative_to(build_root)
+    ):
+        raise RuntimeError("Build directory must not equal or contain the project directory.")
+
+
 def _artifact_paths(
     build_dir: Path,
     *,
     expected_root: Path | None = None,
 ) -> dict[str, str | None]:
     root = expected_root or build_dir.resolve(strict=True)
-    if build_dir.is_symlink() or build_dir.resolve(strict=True) != root:
+    if build_dir.resolve(strict=True) != root:
         raise RuntimeError("Artifact search root was replaced or redirected during the build.")
     files = tuple(
         path
@@ -276,7 +288,7 @@ def _declared_artifacts(args: argparse.Namespace) -> dict[str, str | None] | Non
         role, separator, path = declaration.partition("=")
         if not separator or not _ARTIFACT_ROLE.fullmatch(role) or not path or "\x00" in path:
             raise RuntimeError(
-                "Named artifacts must use ROLE=PATH with a 1-64 character alphanumeric role."
+                "Named artifacts must use ROLE=PATH with a non-empty alphanumeric role."
             )
         normalized = role.casefold()
         if normalized in values and values[normalized] is not None:
@@ -299,7 +311,7 @@ def _validate_declared_artifacts(
     *,
     expected_root: Path,
 ) -> dict[str, str | None]:
-    if build_dir.is_symlink() or build_dir.resolve(strict=True) != expected_root:
+    if build_dir.resolve(strict=True) != expected_root:
         raise RuntimeError("Artifact search root was replaced or redirected during the build.")
     result: dict[str, str | None] = {}
     for role, value in values.items():
@@ -315,6 +327,10 @@ def _validate_declared_artifacts(
             ) from exc
         if not resolved.is_file():
             raise RuntimeError(f"Declared {role.upper()} artifact is not a file: {resolved}")
+        if not resolved.is_relative_to(expected_root):
+            raise RuntimeError(
+                f"Declared {role.upper()} artifact is outside the captured build root: {resolved}"
+            )
         if resolved.stat().st_size == 0:
             raise RuntimeError(f"Declared {role.upper()} artifact is empty: {resolved}")
         result[role] = str(resolved)
@@ -374,8 +390,8 @@ def _timeout_seconds(value: str | int | float) -> float:
         timeout = float(value)
     except (TypeError, ValueError) as exc:
         raise RuntimeError("Build timeout must be a positive number of seconds.") from exc
-    if not 0 < timeout <= 86400:
-        raise RuntimeError("Build timeout must be greater than zero and at most 86400 seconds.")
+    if not 0 < timeout < float("inf"):
+        raise RuntimeError("Build timeout must be a positive finite number of seconds.")
     return timeout
 
 
@@ -447,11 +463,12 @@ def run_build(args: argparse.Namespace) -> int:
         child_environment = _offline_environment(child_environment)
 
     build_dir.mkdir(parents=True, exist_ok=True)
-    if build_dir.is_symlink():
-        raise RuntimeError("Artifact search root must not be a symbolic link.")
     created_build_root = build_dir.resolve(strict=True)
-    if created_build_root != build_dir:
-        raise RuntimeError("Artifact search root resolved somewhere unexpected.")
+    _validate_resolved_build_root(
+        project_dir,
+        created_build_root,
+        require_fresh_build=False,
+    )
     evidence: dict[str, object] = {
         "schema_version": 2,
         "cwd": str(cwd),
@@ -494,9 +511,7 @@ def run_build(args: argparse.Namespace) -> int:
     evidence["exit_code"] = completed.returncode
     try:
         try:
-            root_changed = (
-                build_dir.is_symlink() or build_dir.resolve(strict=True) != created_build_root
-            )
+            root_changed = build_dir.resolve(strict=True) != created_build_root
         except OSError as exc:
             raise RuntimeError(
                 "Artifact search root disappeared or became inaccessible during the build."
@@ -564,7 +579,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--timeout-seconds",
         default=BUILD_TIMEOUT_SECONDS,
-        help="Positive build timeout in seconds (default: 1800; maximum: 86400)",
+        help="Positive finite build timeout in seconds (default: 1800)",
     )
     parser.add_argument(
         "--artifact",
@@ -637,7 +652,7 @@ def command_template() -> dict[str, object]:
             ),
             "cwd": "Optional child working directory; defaults to project_dir.",
             "env": "Repeatable KEY=VALUE child-environment overrides.",
-            "timeout_seconds": "Positive child-process timeout, up to 86400 seconds.",
+            "timeout_seconds": "Positive finite child-process timeout.",
             "artifact": (
                 "Repeatable ROLE=PATH for any output format. Every path must exist and be "
                 "nonempty after the build; unknown formats are reported as opaque, not validated."

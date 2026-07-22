@@ -91,11 +91,13 @@ needed, initialize `connect_override-plan` and use the hidden run-scoped
 strict child schema and cannot smuggle those fields through normal `connect`.
 
 Memory reads are contained to the exact bytes the backend will access. Mapped
-RAM, flash, ROM, CPU-system, and peripheral reads remain available, while an
-unknown span or any overlap with a prohibited security/provisioning region is
-refused before target I/O. This applies to both raw-address reads and
-symbol-resolved reads; use the named safety-setup remedy for an incomplete map,
-or choose a different mapped address for a prohibited region.
+RAM, flash, ROM, CPU-system, and peripheral reads remain available, including
+deliberately prohibited security/provisioning spans when they are authoritatively
+mapped. Unknown or unmapped spans and write-only peripheral reads are refused
+before target I/O. Every mutation remains refused for prohibited regions. This
+applies to both raw-address reads and symbol-resolved reads; use the named
+safety-setup remedy for an incomplete map, or choose a different mapped address
+for a write-only peripheral.
 
 After the handshake, ask the user only for familiar board names and pass them
 to `setup_overview`. The normalized phrase `no board` is a literal sentinel

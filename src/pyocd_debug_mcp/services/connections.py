@@ -5,7 +5,7 @@ from __future__ import annotations
 import threading
 from dataclasses import dataclass
 
-from pyocd_debug_mcp.adapters.swd_interface import TargetSessionHandle
+from pyocd_debug_mcp.adapters.swd_interface import TargetSessionHandle, session_metadata
 from pyocd_debug_mcp.services.session_runtime import SessionRecord
 
 
@@ -20,15 +20,16 @@ class BoardNotConnectedError(RuntimeError):
 def stable_connection_identity(handle: TargetSessionHandle) -> str:
     """Return an immutable identity for a live connection.
 
-    A probe UID is the preferred physical identity. The underlying session
-    object identity is a process-local fallback for adapters that cannot expose
-    a probe UID; unlike a board display label, it cannot change while active.
+    A probe UID is the preferred physical identity. When a provider exposes no
+    UID, the frozen runtime token identifies only this live worker/session and
+    is deliberately not stable across reconnects.
     """
 
-    probe_uid = (handle.probe_uid or "").strip()
+    metadata = session_metadata(handle)
+    probe_uid = (metadata.probe_uid or "").strip()
     if probe_uid:
         return f"probe:{probe_uid.casefold()}"
-    return f"session:{id(handle.session)}"
+    return f"session:{metadata.runtime_token}"
 
 
 @dataclass(frozen=True, slots=True)
@@ -127,6 +128,22 @@ class ConnectionManager:
             connection = self._connections.pop(normalized, None)
             if connection is not None:
                 self._boards_by_connection.pop(connection.connection_id, None)
+            return connection
+
+    def clear_if_current(
+        self,
+        board_id: str,
+        expected: ManagedConnection,
+    ) -> ManagedConnection | None:
+        """Remove the assignment only when it is still the exact captured object."""
+
+        normalized = self._normalize_board_id(board_id)
+        with self._guard:
+            current = self._connections.get(normalized)
+            if current is not expected:
+                return None
+            connection = self._connections.pop(normalized)
+            self._boards_by_connection.pop(connection.connection_id, None)
             return connection
 
     def assigned_board_ids(self) -> tuple[str, ...]:

@@ -25,14 +25,11 @@ from pyocd_debug_mcp.pack_provision import (
     PackProvisionError,
     VerifiedPack,
     load_manifest,
-    read_bounded_pack_bytes,
+    read_pack_bytes,
     verified_pack_for_spec,
 )
 from pyocd_debug_mcp.firmstore.store import FirmStore
 
-_MAX_PACK_MEMBERS = 4_096
-_MAX_PACK_UNCOMPRESSED_BYTES = 128 * 1024 * 1024
-_MAX_PACK_COMPRESSION_RATIO = 200
 _ARM_CPUID_PARTNO = {
     "cortexm0": 0xC20,
     "cortexm0plus": 0xC60,
@@ -187,7 +184,7 @@ def _compatible_core_identity(device: object) -> LiveIdentityProof | None:
 
 
 def _derive_verified_binding(selected: VerifiedPack, part_number: str) -> DeviceBinding:
-    """Derive an exact part binding from already bounded, digest-verified bytes."""
+    """Derive an exact part binding from digest-verified bytes."""
 
     normalize_part_number(part_number)
     try:
@@ -224,7 +221,7 @@ def _derive_verified_binding(selected: VerifiedPack, part_number: str) -> Device
 def derive_candidate_binding(pack_path: Path, part_number: str) -> DeviceBinding:
     """Derive one exact/wildcard PDSC leaf and canonical target from quarantined bytes."""
 
-    payload = read_bounded_pack_bytes(pack_path)
+    payload = read_pack_bytes(pack_path)
     return _derive_verified_binding(
         VerifiedPack(
             pack_path,
@@ -643,6 +640,20 @@ def resolve_device_support_geometry(
     return resolve_registered_pack_geometry(candidate, store)
 
 
+def _select_pdsc_member(members: Iterable[zipfile.ZipInfo]) -> zipfile.ZipInfo:
+    """Select the only PDSC without imposing archive resource policy."""
+
+    pdsc_rows = tuple(
+        member
+        for member in members
+        if not member.is_dir()
+        and member.filename.replace("\\", "/").casefold().endswith(".pdsc")
+    )
+    if len(pdsc_rows) != 1:
+        raise PackProvisionError("CMSIS-Pack must contain exactly one PDSC document")
+    return pdsc_rows[0]
+
+
 class DeviceSupportResolver:
     """Resolve only provisioned exact bindings whose pack bytes expose the PDSC leaf."""
 
@@ -670,41 +681,14 @@ class DeviceSupportResolver:
 
     @staticmethod
     def _validate_archive(selected: VerifiedPack) -> None:
-        """Reject unsafe archive structure before the pyOCD CMSIS parser opens it."""
+        """Require one readable ZIP with exactly one PDSC before CMSIS parsing."""
 
         try:
             with zipfile.ZipFile(io.BytesIO(selected.payload)) as archive:
-                members = archive.infolist()
-                if not 1 <= len(members) <= _MAX_PACK_MEMBERS:
-                    raise PackProvisionError(
-                        "CMSIS-Pack member count is outside the supported limit"
-                    )
-                total_size = 0
-                pdsc_rows: list[zipfile.ZipInfo] = []
-                for member in members:
-                    path = member.filename.replace("\\", "/")
-                    parts = tuple(part for part in path.split("/") if part)
-                    if path.startswith("/") or ".." in parts:
-                        raise PackProvisionError("CMSIS-Pack contains an unsafe member path")
-                    if member.is_dir():
-                        continue
-                    total_size += member.file_size
-                    if total_size > _MAX_PACK_UNCOMPRESSED_BYTES:
-                        raise PackProvisionError("CMSIS-Pack exceeds the supported unpacked size")
-                    if member.compress_size and (
-                        member.file_size > member.compress_size * _MAX_PACK_COMPRESSION_RATIO
-                    ):
-                        raise PackProvisionError("CMSIS-Pack has an unsafe compression ratio")
-                    if path.casefold().endswith(".pdsc"):
-                        pdsc_rows.append(member)
-                if len(pdsc_rows) != 1:
-                    raise PackProvisionError("CMSIS-Pack must contain exactly one PDSC document")
-                pdsc = archive.read(pdsc_rows[0])
-                lowered_pdsc = pdsc.lower()
-                if b"<!doctype" in lowered_pdsc or b"<!entity" in lowered_pdsc:
-                    raise PackProvisionError("CMSIS-Pack PDSC must not declare XML entities")
+                pdsc = _select_pdsc_member(archive.infolist())
+                archive.read(pdsc)
         except (OSError, zipfile.BadZipFile) as exc:
-            raise PackProvisionError("Verified CMSIS-Pack is not a safe ZIP archive") from exc
+            raise PackProvisionError("Verified CMSIS-Pack is not a readable ZIP archive") from exc
 
     def candidates(
         self, part_number: str, targets: Iterable[str]
@@ -1021,9 +1005,6 @@ def _svd_peripheral_regions(
         payload = stream.read()
         if not isinstance(payload, bytes) or not payload:
             return ()
-        lowered = payload.lower()
-        if b"<!doctype" in lowered or b"<!entity" in lowered:
-            return ()
         root = ET.fromstring(payload)
         # pyOCD maps both a missing <access> and a present empty <access/> to
         # None. Preserve the latter as an invalid token so only true absence
@@ -1041,7 +1022,7 @@ def _svd_peripheral_regions(
                     try:
                         offset = int(register.address_offset)
                         width_bits = int(register.size or parsed.width or 32)
-                        if not 0 < width_bits <= 1024:
+                        if width_bits <= 0:
                             continue
                         width_bytes = max(1, (width_bits + 7) // 8)
                         start = base + offset

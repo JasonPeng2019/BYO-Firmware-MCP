@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
+import json
+import math
 import time
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from typing import Any
 
+from pyocd_debug_mcp.adapters.swd_interface import session_metadata
 from pyocd_debug_mcp.kernel.operations import wrap_layer2_response
 from pyocd_debug_mcp.kernel.finalizers import OnExitFinalizer
 from pyocd_debug_mcp.services.session_runtime import (
@@ -101,13 +104,18 @@ def read_serial(
         "read_seconds": read_seconds,
         "reset_on_open": reset_on_open,
     }
-    if read_seconds <= 0:
+    if (
+        isinstance(read_seconds, bool)
+        or not isinstance(read_seconds, (int, float))
+        or not math.isfinite(read_seconds)
+        or read_seconds <= 0
+    ):
         return _record_refusal(
             services,
             "read_serial",
             board_id,
             normalized_args,
-            PolicyRefusal("uart/invalid-read-seconds", "read_seconds must be > 0."),
+            PolicyRefusal("uart/invalid-read-seconds", "read_seconds must be a positive finite number."),
             started,
             runtime,
         )
@@ -169,11 +177,13 @@ def read_serial(
         f"expected='{expected_text}'" if expected_text is not None else "expected=(none)"
     )
     verdict = "matched" if capture.matched else "did not match"
-    excerpt = capture.excerpt or "(none)"
+    captured_text = capture.text
     result = (
         f"UART {verdict} on {resolved_port.device} at {resolved_baudrate} baud via "
-        f"{handle.route_used}; {expectation_label}; reopen_count={capture.reopen_count}; "
-        f"duration={capture.duration_seconds:.2f}s; excerpt={excerpt}"
+        f"{session_metadata(handle).route_used}; {expectation_label}; "
+        f"reopen_count={capture.reopen_count}; "
+        f"duration={capture.duration_seconds:.2f}s; "
+        f"captured_text={json.dumps(captured_text, ensure_ascii=True)}"
     )
     event = services.record_event(
         "read_serial",
@@ -185,7 +195,7 @@ def read_serial(
             "matched": capture.matched,
             "reopen_count": capture.reopen_count,
             "capture_duration_seconds": round(capture.duration_seconds, 3),
-            "excerpt": excerpt,
+            "captured_text": captured_text,
         },
         board_id=board_id,
         session=runtime,
@@ -226,13 +236,18 @@ def write_serial(
             started,
             runtime,
         )
-    if timeout_seconds <= 0:
+    if (
+        isinstance(timeout_seconds, bool)
+        or not isinstance(timeout_seconds, (int, float))
+        or not math.isfinite(timeout_seconds)
+        or timeout_seconds <= 0
+    ):
         return _record_refusal(
             services,
             "write_serial",
             board_id,
             normalized_args,
-            PolicyRefusal("uart/invalid-timeout", "timeout_seconds must be > 0."),
+            PolicyRefusal("uart/invalid-timeout", "timeout_seconds must be a positive finite number."),
             started,
             runtime,
         )
@@ -276,7 +291,7 @@ def write_serial(
     )
     result = (
         f"UART wrote {write_result.bytes_written} byte(s) on {resolved_port.device} "
-        f"at {resolved_baudrate} baud via {handle.route_used}; "
+        f"at {resolved_baudrate} baud via {session_metadata(handle).route_used}; "
         f"duration={write_result.duration_seconds:.2f}s"
     )
     event = services.record_event(
@@ -387,7 +402,6 @@ def serial_exchange(
         ready_probe_delay_seconds=ready_probe_delay_seconds,
         followup_steps=tuple(validated_steps[1:]),
         clear_input=clear_input,
-        max_bytes=65536,
     )
     step_summary = "; ".join(
         f"{index}:{step.expected_text}={'matched' if step.matched else 'did not match'}"
@@ -400,7 +414,9 @@ def serial_exchange(
         f"ready={'matched' if exchange.ready_matched else 'did not match'}; "
         f"ready_probe_bytes={exchange.ready_probe_bytes_written}; "
         f"steps={len(exchange.steps)} [{step_summary or 'none'}]; "
-        f"excerpt={exchange.excerpt or '(none)'}"
+        f"captured_text={json.dumps(exchange.text, ensure_ascii=True)}; "
+        "step_captured_texts="
+        f"{json.dumps([step.text for step in exchange.steps], ensure_ascii=True)}"
     )
     event = services.record_event(
         "serial_exchange",
@@ -411,7 +427,7 @@ def serial_exchange(
         details={
             "matched": exchange.matched,
             "bytes_written": exchange.bytes_written,
-            "excerpt": exchange.excerpt,
+            "captured_text": exchange.text,
             "ready_matched": exchange.ready_matched,
             "ready_probe_bytes_written": exchange.ready_probe_bytes_written,
             "steps": [
@@ -419,6 +435,7 @@ def serial_exchange(
                     "expected_text": step.expected_text,
                     "matched": step.matched,
                     "bytes_written": step.bytes_written,
+                    "captured_text": step.text,
                 }
                 for step in exchange.steps
             ],
@@ -497,7 +514,7 @@ def build_serial_handlers(
         ready_probe_delay_seconds: float = 0.0,
         clear_input: bool = False,
     ) -> str:
-        """Run 1-8 planned command/response steps through one state-preserving UART open."""
+        """Run one or more planned command/response steps through one state-preserving UART open."""
 
         return wrap_layer2_response(
             serial_exchange(

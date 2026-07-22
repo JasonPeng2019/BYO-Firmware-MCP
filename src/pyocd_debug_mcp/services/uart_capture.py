@@ -21,11 +21,6 @@ class UARTCaptureResult:
     duration_seconds: float
 
     @property
-    def excerpt(self) -> str:
-        excerpt = self.text.strip().replace("\r", "\\r").replace("\n", "\\n")
-        return excerpt[:300] if excerpt else ""
-
-    @property
     def has_output(self) -> bool:
         return bool(self.text.strip())
 
@@ -73,12 +68,6 @@ class UARTExchangeResult:
             and self.expected_step_count > 0
             and all(step.matched for step in self.steps)
         )
-
-    @property
-    def excerpt(self) -> str:
-        value = self.text.strip().replace("\r", "\\r").replace("\n", "\\n")
-        return value[:300] if value else ""
-
 
 def capture_uart_output(
     device: str,
@@ -241,13 +230,12 @@ def exchange_uart_output(
     ready_probe_delay_seconds: float = 0.0,
     followup_steps: tuple[tuple[bytes, str], ...] = (),
     clear_input: bool = False,
-    max_bytes: int = 65536,
     adapter: UARTInterface | None = None,
 ) -> UARTExchangeResult:
     """Write and capture the immediate response through one bounded port open."""
 
-    if baudrate <= 0 or read_seconds <= 0 or max_bytes <= 0:
-        raise ValueError("baudrate, read_seconds, and max_bytes must be positive")
+    if baudrate <= 0 or read_seconds <= 0:
+        raise ValueError("baudrate and read_seconds must be positive")
     if ready_text is not None and (not ready_text or ready_seconds <= 0):
         raise ValueError("ready_text requires a positive ready_seconds window")
     if ready_probe_delay_seconds < 0 or ready_probe_delay_seconds > ready_seconds:
@@ -280,9 +268,9 @@ def exchange_uart_output(
                 time.monotonic() + ready_probe_delay_seconds,
             )
             probe_sent = not bool(ready_probe)
-            while time.monotonic() < ready_deadline and len(captured) < max_bytes:
+            while time.monotonic() < ready_deadline:
                 cancellation_checkpoint()
-                chunk = backend.read(port_handle, min(256, max_bytes - len(captured)))
+                chunk = backend.read(port_handle, 256)
                 if chunk:
                     captured.extend(chunk)
                     if ready_text in captured.decode("utf-8", errors="replace"):
@@ -303,9 +291,9 @@ def exchange_uart_output(
                 bytes_written += step_written
                 step_capture = bytearray()
                 deadline = time.monotonic() + read_seconds
-                while time.monotonic() < deadline and len(captured) < max_bytes:
+                while time.monotonic() < deadline:
                     cancellation_checkpoint()
-                    chunk = backend.read(port_handle, min(256, max_bytes - len(captured)))
+                    chunk = backend.read(port_handle, 256)
                     if chunk:
                         captured.extend(chunk)
                         step_capture.extend(chunk)

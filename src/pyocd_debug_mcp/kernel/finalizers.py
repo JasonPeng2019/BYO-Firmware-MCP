@@ -3,17 +3,25 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping
+import math
 from typing import Annotated, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, TypeAdapter
+from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, field_validator
 
 
 class UARTWriteFinalizer(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
 
     action: Literal["uart_write"]
-    text: str = Field(min_length=1, max_length=4096)
-    timeout_seconds: float = Field(default=1.0, gt=0, le=5.0)
+    text: str = Field(min_length=1)
+    timeout_seconds: float = Field(default=1.0, gt=0)
+
+    @field_validator("timeout_seconds")
+    @classmethod
+    def _finite_timeout(cls, value: float) -> float:
+        if not math.isfinite(value):
+            raise ValueError("timeout_seconds must be finite")
+        return value
 
 
 class ResetAndRunFinalizer(BaseModel):

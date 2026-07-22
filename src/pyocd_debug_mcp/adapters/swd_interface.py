@@ -6,12 +6,31 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+from uuid import uuid4
 
 from pyocd_debug_mcp.board_config import BoardConfig
 from pyocd_debug_mcp.timeouts import ServerTimeoutConfig
 
 
-@dataclass
+@dataclass(frozen=True, slots=True)
+class TargetSessionMetadata:
+    """Serializable facts for one live target session.
+
+    ``runtime_token`` identifies only this live session. It is deliberately
+    separate from optional hardware identity and is not stable across reconnects.
+    """
+
+    board_name: str
+    probe_description: str
+    probe_family: str
+    probe_uid: str | None
+    live_part_number: str | None
+    route_used: str
+    target_override: str | None
+    runtime_token: str
+
+
+@dataclass(frozen=True, slots=True)
 class TargetSessionHandle:
     """Open target session plus the board facts and routing used to create it."""
 
@@ -20,6 +39,36 @@ class TargetSessionHandle:
     probe_uid: str | None
     route_used: str
     target_override: str | None
+    worker: Any | None = None
+    metadata: TargetSessionMetadata | None = None
+
+    def __post_init__(self) -> None:
+        if self.metadata is not None:
+            return
+        board_name = self.board.display_name if self.board is not None else ""
+        probe_family = self.board.probe_family if self.board is not None else "unknown"
+        object.__setattr__(
+            self,
+            "metadata",
+            TargetSessionMetadata(
+                board_name=board_name,
+                probe_description="",
+                probe_family=probe_family,
+                probe_uid=self.probe_uid,
+                live_part_number=None,
+                route_used=self.route_used,
+                target_override=self.target_override,
+                runtime_token=uuid4().hex,
+            ),
+        )
+
+
+def session_metadata(handle: TargetSessionHandle) -> TargetSessionMetadata:
+    """Return the immutable metadata record established for every live handle."""
+
+    if handle.metadata is None:
+        raise RuntimeError("Target session has no immutable metadata record.")
+    return handle.metadata
 
 
 class SWDInterface(ABC):
@@ -39,6 +88,7 @@ class SWDInterface(ABC):
         pack_sha256: str | None = None,
         pdsc_device: str | None = None,
         frequency_hz: int | None = None,
+        operation_timeout_seconds: float | None = None,
     ) -> TargetSessionHandle:
         """Open a live debug session, optionally with one quarantined pack candidate."""
 
@@ -57,6 +107,7 @@ class SWDInterface(ABC):
         pack_path: Path | None = None,
         pack_sha256: str | None = None,
         pdsc_device: str | None = None,
+        operation_timeout_seconds: float | None = None,
     ) -> TargetSessionHandle:
         """Assert physical reset, attach and halt, then release reset."""
 
@@ -65,7 +116,14 @@ class SWDInterface(ABC):
         """Return the target's current run state."""
 
     @abstractmethod
-    def read_memory(self, handle: TargetSessionHandle, address: int, width_bits: int) -> int:
+    def read_memory(
+        self,
+        handle: TargetSessionHandle,
+        address: int,
+        width_bits: int,
+        *,
+        operation_timeout_seconds: float | None = None,
+    ) -> int:
         """Read one memory value."""
 
     @abstractmethod
@@ -115,6 +173,10 @@ class SWDInterface(ABC):
     @abstractmethod
     def reset_and_halt(self, handle: TargetSessionHandle) -> None:
         """Reset and halt the target."""
+
+    @abstractmethod
+    def release_reset(self, handle: TargetSessionHandle) -> None:
+        """Deassert the connected probe's wired reset line."""
 
     @abstractmethod
     def flash(

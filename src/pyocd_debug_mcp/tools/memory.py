@@ -16,8 +16,6 @@ from pyocd_debug_mcp.services.session_runtime import PolicyRefusal, SessionRecor
 from pyocd_debug_mcp.services.symbols import ResolvedSymbol, is_elf_artifact
 from pyocd_debug_mcp.target_errors import ReferenceArtifactError, SymbolLookupError
 
-MAX_ADDRESS_READ_BYTES = 64 * 1024
-
 
 @dataclass(frozen=True, slots=True)
 class MemoryToolServices:
@@ -172,7 +170,7 @@ def _reverify_symbol_artifact(
 
 def _symbol_parse_refusal(exc: Exception) -> PolicyRefusal:
     return PolicyRefusal(
-        "memory/symbol-artifact-unavailable",
+        "memory/symbol-artifact-parse-failed",
         "The selected firmware ELF could not be parsed safely: "
         f"{exc}. Rebuild it or pass the correct current project .elf as elf_artifact.",
     )
@@ -416,7 +414,7 @@ def build_memory_handlers(
                 runtime,
             )
         if length is not None and (
-            isinstance(length, bool) or length < 1 or length > MAX_ADDRESS_READ_BYTES
+            not isinstance(length, int) or isinstance(length, bool) or length < 1
         ):
             return _record_refusal(
                 services,
@@ -425,7 +423,7 @@ def build_memory_handlers(
                 args,
                 PolicyRefusal(
                     "memory/invalid-length",
-                    f"length must be between 1 and {MAX_ADDRESS_READ_BYTES} bytes.",
+                    "length must be a positive integer.",
                 ),
                 started,
                 runtime,

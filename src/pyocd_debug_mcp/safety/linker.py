@@ -15,7 +15,7 @@ from elftools.elf.sections import SymbolTableSection  # type: ignore[import-unty
 
 from pyocd_debug_mcp.safety.regions import AddressRange, RegionError
 
-_CONFIGURATION_ID: Final = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,127}")
+_CONFIGURATION_ID: Final = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]*")
 _MAP_ASSIGNMENT: Final = re.compile(
     r"^\s*(?P<name>[A-Za-z_.$][A-Za-z0-9_.$]*)\s*=\s*"
     r"(?P<value>0[xX][0-9A-Fa-f]+|[0-9]+)\s*;?\s*$"
@@ -86,7 +86,8 @@ class BuildArtifactSelection:
         if _CONFIGURATION_ID.fullmatch(self.configuration_id) is None:
             raise LinkerEvidenceError(
                 "build/invalid-configuration-id",
-                "configuration_id must be a stable 1-128 character identifier",
+                "configuration_id must be a non-empty stable identifier using letters, "
+                "numbers, dots, underscores, or hyphens",
             )
         if (
             not isinstance(self.elf_path, Path)
@@ -518,9 +519,7 @@ def extract_build_evidence(selection: BuildArtifactSelection | None) -> BuildEvi
             "Vector-table initial stack pointer is zero or misaligned",
         )
     reset_handler = reset_vector & ~1
-    executable_ranges = tuple(
-        segment.runtime_range for segment in segments if segment.executable
-    )
+    executable_ranges = tuple(segment.runtime_range for segment in segments if segment.executable)
     if (reset_vector & 1) == 0 or not any(
         executable.contains_address(reset_handler) for executable in executable_ranges
     ):

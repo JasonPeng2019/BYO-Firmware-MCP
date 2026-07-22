@@ -69,7 +69,6 @@ class PlanDefinition:
     timeout_seconds: float
     extra_instructions: str
     paired_actions: tuple[str, ...] = ()
-    max_plan_cycles_per_board: int | None = None
     action_validator: Callable[[Mapping[str, object]], str | None] | None = None
     artifact_binding_field: str | None = None
     artifact_binding_suffixes: tuple[str, ...] = ()
@@ -243,7 +242,6 @@ _DEFINITIONS = (
         "Do not guess hardware choices or rewrite the user-supplied MCU part number. The server "
         "resolves the current UART port and computes the datasheet digest.",
         paired_actions=("board_fix_setup",),
-        max_plan_cycles_per_board=3,
         action_validator=_validate_setup_parameters,
     ),
     PlanDefinition(
@@ -319,10 +317,9 @@ _DEFINITIONS = (
             _field(
                 "length",
                 FieldType.INTEGER,
-                "Optional block length up to 64 KiB.",
+                "Optional positive block length.",
                 nullable=True,
                 minimum=1,
-                maximum=65536,
             ),
         ),
         BudgetMode.FLEXIBLE,
@@ -509,16 +506,14 @@ _DEFINITIONS = (
             _field(
                 "steps",
                 FieldType.ARRAY,
-                "One to eight exact {text, expected_text, line_ending} command/response steps.",
+                "One or more exact {text, expected_text, line_ending} command/response steps.",
                 min_items=1,
-                max_items=8,
             ),
             _field(
                 "read_seconds",
                 FieldType.NUMBER,
-                "Positive per-step response window no greater than 30 seconds.",
+                "Positive finite per-step response window.",
                 minimum=0,
-                maximum=30,
                 exclusive_minimum=True,
             ),
             _field("baudrate", FieldType.INTEGER, "Positive baud rate.", nullable=True, minimum=1),
@@ -532,14 +527,13 @@ _DEFINITIONS = (
             _field(
                 "ready_seconds",
                 FieldType.NUMBER,
-                "Bounded pre-send readiness window; zero when ready_text is NULL.",
+                "Pre-send readiness window; zero when ready_text is NULL.",
                 minimum=0,
-                maximum=30,
             ),
             _field(
                 "ready_probe_text",
                 FieldType.TEXT,
-                "Optional exact bounded text sent once to elicit the readiness marker.",
+                "Optional exact text sent once to elicit the readiness marker.",
                 nullable=True,
                 allow_empty=True,
             ),
@@ -552,10 +546,9 @@ _DEFINITIONS = (
             _field(
                 "ready_probe_delay_seconds",
                 FieldType.NUMBER,
-                "Optional bounded observation delay before sending the readiness probe; use it "
+                "Optional observation delay before sending the readiness probe; use it "
                 "after flash/reset so boot output can arrive first.",
                 minimum=0,
-                maximum=30,
             ),
             _field(
                 "clear_input",
@@ -567,7 +560,7 @@ _DEFINITIONS = (
         PermissionMode.NONE,
         SafetyMode.FRESH_WRITE,
         30.0,
-        "All steps, readiness input, and the optional pre-probe delay are exact, bounded, and "
+        "All steps, readiness input, and the optional pre-probe delay are exact and "
         "execute through one port open; "
         "successful cleanup preserves application state.",
         action_validator=validate_serial_exchange_parameters,
@@ -801,7 +794,7 @@ _GUIDANCE: Final = MappingProxyType(
             "Use raw addresses only for dynamically allocated, pointer-derived, stack, optimized-out, "
             "or otherwise unsymbolized memory.",
             "The server verifies a validated session and full containment in a mapped region; unknown "
-            "memory is denied and block length is capped at 64 KiB.",
+            "memory is denied and every requested byte must remain inside one mapped range.",
             "Some peripheral registers have clear-on-read or other side effects.",
             (
                 "Try find_symbol first and record why it was insufficient.",
@@ -1116,8 +1109,8 @@ def _render_null_response(
         "or returns nothing useful. Pre-execution refusal consumes nothing. Exhaustion relocks the "
         "action and a complete replacement plan is required."
         if definition.budget_mode is BudgetMode.FIXED
-        else "Set max_calls to the attempts the strategy genuinely expects (1..20) and "
-        "max_calls_buffer to bounded leeway (0..10). Every started attempt consumes one call, "
+        else "Set max_calls to the positive number of attempts the strategy genuinely expects and "
+        "max_calls_buffer to any nonnegative leeway. Every started attempt consumes one call, "
         "including empty, inconclusive, failed, timed-out, or cancelled results; pre-execution "
         "refusal consumes nothing. Exhaustion relocks the action and requires a complete replacement plan."
     )

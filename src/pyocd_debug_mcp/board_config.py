@@ -175,8 +175,8 @@ def make_board_config(raw: dict[str, object], source_path: Path | None) -> Board
         raise ConfigError("board_id must be 1-64 lowercase letters, numbers, or underscores")
 
     display_name = str(raw["display_name"]).strip()
-    if not display_name or len(display_name) > 100:
-        raise ConfigError("display_name must be a non-empty string of at most 100 characters")
+    if not display_name:
+        raise ConfigError("display_name must be a non-empty string")
     mcu_family = str(raw["mcu_family"]).strip().lower()
     probe_family = str(raw["probe_family"]).strip().lower()
     pyocd_target = str(raw["pyocd_target"]).strip()

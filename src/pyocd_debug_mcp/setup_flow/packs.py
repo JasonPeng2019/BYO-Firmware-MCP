@@ -16,7 +16,7 @@ from pyocd_debug_mcp.pack_provision import (
     load_manifest,
     load_manifest_document,
     pack_spec_document,
-    read_bounded_pack_bytes,
+    read_pack_bytes,
     sha256_bytes,
     sha256_file,
 )
@@ -91,7 +91,7 @@ class ValidatedPack:
 
 
 class PackCandidatePipeline:
-    """Validate at most three materially distinct candidates before promotion."""
+    """Validate every materially distinct candidate before promotion."""
 
     def __init__(
         self,
@@ -100,15 +100,11 @@ class PackCandidatePipeline:
         enumerate_targets: Callable[[Path, str], Sequence[str]],
         live_connect: Callable[[str, Path, str, str | None], None],
         record_failure: Callable[[CandidateFailure], None] | None = None,
-        max_candidates: int = 3,
     ) -> None:
-        if max_candidates < 1:
-            raise ValueError("max_candidates must be positive")
         self._store = store
         self._enumerate_targets = enumerate_targets
         self._live_connect = live_connect
         self._record_failure = record_failure
-        self._max_candidates = max_candidates
         self._seen_material: set[str] = set()
         self._failures: list[CandidateFailure] = []
 
@@ -144,12 +140,6 @@ class PackCandidatePipeline:
         self._failures.append(failure)
         if self._record_failure is not None:
             self._record_failure(failure)
-        if len(self._seen_material) >= self._max_candidates:
-            return PackCandidateError(
-                "package/retry-exhausted",
-                "Three materially distinct package candidates failed; setup is unresolved",
-                failure=failure,
-            )
         return PackCandidateError(code, reason, failure=failure)
 
     def validate(self, candidate: PackCandidate, *, required_target: str) -> ValidatedPack:
@@ -164,7 +154,7 @@ class PackCandidatePipeline:
     ) -> ValidatedPack:
         """Validate bytes, derived binding, target exposure, and live attach before promotion."""
         try:
-            payload = read_bounded_pack_bytes(candidate.source_path)
+            payload = read_pack_bytes(candidate.source_path)
         except PackProvisionError as exc:
             raise PackCandidateError(
                 "package/source-unreadable", f"Package source could not be read: {exc}"
@@ -176,11 +166,6 @@ class PackCandidatePipeline:
                 "package/duplicate-candidate",
                 "Candidate is identical or merely renamed; provide a materially different "
                 "source, version, or checksum",
-            )
-        if len(self._seen_material) >= self._max_candidates:
-            raise PackCandidateError(
-                "package/retry-exhausted",
-                "Three materially distinct package candidates have already been attempted",
             )
         self._seen_material.add(fingerprint)
 

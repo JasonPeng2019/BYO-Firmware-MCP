@@ -5,7 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from pyocd_debug_mcp.adapters.swd_interface import TargetSessionHandle
-from pyocd_debug_mcp.adapters.swd_pyocd import PyOCDSWDInterface
+from pyocd_debug_mcp.adapters.swd_process import ProcessIsolatedSWDInterface
 from pyocd_debug_mcp.board_config import (
     RECOVER_MODE_MANUAL_ONLY,
     RECOVER_MODE_BACKEND_MASS_ERASE,
@@ -13,7 +13,7 @@ from pyocd_debug_mcp.board_config import (
 )
 from pyocd_debug_mcp.timeouts import ServerTimeoutConfig
 
-_BACKEND = PyOCDSWDInterface()
+_BACKEND = ProcessIsolatedSWDInterface()
 
 
 def open_session(
@@ -28,6 +28,7 @@ def open_session(
     pack_sha256: str | None = None,
     pdsc_device: str | None = None,
     frequency_hz: int | None = None,
+    operation_timeout_seconds: float | None = None,
 ) -> TargetSessionHandle:
     return _BACKEND.open(
         board=board,
@@ -40,6 +41,7 @@ def open_session(
         pack_sha256=pack_sha256,
         pdsc_device=pdsc_device,
         frequency_hz=frequency_hz,
+        operation_timeout_seconds=operation_timeout_seconds,
     )
 
 
@@ -56,6 +58,7 @@ def connect_under_reset(
     pack_path: Path | None = None,
     pack_sha256: str | None = None,
     pdsc_device: str | None = None,
+    operation_timeout_seconds: float | None = None,
 ) -> TargetSessionHandle:
     return _BACKEND.connect_under_reset(
         board=board,
@@ -65,6 +68,7 @@ def connect_under_reset(
         pack_path=pack_path,
         pack_sha256=pack_sha256,
         pdsc_device=pdsc_device,
+        operation_timeout_seconds=operation_timeout_seconds,
     )
 
 
@@ -72,8 +76,23 @@ def get_state(handle: TargetSessionHandle) -> str:
     return _BACKEND.get_state(handle)
 
 
-def read_memory(handle: TargetSessionHandle, address: int, width_bits: int = 32) -> int:
-    return _BACKEND.read_memory(handle, address, width_bits)
+def read_memory(
+    handle: TargetSessionHandle,
+    address: int,
+    width_bits: int = 32,
+    *,
+    operation_timeout_seconds: float | None = None,
+) -> int:
+    return _BACKEND.read_memory(
+        handle,
+        address,
+        width_bits,
+        operation_timeout_seconds=operation_timeout_seconds,
+    )
+
+
+def release_reset(handle: TargetSessionHandle) -> None:
+    _BACKEND.release_reset(handle)
 
 
 def read_memory_block(handle: TargetSessionHandle, address: int, length: int) -> list[int]:

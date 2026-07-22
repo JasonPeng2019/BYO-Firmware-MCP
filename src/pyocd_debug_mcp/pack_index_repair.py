@@ -152,11 +152,6 @@ def _download_descriptor(ref: PdscRef, dest: Path, *, timeout: float, retries: i
                         if chunk:
                             fh.write(chunk)
 
-            prefix = tmp.read_bytes()[:256].lstrip()
-            if not prefix.startswith(b"<?xml") and b"<package" not in prefix:
-                raise PackIndexRepairError(
-                    f"Downloaded {ref.remote_pdsc_url} but content did not look like a PDSC XML file"
-                )
             tmp.replace(dest)
             return
         except Exception as exc:

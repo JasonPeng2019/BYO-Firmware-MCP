@@ -32,6 +32,19 @@ def _default_runs_root() -> Path:
 DEFAULT_MARKER_ROOT = _default_runs_root() / "owned-processes"
 _WINDOWS_JOB_HANDLES: dict[int, int] = {}
 _WINDOWS_JOB_GUARD = threading.Lock()
+DEFAULT_PROCESS_GROUP_CLEANUP_GRACE_SECONDS = 0.5
+# Windows can consume one grace while waiting for Job active-zero and a second
+# after that kernel proof while reaping the Python Popen leader. POSIX can
+# consume one grace each while waiting after SIGTERM, waiting after SIGKILL,
+# and confirming PGID absence.
+# This exported maximum is max(Windows two phases, POSIX three phases), the
+# implementation's real cross-platform worst-case cleanup budget for one
+# default ``run_owned`` child, not an independent timeout policy.
+MAX_OWNED_PROCESS_CLEANUP_SECONDS = (
+    DEFAULT_PROCESS_GROUP_CLEANUP_GRACE_SECONDS
+    + DEFAULT_PROCESS_GROUP_CLEANUP_GRACE_SECONDS
+    + DEFAULT_PROCESS_GROUP_CLEANUP_GRACE_SECONDS
+)
 
 
 class ProcessIdentityUnavailable(RuntimeError):
@@ -123,7 +136,7 @@ def _resume_windows_process(process: subprocess.Popen[Any]) -> None:
         raise OSError(status, "NtResumeProcess failed for owned subprocess")
 
 
-def _close_windows_job(pid: int, handle: int, *, terminate: bool, timeout: float) -> bool:
+def _close_windows_job(pid: int, handle: int, *, terminate: bool, deadline: float) -> bool:
     import ctypes
     from ctypes import wintypes
 
@@ -142,7 +155,6 @@ def _close_windows_job(pid: int, handle: int, *, terminate: bool, timeout: float
     kernel32 = ctypes.windll.kernel32
     if terminate and not kernel32.TerminateJobObject(wintypes.HANDLE(handle), 1):
         return False
-    deadline = time.monotonic() + timeout
     while True:
         accounting = BASIC_ACCOUNTING_INFORMATION()
         if not kernel32.QueryInformationJobObject(
@@ -294,15 +306,49 @@ def identity_matches(pid: int, expected_start_token: str) -> bool:
     return _start_token(pid) == expected_start_token
 
 
-def terminate_process_group(process: subprocess.Popen[Any], *, grace_seconds: float = 0.5) -> bool:
+def _terminate_suspended_windows_leader(process: subprocess.Popen[Any]) -> bool:
+    """Terminate and reap a pre-resume leader that cannot have descendants."""
+
+    try:
+        process.terminate()
+    except ProcessLookupError:
+        return process.poll() is not None
+    except OSError:
+        return False
+    try:
+        process.wait(timeout=MAX_OWNED_PROCESS_CLEANUP_SECONDS)
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    return process.returncode is not None
+
+
+def terminate_process_group(
+    process: subprocess.Popen[Any],
+    *,
+    grace_seconds: float = DEFAULT_PROCESS_GROUP_CLEANUP_GRACE_SECONDS,
+) -> bool:
     if os.name == "nt":
         with _WINDOWS_JOB_GUARD:
             handle = _WINDOWS_JOB_HANDLES.get(process.pid)
         if handle is None:
             return process.poll() is not None
-        return _close_windows_job(
-            process.pid, handle, terminate=process.poll() is None, timeout=grace_seconds
-        )
+        deadline = time.monotonic() + grace_seconds
+        if not _close_windows_job(
+            process.pid,
+            handle,
+            terminate=process.poll() is None,
+            deadline=deadline,
+        ):
+            return False
+        # Job active-zero proves that no owned process remains live. Reaping the
+        # leader is separate Python/OS bookkeeping and gets its own bounded
+        # phase; coupling it to the already-consumed Job deadline creates false
+        # unconfirmed-cleanup results under scheduler contention.
+        try:
+            process.wait(timeout=grace_seconds)
+        except (OSError, subprocess.TimeoutExpired):
+            return False
+        return process.returncode is not None
 
     process_group = process.pid
     try:
@@ -426,25 +472,47 @@ def popen_owned(
     job_handle: int | None = None
     marker: Path | None = None
     try:
+        # Establish recoverable identity before Windows Job assignment. The
+        # leader is still suspended here and therefore cannot have descendants.
+        marker = store.create(process, validated)
         if os.name == "nt":
             job_handle = _create_windows_kill_job(process)
             with _WINDOWS_JOB_GUARD:
                 _WINDOWS_JOB_HANDLES[process.pid] = job_handle
-        marker = store.create(process, validated)
-        if os.name == "nt":
             _resume_windows_process(process)
-    except BaseException as exc:
+    except BaseException as primary:
         if job_handle is not None:
-            cleaned = _close_windows_job(process.pid, job_handle, terminate=True, timeout=0.5)
-        else:
-            cleaned = terminate_process_group(process)
+            with _WINDOWS_JOB_GUARD:
+                _WINDOWS_JOB_HANDLES.setdefault(process.pid, job_handle)
+        cleaned = (
+            _terminate_suspended_windows_leader(process)
+            if os.name == "nt" and job_handle is None
+            else terminate_process_group(process)
+        )
         if cleaned:
-            store.remove(marker)
+            try:
+                store.remove(marker)
+            except BaseException as cleanup:
+                raise primary from cleanup
+            raise
+        recovery_error: BaseException | None = None
+        if marker is None:
+            try:
+                marker = store.create(process, validated)
+            except BaseException as exc:
+                recovery_error = exc
+        if marker is not None:
+            cleanup = RuntimeError(
+                "Suspended subprocess cleanup could not be confirmed; recovery marker retained "
+                f"at {marker}."
+            )
         else:
-            raise RuntimeError(
-                "Owned subprocess initialization failed and cleanup could not be confirmed."
-            ) from exc
-        raise
+            cleanup = RuntimeError(
+                "Suspended subprocess cleanup could not be confirmed and recovery marker "
+                "creation also failed: "
+                f"{type(recovery_error).__name__}: {recovery_error}"
+            )
+        raise primary from cleanup
     return process, marker
 
 

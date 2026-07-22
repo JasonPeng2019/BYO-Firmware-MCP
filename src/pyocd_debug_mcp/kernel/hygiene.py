@@ -32,7 +32,6 @@ class HygieneResult:
 def cleanup_stale_owned_processes(
     root: Path = DEFAULT_MARKER_ROOT,
     *,
-    max_markers: int = 128,
     timeout_seconds: float = 2.0,
 ) -> HygieneResult:
     root = root.resolve()
@@ -41,7 +40,7 @@ def cleanup_stale_owned_processes(
     deadline = time.monotonic() + timeout_seconds
     inspected = terminated = stale = live_owner_skipped = unresolved = 0
     candidates = sorted(root.glob("*.json"))
-    for path in candidates[:max_markers]:
+    for path in candidates:
         if time.monotonic() >= deadline:
             break
         inspected += 1

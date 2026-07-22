@@ -40,9 +40,9 @@ composition root.
 Profiles in the selected project `.firm/boards/` root are the only normal-connection
 source. The checkout ships no board-profile fallback. Fresh setup accepts an exact MCU
 ordering code and local PDF without requiring a checked-in board record. It first replays
-verified project support. If none exists, it issues a bounded research request
-for one official CMSIS-Pack; the server quarantines and hashes the bytes, bounds
-archive/XML parsing, proves the exact PDSC leaf, derives the pyOCD target, loads
+verified project support. If none exists, it issues a focused research request
+for one official CMSIS-Pack; the server quarantines and hashes the bytes, parses
+the exact PDSC leaf, derives the pyOCD target, loads
 only that pack, and performs a non-destructive live attach before promotion.
 Client-supplied strings and the project manifest are indices, not authority. Every later
 load re-hashes the pack and datasheet and replays the exact binding. Validation
@@ -66,10 +66,12 @@ The kernel provides the protocol and lifecycle boundary:
   cleanup only when the live process identity still matches.
 
 `ConnectionManager` is the only owner of live board handles. It enforces one
-active connection per logical board and one logical board per stable
-connection identity. Calls on one board serialize; different boards can run
-concurrently. Disconnect clears only the named board's connection and
-run-scoped authority.
+active connection per logical board and one logical board per immutable live
+connection identity. A provider UID is the preferred hardware-stable identity;
+when the provider exposes none, an immutable runtime token identifies only that
+live worker/session and is explicitly not stable across reconnects. Calls on
+one board serialize; different boards can run concurrently. Disconnect clears
+only the named board's connection and run-scoped authority.
 
 ## Plans and permissions
 
@@ -113,8 +115,9 @@ empty after restart.
 ## Validation gate and safety
 
 The write gate is default closed. Only successful `board_validate` creates
-live identity proof. The stamp records logical board, current connection, stable
-probe identity, observed MCU evidence, validation run, and canonical map digest.
+live identity proof. The stamp records logical board, current connection, probe
+identity (hardware-stable when exposed, otherwise session-local to the current
+worker), observed MCU evidence, validation run, and canonical map digest.
 It is memory-only; disk artifacts, refresh, setup, plans, permissions, reports,
 and tool visibility cannot create it.
 
@@ -128,11 +131,19 @@ Guarded dispatch applies the standard order before backend mutation:
    writes;
 5. apply action-specific runtime containment;
 6. decrement the plan/permission budget exactly once at execution start; and
-7. call the bounded backend operation.
+7. call the process-isolated backend within the current hard operation deadline.
 
-Raw and symbol memory checks cover the exact bytes accessed. UNKNOWN and
-PROHIBITED spans fail closed. `safety/regions.py` uses authoritative non-empty
-half-open ranges with prohibited precedence. `safety/linker.py` parses selected
+Native providers run in owned per-session worker processes. The parent enforces a hard
+deadline: an unreturned worker is terminated, its connection is invalidated, and only that
+board must reconnect and revalidate before a retry. Parent inventory merges active UID-less
+workers under their exact session-local connection tokens rather than fabricating probe UIDs.
+Noninteractive probe-inventory CLI children receive null stdin, so neither they nor descendant
+launchers can read or wait on the MCP stdio protocol pipe.
+
+Raw and symbol memory checks cover the exact bytes accessed. UNKNOWN spans fail
+closed, while authoritative PROHIBITED spans remain readable for deliberate
+inspection and fail closed for every mutation. `safety/regions.py` uses authoritative
+non-empty half-open ranges with prohibited precedence for mutations. `safety/linker.py` parses selected
 ELF/HEX bytes for segments, entry, vector, executable evidence, and target/build
 metadata; it never accepts caller-provided ranges. HEX bytes must agree with a
 matching ELF companion. `safety/verify2.py` promotes only deterministically
@@ -200,7 +211,7 @@ selectors. `continue_setup` is the reverse adapter
 for one friendly choice or strict research response. It is scoped to the live
 board continuation, grants no authority, and feeds the accepted selection or
 target into the paired repair attempt. Pack candidates are staged under the
-project `.firm` root, archive-bounded, exact-leaf checked, enumerated,
+project `.firm` root, exact-leaf checked, enumerated,
 live-connected, and only then added through a serialized project-index update.
 The exact validated payload is rebound before publication, and the checkout
 pack registry is never a runtime write target. Successful attach
@@ -292,7 +303,7 @@ way to restore authority after restart.
 
 ## Batch and lifecycle behavior
 
-`action_batch` validates the entire bounded child list for one shared board and
+`action_batch` validates the entire child list for one shared board and
 rejects recursion before starting. It does not pre-authorize or pre-consume
 children. Each child traverses the identical direct-call dispatch path and
 observes any plan, permission, gate, or freshness change caused by earlier

@@ -54,9 +54,7 @@ class SetupUserInput:
                 "board_id must be 1-64 lowercase letters, numbers, or underscores"
             )
         _nonempty(self.connection_id, "connection_id")
-        display_name = _nonempty(self.display_name, "display_name")
-        if len(display_name) > 100:
-            raise PreflightError("display_name must be at most 100 characters")
+        _nonempty(self.display_name, "display_name")
         # Deliberately validate without normalizing or replacing the exact value.
         _nonempty(self.mcu_part_number, "mcu_part_number")
         if not isinstance(self.requires_uart, bool):

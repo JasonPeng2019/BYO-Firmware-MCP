@@ -116,7 +116,7 @@ Extra instructions: Load addresses come only from the artifact. Permission is pa
 | --- | --- | --- | --- |
 | `address` | `text-or-integer` | required | Exact address. |
 | `width` | `integer` | required; choices=8, 16, 32 | Transfer width: 8, 16, or 32 bits. |
-| `length` | `integer` | nullable; >= 1; <= 65536 | Optional block length up to 64 KiB. |
+| `length` | `integer` | nullable; >= 1 | Optional positive block length. |
 
 Extra instructions: Prefer read_memory_symbol when debug metadata identifies the value.
 
@@ -141,6 +141,7 @@ Extra instructions: Prefer read_memory_symbol when debug metadata identifies the
 | `on_exit` | `object` | nullable | Optional exact structured uart_write or reset_and_run finalizer. |
 
 Extra instructions: A port path is runtime-only; it is never persisted as attachment identity.
+The result includes complete time-bounded UART output as reversible JSON-escaped `captured_text`.
 
 ## `register_write-plan`
 
@@ -191,18 +192,18 @@ Extra instructions: This reset does not unlock a protected target.
 
 | Action field | Type | Constraints | Description |
 | --- | --- | --- | --- |
-| `steps` | `array` | required; min_items=1; max_items=8 | One to eight exact {text, expected_text, line_ending} command/response steps. |
-| `read_seconds` | `number` | required; > 0; <= 30 | Positive per-step response window no greater than 30 seconds. |
+| `steps` | `array` | required; min_items=1 | One or more exact {text, expected_text, line_ending} command/response steps. |
+| `read_seconds` | `number` | required; finite; > 0 | Positive finite per-step response window. |
 | `baudrate` | `integer` | nullable; >= 1 | Positive baud rate. |
 | `port` | `text` | nullable | Current serial port path. |
 | `ready_text` | `text` | nullable | Optional text to await after opening the UART and before sending. |
-| `ready_seconds` | `number` | required; >= 0; <= 30 | Bounded pre-send readiness window; zero when ready_text is NULL. |
-| `ready_probe_text` | `text` | nullable; empty allowed | Optional exact bounded text sent once to elicit the readiness marker. |
+| `ready_seconds` | `number` | required; finite; >= 0 | Pre-send readiness window; zero when ready_text is NULL. |
+| `ready_probe_text` | `text` | nullable; empty allowed | Optional exact text sent once to elicit the readiness marker. |
 | `ready_probe_line_ending` | `text` | required; choices='none', 'lf', 'cr', 'crlf' | Line ending for the optional readiness probe: none, lf, cr, or crlf. |
-| `ready_probe_delay_seconds` | `number` | required; >= 0; <= 30 | Optional bounded observation delay before sending the readiness probe; use it after flash/reset so boot output can arrive first. |
+| `ready_probe_delay_seconds` | `number` | required; finite; >= 0 | Optional observation delay before sending the readiness probe; use it after flash/reset so boot output can arrive first. |
 | `clear_input` | `boolean` | required | Discard buffered input after open only when true; false preserves boot/prompt bytes. |
 
-Extra instructions: All steps, readiness input, and the optional pre-probe delay are exact, bounded, and execute through one port open; successful cleanup preserves application state.
+Extra instructions: All steps, readiness input, and the optional pre-probe delay are exact and execute through one port open; successful cleanup preserves application state. The result includes complete time-bounded aggregate `captured_text` and complete ordered `step_captured_texts`, reversibly JSON-escaped.
 
 ## `set_breakpoint-plan`
 

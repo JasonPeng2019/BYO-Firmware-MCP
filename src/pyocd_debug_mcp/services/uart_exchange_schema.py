@@ -22,12 +22,12 @@ SERIAL_EXCHANGE_FIELDS = frozenset(
 )
 
 
-def _bounded_number(value: object, *, minimum: float, maximum: float) -> bool:
+def _finite_number_at_least(value: object, *, minimum: float) -> bool:
     return (
         not isinstance(value, bool)
         and isinstance(value, (int, float))
         and math.isfinite(float(value))
-        and minimum <= float(value) <= maximum
+        and minimum <= float(value)
     )
 
 
@@ -42,8 +42,8 @@ def validate_serial_exchange_parameters(parameters: Mapping[str, object]) -> str
             f"unknown={sorted(supplied - SERIAL_EXCHANGE_FIELDS)}"
         )
     steps = parameters["steps"]
-    if not isinstance(steps, list) or not 1 <= len(steps) <= 8:
-        return "steps must contain 1-8 exact command/response objects"
+    if not isinstance(steps, list) or not steps:
+        return "steps must contain one or more exact command/response objects"
     for index, row in enumerate(steps):
         if not isinstance(row, Mapping) or set(row) != {
             "text",
@@ -54,15 +54,15 @@ def validate_serial_exchange_parameters(parameters: Mapping[str, object]) -> str
         text = row["text"]
         expected = row["expected_text"]
         ending = row["line_ending"]
-        if not isinstance(text, str) or not text or len(text.encode("utf-8")) > 4096:
-            return f"steps[{index}].text must be 1-4096 UTF-8 bytes"
+        if not isinstance(text, str) or not text:
+            return f"steps[{index}].text must be non-empty text"
         if not isinstance(expected, str) or not expected:
             return f"steps[{index}].expected_text must be non-empty text"
         if not isinstance(ending, str) or ending not in LINE_ENDINGS:
             return f"steps[{index}].line_ending must be none, lf, cr, or crlf"
 
-    if not _bounded_number(parameters["read_seconds"], minimum=0.000001, maximum=30):
-        return "read_seconds must be a finite number in (0, 30]"
+    if not _finite_number_at_least(parameters["read_seconds"], minimum=0.000001):
+        return "read_seconds must be a positive finite number"
     baudrate = parameters["baudrate"]
     if baudrate is not None and (
         isinstance(baudrate, bool) or not isinstance(baudrate, int) or baudrate <= 0
@@ -81,10 +81,10 @@ def validate_serial_exchange_parameters(parameters: Mapping[str, object]) -> str
     probe_delay = parameters["ready_probe_delay_seconds"]
     if not isinstance(probe_ending, str) or probe_ending not in LINE_ENDINGS:
         return "ready_probe_line_ending must be none, lf, cr, or crlf"
-    if not _bounded_number(ready_seconds, minimum=0, maximum=30):
-        return "ready_seconds must be a finite number in [0, 30]"
-    if not _bounded_number(probe_delay, minimum=0, maximum=30):
-        return "ready_probe_delay_seconds must be a finite number in [0, 30]"
+    if not _finite_number_at_least(ready_seconds, minimum=0):
+        return "ready_seconds must be a nonnegative finite number"
+    if not _finite_number_at_least(probe_delay, minimum=0):
+        return "ready_probe_delay_seconds must be a nonnegative finite number"
     assert isinstance(ready_seconds, (int, float)) and not isinstance(ready_seconds, bool)
     assert isinstance(probe_delay, (int, float)) and not isinstance(probe_delay, bool)
 
@@ -99,16 +99,16 @@ def validate_serial_exchange_parameters(parameters: Mapping[str, object]) -> str
         return None
     if not isinstance(ready_text, str) or not ready_text:
         return "ready_text must be non-empty text or NULL"
-    if not 0 < float(ready_seconds) <= 30:
-        return "ready_text requires ready_seconds in (0, 30]"
+    if not 0 < float(ready_seconds):
+        return "ready_text requires positive ready_seconds"
     if probe_text is None:
         if probe_delay != 0:
             return "ready_probe_delay_seconds requires ready_probe_text"
         if probe_ending != "none":
             return "ready_probe_line_ending must be none when ready_probe_text is NULL"
         return None
-    if not isinstance(probe_text, str) or len(probe_text.encode("utf-8")) > 256:
-        return "ready_probe_text must be at most 256 UTF-8 bytes or NULL"
+    if not isinstance(probe_text, str):
+        return "ready_probe_text must be text or NULL"
     if not probe_text and probe_ending == "none":
         return "an empty ready_probe_text requires a line ending"
     if float(probe_delay) > float(ready_seconds):

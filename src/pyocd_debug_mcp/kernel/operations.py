@@ -24,11 +24,13 @@ from pathlib import Path
 from typing import Any, ContextManager, TypeVar, cast
 
 import anyio
-
 from pyocd_debug_mcp.kernel.processes import (
+    MAX_OWNED_PROCESS_CLEANUP_SECONDS,
     ProcessMarkerStore,
     terminate_process_group,
 )
+from pyocd_debug_mcp.probe_families import configured_probe_cli_commands
+from pyocd_debug_mcp.timeouts import DEFAULT_EXTERNAL_COMMAND_TIMEOUT_SECONDS
 
 DEFAULT_OPERATION_TIMEOUT_SECONDS = 30.0
 FLASH_OPERATION_TIMEOUT_SECONDS = 120.0
@@ -46,6 +48,18 @@ SAFE_EXIT_REMINDER = (
 _FLASH_TOOLS = frozenset({"flash_application", "flash_bootloader", "flash_firmware"})
 _VALIDATION_TOOLS = frozenset({"board_validate"})
 _RECOVERY_TOOLS = frozenset({"target_unlock"})
+_PROBE_INVENTORY_TOOLS = frozenset(
+    {
+        "setup_overview",
+        "connect",
+        "connect_override",
+        "get_setup_status",
+        "connect_under_reset",
+        "board_validate",
+        "board_setup",
+        "board_fix_setup",
+    }
+)
 _INTENTIONAL_HALT_TOOLS = frozenset(
     {"halt", "reset_and_halt", "connect_under_reset", "set_breakpoint"}
 )
@@ -441,6 +455,37 @@ def operation_timeout_seconds(
     """Return the finite A-11 timeout budget for a tool invocation."""
 
     values = arguments or {}
+    finalizer_timeout: float | None = None
+    if "on_exit" in values:
+        from pyocd_debug_mcp.kernel.finalizers import (
+            FinalizerValidationError,
+            UARTWriteFinalizer,
+            parse_finalizer,
+        )
+
+        try:
+            finalizer = parse_finalizer(tool_name, values["on_exit"])
+        except FinalizerValidationError:
+            raw_finalizer = values["on_exit"]
+            # Preserve the established deadline treatment for malformed input
+            # that explicitly supplied a positive finite UART timeout. Valid
+            # UART finalizers, including ones that omit the field, use the
+            # schema-validated value below.
+            if (
+                isinstance(raw_finalizer, Mapping)
+                and raw_finalizer.get("action") == "uart_write"
+                and "timeout_seconds" in raw_finalizer
+            ):
+                finalizer_timeout = _positive_finite_number(raw_finalizer.get("timeout_seconds"))
+        else:
+            if isinstance(finalizer, UARTWriteFinalizer):
+                finalizer_timeout = finalizer.timeout_seconds
+
+    def include_finalizer(timeout: float) -> float:
+        if finalizer_timeout is None:
+            return timeout
+        return timeout + finalizer_timeout + ARGUMENT_TIMEOUT_GRACE_SECONDS
+
     if tool_name == "action_batch":
         actions = values.get("actions")
         if isinstance(actions, list):
@@ -460,9 +505,11 @@ def operation_timeout_seconds(
                     )
                 )
             if child_timeouts:
-                return max(
-                    DEFAULT_OPERATION_TIMEOUT_SECONDS,
-                    sum(child_timeouts) + BATCH_TIMEOUT_GRACE_SECONDS,
+                return include_finalizer(
+                    max(
+                        DEFAULT_OPERATION_TIMEOUT_SECONDS,
+                        sum(child_timeouts) + BATCH_TIMEOUT_GRACE_SECONDS,
+                    )
                 )
     # Planned actions publish their timeout as part of the immutable plan
     # definition.  Runtime dispatch must use that same value so the guidance
@@ -474,45 +521,63 @@ def operation_timeout_seconds(
     except KeyError:
         planned_timeout = None
     if tool_name in _FLASH_TOOLS:
-        return FLASH_OPERATION_TIMEOUT_SECONDS
-    if tool_name in _VALIDATION_TOOLS:
-        return VALIDATION_OPERATION_TIMEOUT_SECONDS
-    if tool_name in _RECOVERY_TOOLS:
-        return RECOVERY_OPERATION_TIMEOUT_SECONDS
+        resolved_timeout = FLASH_OPERATION_TIMEOUT_SECONDS
+    elif tool_name in _VALIDATION_TOOLS:
+        resolved_timeout = VALIDATION_OPERATION_TIMEOUT_SECONDS
+    elif tool_name in _RECOVERY_TOOLS:
+        resolved_timeout = RECOVERY_OPERATION_TIMEOUT_SECONDS
+    elif planned_timeout is not None:
+        resolved_timeout = float(planned_timeout)
+    else:
+        resolved_timeout = DEFAULT_OPERATION_TIMEOUT_SECONDS
+    if tool_name in _PROBE_INVENTORY_TOOLS:
+        inventory_timeout = (
+            DEFAULT_OPERATION_TIMEOUT_SECONDS
+            + len(configured_probe_cli_commands())
+            * (DEFAULT_EXTERNAL_COMMAND_TIMEOUT_SECONDS + MAX_OWNED_PROCESS_CLEANUP_SECONDS)
+            + CANCELLATION_CLEANUP_GRACE_SECONDS
+        )
+        resolved_timeout = max(resolved_timeout, inventory_timeout)
     if tool_name == "read_serial":
         requested = _positive_finite_number(values.get("read_seconds"))
         if requested is not None:
-            return max(
-                float(planned_timeout or DEFAULT_OPERATION_TIMEOUT_SECONDS),
-                requested + ARGUMENT_TIMEOUT_GRACE_SECONDS,
+            return include_finalizer(
+                max(
+                    float(planned_timeout or DEFAULT_OPERATION_TIMEOUT_SECONDS),
+                    requested + ARGUMENT_TIMEOUT_GRACE_SECONDS,
+                )
             )
     if tool_name == "serial_exchange":
         per_step = _positive_finite_number(values.get("read_seconds"))
         steps = values.get("steps")
-        step_count = min(len(steps), 8) if isinstance(steps, list) and steps else 1
+        step_count = len(steps) if isinstance(steps, list) and steps else 1
         ready = _positive_finite_number(values.get("ready_seconds")) or 0.0
         if per_step is not None:
-            return max(
-                float(planned_timeout or DEFAULT_OPERATION_TIMEOUT_SECONDS),
-                ready + step_count * per_step + ARGUMENT_TIMEOUT_GRACE_SECONDS,
+            return include_finalizer(
+                max(
+                    float(planned_timeout or DEFAULT_OPERATION_TIMEOUT_SECONDS),
+                    ready + step_count * per_step + ARGUMENT_TIMEOUT_GRACE_SECONDS,
+                )
             )
     if tool_name == "write_serial":
         requested = _positive_finite_number(values.get("timeout_seconds"))
         if requested is not None:
-            return max(
-                float(planned_timeout or DEFAULT_OPERATION_TIMEOUT_SECONDS),
-                requested + ARGUMENT_TIMEOUT_GRACE_SECONDS,
+            return include_finalizer(
+                max(
+                    float(planned_timeout or DEFAULT_OPERATION_TIMEOUT_SECONDS),
+                    requested + ARGUMENT_TIMEOUT_GRACE_SECONDS,
+                )
             )
     if tool_name == "wait":
         requested_ms = _positive_finite_number(values.get("ms"))
         if requested_ms is not None:
-            return max(
-                DEFAULT_OPERATION_TIMEOUT_SECONDS,
-                requested_ms / 1000.0 + ARGUMENT_TIMEOUT_GRACE_SECONDS,
+            return include_finalizer(
+                max(
+                    DEFAULT_OPERATION_TIMEOUT_SECONDS,
+                    requested_ms / 1000.0 + ARGUMENT_TIMEOUT_GRACE_SECONDS,
+                )
             )
-    if planned_timeout is not None:
-        return float(planned_timeout)
-    return DEFAULT_OPERATION_TIMEOUT_SECONDS
+    return include_finalizer(resolved_timeout)
 
 
 async def _wait_for_done(operation: ManagedOperation) -> None:

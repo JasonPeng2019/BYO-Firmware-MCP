@@ -68,11 +68,6 @@ class CollectionResult:
         }
 
 
-def _path_is_link_or_junction(path: Path) -> bool:
-    is_junction = getattr(path, "is_junction", None)
-    return path.is_symlink() or bool(is_junction is not None and is_junction())
-
-
 def _sha256(path: Path) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as handle:
@@ -105,8 +100,6 @@ def _normalize_sources(
 
 def _validate_destination(destination: Path, sources: Mapping[ArtifactRole, Path]) -> Path:
     requested = destination.expanduser()
-    if _path_is_link_or_junction(requested):
-        raise ValueError(f"Output directory must not be a link or junction: {requested}")
     resolved = requested.resolve()
     if resolved == Path(resolved.anchor).resolve() or resolved == Path.home().resolve():
         raise ValueError("Output directory must not be a filesystem root or the user's home.")
@@ -133,8 +126,8 @@ def collect_artifacts(
     """Copy explicit typed artifacts into a deterministic, non-authoritative bundle."""
 
     producer = producer.strip()
-    if not producer or len(producer) > 128:
-        raise ValueError("Producer must contain 1 to 128 non-whitespace characters.")
+    if not producer:
+        raise ValueError("Producer must be non-empty text.")
     normalized = _normalize_sources(sources)
     expected = {
         role if isinstance(role, ArtifactRole) else ArtifactRole(role) for role in expected_roles

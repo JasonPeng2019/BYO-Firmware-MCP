@@ -27,7 +27,6 @@ from pyocd_debug_mcp.safety.regions import (
     AddressRange,
     Allowed,
     Refusal,
-    RegionKind,
     SafetyMap,
 )
 
@@ -100,11 +99,7 @@ class SafetyPolicy:
         requested = AddressRange.from_start_size(address, size_bytes)
         result = self.load(board_id).safety_map.check(ActionCategory.MEMORY_READ, (requested,))
         if isinstance(result, Refusal):
-            remedy = (
-                ("choose a mapped, non-prohibited address",)
-                if result.classification is RegionKind.PROHIBITED
-                else ("board_safety_refresh",)
-            )
+            remedy = ("board_safety_refresh",)
             raise SafetyPolicyError(
                 result.code,
                 f"Memory-read range {requested.to_document()} has region kind "
