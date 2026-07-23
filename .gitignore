@@ -10,7 +10,6 @@ __pycache__/
 .venv/
 .env
 .env.*
-!.env.example
 pyocd.local.yaml
 
 # Tool caches

@@ -1,380 +1,75 @@
-# BYO Server architecture
+# BYO Firmware MCP architecture
 
-## Product boundary
+## Composition
 
-BYO Server is a local, checkout-operated MCP server for board setup, debug,
-flash, serial, and recovery through pyOCD and pyserial. The only server
-transport is stdio. It does not listen on a socket or trust an MCP client as a
-safety authority.
+`firmware_mcp.server` wires the live tool handlers, project store, setup workflow,
+connection manager, operation kernel, pyOCD process adapter, UART services, and
+reporting. Tool behavior lives in its owning `tools` or `services` module; the
+server is the composition boundary.
 
-```text
-MCP client over stdio
-        |
-        v
-server.py composition root
-        |
-        +-- kernel: registry, managed dispatch, lifecycle, process ownership
-        +-- guardrails: plans, permissions, validation gate
-        +-- safety: reviewed map authority, regions, runtime containment
-        +-- setup_flow: inventory, research, setup, validation
-        +-- tools: schemas and board-facing handlers
-        +-- services/adapters: board routing, pyOCD, serial, symbols
-        |
-        +-- FirmStore: durable evidence under .firm (never live authority)
-```
+Profiles and durable setup evidence live under the active project's `.firm`
+store. Replay reconstructs support authority and capability-aware identity
+evidence; disk records do not substitute for a live silicon read. The setup workflow stores a
+transient board-and-connection-bound setup run, so continuations cannot be
+applied to a stale or different board.
 
-The client chooses what to request. The server independently checks whether
-the named operation is visible, planned, permitted, scoped to the live board,
-safe for the current map, and still fresh. Discovery is guidance, not
-authorization: hidden tools remain registered so a stale direct call reaches a
-physical handler lock and receives the same prerequisite refusal.
+## Live hardware correctness
 
-## Layers and ownership
+`ConnectionManager` owns board-local sessions and rejects assigning one physical
+connection to multiple logical boards. `kernel.operations` serializes operations
+per board, preserves independent execution across boards, owns cancellation and
+owned-process cleanup, and records immutable operation events.
 
-`server.py` is the composition root. It creates one process-local
-`ServerRun`, `ConnectionManager`, `ToolRegistry`, `PlanEngine`,
-`PermissionStore`, `GateManager`, safety policy, setup services, and board
-adapters. Business rules live in their owning modules rather than in the
-composition root.
+The process-isolated provider obtains current target state, capability-aware
+identity evidence, and physical memory-region facts. Raw memory, peripheral, and breakpoint work
+uses those live facts for containment and read/write capability. It does not
+infer board ownership from an address. Write results distinguish byte readback,
+unavailable verification, and caller-selected no-readback.
 
-Profiles in the selected project `.firm/boards/` root are the only normal-connection
-source. The checkout ships no board-profile fallback. Fresh setup accepts an exact MCU
-ordering code and local PDF without requiring a checked-in board record. It first replays
-verified project support. If none exists, it issues a focused research request
-for one official CMSIS-Pack; the server quarantines and hashes the bytes, parses
-the exact PDSC leaf, derives the pyOCD target, loads
-only that pack, and performs a non-destructive live attach before promotion.
-Client-supplied strings and the project manifest are indices, not authority. Every later
-load re-hashes the pack and datasheet and replays the exact binding. Validation
-promotes only the exact live connection; no pseudo-connection stamp can satisfy
-the readiness barrier.
+Flashing parses exact ELF/AXF `PT_LOAD` bytes or Intel HEX bytes, rejects
+conflicting overlap, validates every programmed byte against live writable flash,
+programs sector-bounded ranges, then reads every image byte back. The canonical
+digest is sorted address-plus-byte evidence. A verified program/readback result
+is retained if the subsequent reset cannot be observed.
 
-The kernel provides the protocol and lifecycle boundary:
+The built-in pyOCD adapter uses the same versioned JSON-lines worker boundary as
+an external provider recipe. Recipe inventory and worker argv are direct argv
+lists, never shell text. A worker reports a ready frame before requests; each
+request and reply includes the protocol version and request ID. The parent owns
+cancellation, process markers, session promotion, and finalization, so an
+external provider does not become a server plugin or bypass board isolation.
+See [provider-worker-protocol.md](provider-worker-protocol.md) for the wire
+contract.
 
-- `kernel/registry.py` filters dynamic tool discovery, sends
-  `tools/list_changed`, rechecks handler locks, and routes every call through
-  managed dispatch.
-- `kernel/operations.py` assigns a finite timeout and operation identity,
-  serializes one board while preserving cross-board concurrency, connects MCP
-  cancellation to cooperative cancellation, and owns one idempotent cleanup
-  path.
-- `kernel/finalizers.py` accepts only the structured `uart_write` and
-  `reset_and_run` finalizers on eligible serial tools. Finalizers are
-  best-effort and run before mandatory cleanup.
-- `kernel/processes.py` owns validated argv, finite subprocess bounds, process
-  groups, and identity markers. `kernel/hygiene.py` performs bounded startup
-  cleanup only when the live process identity still matches.
+## Build and UART
 
-`ConnectionManager` is the only owner of live board handles. It enforces one
-active connection per logical board and one logical board per immutable live
-connection identity. A provider UID is the preferred hardware-stable identity;
-when the provider exposes none, an immutable runtime token identifies only that
-live worker/session and is explicitly not stable across reconnects. Calls on
-one board serialize; different boards can run concurrently. Disconnect clears
-only the named board's connection and run-scoped authority.
+`native_build.build_firmware` is the one direct-argv build implementation used
+by both the MCP tool and CLI. It owns the process, returns argv/cwd/environment
+override keys/stdout/stderr/duration/exit evidence, and discovers all nonempty
+ELF, AXF, HEX, BIN, and MAP files deterministically when outputs are not
+declared. Its owned build child receives closed stdin; builds obtain input only
+from exact argv, cwd, and environment, never the MCP protocol stream. The
+artifact collector is separate and only normalizes explicit files.
 
-## Plans and permissions
+UART capture and exchange retain lossless bytes beside decoded text. Serial
+writes compare the accepted byte count with the requested payload. Recovery is
+provider-capability-driven and reports command acceptance separately from any
+observable postcondition.
 
-`guardrails/plan_defs.py` is the declarative source for each plan tool's
-purpose, fields, exact action schema, budget, permission mode, safety mode,
-timeout, and all-NULL guidance. Clients must initialize a plan tool by sending
-the universal envelope with every field NULL, then submit only a complete JSON
-envelope whose `action_parameters` member is one nested object binding exactly
-to the eventual call. Flattened action fields, prose/wrapper payloads, missing
-or extra fields, and permission fields on non-permission populated plans are
-rejected atomically. Each all-NULL response renders the mechanism, purpose,
-use/not-use cases, fields, validation, budget, permission, preconditions,
-warnings, soft guardrails, exit state, and a complete example from
-the same definition. `docs/plan-tool-contract.md` is a deterministic human-readable
-rendering of every live plan/action field, budget, and permission mode. Archived
-documentation explains the live product surface without creating a second runtime authority.
-After a populated plan is accepted, the response switches to a compact structured unlock payload:
-the unlocked action, exact preferred call, unchanged static-client fallback, bounded usage guidance,
-and reminders. It never repeats the initialization tutorial.
+## Guard core and public contract
 
-The pinned FastMCP SDK normally ignores unknown function arguments while
-building its Pydantic call model. Plan-tool registration deliberately rebuilds
-only those generated argument models with `extra="forbid"`, publishing
-`additionalProperties: false`, so unknown inputs reach neither normalization
-nor plan activation. The engine independently repeats exact-envelope and
-nested-action validation; SDK visibility never substitutes for the handler
-lock or policy checks.
+`guardrails.core` owns a small run-scoped permission, grant, and exact-plan
+store. It atomically consumes both the matching plan action and the exact user
+grant before a backend attempt, never refunds a failed/cancelled attempt, and
+releases its lock before hardware work. Bindings contain current board/profile/
+assignment/session identity evidence plus stable serial or parsed artifact
+digest when required. Disconnect, replacement, explicit revoke/cancel, and a
+changed binding invalidate the affected records.
 
-`PlanEngine` scopes a plan to the current run, tool, board, session, canonical
-parameters, and call budget. It atomically decrements once at execution start.
-Pre-start refusals do not consume a call; failure, timeout, or cancellation
-after start does. Replacement, exhaustion, invalidation, disconnect, and run
-closure relock the action.
-
-`PermissionStore` provides structured `one-time` and `full-session` grants.
-One-time permission is consumed at execution start. Full-session permission
-removes repeated prompting only where the plan definition allows it; it never
-authorizes mass erase. Plans and permissions live only in `ServerRun` and are
-empty after restart.
-
-## Validation gate and safety
-
-The write gate is default closed. Only successful `board_validate` creates
-live identity proof. The stamp records logical board, current connection, probe
-identity (hardware-stable when exposed, otherwise session-local to the current
-worker), observed MCU evidence, validation run, and canonical map digest.
-It is memory-only; disk artifacts, refresh, setup, plans, permissions, reports,
-and tool visibility cannot create it.
-
-Guarded dispatch applies the standard order before backend mutation:
-
-1. require the registered handler to be unlocked;
-2. verify any plan-bound artifact digest before scope, permission, preconditions,
-   or budget consumption;
-3. validate exact plan, board, run, session, parameters, and permission;
-4. require live identity proof for guarded reads and a matching map digest for
-   writes;
-5. apply action-specific runtime containment;
-6. decrement the plan/permission budget exactly once at execution start; and
-7. call the process-isolated backend within the current hard operation deadline.
-
-Native providers run in owned per-session worker processes. The parent enforces a hard
-deadline: an unreturned worker is terminated, its connection is invalidated, and only that
-board must reconnect and revalidate before a retry. Parent inventory merges active UID-less
-workers under their exact session-local connection tokens rather than fabricating probe UIDs.
-Noninteractive probe-inventory CLI children receive null stdin, so neither they nor descendant
-launchers can read or wait on the MCP stdio protocol pipe.
-
-Raw and symbol memory checks cover the exact bytes accessed. UNKNOWN spans fail
-closed, while authoritative PROHIBITED spans remain readable for deliberate
-inspection and fail closed for every mutation. `safety/regions.py` uses authoritative
-non-empty half-open ranges with prohibited precedence for mutations. `safety/linker.py` parses selected
-ELF/HEX bytes for segments, entry, vector, executable evidence, and target/build
-metadata; it never accepts caller-provided ranges. HEX bytes must agree with a
-matching ELF companion. `safety/verify2.py` promotes only deterministically
-reconciled device-support and official-document facts.
-
-The sole persisted authority is each board's `memory_map.yaml`: schema v2 for
-reviewed compatibility profiles and schema v3 for dynamically resolved support.
-Semantic source digests cover the profile, replayed support bytes/binding,
-captured datasheet evidence, deployment policy, and map-generator schema.
-Ordinary build artifacts are not stable-map currentness inputs.
-`board_safety_refresh` rederives the complete map from those server-owned
-sources, can create the first map, and can update only the map association of an
-existing same-connection identity proof. It cannot create live identity
-authority.
-
-The resulting action policy is:
-
-- guarded address reads require a validated current connection;
-- memory writes are fully contained in RAM;
-- peripheral register writes exclude prohibited ranges;
-- breakpoints require executable segments from the current plan-bound ELF;
-- application and bootloader flash require explicit deployment authority plus
-  target, segment, entry/vector, and erase-sector containment. A generic board may acquire or
-  monotonically expand a server-derived application allocation under an approved artifact-bound
-  plan and bounded sector-driver proof; existing bytes inside that envelope may be replaced without
-  requiring a whole-device blank state; and
-- target recovery uses a typed mechanism, complete disclosure, a fixed one-call
-  plan, and fresh one-time permission, then clears live proof.
-
-Symbol tools use either an explicit project `elf_artifact` or the ELF bound by a successful
-application flash in the same Server Run. The binding is only a convenience: it is not persisted,
-does not grant address authority, and implicit checkout firmware is never silently substituted
-after restart. Explicit symbol-write ELFs are digest-bound by the accepted plan; every resolved
-address still passes the stable memory-map containment check before target access.
-
-Every refusal occurs before the corresponding backend mutation and names the
-required remedy.
-
-Normal connection is structurally separate from manual override. The visible
-`connect(board_id)` schema and handler resolve only the named project profile,
-disable launch-environment probe/config fallbacks, and reject unknown
-fields before backend dispatch. The hidden `connect_override` retains explicit
-run-scoped probe, target, and external-config values behind its plan. Batch
-children traverse the same strict FastMCP argument model, so batching cannot
-reintroduce the removed public override channel.
-
-## Setup and client relay boundary
-
-Setup deterministically inventories probes, serial ports, cache matches,
-targets, builds, and exact verified pack bindings before requesting research.
-Unknown facts are returned as strict research requests; blocked physical
-conditions are not mislabeled as research. Candidate replies contain only an
-official pack source record and cannot alter the exact user-supplied MCU part
-number or choose the target, geometry, identity evidence, or partitions.
-
-`setup_overview` is the entry adapter between ordinary familiar board names and
-internal profile/connection routing. The normalized `no board` sentinel is
-handled before route construction. Each route composes the exact loader,
-validation, or plan-initialization call and pre-fills server-known action
-fields, including stable attachment identities. Volatile port paths remain
-diagnostic and are resolved again at execution. `load_setup_tool` returns one
-bounded, tool-specific guide instead of the entire setup manual. Validation
-choice results carry an executable retry recipe that retains already-resolved
-selectors. `continue_setup` is the reverse adapter
-for one friendly choice or strict research response. It is scoped to the live
-board continuation, grants no authority, and feeds the accepted selection or
-target into the paired repair attempt. Pack candidates are staged under the
-project `.firm` root, exact-leaf checked, enumerated,
-live-connected, and only then added through a serialized project-index update.
-The exact validated payload is rebound before publication, and the checkout
-pack registry is never a runtime write target. Successful attach
-mode/frequency is a board fact discovered by a bounded generic fallback and is
-reported and persisted rather than inherited from another board.
-
-`get_setup_status` is the explicit pre-code barrier. It reports configuration,
-live identity/map readiness, and UART attachment readiness separately. Native
-build and artifact-collector guidance is advisory only. The normal deployment
-flow is build, optional collection, populated flash plan, then flash; routine
-build bytes do not enter stable-map currentness.
-
-Safety authority is one strict `memory_map.yaml` per board. A schema-v3 generic
-map stores resolved-support identity, semantic evidence digests, conservative
-physical geometry, nullable partitions, and a closed deployment policy. Its
-initial policy is `none`; the mere existence of physical flash never grants
-deployment ownership. Separate pack RAM/ROM/flash ranges and optional SVD peripheral blocks are
-retained without joining gaps. Exact or compatible live identity permits artifact-contained
-application programming; bootloader/recovery authority remains separate. Status exposes both
-identity capability and flash-planning readiness. A new or expanded generic allocation is persisted
-before programming so a partial failure remains inside a durable owner. Schema-v2 reviewed application and bootloader partitions
-exist only when an explicit reviewed partition policy authorizes them; the
-full-flash capacity is never reinterpreted as partition authority. Source
-manifest and safety report siblings are deleted during map load/commit and are
-never read.
-
-`board_safety_refresh` accepts only a board ID and rederives a complete candidate
-from the profile and replayed server-owned evidence on every call. The
-missing, malformed, and old-schema paths use the same derivation for compatibility maps. A
-present but unreadable generic map is not replaced because it may contain one-way deployment
-ownership that cannot be reconstructed safely. Refresh can
-replace the map association of existing live identity proof, but cannot create
-identity authority. An identity-anchor change closes the proof and requires
-`board_validate`.
-
-Validation connects through the selected probe, reads only replayed exact or
-compatible identity evidence, associates the current map digest, and stamps
-run-scoped gate state. When a pack exposes no safe identity proof it may prove
-connection diagnostics, but cannot stamp the gate. It performs no UART capture
-or firmware behavior assertion. Identity
-proof is cleared by restart, disconnect, connection/probe change, identity
-repair, and recovery, but not by reset, flash, UART work, or refresh. Silicon
-mismatch guidance is neutral and an exact run-scoped allowance is required
-before setup may create a new logical board/profile.
-
-Flash and breakpoint plans bind selected artifact digests when populated plans
-are accepted. Digest drift is rejected before permission, budget, containment,
-or backend work. Flash containment then checks target, segments, entry, vector,
-reviewed partition, and erase sectors; HEX also requires its matching ELF.
-Breakpoint containment uses executable segments from the selected current ELF,
-not blanket partition executability.
-
-Setup and validation return structured control payloads for the MCP client plus an
-`agent_prompt` field written as ordinary prose. The client must relay only that prose
-and friendly choices, never structured payloads, continuation tokens, internal
-field names, or machine identifiers unless a destructive approval explicitly
-requires the exact live identity. See [client-contract.md](client-contract.md).
-
-MCP setup and validation adapt inputs into the single
-`setup_flow.validate.BoardValidator`; there is no parallel checkout-specific
-validation implementation.
-
-## Durable `.firm` artifacts
-
-`FirmStore` is the single layout and low-level write owner:
-
-```text
-.firm/
-  boards/       schema-v2 board profiles
-  packs/        promoted support index and exact quarantined pack bytes
-  evidence/     content-addressed captured datasheet bytes
-  setup/        immutable setup attempts and append-only logs
-  safety/       one schema-v2 or schema-v3 memory_map.yaml per board
-  validation/   immutable validation and recovery attempts
-  cache/        revocable host attachment hints
-```
-
-Writes are project-local, atomic, and checked for authority-bearing keys.
-Profiles preserve the exact user-supplied MCU part number and Unicode display
-name. The project pack manifest indexes exact immutable bytes and server-derived
-bindings; every load replays those bytes rather than trusting manifest claims.
-Profiles bind the resulting canonical support ID, not a client path or target
-proposal. Cache records contain only stable attachment hints.
-
-The following are deliberately never persisted: live connections and
-assignments, active plans and remaining budgets, permissions, unlocked tools,
-validation stamps, and open-gate state. Durable reports are evidence, never a
-way to restore authority after restart.
-
-## Batch and lifecycle behavior
-
-`action_batch` validates the entire child list for one shared board and
-rejects recursion before starting. It does not pre-authorize or pre-consume
-children. Each child traverses the identical direct-call dispatch path and
-observes any plan, permission, gate, or freshness change caused by earlier
-children. Execution stops at the first failure.
-
-Accepted plans also render an exact one-child batch as a compatibility route
-for MCP clients that do not refresh callable bindings after
-`notifications/tools/list_changed`. The server builds it from the immutable
-accepted snapshot (`board_id` plus canonical action parameters), never from
-model prose. Direct execution remains preferred. The compatibility child does
-not carry permission state and does not bypass hidden-handler locks or any
-dispatch check. Paired setup repair is returned separately and is valid only
-after the primary setup response establishes that route.
-
-Managed cleanup owns stop-I/O, UART close, debug/session close when required,
-owned process-group termination, reset release, lock release, and the final
-board state. Flash becomes non-interruptible after its transaction starts, so
-cancellation waits for bounded safe completion before resources are released.
-Ordinary successful work preserves the action's documented MCU state; cleanup
-does not silently reset it. Reset-and-run is explicit through a reset tool or
-eligible structured finalizer. Ordinary stateful work is cooperatively
-interruptible. Stdio EOF and normal shutdown use the same cleanup ownership.
-
-## Build artifact intake
-
-Firmware builds remain native-project work. The server returns an exact parameterized invocation of
-the provider-neutral `pyocd_debug_mcp.native_build` helper. The client resolves the project's real
-executable, argv, cwd, environment, and outputs; the helper executes that argv directly without a
-shell, inherits network access by default, verifies ELF/HEX formats, and records whether the linker
-map was explicit or uniquely discovered without claiming universal ELF/map
-coherence. Any project-native output can be declared with a named path; understood ELF/HEX formats
-receive structural checks and unknown formats are honestly reported as opaque nonempty files.
-Outputs may be discovered under a caller-selected artifact root. Existing incremental and in-source
-layouts and caller-adjustable timeouts are supported. Local
-toolchains are preferred, acquisition is allowed when none is compatible, and best-effort offline
-environment guards are explicit rather than an OS network-sandbox claim. The server does not infer
-a provider, toolchain, SDK root, target, or output convention. The always-visible
-`collect_build_artifacts` MCP tool then provides an optional build-system-neutral
-handoff for explicit ELF, HEX, BIN, and linker-map outputs. It performs no build,
-search, subprocess, download, or hardware access. Collection stages a canonical
-`firmware.*` bundle and deterministic SHA-256 manifest outside `.firm`; the
-manifest contains provenance but no allowed ranges, plans, permissions, or gate
-state. Safety refresh never consumes build outputs. The flash plan binds the selected
-artifact and runtime containment parses it immediately before execution.
-
-All build systems use the same owned-process helper with exact client-resolved argv, and their normal
-output can enter through the same visible collector.
-
-## Target and host de-biasing boundaries
-
-The package ships no reviewed board identities, device evidence, geometry, or attach facts.
-The empty state uses generic onboarding, which derives exact target/core/physical memory/flash
-algorithm facts from the verified PDSC leaf and records actual probe/attach
-facts from the live setup transaction. Production setup code contains no
-branches for a particular board name or device address. Missing identity,
-peripheral, erase, deployment, or recovery facts remain missing; no MCU prefix
-invents them. Capability-specific operations then refuse before backend access.
-
-Serial association uses stable USB identity and generic metadata scoring first.
-Optional vendor helpers may be selected from an explicitly configured external registry when
-generic evidence stays ambiguous; their executables come from an explicit environment path or
-`PATH`, never a compiled host installation path. Recovery exposes only `backend_mass_erase` or
-`manual_only`, checks the connected backend capability before disclosure, and
-retains the existing exact-map disclosure and fresh one-time approval boundary.
-
-## Runtime contracts
-
-The live MCP `tools/list` schemas, tool descriptions, and the plan definitions in
-`guardrails/plan_defs.py` are the runtime contract. The generated
-[plan-tool contract](plan-tool-contract.md) is the corresponding human-readable reference.
-
-The checkout, wheel, and sdist contain the same generic runtime. Board profiles, pack bytes,
-firmware, and evidence are created or selected in the active project; none is bundled with the
-server.
+The stable public surface includes visible guard controls alongside the direct
+and guarded hardware tools; it never hides or reveals tools dynamically. The
+`firmware://start-here` resource teaches detect -> configure -> permission ->
+plan -> build -> flash -> verify -> debug. Flash classifies the explicit
+`application` role as routine and other declared roles as one-time destructive
+work; recovery selects an exact current provider mechanism and reports command
+acceptance separately from observed effect/session evidence.

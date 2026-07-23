@@ -7,8 +7,8 @@ import unittest
 import zipfile
 from pathlib import Path
 
-from pyocd_debug_mcp.firmstore.store import FirmStore
-from pyocd_debug_mcp.pack_provision import (
+from firmware_mcp.firmstore.store import FirmStore
+from firmware_mcp.pack_provision import (
     DeviceBinding,
     PackProvisionError,
     PackSpec,
@@ -16,7 +16,7 @@ from pyocd_debug_mcp.pack_provision import (
     read_pack_bytes,
     sha256_file,
 )
-from pyocd_debug_mcp.setup_flow.device_support import (
+from firmware_mcp.setup_flow.device_support import (
     _select_pdsc_member,
     derive_candidate_binding,
     resolve_device_support_geometry,

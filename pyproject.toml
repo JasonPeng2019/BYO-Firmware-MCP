@@ -1,30 +1,31 @@
 # BYO Server package metadata.
 [project]
-name = "pyocd-debug-mcp"
-version = "0.1.0"
-description = "Headless local MCP server for embedded debug and flash control via pyOCD"
+name = "byo-firmware-mcp"
+version = "0.2.0"
+description = "Headless local MCP server for provider-neutral firmware build, flash, and debug work"
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
+    "filelock>=3.16",
     "httpx>=0.27",
     "mcp>=1.2.0",
     "psutil>=5.9",
     "pyocd>=0.44.0",
     "pyelftools>=0.33",
     "pyserial>=3.5",
-    "python-dotenv>=1.0",
     "pyyaml>=6.0",
 ]
 
 [project.scripts]
-pyocd-debug-mcp = "pyocd_debug_mcp.server:main"
-pyocd-pack-repair = "pyocd_debug_mcp.pack_index_repair:main"
-pyocd-collect-artifacts = "pyocd_debug_mcp.artifact_collector:main"
-pyocd-native-build = "pyocd_debug_mcp.native_build:main"
+byo-firmware-mcp = "firmware_mcp.server:main"
+firmware-pack-repair = "firmware_mcp.pack_index_repair:main"
+firmware-collect-artifacts = "firmware_mcp.artifact_collector:main"
+firmware-native-build = "firmware_mcp.native_build:main"
 
 [dependency-groups]
 dev = [
     "pyright>=1.1",
+    "pytest>=8.0",
     "ruff>=0.6",
 ]
 
@@ -35,13 +36,13 @@ build-backend = "hatchling.build"
 [tool.hatch.build.targets.wheel]
 # Runtime board knowledge and generated evidence are project-owned; the package
 # intentionally contains only generic server code and protocol metadata.
-packages = ["src/pyocd_debug_mcp"]
+packages = ["src/firmware_mcp"]
 
 [tool.hatch.build.targets.sdist]
 include = [
     "/README.md",
     "/pyproject.toml",
-    "/src/pyocd_debug_mcp",
+    "/src/firmware_mcp",
 ]
 
 [tool.ruff]

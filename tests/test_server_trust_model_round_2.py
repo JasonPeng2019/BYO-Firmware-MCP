@@ -2,8 +2,7 @@
 
 from __future__ import annotations
 
-import json
-import os
+import sys
 import tempfile
 import unittest
 from dataclasses import dataclass
@@ -12,20 +11,10 @@ from unittest.mock import patch
 
 from elftools.common.exceptions import ELFError
 
-from pyocd_debug_mcp.kernel.operations import operation_timeout_seconds
-from pyocd_debug_mcp.native_build import _validate_declared_artifacts, _validate_paths
-from pyocd_debug_mcp.probe_families import (
-    ProbeFamilyRegistryError,
-    load_probe_family_registry,
-    provider_qualified_family,
-)
-from pyocd_debug_mcp.safety.linker import (
-    BuildArtifactSelection,
-    BuildRole,
-    LinkerEvidenceError,
-)
-from pyocd_debug_mcp.services.symbols import SymbolLookupError, find_symbols
-from pyocd_debug_mcp.setup_flow.targets import TargetResolutionError, TargetResolver
+from firmware_mcp.native_build import build_firmware
+from firmware_mcp.firmstore.providers import ProviderRecipe
+from firmware_mcp.services.symbols import SymbolLookupError, find_symbols
+from firmware_mcp.setup_flow.targets import TargetResolutionError, TargetResolver
 
 
 @dataclass(frozen=True)
@@ -47,33 +36,13 @@ class _FakeElf:
 
 
 class RoundTwoTrustedCallerTests(unittest.TestCase):
-    def test_default_uart_finalizer_timeout_matches_explicit_one_second(self) -> None:
-        base = {"timeout_seconds": 31.0}
-        self.assertEqual(
-            operation_timeout_seconds(
-                "write_serial",
-                {**base, "on_exit": {"action": "uart_write", "text": "exit"}},
-            ),
-            operation_timeout_seconds(
-                "write_serial",
-                {
-                    **base,
-                    "on_exit": {
-                        "action": "uart_write",
-                        "text": "exit",
-                        "timeout_seconds": 1.0,
-                    },
-                },
-            ),
-        )
-
     def test_symbol_search_returns_every_sorted_match_without_a_hidden_limit(self) -> None:
         symbols = [_Symbol(f"Match_{index:02d}", 0x2000 + (30 - index)) for index in range(25)]
         with tempfile.TemporaryDirectory() as directory:
             elf_path = Path(directory) / "symbols.elf"
             elf_path.write_bytes(b"not parsed by the fake reader")
             with patch(
-                "pyocd_debug_mcp.services.symbols.ELFBinaryFile",
+                "firmware_mcp.services.symbols.ELFBinaryFile",
                 return_value=_FakeElf(symbols),
             ):
                 matches = find_symbols(elf_path, "match")
@@ -120,91 +89,48 @@ class RoundTwoTrustedCallerTests(unittest.TestCase):
             )
         self.assertEqual(missing.exception.code, "target/support-missing")
 
-    def test_long_configuration_and_provider_ids_keep_their_grammar_and_uniqueness(self) -> None:
-        configuration_id = "build-" + "release_" * 20
-        self.assertGreater(len(configuration_id), 128)
-        selection = BuildArtifactSelection(
-            configuration_id, BuildRole.APPLICATION, Path("firmware.elf")
-        )
-        self.assertEqual(selection.configuration_id, configuration_id)
-        with self.assertRaises(LinkerEvidenceError):
-            BuildArtifactSelection("invalid id", BuildRole.APPLICATION, Path("firmware.elf"))
-
+    def test_long_provider_ids_are_recipe_data_not_a_source_registry(self) -> None:
         provider_id = "provider_" + "trusted_" * 10
         self.assertGreater(len(provider_id), 64)
-        document = {
-            "schema_version": 1,
-            "cli_fallback": {
-                "executable": "pyocd",
-                "executable_env": "PYOCD_EXE",
-                "inventory_argv": [["list"]],
-            },
-            "families": [
-                {"provider_id": provider_id, "label": "Provider", "text_aliases": ["probe"]}
-            ],
-        }
-        with tempfile.TemporaryDirectory() as directory:
-            path = Path(directory) / "probe_families.json"
-            path.write_text(json.dumps(document), encoding="utf-8")
-            registry = load_probe_family_registry(path)
-            self.assertEqual(registry.families[0].provider_id, provider_id)
+        recipe = ProviderRecipe.from_record(
+            {
+                "provider_id": provider_id,
+                "inventory_argv": ["invent", "connections"],
+                "worker_argv": ["invent", "worker"],
+            }
+        )
+        self.assertEqual(recipe.provider_id, provider_id)
 
-            document["families"].append(
-                {
-                    "provider_id": provider_id.upper(),
-                    "label": "Duplicate",
-                    "text_aliases": ["duplicate"],
-                }
-            )
-            path.write_text(json.dumps(document), encoding="utf-8")
-            with self.assertRaises(ProbeFamilyRegistryError):
-                load_probe_family_registry(path)
-
-            document["families"] = [
-                {"provider_id": "invalid.id", "label": "Invalid", "text_aliases": ["probe"]}
-            ]
-            path.write_text(json.dumps(document), encoding="utf-8")
-            with self.assertRaises(ProbeFamilyRegistryError):
-                load_probe_family_registry(path)
-
-        self.assertEqual(provider_qualified_family(f"{provider_id}:opaque:unique:id"), provider_id)
-
-    def test_stable_directory_link_is_allowed_but_retarget_and_escape_refuse(self) -> None:
+    def test_direct_build_accepts_an_explicit_artifact_outside_the_build_directory(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             project = root / "project"
-            target = root / "build-target"
-            replacement = root / "replacement"
-            link = root / "build-link"
+            build_dir = root / "build"
+            external_artifact = root / "firmware.bin"
             project.mkdir()
-            target.mkdir()
-            replacement.mkdir()
-            try:
-                os.symlink(target, link, target_is_directory=True)
-            except (NotImplementedError, OSError) as exc:
-                self.skipTest(f"directory symbolic links are unavailable: {exc}")
+            external_artifact.write_bytes(b"firmware")
 
-            _, build_dir = _validate_paths(str(project), str(link))
-            self.assertEqual(build_dir, link)
-            captured_root = build_dir.resolve(strict=True)
-            self.assertEqual(captured_root, target.resolve())
-            self.assertEqual(
-                _validate_declared_artifacts(build_dir, {}, expected_root=captured_root), {}
+            result = build_firmware(
+                str(project),
+                str(build_dir),
+                [sys.executable, "-c", "print('build complete')"],
+                artifacts={"firmware": str(external_artifact)},
+                timeout_seconds=10,
             )
 
-            outside = root / "outside.bin"
-            outside.write_bytes(b"outside")
-            with self.assertRaisesRegex(RuntimeError, "outside the captured build root"):
-                _validate_declared_artifacts(
-                    build_dir,
-                    {"custom": str(outside)},
-                    expected_root=captured_root,
-                )
-
-            link.unlink()
-            os.symlink(replacement, link, target_is_directory=True)
-            with self.assertRaisesRegex(RuntimeError, "replaced or redirected"):
-                _validate_declared_artifacts(build_dir, {}, expected_root=captured_root)
+            self.assertEqual(result["status"], "build_succeeded")
+            self.assertEqual(result["exit_code"], 0)
+            self.assertEqual(
+                result["artifacts"],
+                [
+                    {
+                        "role": "firmware",
+                        "path": str(external_artifact.resolve()),
+                        "format": "bin",
+                        "size_bytes": len(b"firmware"),
+                    }
+                ],
+            )
 
 
 if __name__ == "__main__":

@@ -19,13 +19,13 @@ def main() -> None:
         return
     if mode == "ready_then_hang":
         time.sleep(0.10)
-    send({"version": 1, "ready": True})
+    send({"version": 4, "ready": True})
     while line := sys.stdin.readline():
         request = json.loads(line)
         request_id = request["request_id"]
         if mode in {"open_hang", "close_hang", "partial_reply", "ready_then_hang"}:
             if mode == "partial_reply":
-                sys.stdout.write('{"version":1')
+                sys.stdout.write('{"version":4')
                 sys.stdout.flush()
             time.sleep(60)
             return
@@ -36,12 +36,12 @@ def main() -> None:
             sys.stdout.flush()
             return
         if mode == "wrong_id":
-            send({"version": 1, "request_id": request_id + 1, "ok": True, "result": "RUNNING"})
+            send({"version": 4, "request_id": request_id + 1, "ok": True, "result": "RUNNING"})
             return
         if mode == "typed_error":
             send(
                 {
-                    "version": 1,
+                    "version": 4,
                     "request_id": request_id,
                     "ok": False,
                     "error": {"kind": "target_control", "message": "fake target error"},
@@ -51,17 +51,62 @@ def main() -> None:
         if mode == "locked_error":
             send(
                 {
-                    "version": 1,
+                    "version": 4,
                     "request_id": request_id,
                     "ok": False,
                     "error": {"kind": "locked_target", "message": "fake locked target"},
                 }
             )
             return
-        if request["operation"] == "close":
-            send({"version": 1, "request_id": request_id, "ok": True, "result": None})
+        if mode == "cleanup_error":
+            send(
+                {
+                    "version": 4,
+                    "request_id": request_id,
+                    "ok": False,
+                    "error": {
+                        "kind": "target_connection_cleanup",
+                        "message": "worker preserved cleanup uncertainty",
+                        "primary": {"type": "RuntimeError", "message": "open failed"},
+                        "cleanup_diagnostics": [
+                            {
+                                "stage": "reset_release",
+                                "status": "unconfirmed",
+                                "error_type": "OSError",
+                                "error_message": "release denied",
+                                "recovery": "Disconnect, power-cycle, reconnect, and revalidate.",
+                            },
+                            {
+                                "stage": "session_close",
+                                "status": "unconfirmed",
+                                "error_type": "OSError",
+                                "error_message": "close denied",
+                                "recovery": "Disconnect, power-cycle, reconnect, and revalidate.",
+                            },
+                        ],
+                    },
+                }
+            )
             return
-        send({"version": 1, "request_id": request_id, "ok": True, "result": "RUNNING"})
+        if mode == "malformed_cleanup_error":
+            send(
+                {
+                    "version": 4,
+                    "request_id": request_id,
+                    "ok": False,
+                    "error": {
+                        "kind": "target_connection_cleanup",
+                        "message": "bad cleanup",
+                        "primary": {"type": "RuntimeError", "message": "open failed"},
+                        "cleanup_diagnostics": [{"stage": "session_close"}],
+                    },
+                }
+            )
+            return
+        if request["operation"] == "close":
+            send({"version": 4, "request_id": request_id, "ok": True, "result": None})
+            return
+        send({"version": 4, "request_id": request_id, "ok": True, "result": "RUNNING"})
 
 
 if __name__ == "__main__":

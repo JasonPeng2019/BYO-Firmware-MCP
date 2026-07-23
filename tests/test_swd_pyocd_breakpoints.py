@@ -6,10 +6,10 @@ from types import SimpleNamespace
 from typing import Any, cast
 from unittest.mock import patch
 
-from pyocd_debug_mcp.adapters import swd_pyocd
-from pyocd_debug_mcp.adapters.swd_interface import TargetSessionHandle
-from pyocd_debug_mcp.adapters.swd_pyocd import PyOCDSWDInterface
-from pyocd_debug_mcp.target_errors import (
+from firmware_mcp.adapters import swd_pyocd
+from firmware_mcp.adapters.debug_interface import TargetSessionHandle
+from firmware_mcp.adapters.swd_pyocd import PyOCDSWDInterface
+from firmware_mcp.target_errors import (
     TargetConnectionError,
     TargetControlError,
     TargetStateError,
@@ -130,12 +130,13 @@ class FakeBreakpointManager:
     def flush(self) -> None:
         self.target.calls.append(("breakpoint_manager.flush", None))
         error = (
-            self.target.manager_flush_errors.pop(0)
-            if self.target.manager_flush_errors
-            else None
+            self.target.manager_flush_errors.pop(0) if self.target.manager_flush_errors else None
         )
         if error is not None:
-            if self.target.pending_mutation == "remove" and self.target.hw_disable_before_flush_error:
+            if (
+                self.target.pending_mutation == "remove"
+                and self.target.hw_disable_before_flush_error
+            ):
                 breakpoint = cast(Any, self.target.realized)
                 if breakpoint is not None and swd_pyocd._breakpoint_kind(breakpoint) == "hw":
                     breakpoint.enabled = False

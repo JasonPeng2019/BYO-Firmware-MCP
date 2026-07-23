@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import subprocess
 import threading
 import unittest
 from pathlib import Path
@@ -8,16 +7,16 @@ from types import SimpleNamespace
 from typing import Any, cast
 from unittest.mock import Mock, patch
 
-from pyocd_debug_mcp import server
-from pyocd_debug_mcp.adapters.swd_interface import (
+from firmware_mcp import server
+from firmware_mcp.adapters.debug_interface import (
     TargetSessionHandle,
     TargetSessionMetadata,
 )
-from pyocd_debug_mcp.board_config import BoardConfig
-from pyocd_debug_mcp.firmstore.profiles import ProfileError
-from pyocd_debug_mcp.services.connections import ConnectionManager
-from pyocd_debug_mcp.setup_flow.validate import ValidationInventory, ValidationProbe
-from pyocd_debug_mcp.target_errors import TargetConnectionError
+from firmware_mcp.board_config import BoardConfig
+from firmware_mcp.firmstore.profiles import ProfileError
+from firmware_mcp.services.connections import ConnectionManager
+from firmware_mcp.setup_flow.validate import ValidationInventory, ValidationProbe
+from firmware_mcp.target_errors import TargetConnectionError
 
 
 FIRST_PROBE = "683710208"
@@ -30,7 +29,7 @@ def _board(board_id: str) -> BoardConfig:
         display_name="Test nRF52840 board",
         mcu_family="nrf52",
         probe_family="jlink",
-        pyocd_target="nrf52840",
+        target="nrf52840",
         probe_type="jlink",
         probe_hint_terms=("j-link", "nrf52840"),
         serial_hint_terms=(),
@@ -40,9 +39,7 @@ def _board(board_id: str) -> BoardConfig:
 
 def _inventory(*probe_uids: str) -> ValidationInventory:
     return ValidationInventory(
-        probes=tuple(
-            ValidationProbe(uid, f"J-Link {uid}", "jlink", uid) for uid in probe_uids
-        )
+        probes=tuple(ValidationProbe(uid, f"J-Link {uid}", "jlink", uid) for uid in probe_uids)
     )
 
 
@@ -105,6 +102,7 @@ class AssignmentAwareConnectTests(unittest.TestCase):
         assigned_connection: str | None,
         inventory: ValidationInventory,
         generic_uid: str = FIRST_PROBE,
+        requested_connection: str | None = None,
     ) -> tuple[str, Mock, Mock]:
         board = _board(board_id)
         connection_manager = _ConnectionManager()
@@ -129,9 +127,7 @@ class AssignmentAwareConnectTests(unittest.TestCase):
                 layout=SimpleNamespace(board_profile=lambda unused: Path("missing-profile.json"))
             ),
         )
-        assignment_store = SimpleNamespace(
-            connection_for=Mock(return_value=assigned_connection)
-        )
+        assignment_store = SimpleNamespace(connection_for=Mock(return_value=assigned_connection))
 
         with (
             patch.object(server, "assignment_store", assignment_store),
@@ -142,10 +138,9 @@ class AssignmentAwareConnectTests(unittest.TestCase):
             patch.object(server, "_profile_repository", profile_repository),
             patch.object(server.target_control, "open_session", open_session),
             patch.object(server, "_session_store", _SessionStore()),
-            patch.object(server, "gate_manager", SimpleNamespace(clear=Mock())),
             patch.object(server, "_record_event", Mock()),
         ):
-            result = server._connect_impl(board_id, allow_environment_overrides=False)
+            result = server._connect_impl(board_id, requested_connection)
 
         return result, open_session, generic_resolution
 
@@ -159,6 +154,121 @@ class AssignmentAwareConnectTests(unittest.TestCase):
         self.assertEqual(open_session.call_args.kwargs["unique_id"], SECOND_PROBE)
         self.assertIn(SECOND_PROBE, result)
         generic_resolution.assert_not_called()
+
+    def test_canonical_pyocd_plan_assignment_is_reresolved_to_raw_backend_uid(self) -> None:
+        _, open_session, generic_resolution = self._connect_with(
+            board_id="lora_tester_2",
+            assigned_connection="probe:000123",
+            inventory=_inventory("000123"),
+            requested_connection="probe:000123",
+        )
+
+        self.assertEqual(open_session.call_args.kwargs["unique_id"], "000123")
+        generic_resolution.assert_not_called()
+
+    def test_canonical_pyocd_plan_route_change_or_removal_blocks_before_backend(self) -> None:
+        profile_repository = SimpleNamespace(
+            load=Mock(side_effect=ProfileError("no stored profile")),
+            store=SimpleNamespace(
+                layout=SimpleNamespace(board_profile=lambda unused: Path("missing-profile.json"))
+            ),
+        )
+        for assignment, inventory in (
+            ("probe:000456", _inventory("000123", "000456")),
+            ("probe:123", _inventory("000123")),
+            (None, _inventory("000123")),
+            ("probe:000123", _inventory("000456")),
+        ):
+            with self.subTest(assignment=assignment, inventory=inventory):
+                open_session = Mock()
+                with (
+                    patch.object(
+                        server,
+                        "assignment_store",
+                        SimpleNamespace(connection_for=Mock(return_value=assignment)),
+                    ),
+                    patch.object(server, "connection_manager", _ConnectionManager()),
+                    patch.object(server, "_validation_inventory", return_value=inventory),
+                    patch.object(
+                        server, "resolve_board_config", return_value=_board("lora_tester_2")
+                    ),
+                    patch.object(server, "_profile_repository", profile_repository),
+                    patch.object(server.target_control, "open_session", open_session),
+                    patch.object(server, "_record_event", Mock()),
+                ):
+                    with self.assertRaises((TargetConnectionError, RuntimeError)):
+                        server._connect_impl("lora_tester_2", "probe:000123")
+                open_session.assert_not_called()
+
+    def test_under_reset_canonical_assignment_reaches_backend_as_raw_uid(self) -> None:
+        board = _board("lora_tester_2")
+        connection_manager = _ConnectionManager()
+        connect_under_reset = Mock(
+            side_effect=lambda **kwargs: TargetSessionHandle(
+                session=SimpleNamespace(board=SimpleNamespace(name="nRF52840")),
+                board=kwargs["board"],
+                probe_uid=kwargs["unique_id"],
+                route_used="under-reset",
+                target_override=kwargs["target"],
+            )
+        )
+        profile_repository = SimpleNamespace(
+            load=Mock(side_effect=ProfileError("no stored profile")),
+            store=SimpleNamespace(
+                layout=SimpleNamespace(board_profile=lambda unused: Path("missing-profile.json"))
+            ),
+        )
+        with (
+            patch.object(
+                server,
+                "assignment_store",
+                SimpleNamespace(connection_for=Mock(return_value="probe:000123")),
+            ),
+            patch.object(server, "connection_manager", connection_manager),
+            patch.object(server, "_validation_inventory", return_value=_inventory("000123")),
+            patch.object(server, "resolve_board_config", return_value=board),
+            patch.object(server, "_profile_repository", profile_repository),
+            patch.object(server.target_control, "connect_under_reset", connect_under_reset),
+            patch.object(server, "_session_store", _SessionStore()),
+            patch.object(server, "_record_event", Mock()),
+        ):
+            server._connect_with_wired_reset_impl("lora_tester_2", "probe:000123", None, None)
+
+        self.assertEqual(connect_under_reset.call_args.kwargs["unique_id"], "000123")
+
+    def test_under_reset_canonical_assignment_change_blocks_before_backend(self) -> None:
+        board = _board("lora_tester_2")
+        profile_repository = SimpleNamespace(
+            load=Mock(side_effect=ProfileError("no stored profile")),
+            store=SimpleNamespace(
+                layout=SimpleNamespace(board_profile=lambda unused: Path("missing-profile.json"))
+            ),
+        )
+        for assignment, inventory in (
+            ("probe:123", _inventory("000123")),
+            (None, _inventory("000123")),
+            ("probe:000123", _inventory("000456")),
+        ):
+            with self.subTest(assignment=assignment, inventory=inventory):
+                connect_under_reset = Mock()
+                with (
+                    patch.object(
+                        server,
+                        "assignment_store",
+                        SimpleNamespace(connection_for=Mock(return_value=assignment)),
+                    ),
+                    patch.object(server, "connection_manager", _ConnectionManager()),
+                    patch.object(server, "_validation_inventory", return_value=inventory),
+                    patch.object(server, "resolve_board_config", return_value=board),
+                    patch.object(server, "_profile_repository", profile_repository),
+                    patch.object(server.target_control, "connect_under_reset", connect_under_reset),
+                    patch.object(server, "_record_event", Mock()),
+                ):
+                    with self.assertRaises((TargetConnectionError, RuntimeError)):
+                        server._connect_with_wired_reset_impl(
+                            "lora_tester_2", "probe:000123", None, None
+                        )
+                connect_under_reset.assert_not_called()
 
     def test_normal_connect_rejects_missing_assigned_probe_without_fallback(self) -> None:
         open_session = Mock()
@@ -177,7 +287,7 @@ class AssignmentAwareConnectTests(unittest.TestCase):
             patch.object(server, "_record_event", Mock()),
         ):
             with self.assertRaisesRegex(RuntimeError, "assigned probe.*no longer present"):
-                server._connect_impl("lora_tester_2", allow_environment_overrides=False)
+                server._connect_impl("lora_tester_2")
 
         open_session.assert_not_called()
         generic_resolution.assert_not_called()
@@ -220,34 +330,36 @@ class AssignmentAwareConnectTests(unittest.TestCase):
                 RuntimeError,
                 "multiple matching probes found.*Rerun setup routing",
             ):
-                server._connect_impl("ambiguous_board", allow_environment_overrides=False)
+                server._connect_impl("ambiguous_board")
 
         open_session.assert_not_called()
         generic_resolution.assert_called_once()
 
-    def test_parent_validation_and_connect_inventory_never_call_native_pyocd_discovery(self) -> None:
-        native = Mock(side_effect=AssertionError("parent invoked native discovery"))
-        cli_listing = f"0  J-Link Probe  jlink:{FIRST_PROBE}\n"
+    def test_parent_validation_and_connect_inventory_use_runtime_probe_evidence(self) -> None:
+        from firmware_mcp.probe_inventory import ProbeInfo
+
         with (
-            patch(
-                "pyocd.core.helpers.ConnectHelper.get_all_connected_probes",
-                native,
+            patch.object(
+                server,
+                "list_connected_probes",
+                return_value=[ProbeInfo(FIRST_PROBE, "runtime probe", FIRST_PROBE)],
             ),
-            patch.object(server, "_run_cmd", return_value=(0, cli_listing, "")) as run_cmd,
             patch.object(server, "list_serial_ports", return_value=[]),
             patch.object(server.connection_manager, "assigned_board_ids", return_value=()),
+            patch.object(
+                server,
+                "resolve_probe_for_board_cli",
+                return_value=SimpleNamespace(probe=SimpleNamespace(uid=FIRST_PROBE), note=""),
+            ),
         ):
             inventory = server._validation_inventory()
             resolved = server._resolve_probe_uid_for_connect(
                 _board("board"),
                 None,
-                allow_environment_override=False,
             )
 
-        self.assertEqual(inventory.probes[0].usb_serial, f"jlink:{FIRST_PROBE}")
-        self.assertEqual(resolved, f"jlink:{FIRST_PROBE}")
-        native.assert_not_called()
-        self.assertGreaterEqual(run_cmd.call_count, 2)
+        self.assertEqual(inventory.probes[0].usb_serial, FIRST_PROBE)
+        self.assertEqual(resolved, FIRST_PROBE)
 
     def test_empty_cli_inventory_includes_active_uidless_connection_as_session_local(self) -> None:
         manager = ConnectionManager()
@@ -274,7 +386,7 @@ class AssignmentAwareConnectTests(unittest.TestCase):
 
         with (
             patch.object(server, "connection_manager", manager),
-            patch.object(server, "_run_cmd", return_value=(0, "", "")),
+            patch.object(server, "list_connected_probes", return_value=[]),
             patch.object(server, "list_serial_ports", return_value=[]),
         ):
             inventory = server._validation_inventory()
@@ -323,14 +435,12 @@ class AssignmentAwareConnectTests(unittest.TestCase):
                         "jlink",
                         None,
                     ),
-                    1.0,
                 ),
             )
             with self.assertRaisesRegex(TargetConnectionError, "does not match"):
                 server._validation_connect(
                     profile,
                     ValidationProbe("session:another-worker", "Other", "jlink", None),
-                    1.0,
                 )
 
         self.assertIs(reused.handle, handle)
@@ -362,182 +472,6 @@ class AssignmentAwareConnectTests(unittest.TestCase):
             connections[0]["connection_id"],
             "probe:session:runtime-uidless",
         )
-
-    def test_uidless_validation_stamps_exact_session_token_without_probe_prefix(self) -> None:
-        manager = ConnectionManager()
-        handle = TargetSessionHandle(
-            session=None,
-            board=_board("uidless-board"),
-            probe_uid=None,
-            route_used="worker",
-            target_override="nrf52840",
-            metadata=TargetSessionMetadata(
-                board_name="Test board",
-                probe_description="UID-less probe",
-                probe_family="jlink",
-                probe_uid=None,
-                live_part_number="nRF52840",
-                route_used="worker",
-                target_override="nrf52840",
-                runtime_token="runtime-uidless",
-            ),
-        )
-        assignment = manager.assign("uidless-board", handle, Mock(name="runtime"))
-        assignment_store = SimpleNamespace(
-            run_if_current=Mock(side_effect=lambda _connection, _board, action: action())
-        )
-        gate = SimpleNamespace(stamp_validation=Mock())
-        profile = SimpleNamespace(device_support=None, mcu_part_number="nRF52840")
-
-        with (
-            patch.object(server, "connection_manager", manager),
-            patch.object(server, "assignment_store", assignment_store),
-            patch.object(server, "gate_manager", gate),
-            patch.object(server._profile_repository, "load", return_value=profile),
-        ):
-            stamped = server._stamp_validation_session(
-                "uidless-board",
-                "validation-run",
-                assignment.connection_id,
-                None,
-                "nRF52840 0x1234",
-                "map-digest",
-            )
-
-        self.assertTrue(stamped)
-        self.assertEqual(
-            assignment_store.run_if_current.call_args.args[:2],
-            (assignment.connection_id, "uidless-board"),
-        )
-        self.assertFalse(assignment.connection_id.startswith("probe:"))
-        self.assertEqual(
-            gate.stamp_validation.call_args.kwargs["connection_id"],
-            assignment.connection_id,
-        )
-        self.assertEqual(
-            gate.stamp_validation.call_args.kwargs["probe_identity"],
-            assignment.connection_id,
-        )
-
-    def test_cli_command_uses_null_stdin_and_preserves_owned_runner_contract(self) -> None:
-        completed = SimpleNamespace(returncode=7, stdout="listed", stderr="diagnostic")
-        with patch.object(server, "run_owned", return_value=completed) as run_owned:
-            result = server._run_cmd(["pyocd", "list", "--probes"], timeout_seconds=4.25)
-
-        self.assertEqual(result, (7, "listed", "diagnostic"))
-        run_owned.assert_called_once_with(
-            ["pyocd", "list", "--probes"],
-            stdin=subprocess.DEVNULL,
-            capture_output=True,
-            text=True,
-            timeout=4.25,
-        )
-
-    def test_cli_inventory_hanging_child_is_bounded_and_terminated(self) -> None:
-        import sys
-        import time
-
-        from pyocd_debug_mcp.probe_inventory import list_connected_probes_cli
-
-        marker_root = Path.home() / ".pyocd-debug-mcp" / "runs" / "owned-processes"
-        before = set(marker_root.glob("*.json")) if marker_root.exists() else set()
-        started = time.monotonic()
-
-        probes = list_connected_probes_cli(
-            lambda _command: server._run_cmd(
-                [sys.executable, "-c", "import time; time.sleep(60)"],
-                timeout_seconds=0.05,
-            )
-        )
-
-        self.assertEqual(probes, [])
-        self.assertLess(time.monotonic() - started, 2.0)
-        after = set(marker_root.glob("*.json")) if marker_root.exists() else set()
-        self.assertEqual(after - before, set())
-
-    def test_inventory_reachable_tool_timeouts_compose_every_cli_fallback(self) -> None:
-        from pyocd_debug_mcp.kernel import operations
-        from pyocd_debug_mcp.kernel.processes import MAX_OWNED_PROCESS_CLEANUP_SECONDS
-
-        existing = {
-            "setup_overview": 30.0,
-            "connect": 30.0,
-            "connect_override": 30.0,
-            "get_setup_status": 30.0,
-            "connect_under_reset": 30.0,
-            "board_validate": 120.0,
-            "board_setup": 300.0,
-            "board_fix_setup": 300.0,
-        }
-        for fallback_count in (1, 4, 10):
-            commands = tuple(("pyocd", f"fallback-{index}") for index in range(fallback_count))
-            derived = (
-                operations.DEFAULT_OPERATION_TIMEOUT_SECONDS
-                + fallback_count
-                * (
-                    operations.DEFAULT_EXTERNAL_COMMAND_TIMEOUT_SECONDS
-                    + MAX_OWNED_PROCESS_CLEANUP_SECONDS
-                )
-                + operations.CANCELLATION_CLEANUP_GRACE_SECONDS
-            )
-            with self.subTest(fallback_count=fallback_count), patch.object(
-                operations, "configured_probe_cli_commands", return_value=commands
-            ):
-                for tool_name, prior_timeout in existing.items():
-                    with self.subTest(tool_name=tool_name):
-                        self.assertEqual(
-                            operations.operation_timeout_seconds(
-                                tool_name,
-                                {"probe_uid": None}
-                                if tool_name == "connect_override"
-                                else None,
-                            ),
-                            max(prior_timeout, derived),
-                        )
-                self.assertEqual(
-                    operations.operation_timeout_seconds("get_state"),
-                    operations.DEFAULT_OPERATION_TIMEOUT_SECONDS,
-                )
-
-    def test_real_sequential_hanging_fallbacks_fit_derived_budget_without_markers(self) -> None:
-        import sys
-        import time
-
-        from pyocd_debug_mcp import probe_inventory
-        from pyocd_debug_mcp.kernel import operations
-        from pyocd_debug_mcp.kernel.processes import MAX_OWNED_PROCESS_CLEANUP_SECONDS
-        from pyocd_debug_mcp.probe_inventory import list_connected_probes_cli
-
-        execution_timeout = 0.05
-        commands = tuple(
-            (sys.executable, "-c", "import time; time.sleep(60)") for _ in range(2)
-        )
-        marker_root = Path.home() / ".pyocd-debug-mcp" / "runs" / "owned-processes"
-        before = set(marker_root.glob("*.json")) if marker_root.exists() else set()
-        derived_budget = (
-            operations.DEFAULT_OPERATION_TIMEOUT_SECONDS
-            + len(commands) * (execution_timeout + MAX_OWNED_PROCESS_CLEANUP_SECONDS)
-            + operations.CANCELLATION_CLEANUP_GRACE_SECONDS
-        )
-
-        started = time.monotonic()
-        with patch.object(
-            probe_inventory,
-            "configured_probe_cli_commands",
-            return_value=commands,
-        ):
-            probes = list_connected_probes_cli(
-                lambda command: server._run_cmd(
-                    command,
-                    timeout_seconds=execution_timeout,
-                )
-            )
-        elapsed = time.monotonic() - started
-
-        self.assertEqual(probes, [])
-        self.assertLess(elapsed, derived_budget)
-        after = set(marker_root.glob("*.json")) if marker_root.exists() else set()
-        self.assertEqual(after - before, set())
 
 
 if __name__ == "__main__":

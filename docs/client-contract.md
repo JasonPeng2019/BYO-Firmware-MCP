@@ -1,258 +1,103 @@
-# MCP client contract
+# BYO Firmware MCP client contract
 
-This document defines how an MCP client must interact with BYO Server. The live
-tool schema and server enforcement remain authoritative.
+Read `firmware://start-here` first. Its flow is detect -> configure -> build ->
+flash -> verify -> debug, and it includes recovery routes. Use only the live
+schemas below; no alternate public names are supported.
 
-## Start and discovery
+## Cooperative permission and exact plans
 
-Call `initialization_handshake` after every new server connection. Use the
-returned `tools/list` as the current advertised surface and respond to
-`notifications/tools/list_changed`. Never guess or directly call an unlisted
-action. A client whose callable bindings remain static may use only the exact
-single-child `action_batch` fallback returned by an accepted plan, unchanged.
-That fallback is transport compatibility, not authority. Visibility is
-advisory; every action still has a physical handler lock.
+Every target-affecting setup, connection, execution, register/memory,
+breakpoint, UART, flash, and recovery action has a required `plan_id`. First
+call `request_hardware_permission(board_id, scope="routine-session")`; relay
+the MCP elicitation or the exact returned approval command to the user. The
+response contains exact structured `approval_argv`, beginning with the server's
+absolute Python interpreter and `-m firmware_mcp.server approve-hardware`
+(preferred for direct process execution), plus `approval_command` text rendered
+for POSIX `sh` or Windows PowerShell, not generic `cmd.exe`; relay either unchanged.
+The agent never runs the command or supplies the
+authoritative finite call budget. Then call `get_hardware_permission`, create
+one `create_hardware_plan(grant_id, board_id, objective, expected_result,
+actions)`, and call its exact action with the returned `plan_id`.
+`get_hardware_plan`, `revoke_hardware_permission`, and
+`cancel_hardware_plan` inspect or stop those records. Permission is a
+cooperative fallibility control for stale/wrong/thrashing calls, not an
+attacker-defense or project-risk judgement. Changed connection/profile/identity,
+stable serial, or artifact evidence invalidates the affected state.
 
-Ask the user in ordinary language for one familiar name per board they want to
-use in the current project, or “no board.” Other visible debug probes may remain
-unassigned. Do not ask for board IDs, connection IDs, continuation tokens,
-permission enum values, or structured payloads. Never silently select, rename,
-reassign, or rewrite a profile.
+## Setup and connection
 
-`no board` is a normalized literal sentinel, not a candidate board name. Pass
-it to `setup_overview` by itself. If it is mixed with names, ask the user to
-clarify in ordinary language and do not route or access hardware.
+- `get_setup_overview(board_names=None, connection_assignments=None)` inventories
+  and routes candidates.
+- Follow an emitted `next_call` only when it exists. A fresh-board route with
+  `template_status=non_executable` is not a callable request: collect every
+  `required_user_facts` item, replace unknowns in `arguments_template`, then
+  construct and call the complete `setup_board` request. Do not invent values
+  or invoke the partial template.
+- `setup_board(board_id, connection_id, display_name, mcu_part_number, requires_uart, baud, serial_id, datasheet_path)` starts a new board-bound setup run.
+- An unknown provider may pass `provider_recipe` with exactly `provider_id`,
+  `inventory_argv`, and `worker_argv` to `get_setup_overview` and `setup_board`.
+  Its returned connection ID is `provider:<provider_id>:<connection_id>`; neither
+  component may contain `:` so this public route remains unambiguous and reversible.
+- `repair_board_setup(board_id)` retries the current run; `continue_board_setup(board_id, continuation_id, response)` supplies the exact requested continuation.
+- `validate_board(board_id)` returns current diagnostics; `get_setup_status(board_id)` reports profile and connection evidence.
+- `connect_board(board_id, probe_id=None, target=None, board_config_path=None, under_reset=False)` creates one board-local session. Copy the exact returned `board_id` key; a disconnected returning board can request permission and plan this stored route while disconnected, before connecting. Null `probe_id` uses its stored assignment, a pyOCD spelling must be stably equivalent, external provider IDs match exactly, `target` must match verified support, `board_config_path` must be null, and `under_reset` uses the same route. `disconnect_board(board_id)` closes it. `get_board_info(board_id)` returns live board facts.
 
-Pass those familiar names to `setup_overview`. Use its per-name route and
-server-generated board ID. Every matching profile, including an incomplete or
-previously failed profile, goes to `board_validate` first. Follow its exact
-attachment, retry, safety, or repair remedy. Unknown names go to setup. Do not
-make the user perform that profile or hardware-inventory matching.
+## Execution and physical access
 
-Copy each route's `load_call`, `next_call`, `plan_initialization_call`, and
-server-known `plan_action_parameters_template` values directly. Never ask the
-user for a board ID, connection ID, stable UART identity, current port path,
-datasheet hash, or validation retry field. Ask the user only for the listed
-ordinary-language facts and friendly ambiguous hardware choice. The diagnostic
-port path may change; the stable identity remains the plan input. After
-`load_setup_tool`, follow its bounded guidance for that requested tool only.
-For `validation_needs_user_input`, copy the returned `accepted_response` as the
-exact retry; it preserves any probe or UART selector already resolved. Terminal
-validation statuses deliberately have `accepted_response: null`.
+`get_target_state(board_id)`, `halt_target(board_id)`, `resume_target(board_id)`,
+`step_target(board_id)`, and `reset_target(board_id, halt_after_reset=False)`
+report observed state rather than promising persistent execution.
 
-## Plans
+Use `read_cpu_register(board_id, register_name)` and
+`write_cpu_register(board_id, register_name, value, verify=True)` for supported
+core registers. Use `write_peripheral_register(board_id, address, mask, value,
+width_bits=32, verify=True)` for mapped peripheral state. `address` can be a
+number or decimal/hex text. `read_memory(board_id, address, width_bits=32,
+length_bytes=None)` and `write_memory(board_id, address, value, width_bits=32,
+verify=True)` use current provider memory facts. `find_symbol(board_id, query,
+elf_path)` requires an explicit ELF. `set_breakpoint(board_id, address)` and
+`remove_breakpoint(board_id, address)` use numeric addresses returned by symbol
+search or another trusted source.
 
-For a `*-plan` tool, first call it with every field set to JSON `null`. Relay
-its guidance, then submit only the exact plan JSON envelope. Put the exact
-underlying action arguments inside the nested `action_parameters` object; do
-not flatten them and do not add prose, Markdown, a wrapper key, or extra
-fields. Omit `user_permission` from populated non-permission plans. Do not use
-placeholders or partial NULL requests. An accepted plan is bound to one run,
-board, session, tool, and canonical parameter set.
+## Build, firmware, and serial
 
-An accepted plan returns machine-readable `preferred_call` and
-`stable_client_fallback` objects plus only concise unlock guidance and reminders. It does not
-repeat the all-NULL planning tutorial or require the client to construct the plan again. Prefer the direct action when the client
-exposes it. If it does not, submit the fallback's exact `action_batch`
-arguments. Never edit its board, child name, or arguments, and never combine a
-primary setup call with its separately conditioned paired-repair fallback.
-The child traverses the identical plan, permission, validation, gate,
-freshness, lock, timeout, budget, event, and cleanup path as a direct call.
+`build_firmware(project_dir, build_dir, command, working_dir=None,
+environment=None, artifacts=None, timeout_seconds=None)` runs an
+exact argv list without a shell and with closed stdin: builds receive required input through argv,
+working directory, and environment, never the MCP protocol stream. `collect_build_artifacts(output_dir, elf_path,
+hex_path, bin_path, map_path, expected_roles)` normalizes explicit outputs.
+`flash_firmware(board_id, firmware_path, flash_role, halt_after_reset=False,
+artifact_target_evidence_path=None, plan_id)` requires an explicit physical
+role. `application` is routine; `bootloader`, `full-device`, and `sensitive`
+are one-action, one-attempt destructive plans with `grant_id=null`, followed
+by `request_hardware_permission(scope="destructive-once", plan_id=...)`.
+The approval view is the exact canonical disclosure of image bytes, ranges,
+touched erase sectors, roles, live identity/map evidence, and optional exact
+artifact-part metadata. Target-part comparison is `matched` only when both the
+artifact and the current live observation are exact; otherwise it is honestly
+`unavailable` and does not infer a part. `recover_target(board_id, mechanism,
+plan_id)` has no default: select an exact current mechanism reported by
+`get_board_info`, approve its disclosed affected ranges, and treat provider
+acceptance as distinct from effect verification/session preservation.
 
-Plan replacement is atomic. A pre-execution refusal does not spend a call.
-Once execution starts, success, backend failure, timeout, and cancellation all
-spend exactly one call. When a budget is exhausted, initialize and submit a new
-plan instead of retrying the hidden action.
+`read_serial(board_id, timeout_seconds, expected_text=None, baud=None,
+port=None, reset_on_open=False)`, `write_serial(board_id, text,
+timeout_seconds, baud=None, port=None, line_ending="none")`, and
+`exchange_serial(board_id, steps, timeout_seconds, ...)` each require a
+caller-supplied positive finite `timeout_seconds` in seconds; the server has no
+serial timeout default. For example, `timeout_seconds=3.0` is a caller-chosen
+capture duration, not a server default. `baud` is bits per second and
+`line_ending` is one of `none`, `lf`, `cr`, or `crlf`; exchange step objects use
+the same spelling. `wait_duration(board_id, duration_seconds)` accepts positive
+finite seconds.
 
-## Connection routing
+## Evidence and recovery
 
-Use visible `connect` only with the server-generated `board_id`. It is a
-profile-only action: do not supply or infer a probe UID, pyOCD target, external
-board-config path, or launch-environment override. Unknown fields are rejected
-through direct MCP dispatch and through `action_batch`.
-
-If normal profile/probe resolution fails and a deliberate exceptional manual
-connection is appropriate, initialize `connect_override-plan`. Only its hidden
-`connect_override` action accepts run-scoped `probe_uid`, `target_override`, or
-`external_board_config`; those values never rewrite a profile. Do not use the
-override path to conceal a profile/hardware mismatch that setup or validation
-should correct.
-
-## Permission
-
-Conversation is not permission. When a plan requests approval, relay its
-ordinary-language disclosure and pass only the exact structured permission
-value the tool requests.
-
-`one-time` permission is consumed at execution start. `full-session`
-permission applies only where the plan definition allows it and never covers
-mass erase. Revocation, disconnect, replacement, target/probe/artifact-digest
-change, or restart invalidates the applicable authority.
-
-For `target_unlock`, relay the complete live destructive disclosure: board and
-target identity, probe identity, vendor mechanism, mass-erase status, every
-erased range/bank/sector, all-nonvolatile warning, expected losses, and plan
-identifier. Approval is fresh, one-time, and valid only for the unchanged
-plan. A successful recovery does not open the gate.
-
-## Setup, research, and validation
-
-Call the all-NULL `board_setup-plan` first whenever hardware access is desired,
-before loading it and before any other `*-plan` tool. Ask for the familiar
-board name and exact board/MCU identity. Every matching YAML routes first to
-`board_validate`; an absent profile or a specific validation remedy routes
-through `load_setup_tool` and setup/repair. Fresh setup also requires a local
-official PDF datasheet and exact MCU ordering code. Supply its digest only as an
-optional cross-check; the server computes the authoritative SHA-256 and captures
-the exact bytes. Do not ask the user for a CMSIS-Pack filename or pyOCD target.
-If no exact local support exists, research one official pack and return only the
-exact response fields; the server derives and verifies the leaf and target.
-Select UART by the
-stable identity returned by inventory, not by a volatile COM/device path. The server
-inventories probes, serial ports, cache matches, targets, and builds before it
-requests research. Relay only the supplied `agent_prompt` and friendly
-`choices`; never expose the rest of the control payload.
-
-Research responses must include exactly `exact_response_fields`. Do not add
-sources, explanations, authority, or profile changes unless requested. Never
-change `fields_that_must_not_change`, especially `mcu_part_number`. Research
-does not grant permission, open a gate, or persist a candidate.
-
-When setup returns `setup_needs_user_input` or `setup_research_required`, call
-`continue_setup` with the same board and continuation plus exactly the returned
-response object. For a friendly choice this is only one returned `choice_id`.
-For pack research it is the exact official-source schema; never add a proposed
-target, address, mask, region, or partition. After an
-accepted continuation, call `board_fix_setup` under the still-active paired
-allowance. Never retry `board_setup` or bypass the continuation by editing
-`.firm`.
-
-The exact current plan fields, budgets, and permission modes are generated from
-the runtime source of truth in [`plan-tool-contract.md`](plan-tool-contract.md).
-Artifact load addresses for `flash_application` and `flash_bootloader` come
-only from the ELF/HEX; neither plan accepts a caller-provided target address.
-
-Setup and validation payloads use these common fields:
-
-- `status` and `code`: deterministic machine routing;
-- `continuation_id`: opaque resume identity, never user-facing;
-- `agent_prompt`: the only prose to relay;
-- `choices`: friendly options to present without internal IDs;
-- `observed`: server evidence, not user-facing prose;
-- `constraints`: rules that remain in force;
-- `rejected_candidates`: prior strict research failures;
-- `accepted_response`: validated continuation content, if any; and
-- `validation_plan`: server-controlled remaining checks.
-
-Validation has exactly six results:
-
-- `validation_passed`
-- `validation_needs_user_input`
-- `validation_research_required`
-- `validation_blocked`
-- `validation_failed`
-- `validation_incomplete`
-
-Only `validation_passed` can stamp the current in-memory gate. Validation proves
-the selected probe connection, replayed exact or explicitly compatible live
-identity evidence, and association with the current map. Support without a safe
-identity proof remains connected-diagnostics-only. It never captures UART or asserts firmware behavior; use
-`get_setup_status.ready_for_uart_work` for current attachment readiness. A
-compatible core proof permits bounded read/debug and artifact-contained application programming,
-but not bootloader or recovery authority; inspect `identity_capability` and
-`ready_for_flash_planning` before deployment. A
-silicon mismatch must not rewrite the profile. Setup, refresh, reports, cache
-hits, or a prior validation result do not open a gate.
-
-## Safety and remedies
-
-Never supply allowed ranges. Stable authority comes from the one strict
-`memory_map.yaml`; selected ELF/HEX bytes are checked again at execution time.
-Guarded reads require current board validation. Writes additionally require a
-live identity proof associated with the current canonical map digest. UNKNOWN
-or unmapped spans and write-only peripheral reads are denied before backend
-access. An authoritatively mapped PROHIBITED security/provisioning span remains
-readable, but every mutation of it is refused. A refresh never turns a
-deliberately prohibited security/provisioning range into ordinary memory.
-
-Follow the exact remedy named in a refusal:
-
-- `board_safety_refresh` deterministically rebuilds the complete map from the
-    profile plus replayed server-owned evidence. A present unreadable generic map
-    refuses replacement because possible one-way deployment ownership cannot be recovered; and
-- `board_validate` establishes live identity proof and map association when it
-  is absent or an identity anchor changed.
-
-Refresh accepts only `board_id`; it never accepts artifacts or caller ranges.
-It may update the map association of existing live identity proof, but cannot
-create identity authority. A missing application or bootloader partition stays
-fail-closed and cannot be inferred from the full-flash ceiling.
-
-The three validation trigger categories are: first live connection after setup
-or server restart; reconnect, disconnect, or connection/probe change; and live
-identity mismatch, repair, or recovery. Ordinary build/relink, flash, reset,
-UART work, safety refresh, artifact collection, and report/bookkeeping changes
-do not themselves trigger validation.
-
-For firmware, inspect the project and use the general native-build helper template returned by
-`get_setup_status.build_guidance`: supply the exact argv after `--`, plus cwd/environment/output
-parameters as needed. Prefer compatible local tools, but normal acquisition is allowed when none
-exist; network is inherited unless `--offline` is explicitly chosen. That option is a best-effort
-common-client environment guard, not a network sandbox. The server never detects or selects a
-provider, SDK, compiler, target, or installation layout. Optionally call
-`collect_build_artifacts`, submit the matching flash plan, then call the flash
-action. Do not refresh merely because build bytes changed. Plan acceptance
-binds the selected artifact digest. Before backend mutation, execution verifies
-that digest and checks ELF/HEX target, load segments, entry point, vector table,
-deployment allocation/partition, and erase sectors. A new generic board begins
-with no deployment authority. An approved plan-bound application flash creates a minimal
-artifact-derived allocation, or monotonically expands it for a larger artifact, after the server
-proves the pack driver is sector-bounded. Existing bytes in those sectors may be replaced; the whole
-device need not be blank. The allocation is persisted before programming so a failed or partial
-flash never leaves modified bytes without durable ownership.
-HEX requires a matching ELF
-companion. Do not rebuild the selected output concurrently after execution
-starts.
-
-`set_breakpoint` likewise requires the current selected ELF. Executability is
-proved from that ELF's executable segments; the whole stable application
-partition is never treated as executable.
-
-Use `serial_exchange` when a console command's immediate acknowledgement or a
-later command depends on volatile application state. UART readiness remains a
-separate `get_setup_status` barrier and never establishes live silicon identity.
-Both `read_serial` and `serial_exchange` return the complete time-bounded UART
-capture as JSON-escaped `captured_text`; exchanges also return complete
-`step_captured_texts` in step order. These fields are not excerpts. Capture is
-bounded by the planned read windows and the server's operation deadline, not by
-an undocumented byte or presentation limit.
-
-Recovery plans use the target-neutral `backend_mass_erase` mechanism. The
-server checks live backend support, renders the complete map-derived erase
-disclosure, and requires fresh one-time permission. Recovery clears live proof
-and requires validation afterward.
-
-All heavy dependencies remain local-first. Inspect bounded standard locations,
-validate any reused SDK/pack/toolchain, and explain what is absent before a
-large network fallback. Never infer authority from a discovered filename.
-
-Refresh cannot reopen a gate after disconnect or restart. Never interpret a
-disk artifact, plan, permission, successful refresh, report, or cache entry as
-live identity proof.
-
-## Batch, cancellation, and exit
-
-`action_batch` contains one board and a nonempty list of ordinary child calls.
-Do not nest it. Each child is authorized only when it reaches normal dispatch;
-the batch stops after the first failure. A server-generated static-client plan
-fallback always contains exactly one child and must be submitted unchanged.
-
-Cancellation is best-effort for interruptible work. A flash transaction that
-has started completes within its finite backend bound before resources are
-released. Do not interrupt `target_unlock` or bootloader flash as an operating
-practice.
-
-Observe every safe-exit reminder. Structured `on_exit` is available only on
-eligible serial tools and accepts only `uart_write` or `reset_and_run`; never
-send shell strings or arbitrary commands. Disconnect explicitly when work is
-complete.
+All mutations report whether values were verified, unavailable, or not
+requested. A failed flash can retain successful program/readback evidence while
+showing a reset failure separately. When a connection drops, reconnect with
+`connect_board`, then use `validate_board` if diagnostics request it. For an
+incomplete setup continuation, use `continue_board_setup` and retry
+`repair_board_setup`. For a build failure, correct the exact argv or artifact
+path and rerun `build_firmware`; for UART mismatch or timeout, inspect the raw
+bytes returned by `read_serial` or `exchange_serial` before changing a timeout.

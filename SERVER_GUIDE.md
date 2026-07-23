@@ -1,169 +1,120 @@
-# BYO Server Guide
+# BYO Firmware MCP server guide
 
-BYO Server is a headless local MCP server for safe embedded-board setup,
-debugging, serial I/O, flash, and recovery through pyOCD. It runs over stdio
-only. Any compatible MCP client can use it; the server, not the client, owns
-plans, permissions, board routing, validation, safety containment, timeouts,
-and cleanup.
+BYO Firmware MCP is the `byo-firmware-mcp` version 0.2.0 distribution; its
+Python package is `firmware_mcp`. Start the local stdio server with the portable
+command in the [README](README.md), then read `firmware://start-here`. The server does not
+select a board, probe, serial port, toolchain, or firmware on a caller's behalf.
 
-## Start the server
+## Work with boards
 
-The repository is intentionally a fresh-start distribution: it contains no board profiles, packs,
-reference firmware, reviewed-device catalog, or generated `.firm` state. Install the locked
-environment, then register the stdio command with any MCP-compatible client:
+Use `get_setup_overview` to inventory candidate boards and routes. Follow an
+emitted `next_call` only when it exists. For a fresh-board route with
+`template_status=non_executable`, collect every `required_user_facts` item,
+replace each unknown in `arguments_template`, then construct and call the
+complete `setup_board` request. Do not invent values or invoke the partial
+template. If setup requests research or a choice, provide its exact continuation
+through `continue_board_setup`, then use `repair_board_setup` as often as
+needed. `validate_board` returns live diagnostic evidence, while
+`get_setup_status` reports persisted configuration and whether a connection is
+currently present.
 
-```text
-uv sync --locked
-uv run --project <absolute-path-to-BYO-Server> --locked pyocd-debug-mcp
-```
+`connect_board` establishes the board-local session. Copy the exact `board_id`
+key returned by `get_setup_overview` or `get_setup_status`; an illustrative
+name is never a route. A returning board may request permission and create its
+exact `connect_board` plan while disconnected: the plan replays the saved
+profile and assignment. A null `probe_id` uses that assignment; a supplied
+pyOCD UID must be stably equivalent to it, while external provider connection
+IDs must match exactly. A supplied `target` must match verified saved support,
+`board_config_path` must be null, and `under_reset=true` uses that same route
+with wired reset. Call `disconnect_board` when board work ends. A physical
+connection cannot be assigned to two board IDs, and same-board work is
+serialized.
 
-The client-specific registration wrapper varies, but the command and arguments do not. Stdout is
-reserved for MCP framing. Each project should set `BYO_MCP_ARTIFACT_ROOT` when it needs state outside
-its default project `.firm` directory. Setup creates project-local profiles and verified pack
-metadata only after the client supplies the user's exact part number, datasheet, and researched target
-or pack candidate.
+After connecting, publish current semantic evidence with
+`refresh_safety_map(board_id, layout_path, application_elf_path, plan_id)`.
+It is a visible routine guarded call, not destructive authority. It binds the
+exact selected layout/ELF bytes and atomically associates the canonical
+`.firm/safety/<board_id>/memory-map.json` with the profile. A layout is JSON or
+YAML schema version 1 with the exact board ID and `regions` containing `name`,
+one explicit semantic `role`, half-open `start`/`end`, `source_path`, and
+`source_locator`. Provider facts without semantic evidence remain `unknown`;
+readable unknown spans can be observed with that uncertainty, but writes do not
+gain authority. A changed digest invalidates existing plans for that board.
+The associated live identity record is capability-aware: `exact` includes a
+matched current part, `compatible` proves only a compatible family/core fact,
+and `unavailable` names the missing observation. A verified exact or compatible
+contradiction blocks the operation; compatible and unavailable evidence never
+pretend to be exact-part authority.
 
-Generic command-line utilities are available without any bundled board data:
+## Cooperative-user plan workflow
 
-```text
-uv run --locked pyocd-pack-repair --help
-uv run --locked pyocd-native-build --help
-uv run --locked pyocd-collect-artifacts --help
-```
+Visible hardware actions require an exact `plan_id`; visibility is not
+authority. Before a routine action, call
+`request_hardware_permission(board_id, scope="routine-session")`. Relay the
+MCP elicitation to the cooperative user, or relay the returned exact
+approval command unchanged when elicitation is unavailable. The response's
+exact `approval_argv` starts with the server's absolute Python interpreter and
+`-m firmware_mcp.server approve-hardware` (prefer it when direct argv execution
+is available); `approval_command` renders those exact tokens for POSIX `sh` or
+Windows PowerShell, not generic `cmd.exe`. The agent does not run that
+command or choose the authoritative finite budget. After direct user approval,
+call `get_hardware_permission`, then
+`create_hardware_plan(grant_id, board_id, objective, expected_result, actions)`
+with each exact action argument except `plan_id`; pass the returned `plan_id` to
+that one action. `get_hardware_plan`, `revoke_hardware_permission`, and
+`cancel_hardware_plan` expose or stop the state. A plan is bound to board,
+profile/session evidence, serial evidence where relevant, and artifact bytes
+where relevant; a changed binding needs a new request and plan. This protects
+against honest stale/wrong calls and thrashing, not against an attacker or a
+user-selected project risk.
 
-After setup validation, `get_setup_status` returns advisory, provider-neutral
-build guidance. The client inspects the project's own build metadata, resolves
-its actual toolchain and target, and supplies exact argv to
-`<server-python> -m pyocd_debug_mcp.native_build ... -- <command>`. The server
-does not choose an SDK, compiler, provider, or target. Compatible local tools
-are preferred; ordinary acquisition is allowed when none is usable. Build
-guidance never grants memory authority.
+## Build, flash, and debug
 
-Plan fields, budgets, and permission modes are listed in
-[`docs/plan-tool-contract.md`](docs/plan-tool-contract.md), which is derived
-from the same definitions used by the live MCP schemas. Setup resolves the
-current UART port from the selected stable identity and computes the datasheet
-SHA-256 itself; clients never need to bind a COM path or run a hash command.
+Call `build_firmware` with the project and build directories plus an exact argv
+list. It runs that command directly and returns complete process evidence and
+all declared or discovered artifacts. A zero exit with no artifact is honestly
+reported as process success with the next action to supply or locate output.
+Use `collect_build_artifacts` when a canonical manifest/copy of known outputs is
+useful.
 
-## Tool surface
+`flash_firmware` requires an ELF, AXF, or Intel HEX `firmware_path` and one
+explicit `flash_role`. `application` uses the ordinary finite routine grant;
+`bootloader`, `full-device`, and `sensitive` use a single-action destructive
+plan with `grant_id=null`, followed by one exact `destructive-once` approval.
+The approval displays reproducible image, erase-sector, role, identity, and
+target-comparison evidence. The provider receives a server-owned snapshot of
+those exact bytes, then Slice-1 byte readback remains required.
 
-Call `initialization_handshake` first. The live `tools/list` response is the
-authoritative advertised surface; visibility can change after plan/setup calls.
-A visible tool is never proof of authorization.
-After a plan is accepted, dynamic clients should use its newly exposed direct
-action. Clients with a static function binding can use the exact returned
-single-child `action_batch` fallback; it follows the identical guarded dispatch
-path and is never permission to invent hidden calls.
+Use `get_target_state`, `halt_target`, `resume_target`, `step_target`, and
+`reset_target` for core control. Use `read_cpu_register`, `write_cpu_register`,
+and `write_peripheral_register` only for provider-supported state. Physical
+memory access is through `read_memory` and `write_memory`; it checks both live
+provider region facts and the current map role, and reports unknown readable
+evidence honestly. `write_memory` is limited to mapped `ordinary_ram` and
+peripheral writes to mapped `peripheral`; special physical roles remain pending
+the future destructive disclosure path. Resolve symbols with `find_symbol`; a
+numeric `set_breakpoint` also needs an exact `elf_path` whose file-backed
+executable PT_LOAD bytes cover the address. `remove_breakpoint` rechecks current
+executable map coverage without reopening an ELF.
 
-Always-advertised operational tools cover:
+## UART and recovery
 
-- connection and inspection: profile-only `connect`, `disconnect`, `get_board_info`,
-  `get_state`, `read_cpu_register`, `read_execution_state`, `find_symbol`, and
-  `read_memory_symbol`;
-- ordinary execution: `halt`, `resume`, `step`, `reset_and_run`,
-  `remove_breakpoint`, and bounded `wait`;
-- setup and safety: familiar-name `setup_overview`, `load_setup_tool`,
-  setup-first `board_setup-plan`, strict `continue_setup`,
-  application/bootloader-aware `board_safety_refresh`, `board_validate`,
-  and the non-authoritative `get_setup_status` readiness barrier;
-- orchestration: `action_batch`; and
-- the `*-plan` tools for guarded actions.
+`read_serial` preserves empty exploratory captures as successful transport
+evidence and returns raw byte evidence. `write_serial` and `exchange_serial`
+report partial writes as failures. Use `baud`, `port`, `timeout_seconds`, and
+`line_ending` consistently. `wait_duration` deliberately holds the board-local
+operation boundary for a finite positive duration.
 
-Guarded actions are registered but hidden until their exact plan unlocks them:
+`get_board_info` lists the connected provider's live recovery mechanisms.
+`recover_target(board_id, mechanism, plan_id)` has no default mechanism and
+uses the same exact one-time destructive disclosure. A returned command only
+proves provider acceptance; unless current-session preservation, identity, and
+regions are freshly observed, reconnect, validate, and refresh the safety map.
 
-- connection/execution: `connect_override`, `connect_under_reset`,
-  `reset_and_halt`, `write_cpu_register`, and `set_execution_state`;
-- memory/register/debug: `read_memory_address`, `write_memory`,
-  `register_write`, and `set_breakpoint`;
-- serial and flash: `read_serial`, `write_serial`, single-open
-  `serial_exchange`, `flash_application`, and
-  permission-locked `flash_bootloader`;
-- destructive recovery: `target_unlock`, which requires fresh one-time
-  approval and leaves the validation gate closed; and
-- setup mutation: `board_setup` and `board_fix_setup`, exposed only through
-  the setup loader and plan workflow.
-
-Normal `connect(board_id)` resolves only the named project profile and its
-profile-matched probe. It accepts no probe UID, target, external board-config,
-or launch-environment override. If an exceptional manual connection is truly
-needed, initialize `connect_override-plan` and use the hidden run-scoped
-`connect_override`; it never rewrites the profile. `action_batch` uses the same
-strict child schema and cannot smuggle those fields through normal `connect`.
-
-Memory reads are contained to the exact bytes the backend will access. Mapped
-RAM, flash, ROM, CPU-system, and peripheral reads remain available, including
-deliberately prohibited security/provisioning spans when they are authoritatively
-mapped. Unknown or unmapped spans and write-only peripheral reads are refused
-before target I/O. Every mutation remains refused for prohibited regions. This
-applies to both raw-address reads and symbol-resolved reads; use the named
-safety-setup remedy for an incomplete map, or choose a different mapped address
-for a write-only peripheral.
-
-After the handshake, ask the user only for familiar board names and pass them
-to `setup_overview`. The normalized phrase `no board` is a literal sentinel
-that must be passed alone, never treated as a candidate profile name. Every
-matching YAML routes to validation first; unknown names route to setup, and
-validation may return a specific repair. The response supplies bounded
-`load_call`, `next_call`, or plan-template objects with every server-known ID
-already filled. Copy those fields into MCP calls; never ask the user to invent
-them or to hash a datasheet. `load_setup_tool` then returns guidance only for
-the requested setup tool. If setup or validation returns a friendly choice,
-relay its prose and copy its exact `accepted_response`; do not scrape labels,
-invent a target, or ask the user for internal IDs.
-
-Exact schemas and status payload behavior are in
-[docs/client-contract.md](docs/client-contract.md) and the live MCP descriptions.
-
-## Safety model
-
-Each logical board has one live connection and one operation boundary.
-Same-board calls serialize while different boards can execute concurrently.
-Guarded requests are scoped to their run, board, session, exact parameters,
-plan budget, and permission.
-
-When multiple SEGGER J-Link probes are used from one server process, the server
-detects the selected probe provider dynamically. The first live J-Link session
-uses the provider's normal DLL instance; each additional simultaneous J-Link
-session gets an isolated temporary DLL instance, as required by pylink. Closing
-the normal owner releases that fast path immediately, even if isolated sessions
-remain live. This allocation does not depend on board names, probe serials,
-target types, USB locations, or host-specific library paths.
-If provider closure cannot be confirmed, the server keeps the affected DLL/session
-reservation and reports the close failure; later J-Links remain safely isolated.
-Restart the server after resolving the probe/USB fault to reclaim the normal fast path.
-
-Only successful `board_validate` opens the in-memory gate. Writes recheck the
-current aggregate safety fingerprint on every call and apply typed containment
-before backend mutation. Disconnect and restart clear live assignments, plans,
-permissions, and gates. Files under `.firm` are durable evidence only and can
-never restore authority.
-
-Target recovery and bootloader flash are destructive operations with stronger
-approval rules. Never treat conversational approval, a report, tool visibility,
-or a prior run as current authorization.
-
-## Build and import check
-
-The distributable package can be checked without operating hardware:
+## Non-hardware import check
 
 ```text
-uv build
-uv run --locked python -c "import pyocd_debug_mcp; import pyocd_debug_mcp.server"
+uv run --locked python -c "import firmware_mcp.server"
 ```
 
-## More detail
-
-- [Architecture and state ownership](docs/architecture.md)
-- [MCP client contract](docs/client-contract.md)
-- [Plan-tool contract](docs/plan-tool-contract.md)
-
-## Runtime guarantees
-
-`InMemorySessionStore` is the process-local session implementation; durable reports are
-evidence only and cannot restore live authority. The MCP server is provider-neutral over stdio.
-
-For project build dependencies, the client inspects the project's own metadata and available host
-resources, prefers a compatible existing SDK/toolchain/library, and uses the project's ordinary
-installation or network acquisition path when none is usable. The server does not prescribe vendor
-locations, select a provider, or manage a build-environment fallback. Device-support packs used as
-debug authority follow the separate verified-pack onboarding contract.
+The live tool schemas and their descriptions remain the executable contract.

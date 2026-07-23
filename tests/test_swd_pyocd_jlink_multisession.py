@@ -6,10 +6,14 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from pyocd_debug_mcp.adapters import swd_pyocd
-from pyocd_debug_mcp.adapters.swd_pyocd import PyOCDSWDInterface
-from pyocd_debug_mcp.board_config import BoardConfig
-from pyocd_debug_mcp.target_errors import ResetLineUnavailableError, TargetConnectionError
+from firmware_mcp.adapters import swd_pyocd
+from firmware_mcp.adapters.swd_pyocd import PyOCDSWDInterface
+from firmware_mcp.board_config import BoardConfig
+from firmware_mcp.target_errors import (
+    ResetLineUnavailableError,
+    TargetConnectionCleanupError,
+    TargetConnectionError,
+)
 
 
 def board(family: str = "jlink") -> BoardConfig:
@@ -18,7 +22,7 @@ def board(family: str = "jlink") -> BoardConfig:
         display_name="Fake board",
         mcu_family="fake",
         probe_family=family,
-        pyocd_target="fake_target",
+        target="fake_target",
         probe_type=family,
         probe_hint_terms=("fake",),
         serial_hint_terms=("fake",),
@@ -40,26 +44,39 @@ class FakeTarget:
 
 
 class FakeProbe:
-    def __init__(self, *, reset_supported: bool = True) -> None:
+    def __init__(
+        self, *, reset_supported: bool = True, reset_error: Exception | None = None
+    ) -> None:
         self.unique_id = "probe-1"
         self.description = "Fake J-Link"
         self._link = object()
         self.reset_values: list[bool] = []
+        self.reset_error = reset_error
         if not reset_supported:
             self.assert_reset = None  # type: ignore[assignment]
 
     def assert_reset(self, asserted: bool) -> None:
         self.reset_values.append(asserted)
+        if self.reset_error is not None:
+            raise self.reset_error
 
 
 class FakeSession:
-    def __init__(self, *, open_error: Exception | None = None, reset_supported: bool = True) -> None:
-        self.probe = FakeProbe(reset_supported=reset_supported)
+    def __init__(
+        self,
+        *,
+        open_error: Exception | None = None,
+        reset_supported: bool = True,
+        reset_error: Exception | None = None,
+        close_error: Exception | None = None,
+    ) -> None:
+        self.probe = FakeProbe(reset_supported=reset_supported, reset_error=reset_error)
         self.target = FakeTarget()
         self.board = SimpleNamespace(name="Fake target board")
         self.open_error = open_error
         self.open_calls = 0
         self.close_calls = 0
+        self.close_error = close_error
 
     def open(self) -> None:
         self.open_calls += 1
@@ -68,6 +85,8 @@ class FakeSession:
 
     def close(self) -> None:
         self.close_calls += 1
+        if self.close_error is not None:
+            raise self.close_error
 
 
 class JLinkOneSessionWorkerTests(unittest.TestCase):
@@ -85,7 +104,7 @@ class JLinkOneSessionWorkerTests(unittest.TestCase):
             stdin=subprocess.DEVNULL,
             capture_output=True,
             text=True,
-            timeout=6.5,
+            timeout_seconds=6.5,
         )
 
     def test_session_options_are_headless_only_for_jlink(self) -> None:
@@ -93,10 +112,9 @@ class JLinkOneSessionWorkerTests(unittest.TestCase):
         cmsis_options = swd_pyocd.build_session_options(board("cmsisdap"), target=None)
 
         self.assertIsNotNone(jlink_options)
-        self.assertIsNotNone(cmsis_options)
-        assert jlink_options is not None and cmsis_options is not None
+        self.assertIsNone(cmsis_options)
+        assert jlink_options is not None
         self.assertIs(jlink_options["jlink.non_interactive"], True)
-        self.assertNotIn("jlink.non_interactive", cmsis_options)
 
     def test_open_uses_pyocd_selected_provider_without_temporary_dll_replacement(self) -> None:
         session = FakeSession()
@@ -112,7 +130,6 @@ class JLinkOneSessionWorkerTests(unittest.TestCase):
                 board=board(),
                 unique_id=session.probe.unique_id,
                 target="fake_target",
-                operation_timeout_seconds=1.0,
             )
 
         self.assertIs(session.probe._link, original_link)
@@ -138,6 +155,71 @@ class JLinkOneSessionWorkerTests(unittest.TestCase):
 
         self.assertEqual(session.close_calls, 1)
 
+    def test_open_failure_preserves_primary_and_unconfirmed_session_close(self) -> None:
+        session = FakeSession(
+            open_error=RuntimeError("open failed"),
+            close_error=OSError("close denied"),
+        )
+        interface = PyOCDSWDInterface()
+
+        with (
+            patch.object(interface, "_choose_session", return_value=session),
+            patch.object(interface, "_verify_session_pack_source", return_value=None),
+            patch.object(swd_pyocd, "verified_pack_for_target", return_value=None),
+            self.assertRaises(TargetConnectionCleanupError) as raised,
+        ):
+            interface.open(board=board(), unique_id=session.probe.unique_id, target="fake_target")
+
+        self.assertEqual(raised.exception.primary_error_type, "RuntimeError")
+        self.assertEqual(raised.exception.primary_error_message, "open failed")
+        self.assertEqual(raised.exception.cleanup_diagnostics[0].stage, "session_close")
+        self.assertIn("close denied", str(raised.exception))
+        self.assertIn("Disconnect, power-cycle", str(raised.exception))
+
+    def test_missing_wired_reset_preserves_unconfirmed_session_close(self) -> None:
+        session = FakeSession(reset_supported=False, close_error=OSError("close denied"))
+        interface = PyOCDSWDInterface()
+
+        with (
+            patch.object(interface, "_choose_session", return_value=session),
+            patch.object(swd_pyocd, "verified_pack_for_target", return_value=None),
+            self.assertRaises(TargetConnectionCleanupError) as raised,
+        ):
+            interface.connect_under_reset(
+                board=board(), unique_id=session.probe.unique_id, target="fake_target"
+            )
+
+        self.assertEqual(raised.exception.primary_error_type, "ResetLineUnavailableError")
+        self.assertEqual(raised.exception.cleanup_diagnostics[0].stage, "session_close")
+
+    def test_under_reset_failure_preserves_reset_release_and_session_close_uncertainty(
+        self,
+    ) -> None:
+        session = FakeSession(
+            open_error=RuntimeError("under-reset open failed"),
+            reset_error=OSError("release denied"),
+            close_error=OSError("close denied"),
+        )
+        interface = PyOCDSWDInterface()
+
+        with (
+            patch.object(interface, "_choose_session", return_value=session),
+            patch.object(interface, "_verify_session_pack_source", return_value=None),
+            patch.object(swd_pyocd, "verified_pack_for_target", return_value=None),
+            self.assertRaises(TargetConnectionCleanupError) as raised,
+        ):
+            interface.connect_under_reset(
+                board=board(), unique_id=session.probe.unique_id, target="fake_target"
+            )
+
+        self.assertEqual(raised.exception.primary_error_message, "under-reset open failed")
+        self.assertEqual(
+            [item.stage for item in raised.exception.cleanup_diagnostics],
+            ["reset_release", "session_close"],
+        )
+        self.assertIn("release denied", str(raised.exception))
+        self.assertIn("close denied", str(raised.exception))
+
     def test_connect_under_reset_and_release_reset_use_the_selected_probe(self) -> None:
         session = FakeSession()
         interface = PyOCDSWDInterface()
@@ -151,7 +233,6 @@ class JLinkOneSessionWorkerTests(unittest.TestCase):
                 board=board(),
                 unique_id=session.probe.unique_id,
                 target="fake_target",
-                operation_timeout_seconds=1.0,
             )
             interface.release_reset(handle)
 

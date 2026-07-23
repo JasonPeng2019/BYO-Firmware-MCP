@@ -1,0 +1,239 @@
+"""Shared probe inventory and board-aware selection helpers."""
+
+from __future__ import annotations
+
+import re
+from dataclasses import dataclass
+from typing import Any, Callable
+
+from pyocd.probe.aggregator import (  # type: ignore[import-untyped]
+    PROBE_CLASSES,
+    DebugProbeAggregator,
+)
+
+from firmware_mcp.board_config import BoardConfig
+
+RunCommand = Callable[[list[str]], tuple[int, str, str]]
+
+_ANSI_RE = re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]")
+_ROW_RE = re.compile(
+    r"^\s*(?P<index>\d+)\s{2,}(?P<description>.+?)\s{2,}(?P<uid>\S+)(?:\s{2,}(?P<state>\S.*))?\s*$"
+)
+
+
+@dataclass(frozen=True)
+class ProbeInfo:
+    uid: str
+    description: str
+    raw: str
+    state: str = ""
+    family: str = "unknown"
+    family_source: str = "unknown"
+
+    @property
+    def searchable_text(self) -> str:
+        return f"{self.uid} {self.description} {self.raw}".lower()
+
+
+@dataclass(frozen=True)
+class ProbeResolution:
+    probe: ProbeInfo | None
+    note: str
+    probes: tuple[ProbeInfo, ...]
+
+
+def _normalize_text(value: object) -> str:
+    return str(value or "").strip()
+
+
+def _append_unique_text(parts: list[str], value: object) -> None:
+    text = _normalize_text(value)
+    if text and text not in parts:
+        parts.append(text)
+
+
+def probe_family_from_pyocd_probe(probe: Any) -> str:
+    """Return pyOCD's registered provider key for a live probe object."""
+
+    for provider_id, probe_class in PROBE_CLASSES.items():
+        if isinstance(probe, probe_class):
+            return str(provider_id).casefold()
+    return "unknown"
+
+
+def _probe_info_from_pyocd_probe(probe: Any) -> ProbeInfo | None:
+    uid = _normalize_text(getattr(probe, "unique_id", ""))
+    description_parts: list[str] = []
+    raw_parts: list[str] = []
+
+    _append_unique_text(description_parts, getattr(probe, "description", ""))
+    _append_unique_text(raw_parts, getattr(probe, "description", ""))
+    _append_unique_text(raw_parts, uid)
+
+    board_info = getattr(probe, "associated_board_info", None)
+    if board_info is not None:
+        _append_unique_text(description_parts, getattr(board_info, "name", ""))
+        _append_unique_text(raw_parts, getattr(board_info, "vendor", ""))
+        _append_unique_text(raw_parts, getattr(board_info, "name", ""))
+        _append_unique_text(raw_parts, getattr(board_info, "target", ""))
+
+    description = " ".join(description_parts).strip()
+    raw = " | ".join(raw_parts).strip()
+    if not uid or not description:
+        return None
+
+    family = probe_family_from_pyocd_probe(probe)
+    return ProbeInfo(
+        uid=uid,
+        description=description,
+        raw=raw,
+        family=family,
+        family_source="pyocd_api" if family != "unknown" else "unknown",
+    )
+
+
+def parse_pyocd_probe_listing(output: str) -> list[ProbeInfo]:
+    """Parse `pyocd list --probes` table output into structured rows."""
+
+    probes: list[ProbeInfo] = []
+    current_index: int | None = None
+
+    for line in output.splitlines():
+        raw = _ANSI_RE.sub("", line).rstrip()
+        stripped = raw.strip()
+        if not stripped:
+            continue
+        lowered = stripped.lower()
+        if (
+            stripped.startswith("#")
+            or lowered.startswith("probe/board")
+            or lowered.startswith("no available debug probes")
+            or re.fullmatch(r"-+", stripped)
+        ):
+            continue
+
+        match = _ROW_RE.match(raw)
+        if match:
+            uid = match.group("uid").strip()
+            probe = ProbeInfo(
+                uid=uid,
+                description=match.group("description").strip(),
+                state=(match.group("state") or "").strip(),
+                raw=raw,
+                family="unknown",
+                family_source="pyocd_cli_unclassified",
+            )
+            probes.append(probe)
+            current_index = len(probes) - 1
+            continue
+
+        columns = re.split(r"\s{2,}", stripped)
+        if len(columns) >= 3 and columns[0].isdigit():
+            description = columns[1].strip()
+            uid = columns[2].strip()
+            state = columns[3].strip() if len(columns) >= 4 else ""
+            if description and uid:
+                probe = ProbeInfo(
+                    uid=uid,
+                    description=description,
+                    state=state,
+                    raw=raw,
+                    family="unknown",
+                    family_source="pyocd_cli_unclassified",
+                )
+                probes.append(probe)
+                current_index = len(probes) - 1
+                continue
+
+        if current_index is not None:
+            current = probes[current_index]
+            combined_description = f"{current.description} {stripped}".strip()
+            combined_raw = f"{current.raw}\n{raw}"
+            probes[current_index] = ProbeInfo(
+                uid=current.uid,
+                description=combined_description,
+                state=current.state,
+                raw=combined_raw,
+                family=current.family,
+                family_source=current.family_source,
+            )
+
+    return probes
+
+
+def list_connected_probes() -> list[ProbeInfo]:
+    """Return the provider's current probe inventory without vendor filtering."""
+
+    probes: list[ProbeInfo] = []
+    for probe in DebugProbeAggregator.get_all_connected_probes():
+        item = _probe_info_from_pyocd_probe(probe)
+        if item is not None:
+            probes.append(item)
+    return probes
+
+
+def _score_terms(text: str, terms: tuple[str, ...]) -> int:
+    return sum(1 for term in terms if term in text)
+
+
+def pick_probe_for_board(
+    board: BoardConfig,
+    probes: list[ProbeInfo],
+    *,
+    allow_single_fallback: bool,
+) -> ProbeResolution:
+    """Select one connected probe for a tracked board."""
+
+    if not probes:
+        return ProbeResolution(probe=None, note="no probes detected", probes=tuple())
+
+    scored: list[tuple[int, ProbeInfo]] = []
+    for probe in probes:
+        score = _score_terms(probe.searchable_text, board.probe_hint_terms)
+        if score > 0:
+            scored.append((score, probe))
+
+    if scored:
+        best_score = max(score for score, _ in scored)
+        best = [probe for score, probe in scored if score == best_score]
+        if len(best) == 1:
+            return ProbeResolution(probe=best[0], note="", probes=tuple(probes))
+        return ProbeResolution(
+            probe=None,
+            note="multiple matching probes found; disconnect extras or refine probe_hint_terms",
+            probes=tuple(probes),
+        )
+
+    if allow_single_fallback and len(probes) == 1:
+        return ProbeResolution(
+            probe=probes[0],
+            note="single connected probe selected from live pyOCD inventory",
+            probes=tuple(probes),
+        )
+
+    return ProbeResolution(
+        probe=None,
+        note="no matching probe found",
+        probes=tuple(probes),
+    )
+
+
+def resolve_probe_for_board_cli(
+    board: BoardConfig,
+    *,
+    run_cmd: RunCommand,
+    allow_single_fallback: bool,
+) -> ProbeResolution:
+    """Compatibility adapter for callers that still supply a command runner.
+
+    Inventory is taken directly from the active provider registry; no fixed
+    executable path, vendor family, or parsed command output is authoritative.
+    """
+
+    del run_cmd
+    probes = list_connected_probes()
+    return pick_probe_for_board(
+        board,
+        probes,
+        allow_single_fallback=allow_single_fallback,
+    )
