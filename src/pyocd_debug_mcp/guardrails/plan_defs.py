@@ -925,7 +925,9 @@ _GUIDANCE: Final = MappingProxyType(
         "connect_under_reset": _PromptGuidance(
             "Use after normal attach fails because firmware sleeps, reconfigures debug pins/clocks, or "
             "crashes too early. It asserts physical reset, attaches over SWD, halts, and releases reset. "
-            "It is not an unlock; a protected target still requires target_unlock.",
+            "It ignores launch-environment routing overrides; provide probe_uid/target_override in "
+            "this action or use the persisted board setup. It is not an unlock; a protected target "
+            "still requires target_unlock.",
             "The server verifies the board/plan and that the selected probe has a wired, supported reset "
             "line; unsupported hardware fails clearly without a fallback.",
             "Physical reset stops the running firmware without warning.",
@@ -951,7 +953,7 @@ _GUIDANCE: Final = MappingProxyType(
                 "Ensure the user understands every erased range and what must be reflashed.",
                 "Prepare the post-recovery reflash and board_validate steps.",
             ),
-            "The gate stays closed after recovery until board_validate passes again.",
+            "Recovery disconnects the board. Reconnect and complete board_validate before any further action.",
             {"recovery_mechanism": "backend_mass_erase"},
             "TWO-PHASE APPROVAL: first submit the complete populated plan with user_permission=null. "
             "The server returns permission_required with exact live identity, mechanism, mass-erase "

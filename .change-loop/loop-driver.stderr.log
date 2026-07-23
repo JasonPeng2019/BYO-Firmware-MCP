@@ -1,0 +1,783 @@
+change-loop: starting iteration 1 of 8
+Reading additional input from stdin...
+2026-07-23T22:30:35.272776Z ERROR codex_models_manager::cache: failed to load models cache: missing field `supports_reasoning_summaries` at line 88 column 5
+2026-07-23T22:30:36.343840Z  WARN codex_core::shell_snapshot: Failed to create shell snapshot for powershell: Shell snapshot not supported yet for PowerShell
+2026-07-23T22:30:37.805585Z ERROR codex_models_manager::manager: failed to renew cache TTL: missing field `supports_reasoning_summaries` at line 88 column 5
+2026-07-23T22:30:43.858202Z ERROR codex_models_manager::manager: failed to renew cache TTL: missing field `supports_reasoning_summaries` at line 88 column 5
+2026-07-23T22:30:48.338983Z ERROR codex_models_manager::manager: failed to renew cache TTL: missing field `supports_reasoning_summaries` at line 88 column 5
+2026-07-23T22:30:54.744538Z ERROR codex_models_manager::manager: failed to renew cache TTL: missing field `supports_reasoning_summaries` at line 88 column 5
+2026-07-23T22:31:03.369842Z ERROR codex_models_manager::manager: failed to renew cache TTL: missing field `supports_reasoning_summaries` at line 88 column 5
+2026-07-23T22:31:09.132046Z ERROR codex_models_manager::manager: failed to renew cache TTL: missing field `supports_reasoning_summaries` at line 88 column 5
+2026-07-23T22:31:15.291764Z ERROR codex_models_manager::manager: failed to renew cache TTL: missing field `supports_reasoning_summaries` at line 88 column 5
+2026-07-23T22:31:19.770438Z ERROR codex_models_manager::manager: failed to renew cache TTL: missing field `supports_reasoning_summaries` at line 88 column 5
+2026-07-23T22:31:23.654215Z ERROR codex_models_manager::manager: failed to renew cache TTL: missing field `supports_reasoning_summaries` at line 88 column 5
+2026-07-23T22:32:01.887235Z ERROR codex_models_manager::manager: failed to renew cache TTL: missing field `supports_reasoning_summaries` at line 88 column 5
+2026-07-23T22:32:26.699857Z ERROR codex_models_manager::manager: failed to renew cache TTL: missing field `supports_reasoning_summaries` at line 88 column 5
+2026-07-23T22:32:33.708392Z ERROR codex_core::tools::router: error=Exit code: 1
+Wall time: 3.2 seconds
+Output:
+EEEEEEEEEEEFEEEEEEEEEEEEEEE.EEEEFEEEEEFEEEEEE
+======================================================================
+ERROR: test_breakpoint_tools (unittest.loader._FailedTest.test_breakpoint_tools)
+----------------------------------------------------------------------
+ImportError: Failed to import test module: test_breakpoint_tools
+Traceback (most recent call last):
+  File "C:\Users\Jason\AppData\Local\Programs\Python\Python314\Lib\unittest\loader.py", line 426, in _find_test_path
+    module = self._get_module_from_name(name)
+  File "C:\Users\Jason\AppData\Local\Programs\Python\Python314\Lib\unittest\loader.py", line 367, in _get_module_from_name
+    __import__(name)
+    ~~~~~~~~~~^^^^^^
+  File "C:\Users\Jason\Documents\Jason\FirmCLI_Tester\Firmware-Test-Manual\MCP-Trial-3\BYO-Firmware-MCP\tests\test_breakpoint_tools.py", line 10, in <module>
+    from pyocd_debug_mcp.services.symbols import ResolvedSymbol
+ModuleNotFoundError: No module named 'pyocd_debug_mcp'
+
+
+======================================================================
+ERROR: test_connection_promotion_transaction (unittest.loader._FailedTest.test_connection_promotion_transaction)
+----------------------------------------------------------------------
+ImportError: Failed to import test module: test_connection_promotion_transaction
+Traceback (most recent call last):
+  File "C:\Users\Jason\AppData\Local\Programs\Python\Python314\Lib\unittest\loader.py", line 426, in _find_test_path
+    module = self._get_module_from_name(name)
+  File "C:\Users\Jason\AppData\Local\Programs\Python\Python314\Lib\unittest\loader.py", line 367, in _get_module_from_name
+    __import__(name)
+    ~~~~~~~~~~^^^^^^
+  File "C:\Users\Jason\Documents\Jason\FirmCLI_Tester\Firmware-Test-Manual\MCP-Trial-3\BYO-Firmware-MCP\tests\test_connection_promotion_transaction.py", line 13, in <module>
+    from pyocd_debug_mcp import server
+ModuleNotFoundError: No module named 'pyocd_debug_mcp'
+
+
+======================================================================
+ERROR: test_disconnect_cleanup (unittest.loader._FailedTest.test_disconnect_cleanup)
+----------------------------------------------------------------------
+ImportError: Failed to import test module: test_disconnect_cleanup
+Traceback (most recent call last):
+  File "C:\Users\Jason\AppData\Local\Programs\Python\Python314\Lib\unittest\loader.py", line 426, in _find_test_path
+    module = self._get_module_from_name(name)
+  File "C:\Users\Jason\AppData\Local\Programs\Python\Python314\Lib\unittest\loader.py", line 367, in _get_module_from_name
+    __import__(name)
+    ~~~~~~~~~~^^^^^^
+  File "C:\Users\Jason\Documents\Jason\FirmCLI_Tester\Firmware-Test-Manual\MCP-Trial-3\BYO-Firmware-MCP\tests\test_disconnect_cleanup.py", line 7, in <module>
+    from pyocd_debug_mcp import server
+ModuleNotFoundError: No module named 'pyocd_debug_mcp'
+
+
+======================================================================
+ERROR: test_process_cleanup (unittest.loader._FailedTest.test_process_cleanup)
+----------------------------------------------------------------------
+ImportError: Failed to import test module: test_process_cleanup
+Traceback (most recent call last):
+  File "C:\Users\Jason\AppData\Local\Programs\Python\Python314\Lib\unittest\loader.py", line 426, in _find_test_path
+    module = self._get_module_from_name(name)
+  File "C:\Users\Jason\AppData\Local\Programs\Python\Python314\Lib\unittest\loader.py", line 367, in _get_module_from_name
+    __import__(name)
+    ~~~~~~~~~~^^^^^^
+  File "C:\Users\Jason\Documents\Jason\FirmCLI_Tester\Firmware-Test-Manual\MCP-Trial-3\BYO-Firmware-MCP\tests\test_process_cleanup.py", line 15, in <module>
+    from pyocd_debug_mcp.kernel import processes
+ModuleNotFoundError: No module named 'pyocd_debug_mcp'
+
+
+======================================================================
+ERROR: test_server_assignment_connect (unittest.loader._FailedTest.test_server_assignment_connect)
+----------------------------------------------------------------------
+ImportError: Failed to import test module: test_server_assignment_connect
+Traceback (most recent call last):
+  File "C:\Users\Jason\AppData\Local\Programs\Python\Python314\Lib\unittest\loader.py", line 426, in _find_test_path
+    module = self._get_module_from_name(name)
+  File "C:\Users\Jason\AppData\Local\Programs\Python\Python314\Lib\unittest\loader.py", line 367, in _get_module_from_name
+    __import__(name)
+    ~~~~~~~~~~^^^^^^
+  File "C:\Users\Jason\Documents\Jason\FirmCLI_Tester\Firmware-Test-Manual\MCP-Trial-3\BYO-Firmware-MCP\tests\test_server_assignment_connect.py", line 11, in <module>
+    from pyocd_debug_mcp import server
+ModuleNotFoundError: No module named 'pyocd_debug_mcp'
+
+
+======================================================================
+ERROR: test_server_trust_model_round_1 (unittest.loader._FailedTest.test_server_trust_model_round_1)
+----------------------------------------------------------------------
+ImportError: Failed to import test module: test_server_trust_model_round_1
+Traceback (most recent call last):
+  File "C:\Users\Jason\AppData\Local\Programs\Python\Python314\Lib\unittest\loader.py", line 426, in _find_test_path
+    module = self._get_module_from_name(name)
+  File "C:\Users\Jason\AppData\Local\Programs\Python\Python314\Lib\unittest\loader.py", line 367, in _get_module_from_name
+    __import__(name)
+    ~~~~~~~~~~^^^^^^
+  File "C:\Users\Jason\Documents\Jason\FirmCLI_Tester\Firmware-Test-Manual\MCP-Trial-3\BYO-Firmware-MCP\tests\test_server_trust_model_round_1.py", line 11, in <module>
+    from pyocd_debug_mcp.firmstore.store import FirmStore
+ModuleNotFoundError: No module named 'pyocd_debug_mcp'
+
+
+======================================================================
+ERROR: test_server_trust_model_round_2 (unittest.loader._FailedTest.test_server_trust_model_round_2)
+----------------------------------------------------------------------
+ImportError: Failed to import test module: test_server_trust_model_round_2
+Traceback (most recent call last):
+  File "C:\Users\Jason\AppData\Local\Programs\Python\Python314\Lib\unittest\loader.py", line 426, in _find_test_path
+    module = self._get_module_from_name(name)
+  File "C:\Users\Jason\AppData\Local\Programs\Python\Python314\Lib\unittest\loader.py", line 367, in _get_module_from_name
+    __import__(name)
+    ~~~~~~~~~~^^^^^^
+  File "C:\Users\Jason\Documents\Jason\FirmCLI_Tester\Firmware-Test-Manual\MCP-Trial-3\BYO-Firmware-MCP\tests\test_server_trust_model_round_2.py", line 13, in <module>
+    from elftools.common.exceptions import ELFError
+ModuleNotFoundError: No module named 'elftools'
+
+
+======================================================================
+ERROR: test_server_trust_model_round_3 (unittest.loader._FailedTest.test_server_trust_model_round_3)
+----------------------------------------------------------------------
+ImportError: Failed to import test module: test_server_trust_model_round_3
+Traceback (most recent call last):
+  File "C:\Users\Jason\AppData\Local\Programs\Python\Python314\Lib\unittest\loader.py", line 426, in _find_test_path
+    module = self._get_module_from_name(name)
+  File "C:\Users\Jason\AppData\Local\Programs\Python\Python314\Lib\unittest\loader.py", line 367, in _get_module_from_name
+    __import__(name)
+    ~~~~~~~~~~^^^^^^
+  File "C:\Users\Jason\Documents\Jason\FirmCLI_Tester\Firmware-Test-Manual\MCP-Trial-3\BYO-Firmware-MCP\tests\test_server_trust_model_round_3.py", line 16, in <module>
+    from pyocd_debug_mcp import server
+ModuleNotFoundError: No module named 'pyocd_debug_mcp'
+
+
+======================================================================
+ERROR: test_server_trust_model_round_4 (unittest.loader._FailedTest.test_server_trust_model_round_4)
+----------------------------------------------------------------------
+ImportError: Failed to import test module: test_server_trust_model_round_4
+Traceback (most recent call last):
+  File "C:\Users\Jason\AppData\Local\Programs\Python\Python314\Lib\unittest\loader.py", line 426, in _find_test_path
+    module = self._get_module_from_name(name)
+  File "C:\Users\Jason\AppData\Local\Programs\Python\Python314\Lib\unittest\loader.py", line 367, in _get_module_from_name
+    __import__(name)
+    ~~~~~~~~~~^^^^^^
+  File "C:\Users\Jason\Documents\Jason\FirmCLI_Tester\Firmware-Test-Manual\MCP-Trial-3\BYO-Firmware-MCP\tests\test_server_trust_model_round_4.py", line 18, in <module>
+    from pyocd_debug_mcp.artifact_collector import (
+    ...<4 lines>...
+    )
+ModuleNotFoundError: No module named 'pyocd_debug_mcp'
+
+
+======================================================================
+ERROR: test_server_trust_model_round_5 (unittest.loader._FailedTest.test_server_trust_model_round_5)
+----------------------------------------------------------------------
+ImportError: Failed to import test module: test_server_trust_model_round_5
+Traceback (most recent call last):
+  File "C:\Users\Jason\AppData\Local\Programs\Python\Python314\Lib\unittest\loader.py", line 426, in _find_test_path
+    module = self._get_module_from_name(name)
+  File "C:\Users\Jason\AppData\Local\Programs\Python\Python314\Lib\unittest\loader.py", line 367, in _get_module_from_name
+    __import__(name)
+    ~~~~~~~~~~^^^^^^
+  File "C:\Users\Jason\Documents\Jason\FirmCLI_Tester\Firmware-Test-Manual\MCP-Trial-3\BYO-Firmware-MCP\tests\test_server_trust_model_round_5.py", line 10, in <module>
+    from pyocd_debug_mcp.services.session_runtime import (
+    ...<4 lines>...
+    )
+ModuleNotFoundError: No module named 'pyocd_debug_mcp'
+
+
+======================================================================
+ERROR: test_actual_worker_dispatches_short_request_while_stdin_remains_open (test_swd_process_isolation.ProcessIsolationContractTests.test_actual_worker_dispatches_short_request_while_stdin_remains_open)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "C:\Users\Jason\Documents\Jason\FirmCLI_Tester\Firmware-Test-Manual\MCP-Trial-3\BYO-Firmware-MCP\tests\test_swd_process_isolation.py", line 334, in test_actual_worker_dispatches_short_request_while_stdin_remains_open
+    from pyocd_debug_mcp.adapters.swd_process import _WorkerClient
+ModuleNotFoundError: No module named 'pyocd_debug_mcp'
+
+======================================================================
+ERROR: test_blocked_parent_write_has_a_hard_deadline (test_swd_process_isolation.ProcessIsolationContractTests.test_blocked_parent_write_has_a_hard_deadline)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "C:\Users\Jason\Documents\Jason\FirmCLI_Tester\Firmware-Test-Manual\MCP-Trial-3\BYO-Firmware-MCP\tests\test_swd_process_isolation.py", line 360, in test_blocked_parent_write_has_a_hard_deadline
+    from pyocd_debug_mcp.adapters.swd_process import _WorkerClient
+ModuleNotFoundError: No module named 'pyocd_debug_mcp'
+
+======================================================================
+ERROR: test_child_accepts_large_trusted_values_and_dispatches_complete_surface (test_swd_process_isolation.ProcessIsolationContractTests.test_child_accepts_large_trusted_values_and_dispatches_complete_surface)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "C:\Users\Jason\Documents\Jason\FirmCLI_Tester\Firmware-Test-Manual\MCP-Trial-3\BYO-Firmware-MCP\tests\test_swd_process_isolation.py", line 729, in test_child_accepts_large_trusted_values_and_dispatches_complete_surface
+    from pyocd_debug_mcp.adapters.provider_worker_runtime import (
+    ...<3 lines>...
+    )
+ModuleNotFoundError: No module named 'pyocd_debug_mcp'
+
+======================================================================
+ERROR: test_child_metadata_uses_detector_and_preserves_absent_uid_and_part (test_swd_process_isolation.ProcessIsolationContractTests.test_child_metadata_uses_detector_and_preserves_absent_uid_and_part)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "C:\Users\Jason\Documents\Jason\FirmCLI_Tester\Firmware-Test-Manual\MCP-Trial-3\BYO-Firmware-MCP\tests\test_swd_process_isolation.py", line 709, in test_child_metadata_uses_detector_and_preserves_absent_uid_and_part
+    from pyocd_debug_mcp.adapters.provider_worker_runtime import _metadata
+ModuleNotFoundError: No module named 'pyocd_debug_mcp'
+
+======================================================================
+ERROR: test_close_fails_only_when_process_termination_is_unconfirmed (test_swd_process_isolation.ProcessIsolationContractTests.test_close_fails_only_when_process_termination_is_unconfirmed)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "C:\Users\Jason\Documents\Jason\FirmCLI_Tester\Firmware-Test-Manual\MCP-Trial-3\BYO-Firmware-MCP\tests\test_swd_process_isolation.py", line 481, in test_close_fails_only_when_process_termination_is_unconfirmed
+    from pyocd_debug_mcp.adapters import swd_process
+ModuleNotFoundError: No module named 'pyocd_debug_mcp'
+
+======================================================================
+ERROR: test_close_terminates_when_deadline_expires_between_check_and_call (test_swd_process_isolation.ProcessIsolationContractTests.test_close_terminates_when_deadline_expires_between_check_and_call)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "C:\Users\Jason\Documents\Jason\FirmCLI_Tester\Firmware-Test-Manual\MCP-Trial-3\BYO-Firmware-MCP\tests\test_swd_process_isolation.py", line 525, in test_close_terminates_when_deadline_expires_between_check_and_call
+    from pyocd_debug_mcp.adapters import swd_process
+ModuleNotFoundError: No module named 'pyocd_debug_mcp'
+
+======================================================================
+ERROR: test_close_terminates_when_default_deadline_is_already_exhausted (test_swd_process_isolation.ProcessIsolationContractTests.test_close_terminates_when_default_deadline_is_already_exhausted)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "C:\Users\Jason\Documents\Jason\FirmCLI_Tester\Firmware-Test-Manual\MCP-Trial-3\BYO-Firmware-MCP\tests\test_swd_process_isolation.py", line 502, in test_close_terminates_when_default_deadline_is_already_exhausted
+    from pyocd_debug_mcp.adapters import swd_process
+ModuleNotFoundError: No module named 'pyocd_debug_mcp'
+
+======================================================================
+ERROR: test_confirmed_process_termination_makes_close_successful_and_idempotent (test_swd_process_isolation.ProcessIsolationContractTests.test_confirmed_process_termination_makes_close_successful_and_idempotent)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "C:\Users\Jason\Documents\Jason\FirmCLI_Tester\Firmware-Test-Manual\MCP-Trial-3\BYO-Firmware-MCP\tests\test_swd_process_isolation.py", line 323, in test_confirmed_process_termination_makes_close_successful_and_idempotent
+    typed = self._client("typed_error")
+  File "C:\Users\Jason\Documents\Jason\FirmCLI_Tester\Firmware-Test-Manual\MCP-Trial-3\BYO-Firmware-MCP\tests\test_swd_process_isolation.py", line 188, in _client
+    from pyocd_debug_mcp.adapters.swd_process import _WorkerClient
+ModuleNotFoundError: No module named 'pyocd_debug_mcp'
+
+======================================================================
+ERROR: test_confirmed_terminate_uses_helper_as_sole_cleanup_authority (test_swd_process_isolation.ProcessIsolationContractTests.test_confirmed_terminate_uses_helper_as_sole_cleanup_authority)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "C:\Users\Jason\Documents\Jason\FirmCLI_Tester\Firmware-Test-Manual\MCP-Trial-3\BYO-Firmware-MCP\tests\test_swd_process_isolation.py", line 572, in test_confirmed_terminate_uses_helper_as_sole_cleanup_authority
+    from pyocd_debug_mcp.adapters import swd_process
+ModuleNotFoundError: No module named 'pyocd_debug_mcp'
+
+======================================================================
+ERROR: test_faulted_worker_does_not_interrupt_a_healthy_worker (test_swd_process_isolation.ProcessIsolationContractTests.test_faulted_worker_does_not_interrupt_a_healthy_worker)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "C:\Users\Jason\Documents\Jason\FirmCLI_Tester\Firmware-Test-Manual\MCP-Trial-3\BYO-Firmware-MCP\tests\test_swd_process_isolation.py", line 345, in test_faulted_worker_does_not_interrupt_a_healthy_worker
+    from pyocd_debug_mcp.target_errors import TargetConnectionError
+ModuleNotFoundError: No module named 'pyocd_debug_mcp'
+
+======================================================================
+ERROR: test_frozen_metadata_and_uidless_runtime_identity (test_swd_process_isolation.ProcessIsolationContractTests.test_frozen_metadata_and_uidless_runtime_identity)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "C:\Users\Jason\Documents\Jason\FirmCLI_Tester\Firmware-Test-Manual\MCP-Trial-3\BYO-Firmware-MCP\tests\test_swd_process_isolation.py", line 674, in test_frozen_metadata_and_uidless_runtime_identity
+    from pyocd_debug_mcp.adapters.swd_interface import (
+    ...<2 lines>...
+    )
+ModuleNotFoundError: No module named 'pyocd_debug_mcp'
+
+======================================================================
+ERROR: test_generic_flash_and_recovery_calls_use_remaining_outer_deadline (test_swd_process_isolation.ProcessIsolationContractTests.test_generic_flash_and_recovery_calls_use_remaining_outer_deadline)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "C:\Users\Jason\Documents\Jason\FirmCLI_Tester\Firmware-Test-Manual\MCP-Trial-3\BYO-Firmware-MCP\tests\test_swd_process_isolation.py", line 613, in test_generic_flash_and_recovery_calls_use_remaining_outer_deadline
+    from pyocd_debug_mcp.adapters import swd_process
+ModuleNotFoundError: No module named 'pyocd_debug_mcp'
+
+======================================================================
+ERROR: test_importing_worker_bootstrap_does_not_redirect_test_process (test_swd_process_isolation.ProcessIsolationContractTests.test_importing_worker_bootstrap_does_not_redirect_test_process)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "C:\Users\Jason\Documents\Jason\FirmCLI_Tester\Firmware-Test-Manual\MCP-Trial-3\BYO-Firmware-MCP\tests\test_swd_process_isolation.py", line 89, in test_importing_worker_bootstrap_does_not_redirect_test_process
+    from pyocd_debug_mcp.adapters import provider_worker
+ModuleNotFoundError: No module named 'pyocd_debug_mcp'
+
+======================================================================
+ERROR: test_marker_unlink_failure_is_typed_retained_and_retried_by_close (test_swd_process_isolation.ProcessIsolationContractTests.test_marker_unlink_failure_is_typed_retained_and_retried_by_close)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "C:\Users\Jason\Documents\Jason\FirmCLI_Tester\Firmware-Test-Manual\MCP-Trial-3\BYO-Firmware-MCP\tests\test_swd_process_isolation.py", line 400, in test_marker_unlink_failure_is_typed_retained_and_retried_by_close
+    from pyocd_debug_mcp.adapters import swd_process
+ModuleNotFoundError: No module named 'pyocd_debug_mcp'
+
+======================================================================
+ERROR: test_open_rollback_preserves_primary_when_marker_cleanup_fails (test_swd_process_isolation.ProcessIsolationContractTests.test_open_rollback_preserves_primary_when_marker_cleanup_fails)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "C:\Users\Jason\Documents\Jason\FirmCLI_Tester\Firmware-Test-Manual\MCP-Trial-3\BYO-Firmware-MCP\tests\test_swd_process_isolation.py", line 434, in test_open_rollback_preserves_primary_when_marker_cleanup_fails
+    from pyocd_debug_mcp.adapters import swd_process
+ModuleNotFoundError: No module named 'pyocd_debug_mcp'
+
+======================================================================
+ERROR: test_parent_deadlines_use_explicit_or_managed_remaining_budget (test_swd_process_isolation.ProcessIsolationContractTests.test_parent_deadlines_use_explicit_or_managed_remaining_budget)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "C:\Users\Jason\Documents\Jason\FirmCLI_Tester\Firmware-Test-Manual\MCP-Trial-3\BYO-Firmware-MCP\tests\test_swd_process_isolation.py", line 588, in test_parent_deadlines_use_explicit_or_managed_remaining_budget
+    from pyocd_debug_mcp.adapters import swd_process
+ModuleNotFoundError: No module named 'pyocd_debug_mcp'
+
+======================================================================
+ERROR: test_process_backend_exposes_complete_swd_surface (test_swd_process_isolation.ProcessIsolationContractTests.test_process_backend_exposes_complete_swd_surface)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "C:\Users\Jason\Documents\Jason\FirmCLI_Tester\Firmware-Test-Manual\MCP-Trial-3\BYO-Firmware-MCP\tests\test_swd_process_isolation.py", line 197, in test_process_backend_exposes_complete_swd_surface
+    from pyocd_debug_mcp.adapters.swd_process import ProcessIsolatedSWDInterface
+ModuleNotFoundError: No module named 'pyocd_debug_mcp'
+
+======================================================================
+ERROR: test_reader_accepts_large_complete_frames_and_partial_frames_timeout (test_swd_process_isolation.ProcessIsolationContractTests.test_reader_accepts_large_complete_frames_and_partial_frames_timeout)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "C:\Users\Jason\Documents\Jason\FirmCLI_Tester\Firmware-Test-Manual\MCP-Trial-3\BYO-Firmware-MCP\tests\test_swd_process_isolation.py", line 265, in test_reader_accepts_large_complete_frames_and_partial_frames_timeout
+    from pyocd_debug_mcp.adapters.swd_process import _WorkerClient
+ModuleNotFoundError: No module named 'pyocd_debug_mcp'
+
+======================================================================
+ERROR: test_ready_hang_is_bounded (test_swd_process_isolation.ProcessIsolationContractTests.test_ready_hang_is_bounded)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "C:\Users\Jason\Documents\Jason\FirmCLI_Tester\Firmware-Test-Manual\MCP-Trial-3\BYO-Firmware-MCP\tests\test_swd_process_isolation.py", line 302, in test_ready_hang_is_bounded
+    from pyocd_debug_mcp.target_errors import TargetConnectionError
+ModuleNotFoundError: No module named 'pyocd_debug_mcp'
+
+======================================================================
+ERROR: test_result_contracts_preserve_large_valid_values_and_exact_block_length (test_swd_process_isolation.ProcessIsolationContractTests.test_result_contracts_preserve_large_valid_values_and_exact_block_length)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "C:\Users\Jason\Documents\Jason\FirmCLI_Tester\Firmware-Test-Manual\MCP-Trial-3\BYO-Firmware-MCP\tests\test_swd_process_isolation.py", line 235, in test_result_contracts_preserve_large_valid_values_and_exact_block_length
+    from pyocd_debug_mcp.adapters.swd_process import _validate_result
+ModuleNotFoundError: No module named 'pyocd_debug_mcp'
+
+======================================================================
+ERROR: test_startup_and_first_call_share_one_absolute_deadline (test_swd_process_isolation.ProcessIsolationContractTests.test_startup_and_first_call_share_one_absolute_deadline)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "C:\Users\Jason\Documents\Jason\FirmCLI_Tester\Firmware-Test-Manual\MCP-Trial-3\BYO-Firmware-MCP\tests\test_swd_process_isolation.py", line 292, in test_startup_and_first_call_share_one_absolute_deadline
+    from pyocd_debug_mcp.target_errors import TargetConnectionError
+ModuleNotFoundError: No module named 'pyocd_debug_mcp'
+
+======================================================================
+ERROR: test_stderr_is_inherited_not_captured_or_sanitized (test_swd_process_isolation.ProcessIsolationContractTests.test_stderr_is_inherited_not_captured_or_sanitized)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "C:\Users\Jason\Documents\Jason\FirmCLI_Tester\Firmware-Test-Manual\MCP-Trial-3\BYO-Firmware-MCP\tests\test_swd_process_isolation.py", line 657, in test_stderr_is_inherited_not_captured_or_sanitized
+    from pyocd_debug_mcp.adapters import swd_process
+ModuleNotFoundError: No module named 'pyocd_debug_mcp'
+
+======================================================================
+ERROR: test_terminate_helper_exception_closes_pipes_and_retains_marker (test_swd_process_isolation.ProcessIsolationContractTests.test_terminate_helper_exception_closes_pipes_and_retains_marker)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "C:\Users\Jason\Documents\Jason\FirmCLI_Tester\Firmware-Test-Manual\MCP-Trial-3\BYO-Firmware-MCP\tests\test_swd_process_isolation.py", line 544, in test_terminate_helper_exception_closes_pipes_and_retains_marker
+    from pyocd_debug_mcp.adapters import swd_process
+ModuleNotFoundError: No module named 'pyocd_debug_mcp'
+
+======================================================================
+ERROR: test_typed_child_errors_are_preserved_without_retry (test_swd_process_isolation.ProcessIsolationContractTests.test_typed_child_errors_are_preserved_without_retry)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "C:\Users\Jason\Documents\Jason\FirmCLI_Tester\Firmware-Test-Manual\MCP-Trial-3\BYO-Firmware-MCP\tests\test_swd_process_isolation.py", line 310, in test_typed_child_errors_are_preserved_without_retry
+    from pyocd_debug_mcp.target_errors import LockedTargetError, TargetControlError
+ModuleNotFoundError: No module named 'pyocd_debug_mcp'
+
+======================================================================
+ERROR: test_unconfirmed_termination_retains_recovery_marker (test_swd_process_isolation.ProcessIsolationContractTests.test_unconfirmed_termination_retains_recovery_marker)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "C:\Users\Jason\Documents\Jason\FirmCLI_Tester\Firmware-Test-Manual\MCP-Trial-3\BYO-Firmware-MCP\tests\test_swd_process_isolation.py", line 381, in test_unconfirmed_termination_retains_recovery_marker
+    from pyocd_debug_mcp.adapters import swd_process
+ModuleNotFoundError: No module named 'pyocd_debug_mcp'
+
+======================================================================
+ERROR: test_wrong_id_malformed_frame_crash_and_timeout_are_terminal (test_swd_process_isolation.ProcessIsolationContractTests.test_wrong_id_malformed_frame_crash_and_timeout_are_terminal)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "C:\Users\Jason\Documents\Jason\FirmCLI_Tester\Firmware-Test-Manual\MCP-Trial-3\BYO-Firmware-MCP\tests\test_swd_process_isolation.py", line 281, in test_wrong_id_malformed_frame_crash_and_timeout_are_terminal
+    from pyocd_debug_mcp.target_errors import TargetConnectionError
+ModuleNotFoundError: No module named 'pyocd_debug_mcp'
+
+======================================================================
+ERROR: test_swd_pyocd_breakpoints (unittest.loader._FailedTest.test_swd_pyocd_breakpoints)
+----------------------------------------------------------------------
+ImportError: Failed to import test module: test_swd_pyocd_breakpoints
+Traceback (most recent call last):
+  File "C:\Users\Jason\AppData\Local\Programs\Python\Python314\Lib\unittest\loader.py", line 426, in _find_test_path
+    module = self._get_module_from_name(name)
+  File "C:\Users\Jason\AppData\Local\Programs\Python\Python314\Lib\unittest\loader.py", line 367, in _get_module_from_name
+    __import__(name)
+    ~~~~~~~~~~^^^^^^
+  File "C:\Users\Jason\Documents\Jason\FirmCLI_Tester\Firmware-Test-Manual\MCP-Trial-3\BYO-Firmware-MCP\tests\test_swd_pyocd_breakpoints.py", line 9, in <module>
+    from pyocd_debug_mcp.adapters import swd_pyocd
+ModuleNotFoundError: No module named 'pyocd_debug_mcp'
+
+
+======================================================================
+ERROR: test_swd_pyocd_jlink_multisession (unittest.loader._FailedTest.test_swd_pyocd_jlink_multisession)
+----------------------------------------------------------------------
+ImportError: Failed to import test module: test_swd_pyocd_jlink_multisession
+Traceback (most recent call last):
+  File "C:\Users\Jason\AppData\Local\Programs\Python\Python314\Lib\unittest\loader.py", line 426, in _find_test_path
+    module = self._get_module_from_name(name)
+  File "C:\Users\Jason\AppData\Local\Programs\Python\Python314\Lib\unittest\loader.py", line 367, in _get_module_from_name
+    __import__(name)
+    ~~~~~~~~~~^^^^^^
+  File "C:\Users\Jason\Documents\Jason\FirmCLI_Tester\Firmware-Test-Manual\MCP-Trial-3\BYO-Firmware-MCP\tests\test_swd_pyocd_jlink_multisession.py", line 9, in <module>
+    from pyocd_debug_mcp.adapters import swd_pyocd
+ModuleNotFoundError: No module named 'pyocd_debug_mcp'
+
+
+======================================================================
+ERROR: test_trusted_input_admission (unittest.loader._FailedTest.test_trusted_input_admission)
+----------------------------------------------------------------------
+ImportError: Failed to import test module: test_trusted_input_admission
+Traceback (most recent call last):
+  File "C:\Users\Jason\AppData\Local\Programs\Python\Python314\Lib\unittest\loader.py", line 426, in _find_test_path
+    module = self._get_module_from_name(name)
+  File "C:\Users\Jason\AppData\Local\Programs\Python\Python314\Lib\unittest\loader.py", line 367, in _get_module_from_name
+    __import__(name)
+    ~~~~~~~~~~^^^^^^
+  File "C:\Users\Jason\Documents\Jason\FirmCLI_Tester\Firmware-Test-Manual\MCP-Trial-3\BYO-Firmware-MCP\tests\test_trusted_input_admission.py", line 10, in <module>
+    from pyocd_debug_mcp.firmstore.store import FirmStore
+ModuleNotFoundError: No module named 'pyocd_debug_mcp'
+
+
+======================================================================
+ERROR: test_uart_capture_evidence (unittest.loader._FailedTest.test_uart_capture_evidence)
+----------------------------------------------------------------------
+ImportError: Failed to import test module: test_uart_capture_evidence
+Traceback (most recent call last):
+  File "C:\Users\Jason\AppData\Local\Programs\Python\Python314\Lib\unittest\loader.py", line 426, in _find_test_path
+    module = self._get_module_from_name(name)
+  File "C:\Users\Jason\AppData\Local\Programs\Python\Python314\Lib\unittest\loader.py", line 367, in _get_module_from_name
+    __import__(name)
+    ~~~~~~~~~~^^^^^^
+  File "C:\Users\Jason\Documents\Jason\FirmCLI_Tester\Firmware-Test-Manual\MCP-Trial-3\BYO-Firmware-MCP\tests\test_uart_capture_evidence.py", line 8, in <module>
+    from pyocd_debug_mcp.adapters.uart_interface import UARTInterface, UARTPortHandle
+ModuleNotFoundError: No module named 'pyocd_debug_mcp'
+
+
+======================================================================
+ERROR: test_validation_honesty (unittest.loader._FailedTest.test_validation_honesty)
+----------------------------------------------------------------------
+ImportError: Failed to import test module: test_validation_honesty
+Traceback (most recent call last):
+  File "C:\Users\Jason\AppData\Local\Programs\Python\Python314\Lib\unittest\loader.py", line 426, in _find_test_path
+    module = self._get_module_from_name(name)
+  File "C:\Users\Jason\AppData\Local\Programs\Python\Python314\Lib\unittest\loader.py", line 367, in _get_module_from_name
+    __import__(name)
+    ~~~~~~~~~~^^^^^^
+  File "C:\Users\Jason\Documents\Jason\FirmCLI_Tester\Firmware-Test-Manual\MCP-Trial-3\BYO-Firmware-MCP\tests\test_validation_honesty.py", line 12, in <module>
+    from pyocd_debug_mcp.adapters.swd_interface import TargetSessionHandle
+ModuleNotFoundError: No module named 'pyocd_debug_mcp'
+
+
+======================================================================
+FAIL: test_backend_stdout_is_forwarded_to_inherited_stderr_at_both_layers (test_swd_process_isolation.ProcessIsolationContractTests.test_backend_stdout_is_forwarded_to_inherited_stderr_at_both_layers)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "C:\Users\Jason\Documents\Jason\FirmCLI_Tester\Firmware-Test-Manual\MCP-Trial-3\BYO-Firmware-MCP\tests\test_swd_process_isolation.py", line 114, in test_backend_stdout_is_forwarded_to_inherited_stderr_at_both_layers
+    self.assertEqual(result.returncode, 0, result.stderr)
+    ~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AssertionError: 1 != 0 : Traceback (most recent call last):
+  File "<string>", line 4, in <module>
+    from pyocd_debug_mcp.adapters.swd_pyocd import _backend_stdout_to_stderr
+ModuleNotFoundError: No module named 'pyocd_debug_mcp'
+
+
+======================================================================
+FAIL: test_selection_and_discovery_chatter_cannot_corrupt_protocol_result (test_swd_process_isolation.ProcessIsolationContractTests.test_selection_and_discovery_chatter_cannot_corrupt_protocol_result)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "C:\Users\Jason\Documents\Jason\FirmCLI_Tester\Firmware-Test-Manual\MCP-Trial-3\BYO-Firmware-MCP\tests\test_swd_process_isolation.py", line 173, in test_selection_and_discovery_chatter_cannot_corrupt_protocol_result
+    self.assertEqual(result.returncode, 0, result.stderr)
+    ~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AssertionError: 1 != 0 : Traceback (most recent call last):
+  File "<string>", line 6, in <module>
+    from pyocd_debug_mcp.adapters import swd_pyocd
+ModuleNotFoundError: No module named 'pyocd_debug_mcp'
+
+
+======================================================================
+FAIL: test_worker_bootstrap_isolates_import_and_between_request_stdout (test_swd_process_isolation.ProcessIsolationContractTests.test_worker_bootstrap_isolates_import_and_between_request_stdout)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "C:\Users\Jason\Documents\Jason\FirmCLI_Tester\Firmware-Test-Manual\MCP-Trial-3\BYO-Firmware-MCP\tests\test_swd_process_isolation.py", line 75, in test_worker_bootstrap_isolates_import_and_between_request_stdout
+    self.assertEqual(result.returncode, 0, result.stderr)
+    ~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AssertionError: 1 != 0 : Traceback (most recent call last):
+  File "<string>", line 8, in <module>
+    from pyocd_debug_mcp.adapters import provider_worker
+ModuleNotFoundError: No module named 'pyocd_debug_mcp'
+
+
+----------------------------------------------------------------------
+Ran 45 tests in 0.740s
+
+FAILED (failures=3, errors=41)
+
+2026-07-23T22:32:33.774124Z ERROR codex_models_manager::manager: failed to renew cache TTL: missing field `supports_reasoning_summaries` at line 88 column 5
+2026-07-23T22:32:38.978121Z ERROR codex_core::tools::router: error=Exit code: 1
+Wall time: 1.3 seconds
+Output:
+EEE
+======================================================================
+ERROR: test_swd_pyocd_jlink_multisession (unittest.loader._FailedTest.test_swd_pyocd_jlink_multisession)
+----------------------------------------------------------------------
+ImportError: Failed to import test module: test_swd_pyocd_jlink_multisession
+Traceback (most recent call last):
+  File "C:\Users\Jason\AppData\Local\Programs\Python\Python314\Lib\unittest\loader.py", line 137, in loadTestsFromName
+    module = __import__(module_name)
+  File "C:\Users\Jason\Documents\Jason\FirmCLI_Tester\Firmware-Test-Manual\MCP-Trial-3\BYO-Firmware-MCP\tests\test_swd_pyocd_jlink_multisession.py", line 9, in <module>
+    from pyocd_debug_mcp.adapters import swd_pyocd
+  File "C:\Users\Jason\Documents\Jason\FirmCLI_Tester\Firmware-Test-Manual\MCP-Trial-3\BYO-Firmware-MCP\src\pyocd_debug_mcp\adapters\swd_pyocd.py", line 15, in <module>
+    from pyocd_debug_mcp.kernel.processes import run_owned
+  File "C:\Users\Jason\Documents\Jason\FirmCLI_Tester\Firmware-Test-Manual\MCP-Trial-3\BYO-Firmware-MCP\src\pyocd_debug_mcp\kernel\__init__.py", line 8, in <module>
+    from pyocd_debug_mcp.kernel.registry import (
+    ...<3 lines>...
+    )
+  File "C:\Users\Jason\Documents\Jason\FirmCLI_Tester\Firmware-Test-Manual\MCP-Trial-3\BYO-Firmware-MCP\src\pyocd_debug_mcp\kernel\registry.py", line 12, in <module>
+    from mcp.server.fastmcp import FastMCP
+ModuleNotFoundError: No module named 'mcp'
+
+
+======================================================================
+ERROR: test_server_trust_model_round_5 (unittest.loader._FailedTest.test_server_trust_model_round_5)
+----------------------------------------------------------------------
+ImportError: Failed to import test module: test_server_trust_model_round_5
+Traceback (most recent call last):
+  File "C:\Users\Jason\AppData\Local\Programs\Python\Python314\Lib\unittest\loader.py", line 137, in loadTestsFromName
+    module = __import__(module_name)
+  File "C:\Users\Jason\Documents\Jason\FirmCLI_Tester\Firmware-Test-Manual\MCP-Trial-3\BYO-Firmware-MCP\tests\test_server_trust_model_round_5.py", line 17, in <module>
+    from pyocd_debug_mcp.tools.flash import FlashToolServices, build_flash_handlers
+  File "C:\Users\Jason\Documents\Jason\FirmCLI_Tester\Firmware-Test-Manual\MCP-Trial-3\BYO-Firmware-MCP\src\pyocd_debug_mcp\tools\__init__.py", line 3, in <module>
+    from pyocd_debug_mcp.tools.handshake import (
+    ...<2 lines>...
+    )
+  File "C:\Users\Jason\Documents\Jason\FirmCLI_Tester\Firmware-Test-Manual\MCP-Trial-3\BYO-Firmware-MCP\src\pyocd_debug_mcp\tools\handshake.py", line 7, in <module>
+    from mcp.server.fastmcp import FastMCP
+ModuleNotFoundError: No module named 'mcp'
+
+
+======================================================================
+ERROR: test_server_assignment_connect (unittest.loader._FailedTest.test_server_assignment_connect)
+----------------------------------------------------------------------
+ImportError: Failed to import test module: test_server_assignment_connect
+Traceback (most recent call last):
+  File "C:\Users\Jason\AppData\Local\Programs\Python\Python314\Lib\unittest\loader.py", line 137, in loadTestsFromName
+    module = __import__(module_name)
+  File "C:\Users\Jason\Documents\Jason\FirmCLI_Tester\Firmware-Test-Manual\MCP-Trial-3\BYO-Firmware-MCP\tests\test_server_assignment_connect.py", line 11, in <module>
+    from pyocd_debug_mcp import server
+  File "C:\Users\Jason\Documents\Jason\FirmCLI_Tester\Firmware-Test-Manual\MCP-Trial-3\BYO-Firmware-MCP\src\pyocd_debug_mcp\server.py", line 29, in <module>
+    from pyocd.target.pack.cmsis_pack import CmsisPack  # type: ignore[import-untyped]
+    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+ModuleNotFoundError: No module named 'pyocd'
+
+
+----------------------------------------------------------------------
+Ran 3 tests in 0.001s
+
+FAILED (errors=3)
+
+2026-07-23T22:32:39.047587Z ERROR codex_models_manager::manager: failed to renew cache TTL: missing field `supports_reasoning_summaries` at line 88 column 5
+2026-07-23T22:32:48.182538Z ERROR codex_models_manager::manager: failed to renew cache TTL: missing field `supports_reasoning_summaries` at line 88 column 5
+2026-07-23T22:33:01.381373Z ERROR codex_models_manager::manager: failed to renew cache TTL: missing field `supports_reasoning_summaries` at line 88 column 5
+2026-07-23T22:33:12.942986Z ERROR codex_models_manager::manager: failed to renew cache TTL: missing field `supports_reasoning_summaries` at line 88 column 5
+2026-07-23T22:33:19.566370Z ERROR codex_models_manager::manager: failed to renew cache TTL: missing field `supports_reasoning_summaries` at line 88 column 5
+2026-07-23T22:33:34.338243Z ERROR codex_models_manager::manager: failed to renew cache TTL: missing field `supports_reasoning_summaries` at line 88 column 5
+2026-07-23T22:33:48.555461Z ERROR codex_models_manager::manager: failed to renew cache TTL: missing field `supports_reasoning_summaries` at line 88 column 5
+2026-07-23T22:33:58.872795Z ERROR codex_models_manager::manager: failed to renew cache TTL: missing field `supports_reasoning_summaries` at line 88 column 5
+2026-07-23T22:34:05.570249Z ERROR codex_models_manager::manager: failed to renew cache TTL: missing field `supports_reasoning_summaries` at line 88 column 5
+2026-07-23T22:34:08.552264Z  WARN codex_analytics::client: failed to send events request: error sending request for url (https://chatgpt.com/backend-api/codex/analytics-events/events)
+2026-07-23T22:34:10.020265Z  WARN codex_core::responses_retry: stream disconnected - retrying sampling request (1/5 in 197ms)...
+2026-07-23T22:34:10.870009Z ERROR codex_models_manager::manager: failed to renew cache TTL: missing field `supports_reasoning_summaries` at line 88 column 5
+2026-07-23T22:34:17.591046Z ERROR codex_models_manager::manager: failed to renew cache TTL: missing field `supports_reasoning_summaries` at line 88 column 5
+2026-07-23T22:34:26.930214Z ERROR codex_models_manager::manager: failed to renew cache TTL: missing field `supports_reasoning_summaries` at line 88 column 5
+Reading additional input from stdin...
+2026-07-23T22:34:35.840191Z ERROR codex_models_manager::cache: failed to load models cache: missing field `supports_reasoning_summaries` at line 88 column 5
+2026-07-23T22:34:36.982872Z  WARN codex_core::shell_snapshot: Failed to create shell snapshot for powershell: Shell snapshot not supported yet for PowerShell
+2026-07-23T22:34:59.164125Z  WARN codex_analytics::client: failed to send events request: error sending request for url (https://chatgpt.com/backend-api/codex/analytics-events/events)
+2026-07-23T22:35:01.809420Z ERROR codex_models_manager::manager: failed to renew cache TTL: missing field `supports_reasoning_summaries` at line 88 column 5
+2026-07-23T22:35:10.014249Z ERROR codex_models_manager::manager: failed to renew cache TTL: missing field `supports_reasoning_summaries` at line 88 column 5
+2026-07-23T22:35:20.406389Z ERROR codex_models_manager::manager: failed to renew cache TTL: missing field `supports_reasoning_summaries` at line 88 column 5
+2026-07-23T22:35:23.244973Z  WARN codex_core::responses_retry: stream disconnected - retrying sampling request (1/5 in 206ms)...
+2026-07-23T22:35:24.054462Z ERROR codex_models_manager::manager: failed to renew cache TTL: missing field `supports_reasoning_summaries` at line 88 column 5
+2026-07-23T22:36:02.209305Z ERROR codex_models_manager::manager: failed to renew cache TTL: missing field `supports_reasoning_summaries` at line 88 column 5
+2026-07-23T22:36:05.947444Z ERROR codex_core::tools::router: error=Exit code: 1
+Wall time: 0.7 seconds
+Output:
+E
+======================================================================
+ERROR: test_change_loop_spec (unittest.loader._FailedTest.test_change_loop_spec)
+----------------------------------------------------------------------
+ImportError: Failed to import test module: test_change_loop_spec
+Traceback (most recent call last):
+  File "C:\Users\Jason\AppData\Local\Programs\Python\Python314\Lib\unittest\loader.py", line 137, in loadTestsFromName
+    module = __import__(module_name)
+  File "C:\Users\Jason\Documents\Jason\FirmCLI_Tester\Firmware-Test-Manual\MCP-Trial-3\BYO-Firmware-MCP\tests\test_change_loop_spec.py", line 18, in <module>
+    from pyocd_debug_mcp.adapters.swd_interface import TargetSessionHandle
+ModuleNotFoundError: No module named 'pyocd_debug_mcp'
+
+
+----------------------------------------------------------------------
+Ran 1 test in 0.000s
+
+FAILED (errors=1)
+
+2026-07-23T22:36:06.023306Z ERROR codex_models_manager::manager: failed to renew cache TTL: missing field `supports_reasoning_summaries` at line 88 column 5
+2026-07-23T22:36:14.483031Z ERROR codex_core::tools::router: error=Exit code: 1
+Wall time: 4.4 seconds
+Output:
+E.E.E
+======================================================================
+ERROR: test_cl001_reset_connect_has_no_ambient_routing_authority (tests.test_change_loop_spec.ChangeLoopSpecTests.test_cl001_reset_connect_has_no_ambient_routing_authority)
+Reset attach must pass only profile/action routing to the backend.
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "C:\Users\Jason\Documents\Jason\FirmCLI_Tester\Firmware-Test-Manual\MCP-Trial-3\BYO-Firmware-MCP\tests\test_change_loop_spec.py", line 38, in test_cl001_reset_connect_has_no_ambient_routing_authority
+    board = _board()
+            ^^^^^^^^
+  File "C:\Users\Jason\Documents\Jason\FirmCLI_Tester\Firmware-Test-Manual\MCP-Trial-3\BYO-Firmware-MCP\tests\test_change_loop_spec.py", line 25, in _board
+    return BoardConfig(
+           ^^^^^^^^^^^^
+TypeError: BoardConfig.__init__() missing 2 required positional arguments: 'probe_hint_terms' and 'serial_hint_terms'
+
+======================================================================
+ERROR: test_cl003_final_reset_transport_loss_is_successful_but_unconfirmed (tests.test_change_loop_spec.ChangeLoopSpecTests.test_cl003_final_reset_transport_loss_is_successful_but_unconfirmed)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "C:\Users\Jason\Documents\Jason\FirmCLI_Tester\Firmware-Test-Manual\MCP-Trial-3\BYO-Firmware-MCP\tests\test_change_loop_spec.py", line 101, in test_cl003_final_reset_transport_loss_is_successful_but_unconfirmed
+    handle = TargetSessionHandle(session, _board(), "probe", "fake", None)
+                                          ^^^^^^^^
+  File "C:\Users\Jason\Documents\Jason\FirmCLI_Tester\Firmware-Test-Manual\MCP-Trial-3\BYO-Firmware-MCP\tests\test_change_loop_spec.py", line 25, in _board
+    return BoardConfig(
+           ^^^^^^^^^^^^
+TypeError: BoardConfig.__init__() missing 2 required positional arguments: 'probe_hint_terms' and 'serial_hint_terms'
+
+======================================================================
+ERROR: test_cl004_recovery_finalization_revokes_assignment_even_when_close_fails (tests.test_change_loop_spec.ChangeLoopSpecTests.test_cl004_recovery_finalization_revokes_assignment_even_when_close_fails)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "C:\Users\Jason\Documents\Jason\FirmCLI_Tester\Firmware-Test-Manual\MCP-Trial-3\BYO-Firmware-MCP\tests\test_change_loop_spec.py", line 111, in test_cl004_recovery_finalization_revokes_assignment_even_when_close_fails
+    handle = TargetSessionHandle(None, _board(), "probe", "fake", None)
+                                       ^^^^^^^^
+  File "C:\Users\Jason\Documents\Jason\FirmCLI_Tester\Firmware-Test-Manual\MCP-Trial-3\BYO-Firmware-MCP\tests\test_change_loop_spec.py", line 25, in _board
+    return BoardConfig(
+           ^^^^^^^^^^^^
+TypeError: BoardConfig.__init__() missing 2 required positional arguments: 'probe_hint_terms' and 'serial_hint_terms'
+
+----------------------------------------------------------------------
+Ran 5 tests in 1.997s
+
+FAILED (errors=3)
+
+2026-07-23T22:36:14.541575Z ERROR codex_models_manager::manager: failed to renew cache TTL: missing field `supports_reasoning_summaries` at line 88 column 5
+2026-07-23T22:36:18.886869Z ERROR codex_models_manager::manager: failed to renew cache TTL: missing field `supports_reasoning_summaries` at line 88 column 5
+2026-07-23T22:36:26.032980Z ERROR codex_models_manager::manager: failed to renew cache TTL: missing field `supports_reasoning_summaries` at line 88 column 5
+2026-07-23T22:36:37.925986Z ERROR codex_models_manager::manager: failed to renew cache TTL: missing field `supports_reasoning_summaries` at line 88 column 5
+2026-07-23T22:36:43.293524Z ERROR codex_models_manager::manager: failed to renew cache TTL: missing field `supports_reasoning_summaries` at line 88 column 5
+2026-07-23T22:36:50.906918Z ERROR codex_models_manager::manager: failed to renew cache TTL: missing field `supports_reasoning_summaries` at line 88 column 5
+2026-07-23T22:36:53.231555Z  WARN codex_analytics::client: failed to send events request: error sending request for url (https://chatgpt.com/backend-api/codex/analytics-events/events)
+Reading additional input from stdin...
+2026-07-23T22:36:59.799001Z ERROR codex_models_manager::cache: failed to load models cache: missing field `supports_reasoning_summaries` at line 88 column 5
+2026-07-23T22:37:00.886962Z  WARN codex_core::shell_snapshot: Failed to create shell snapshot for powershell: Shell snapshot not supported yet for PowerShell
+2026-07-23T22:38:08.042189Z ERROR codex_models_manager::manager: failed to renew cache TTL: missing field `supports_reasoning_summaries` at line 88 column 5
+2026-07-23T22:38:11.677673Z ERROR codex_core::tools::router: error=Exit code: 1
+Wall time: 0.6 seconds
+Output:
+E
+======================================================================
+ERROR: test_regression_change_loop (unittest.loader._FailedTest.test_regression_change_loop)
+----------------------------------------------------------------------
+ImportError: Failed to import test module: test_regression_change_loop
+Traceback (most recent call last):
+  File "C:\Users\Jason\AppData\Local\Programs\Python\Python314\Lib\unittest\loader.py", line 137, in loadTestsFromName
+    module = __import__(module_name)
+  File "C:\Users\Jason\Documents\Jason\FirmCLI_Tester\Firmware-Test-Manual\MCP-Trial-3\BYO-Firmware-MCP\tests\test_regression_change_loop.py", line 15, in <module>
+    from pyocd_debug_mcp import native_build, server
+ModuleNotFoundError: No module named 'pyocd_debug_mcp'
+
+
+----------------------------------------------------------------------
+Ran 1 test in 0.000s
+
+FAILED (errors=1)
+
+2026-07-23T22:38:11.733018Z ERROR codex_models_manager::manager: failed to renew cache TTL: missing field `supports_reasoning_summaries` at line 88 column 5
+2026-07-23T22:38:18.780471Z ERROR codex_core::tools::router: error=Exit code: 1
+Wall time: 3.9 seconds
+Output:
+EE..E
+======================================================================
+ERROR: test_final_reset_transport_loss_is_unconfirmed_not_running (tests.test_regression_change_loop.FlashStateRegressionTests.test_final_reset_transport_loss_is_unconfirmed_not_running)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "C:\Users\Jason\Documents\Jason\FirmCLI_Tester\Firmware-Test-Manual\MCP-Trial-3\BYO-Firmware-MCP\tests\test_regression_change_loop.py", line 102, in test_final_reset_transport_loss_is_unconfirmed_not_running
+    self._handle(Target()), Path(temporary) / "firmware.elf", halt_after_reset=False
+    ^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\Jason\Documents\Jason\FirmCLI_Tester\Firmware-Test-Manual\MCP-Trial-3\BYO-Firmware-MCP\tests\test_regression_change_loop.py", line 86, in _handle
+    board = BoardConfig("board", "Board", "mcu", "probe", "target")
+            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+TypeError: BoardConfig.__init__() missing 4 required positional arguments: 'probe_type', 'probe_hint_terms', 'serial_hint_terms', and 'test_addr'
+
+======================================================================
+ERROR: test_observed_state_and_worker_contract_only_allow_truthful_flash_states (tests.test_regression_change_loop.FlashStateRegressionTests.test_observed_state_and_worker_contract_only_allow_truthful_flash_states)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "C:\Users\Jason\Documents\Jason\FirmCLI_Tester\Firmware-Test-Manual\MCP-Trial-3\BYO-Firmware-MCP\tests\test_regression_change_loop.py", line 124, in test_observed_state_and_worker_contract_only_allow_truthful_flash_states
+    self._handle(Target()), Path(temporary) / "firmware.elf", halt_after_reset=False
+    ^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\Jason\Documents\Jason\FirmCLI_Tester\Firmware-Test-Manual\MCP-Trial-3\BYO-Firmware-MCP\tests\test_regression_change_loop.py", line 86, in _handle
+    board = BoardConfig("board", "Board", "mcu", "probe", "target")
+            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+TypeError: BoardConfig.__init__() missing 4 required positional arguments: 'probe_type', 'probe_hint_terms', 'serial_hint_terms', and 'test_addr'
+
+======================================================================
+ERROR: test_recovery_revokes_assignment_before_cleanup_failure (tests.test_regression_change_loop.RecoveryCleanupRegressionTests.test_recovery_revokes_assignment_before_cleanup_failure)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "C:\Users\Jason\Documents\Jason\FirmCLI_Tester\Firmware-Test-Manual\MCP-Trial-3\BYO-Firmware-MCP\tests\test_regression_change_loop.py", line 158, in test_recovery_revokes_assignment_before_cleanup_failure
+    self.assertIsNone(manager.maybe_handle_for("board"))
+                      ^^^^^^^^^^^^^^^^^^^^^^^^
+AttributeError: 'ConnectionManager' object has no attribute 'maybe_handle_for'
+
+----------------------------------------------------------------------
+Ran 5 tests in 0.064s
+
+FAILED (errors=3)
+
+2026-07-23T22:38:18.850611Z ERROR codex_models_manager::manager: failed to renew cache TTL: missing field `supports_reasoning_summaries` at line 88 column 5
+2026-07-23T22:38:22.481003Z ERROR codex_models_manager::manager: failed to renew cache TTL: missing field `supports_reasoning_summaries` at line 88 column 5
+2026-07-23T22:38:29.863982Z ERROR codex_models_manager::manager: failed to renew cache TTL: missing field `supports_reasoning_summaries` at line 88 column 5
+2026-07-23T22:38:36.763419Z ERROR codex_models_manager::manager: failed to renew cache TTL: missing field `supports_reasoning_summaries` at line 88 column 5
+2026-07-23T22:38:42.363539Z ERROR codex_models_manager::manager: failed to renew cache TTL: missing field `supports_reasoning_summaries` at line 88 column 5
+2026-07-23T22:38:52.448104Z ERROR codex_models_manager::manager: failed to renew cache TTL: missing field `supports_reasoning_summaries` at line 88 column 5
+change-loop: starting iteration 2 of 8
+2026-07-23T22:39:08.698327Z ERROR codex_models_manager::cache: failed to load models cache: missing field `supports_reasoning_summaries` at line 88 column 5
+2026-07-23T22:39:09.694768Z  WARN codex_core::shell_snapshot: Failed to create shell snapshot for powershell: Shell snapshot not supported yet for PowerShell
+2026-07-23T22:39:28.066845Z ERROR codex_models_manager::manager: failed to renew cache TTL: missing field `supports_reasoning_summaries` at line 88 column 5
+2026-07-23T22:39:37.691163Z ERROR codex_models_manager::cache: failed to load models cache: missing field `supports_reasoning_summaries` at line 88 column 5
+2026-07-23T22:39:38.712773Z  WARN codex_core::shell_snapshot: Failed to create shell snapshot for powershell: Shell snapshot not supported yet for PowerShell
+2026-07-23T22:39:59.340090Z ERROR codex_models_manager::manager: failed to renew cache TTL: missing field `supports_reasoning_summaries` at line 88 column 5
+2026-07-23T22:40:07.747616Z ERROR codex_models_manager::manager: failed to renew cache TTL: missing field `supports_reasoning_summaries` at line 88 column 5
+2026-07-23T22:40:23.153677Z ERROR codex_models_manager::manager: failed to renew cache TTL: missing field `supports_reasoning_summaries` at line 88 column 5
+2026-07-23T22:40:32.255311Z ERROR codex_models_manager::manager: failed to renew cache TTL: missing field `supports_reasoning_summaries` at line 88 column 5
+2026-07-23T22:40:41.982118Z ERROR codex_models_manager::cache: failed to load models cache: missing field `supports_reasoning_summaries` at line 88 column 5
+2026-07-23T22:40:43.004274Z  WARN codex_core::shell_snapshot: Failed to create shell snapshot for powershell: Shell snapshot not supported yet for PowerShell
+2026-07-23T22:41:23.961532Z ERROR codex_models_manager::manager: failed to renew cache TTL: missing field `supports_reasoning_summaries` at line 88 column 5
+2026-07-23T22:41:32.979790Z ERROR codex_core::tools::router: error=Exit code: 1
+Wall time: 5.5 seconds
+Output:
+src/pyocd_debug_mcp\firmstore\profiles.py:130:class ProfileError(ConfigError):
+E
+======================================================================
+ERROR: test_regression_change_loop (unittest.loader._FailedTest.test_regression_change_loop)
+----------------------------------------------------------------------
+ImportError: Failed to import test module: test_regression_change_loop
+Traceback (most recent call last):
+  File "C:\Users\Jason\AppData\Roaming\uv\python\cpython-3.12-windows-x86_64-none\Lib\unittest\loader.py", line 137, in loadTestsFromName
+    module = __import__(module_name)
+             ^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\Jason\Documents\Jason\FirmCLI_Tester\Firmware-Test-Manual\MCP-Trial-3\BYO-Firmware-MCP\tests\test_regression_change_loop.py", line 23, in <module>
+    from pyocd_debug_mcp.profile_store import ProfileError
+ModuleNotFoundError: No module named 'pyocd_debug_mcp.profile_store'
+
+
+----------------------------------------------------------------------
+Ran 1 test in 0.000s
+
+FAILED (errors=1)
+
+2026-07-23T22:41:33.136453Z ERROR codex_models_manager::manager: failed to renew cache TTL: missing field `supports_reasoning_summaries` at line 88 column 5
+2026-07-23T22:41:36.187395Z ERROR codex_models_manager::manager: failed to renew cache TTL: missing field `supports_reasoning_summaries` at line 88 column 5
+2026-07-23T22:41:43.959988Z ERROR codex_models_manager::manager: failed to renew cache TTL: missing field `supports_reasoning_summaries` at line 88 column 5
+2026-07-23T22:42:00.630684Z ERROR codex_models_manager::manager: failed to renew cache TTL: missing field `supports_reasoning_summaries` at line 88 column 5
+change-loop: green: both tester suites passed in iteration 2

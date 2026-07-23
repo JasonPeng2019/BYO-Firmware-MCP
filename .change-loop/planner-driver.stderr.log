@@ -1,0 +1,1147 @@
+Reading additional input from stdin...
+2026-07-23T22:27:10.402123Z ERROR codex_models_manager::cache: failed to load models cache: missing field `supports_reasoning_summaries` at line 88 column 5
+2026-07-23T22:27:11.504170Z  WARN codex_core::shell_snapshot: Failed to create shell snapshot for powershell: Shell snapshot not supported yet for PowerShell
+2026-07-23T22:27:19.750028Z ERROR codex_models_manager::manager: failed to renew cache TTL: missing field `supports_reasoning_summaries` at line 88 column 5
+2026-07-23T22:27:27.534259Z ERROR codex_models_manager::manager: failed to renew cache TTL: missing field `supports_reasoning_summaries` at line 88 column 5
+2026-07-23T22:27:32.974907Z ERROR codex_models_manager::manager: failed to renew cache TTL: missing field `supports_reasoning_summaries` at line 88 column 5
+2026-07-23T22:27:39.885238Z ERROR codex_core::tools::router: error=Exit code: 1
+Wall time: 0.7 seconds
+Total output lines: 2206
+Output:
+            target_override=target_override,
+        )
+
+    def close(self, handle: TargetSessionHandle) -> None:
+        _close_session(handle.session)
+
+    def connect_under_reset(
+        self,
+        *,
+        board: BoardConfig | None,
+        unique_id: str | None,
+        target: str | None,
+        server_timeouts: ServerTimeoutConfig | None = None,
+        pack_path: Path | None = None,
+        pack_sha256: str | None = None,
+        pdsc_device: str | None = None,
+        operation_timeout_seconds: float | None = None,
+    ) -> TargetSessionHandle:
+        del operation_timeout_seconds
+        probe_uid = unique_id or os.environ.get("PYOCD_PROBE_UID") or None
+        target_override = (
+            target
+            or (board.pyocd_target if board else None)
+            or os.environ.get("PYOCD_TARGET")
+            or None
+        )
+        options = dict(build_session_options(board, target_override, server_timeouts) or {})
+        options["connect_mode"] = "under-reset"
+        if pack_path is not None:
+            if pack_sha256 is None:
+                raise ValueError("pack_sha256 is required with a quarantined pack_path")
+            pack_object = _quarantined_cmsis_pack(pack_path.expanduser().resolve(), pack_sha256)
+        elif pack_sha256 is not None:
+            raise ValueError("pack_sha256 is valid only with a quarantined pack_path")
+        else:
+            selected_pack = (
+                verified_pack_for_target(target_override) if target_override is not None else None
+            )
+            pack_object = _cmsis_pack_for(selected_pack) if selected_pack is not None else None
+        if pack_object is not None:
+            options["pack"] = [pack_object]
+        with _pack_target_scope(pack_object, target_override, pdsc_device):
+            session = self._choose_session(probe_uid=probe_uid, options=options)
+        if session is None:
+            raise ProbeNotFoundError("No matching debug probe found.")
+        assert_reset = getattr(session.probe, "assert_reset", None)
+        if not callable(assert_reset):
+            try:
+                _close_session(session)
+            except Exception:
+                pass
+            raise ResetLineUnavailableError(
+                "The selected probe does not expose wired reset-line control; "
+                "connect_under_reset cannot degrade to an ordinary attach."
+            )
+        try:
+            with _backend_stdout_to_stderr():
+                self._verify_session_pack_source(
+                    session,
+                    target_override,
+                    pack_object,
+                    pdsc_device,
+                )
+                # pyOCD's under-reset init sequence owns assertion, reset catch,
+                # halt, and release. Calling assert_reset() before Session.open()
+                # is invalid for probes that have not been opened yet and would
+                # also duplicate pyOCD's reset sequence. Some real targets start
+                # running again as nRESET is released, so explicitly halt once
+                # more after open and verify the observable postcondition before
+                # returning. The bounded retry covers probes where the first halt
+                # command races reset release.
+                session.open()
+                self._verify_session_pack_source(
+                    session, target_override, pack_object, pdsc_device
+                )
+                halt_deadline = time.monotonic() + 0.5
+                while True:
+                    session.target.halt()
+                    state = str(session.target.get_state().name).casefold()
+                    if state == "halted":
+                        break
+                    if time.monotonic() >= halt_deadline:
+                        raise TargetConnectionError(
+                            "connect_under_reset released reset but could not leave "
+                            "the target halted"
+                        )
+                    time.sleep(0.01)
+        except Exception as exc:  # noqa: BLE001 - preserve backend context
+            # If initialisation failed after pyOCD asserted nRESET, release it
+            # best-effort before closing the partially opened session.
+            try:
+                with _backend_stdout_to_stderr():
+                    assert_reset(False)
+            except Exception:
+                pass
+            try:
+                _close_session(session)
+            except Exception:
+                pass
+            if isinstance(exc, ResetLineUnavailableError):
+                raise
+            if isinstance(exc, NotImplementedError):
+                raise ResetLineUnavailableError(
+                    "The selected probe does not support wired reset-line control; "
+                    "connect_under_reset cannot degrade to an ordinary attach."
+                ) from exc
+            raise _typed_backend_error(exc) from exc
+        with _backend_stdout_to_stderr():
+            observed_probe_uid = session.probe.unique_id or probe_uid
+        return TargetSessionHandle(
+            session=session,
+            board=board,
+            probe_uid=observed_probe_uid,
+            route_used=ROUTE_PYOCD_NATIVE,
+            target_override=target_override,
+        )
+
+    def get_state(self, handle: TargetSessionHandle) -> str:
+        try:
+            with _backend_stdout_to_stderr():
+                return cast(str, handle.session.target.get_state().name)
+        except Exception as exc:  # noqa: BLE001 - preserve backend context
+            raise _typed_backend_error(exc) from exc
+
+    def read_memory(
+"""Build-system-neutral firmware process launcher.
+
+The launcher owns no build-system, hardware, or safety authority. The agent
+supplies the project's exact argv, cwd, environment, and expected outputs.
+Network access is inherited unless the caller explicitly requests offline
+execution.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import re
+import subprocess
+import sys
+from pathlib import Path
+from typing import Mapping, Sequence, cast
+
+from pyocd_debug_mcp.kernel.processes import run_owned
+
+
+BUILD_TIMEOUT_SECONDS = 1800.0
+_ARTIFACT_ROLE = re.compile(r"[A-Za-z][A-Za-z0-9_.-]*\Z")
+
+
+class BuildEvidenceError(RuntimeError):
+    """A post-execution failure with enough evidence to diagnose the build."""
+
+    def __init__(self, message: str, evidence: Mapping[str, object]) -> None:
+        super().__init__(message)
+        self.evidence = dict(evidence)
+
+
+def _validate_paths(
+    project_value: str, build_value: str, *, require_fresh_build: bool = True
+) -> tuple[Path, Path]:
+    project_dir = Path(project_value).expanduser().resolve()
+    # Preserve the caller's directory link. Its resolved identity is captured
+    # only after the selected path exists, then checked after the build.
+    build_dir = Path(os.path.abspath(str(Path(build_value).expanduser())))
+    if not project_dir.is_dir():
+        raise RuntimeError(f"Project directory does not exist: {project_dir}")
+    if build_dir == Path(build_dir.anchor):
+        raise RuntimeError("Build directory must be a dedicated non-root directory.")
+    if build_dir.exists() and not build_dir.is_dir():
+        raise RuntimeError(f"Build path exists but is not a directory: {build_dir}")
+    if require_fresh_build and build_dir.exists() and any(build_dir.iterdir()):
+        raise RuntimeError(
+            f"Build directory must be new or empty; preserve existing contents: {build_dir}"
+        )
+    return project_dir, build_dir
+
+
+def _validate_resolved_build_root(
+    project_dir: Path, build_root: Path, *, require_fresh_build: bool
+) -> None:
+    """Validate the captured output-root identity without rejecting a stable link."""
+
+    if build_root == Path(build_root.anchor):
+        raise RuntimeError("Build directory must be a dedicated non-root directory.")
+    if require_fresh_build and build_root == Path.home().resolve():
+        raise RuntimeError("Build directory must be a dedicated non-root, non-home directory.")
+    if require_fresh_build and (
+        project_dir == build_root or project_dir.is_relative_to(build_root)
+    ):
+        raise RuntimeError("Build directory must not equal or contain the project directory.")
+
+
+def _artifact_paths(
+    build_dir: Path,
+    *,
+    expected_root: Path | None = None,
+) -> dict[str, str | None]:
+    root = expected_root or build_dir.resolve(strict=True)
+    if build_dir.resolve(strict=True) != root:
+        raise RuntimeError("Artifact search root was replaced or redirected during the build.")
+    files = tuple(
+        path
+        for path in build_dir.rglob("*")
+        if path.is_file() and path.resolve().is_relative_to(root)
+    )
+    elves = tuple(path.resolve() for path in files if _is_loadable_elf(path))
+    if len(elves) != 1:
+        raise RuntimeError(
+            "Native build must produce exactly one ELF below the artifact search root; "
+            f"found {len(elves)}. Pass --artifact-elf and --artifact-map for multi-image or "
+            "nonstandard output layouts."
+        )
+    elf = elves[0]
+    maps = tuple(
+        path.resolve()
+        for path in files
+        if path.suffix.casefold() == ".map" and path.stat().st_size > 0 and not _has_elf_magic(path)
+    )
+    if len(maps) != 1:
+        raise RuntimeError(
+            "Native build must produce exactly one linker map; "
+            f"found {len(maps)}. Pass --artifact-elf and --artifact-map for multi-image or "
+            "nonstandard output layouts."
+        )
+    hexes = tuple(
+        path.resolve()
+        for path in files
+        if path.suffix.casefold() == ".hex" and path.stem == elf.stem
+    )
+    if len(hexes) > 1:
+        raise RuntimeError(
+            "Native build produced multiple same-stem HEX artifacts; pass --artifact-hex."
+        )
+    return {
+        "elf": str(elf),
+        "hex": str(hexes[0]) if hexes else None,
+        "map": str(maps[0]),
+    }
+
+
+def _has_elf_magic(path: Path) -> bool:
+    try:
+        with path.open("rb") as stream:
+            return stream.read(4) == b"\x7fELF"
+    except OSError as exc:
+        raise RuntimeError(f"Cannot inspect build output: {path}") from exc
+
+
+def _is_loadable_elf(path: Path) -> bool:
+    """Return whether *path* has a complete loadable ELF structure."""
+
+    try:
+        with path.open("rb") as stream:
+            header = stream.read(64)
+            file_size = path.stat().st_size
+    except OSError as exc:
+        raise RuntimeError(f"Cannot inspect build output: {path}") from exc
+    if len(header) < 52 or header[:4] != b"\x7fELF" or header[6] != 1:
+        return False
+    elf_class = header[4]
+    byte_order = "little" if header[5] == 1 else "big" if header[5] == 2 else None
+    if byte_order is None or elf_class not in {1, 2}:
+        return False
+    elf_type = int.from_bytes(header[16:18], byte_order)
+    machine = int.from_bytes(header[18:20], byte_order)
+    version = int.from_bytes(header[20:24], byte_order)
+    if elf_type not in {2, 3} or machine == 0 or version != 1:
+        return False
+    if elf_class == 1:
+        expected_header_size = 52
+        expected_program_header_size = 32
+        program_offset = int.from_bytes(header[28:32], byte_order)
+        header_size = int.from_bytes(header[40:42], byte_order)
+        program_header_size = int.from_bytes(header[42:44], byte_order)
+        program_count = int.from_bytes(header[44:46], byte_order)
+    else:
+        if len(header) < 64:
+            return False
+        expected_header_size = 64
+        expected_program_header_size = 56
+        program_offset = int.from_bytes(header[32:40], byte_order)
+        header_size = int.from_bytes(header[52:54], byte_order)
+        program_header_size = int.from_bytes(header[54:56], byte_order)
+        program_count = int.from_bytes(header[56:58], byte_order)
+    if (
+        header_size != expected_header_size
+        or program_header_size != expected_program_header_size
+        or program_count == 0
+        or program_offset < header_size
+        or program_offset + (program_header_size * program_count) > file_size
+    ):
+        return False
+    try:
+        with path.open("rb") as stream:
+            stream.seek(program_offset)
+            for _ in range(program_count):
+                program_header = stream.read(program_header_size)
+                if len(program_header) != program_header_size:
+                    return False
+                if int.from_bytes(program_header[:4], byte_order) == 1:
+                    return True
+    except OSError as exc:
+        raise RuntimeError(f"Cannot inspect build output: {path}") from exc
+    return False
+
+
+def _is_intel_hex(path: Path) -> bool:
+    """Return whether *path* is a checksum-valid Intel HEX stream with EOF."""
+
+    try:
+        lines = path.read_text(encoding="ascii").splitlines()
+    except (OSError, UnicodeDecodeError) as exc:
+        raise RuntimeError(f"Cannot inspect HEX build output: {path}") from exc
+    saw_record = False
+    saw_eof = False
+    for line in lines:
+        record = line.strip()
+        if not record:
+            continue
+        if saw_eof or not record.startswith(":"):
+            return False
+        try:
+            payload = bytes.fromhex(record[1:])
+        except ValueError:
+            return False
+        if len(payload) < 5 or len(payload) != payload[0] + 5 or sum(payload) % 256:
+            return False
+        saw_record = True
+        address = int.from_bytes(payload[1:3], "big")
+        record_type = payload[3]
+        if record_type not in {0, 1, 2, 3, 4, 5}:
+            return False
+        fixed_lengths = {1: 0, 2: 2, 3: 4, 4: 2, 5: 4}
+        if record_type in fixed_lengths and (
+            payload[0] != fixed_lengths[record_type] or address != 0
+        ):
+            return False
+        if record_type == 1:
+            saw_eof = True
+    return saw_record and saw_eof
+
+
+def _command_tokens(args: argparse.Namespace) -> list[str]:
+    command = list(cast(Sequence[str], getattr(args, "command", ()) or ()))
+    if command[:1] == ["--"]:
+        command = command[1:]
+    if any("\x00" in token for token in command):
+        raise RuntimeError("Build argv must not contain NUL characters.")
+    if command and not command[0]:
+        raise RuntimeError("Build executable must be nonempty.")
+    return command
+
+
+def _environment_overrides(
+    values: Sequence[str], *, platform_name: str = os.name
+) -> dict[str, str]:
+    overrides: dict[str, str] = {}
+    normalized_keys: dict[str, str] = {}
+    for value in values:
+        key, separator, setting = value.partition("=")
+        if not separator or not key or "\x00" in key or "\x00" in setting:
+            raise RuntimeError("Environment overrides must use nonempty KEY=VALUE form.")
+        normalized = key.casefold() if platform_name == "nt" else key
+        if previous := normalized_keys.get(normalized):
+            overrides.pop(previous, None)
+        normalized_keys[normalized] = key
+        overrides[key] = setting
+    return overrides
+
+
+def _apply_environment_overrides(
+    environment: Mapping[str, str],
+    overrides: Mapping[str, str],
+    *,
+    platform_name: str = os.name,
+) -> dict[str, str]:
+    result = dict(environment)
+    if platform_name == "nt":
+        effective_overrides: dict[str, str] = {}
+        normalized_overrides: dict[str, str] = {}
+        for key, value in overrides.items():
+            normalized = key.casefold()
+            if previous := normalized_overrides.get(normalized):
+                effective_overrides.pop(previous, None)
+            normalized_overrides[normalized] = key
+            effective_overrides[key] = value
+        inherited_keys = {key.casefold(): key for key in result}
+        for key in effective_overrides:
+            if previous := inherited_keys.get(key.casefold()):
+                result.pop(previous, None)
+        result.update(effective_overrides)
+        return result
+    result.update(overrides)
+    return result
+
+
+def _resolve_cwd(value: str | None, *, default: Path) -> Path:
+    cwd = Path(value).expanduser().resolve() if value else default.resolve()
+    if not cwd.is_dir():
+        raise RuntimeError(f"Build working directory does not exist: {cwd}")
+    return cwd
+
+
+def _declared_artifacts(args: argparse.Namespace) -> dict[str, str | None] | None:
+    values = {
+        "elf": getattr(args, "artifact_elf", None),
+        "hex": getattr(args, "artifact_hex", None),
+        "map": getattr(args, "artifact_map", None),
+    }
+    for declaration in getattr(args, "artifact", ()) or ():
+        role, separator, path = declaration.partition("=")
+        if not separator or not _ARTIFACT_ROLE.fullmatch(role) or not path or "\x00" in path:
+            raise RuntimeError(
+                "Named artifacts must use ROLE=PATH with a non-empty alphanumeric role."
+            )
+        normalized = role.casefold()
+        if normalized in values and values[normalized] is not None:
+            raise RuntimeError(f"Artifact role was declared more than once: {normalized}")
+        values[normalized] = path
+    if not any(values.values()):
+        return None
+    return values
+
+
+def _artifact_candidate(build_dir: Path, value: str) -> Path:
+    raw = Path(value).expanduser()
+    candidate = raw if raw.is_absolute() else build_dir / raw
+    return candidate.resolve()
+
+
+def _validate_declared_artifacts(
+    build_dir: Path,
+    values: Mapping[str, str | None],
+    *,
+    expected_root: Path,
+) -> dict[str, str | None]:
+    if build_dir.resolve(strict=True) != expected_root:
+        raise RuntimeError("Artifact search root was replaced or redirected during the build.")
+    result: dict[str, str | None] = {}
+    for role, value in values.items():
+        if value is None:
+            result[role] = None
+            continue
+        candidate = _artifact_candidate(build_dir, value)
+        try:
+            resolved = candidate.resolve(strict=True)
+        except OSError as exc:
+            raise RuntimeError(
+                f"Declared {role.upper()} artifact does not exist: {candidate}"
+            ) from exc
+        if not resolved.is_file():
+            raise RuntimeError(f"Declared {role.upper()} artifact is not a file: {resolved}")
+        if not resolved.is_relative_to(expected_root):
+            raise RuntimeError(
+                f"Declared {role.upper()} artifact is outside the captured build root: {resolved}"
+            )
+        if resolved.stat().st_size == 0:
+            raise RuntimeError(f"Declared {role.upper()} artifact is empty: {resolved}")
+        result[role] = str(resolved)
+    declared_paths = [path for path in result.values() if path is not None]
+    if len(set(declared_paths)) != len(declared_paths):
+        raise RuntimeError("Declared artifact roles must refer to different files.")
+    if elf_value := result.get("elf"):
+        elf = Path(elf_value)
+        if not _is_loadable_elf(elf):
+            raise RuntimeError(f"Declared ELF artifact is not a loadable ELF image: {elf}")
+    if map_value := result.get("map"):
+        linker_map = Path(map_value)
+        if _has_elf_magic(linker_map):
+            raise RuntimeError(
+                f"Declared linker-map artifact is an ELF file, not a map: {linker_map}"
+            )
+    if hex_value := result.get("hex"):
+        intel_hex = Path(hex_value)
+        if not _is_intel_hex(intel_hex):
+            raise RuntimeError(f"Declared HEX artifact is not valid Intel HEX: {intel_hex}")
+    return result
+
+…25662 tokens truncated…_debug_mcp\server.py-2040-        resume=_legacy_resume,
+src\pyocd_debug_mcp\server.py-2041-        step=_legacy_step,
+src\pyocd_debug_mcp\server.py:2042:        reset=lambda board_id, halt_after: _legacy_reset(board_id, halt_after=halt_after),
+src\pyocd_debug_mcp\server.py-2043-        connect_under_reset=_connect_under_reset_impl,
+src\pyocd_debug_mcp\server.py-2044-    )
+src\pyocd_debug_mcp\server.py-2045-)
+src\pyocd_debug_mcp\server.py-2046-register_services = RegisterToolServices(
+--
+src\pyocd_debug_mcp\server.py-2246-        handle,
+src\pyocd_debug_mcp\server.py-2247-        explicit_path=artifact,
+src\pyocd_debug_mcp\server.py-2248-        action_context=context,
+src\pyocd_debug_mcp\server.py-2249-    ),
+src\pyocd_debug_mcp\server.py:2250:    flash_target=lambda handle, artifact: target_control.flash_firmware(
+src\pyocd_debug_mcp\server.py-2251-        handle,
+src\pyocd_debug_mcp\server.py-2252-        artifact,
+src\pyocd_debug_mcp\server.py-2253-        halt_after_reset=False,
+src\pyocd_debug_mcp\server.py-2254-    ),
+--
+src\pyocd_debug_mcp\server.py-2272-    resolve_port=_resolve_serial_port_for_session,
+src\pyocd_debug_mcp\server.py-2273-    capture_uart=lambda *args, **kwargs: capture_uart_output(*args, **kwargs),
+src\pyocd_debug_mcp\server.py-2274-    write_uart=lambda *args, **kwargs: write_uart_output(*args, **kwargs),
+src\pyocd_debug_mcp\server.py-2275-    exchange_uart=lambda *args, **kwargs: exchange_uart_output(*args, **kwargs),
+src\pyocd_debug_mcp\server.py:2276:    reset_target=lambda handle: target_control.reset(handle, halt_after=False),
+src\pyocd_debug_mcp\server.py-2277-    no_board_config_message=NO_BOARD_CONFIG_MESSAGE,
+src\pyocd_debug_mcp\server.py-2278-)
+src\pyocd_debug_mcp\server.py-2279-serial_tool_handlers = build_serial_handlers(serial_services)
+src\pyocd_debug_mcp\server.py-2280-
+--
+src\pyocd_debug_mcp\server.py-5627-            else "target connection failed during operation"
+src\pyocd_debug_mcp\server.py-5628-        )
+src\pyocd_debug_mcp\server.py-5629-        evict_captured_connection(reason)
+src\pyocd_debug_mcp\server.py-5630-
+src\pyocd_debug_mcp\server.py:5631:    def release_reset() -> None:
+src\pyocd_debug_mcp\server.py-5632-        try:
+src\pyocd_debug_mcp\server.py:5633:            target_control.release_reset(handle)
+src\pyocd_debug_mcp\server.py-5634-        except TargetConnectionError as release_error:
+src\pyocd_debug_mcp\server.py-5635-            try:
+src\pyocd_debug_mcp\server.py-5636-                evict_captured_connection("target connection failed while releasing reset")
+src\pyocd_debug_mcp\server.py-5637-            except Exception as cleanup_error:  # cleanup still reports the transport loss
+--
+src\pyocd_debug_mcp\server.py-5671-        tool_name,
+src\pyocd_debug_mcp\server.py-5672-        board_id,
+src\pyocd_debug_mcp\server.py-5673-        arguments.get("on_exit"),
+src\pyocd_debug_mcp\server.py-5674-        uart_write=_finalizer_uart_write,
+src\pyocd_debug_mcp\server.py:5675:        reset_and_run=lambda selected_board: target_control.reset(
+src\pyocd_debug_mcp\server.py-5676-            _handle(selected_board), halt_after=False
+src\pyocd_debug_mcp\server.py-5677-        ),
+src\pyocd_debug_mcp\server.py-5678-    )
+src\pyocd_debug_mcp\server.py-5679-
+--
+src\pyocd_debug_mcp\server.py-5694-                disconnect(_board_id)
+src\pyocd_debug_mcp\server.py-5695-            except Exception:
+src\pyocd_debug_mcp\server.py-5696-                pass
+src\pyocd_debug_mcp\server.py-5697-        plan_engine.close_run()
+src\pyocd_debug_mcp\server.py:5698:        tool_registry.reset()
+src\pyocd_debug_mcp\server.py-5699-
+src\pyocd_debug_mcp\server.py-5700-
+src\pyocd_debug_mcp\server.py-5701-if __name__ == "__main__":
+src\pyocd_debug_mcp\server.py-5702-    main()
+--
+src\pyocd_debug_mcp\adapters\swd_process.py-536-            frequency_hz=frequency_hz,
+src\pyocd_debug_mcp\adapters\swd_process.py-537-            operation_timeout_seconds=operation_timeout_seconds,
+src\pyocd_debug_mcp\adapters\swd_process.py-538-        )
+src\pyocd_debug_mcp\adapters\swd_process.py-539-
+src\pyocd_debug_mcp\adapters\swd_process.py:540:    def connect_under_reset(
+src\pyocd_debug_mcp\adapters\swd_process.py-541-        self,
+src\pyocd_debug_mcp\adapters\swd_process.py-542-        *,
+src\pyocd_debug_mcp\adapters\swd_process.py-543-        board: BoardConfig | None,
+src\pyocd_debug_mcp\adapters\swd_process.py-544-        unique_id: str | None,
+--
+src\pyocd_debug_mcp\adapters\swd_process.py-641-
+src\pyocd_debug_mcp\adapters\swd_process.py-642-    def step(self, handle: TargetSessionHandle) -> None:
+src\pyocd_debug_mcp\adapters\swd_process.py-643-        self._call(handle, "step")
+src\pyocd_debug_mcp\adapters\swd_process.py-644-
+src\pyocd_debug_mcp\adapters\swd_process.py:645:    def reset(self, handle: TargetSessionHandle) -> None:
+src\pyocd_debug_mcp\adapters\swd_process.py-646-        self._call(handle, "reset")
+src\pyocd_debug_mcp\adapters\swd_process.py-647-
+src\pyocd_debug_mcp\adapters\swd_process.py-648-    def reset_and_halt(self, handle: TargetSessionHandle) -> None:
+src\pyocd_debug_mcp\adapters\swd_process.py-649-        self._call(handle, "reset_and_halt")
+src\pyocd_debug_mcp\adapters\swd_process.py-650-
+src\pyocd_debug_mcp\adapters\swd_process.py:651:    def release_reset(self, handle: TargetSessionHandle) -> None:
+src\pyocd_debug_mcp\adapters\swd_process.py-652-        self._call(handle, "release_reset")
+src\pyocd_debug_mcp\adapters\swd_process.py-653-
+src\pyocd_debug_mcp\adapters\swd_process.py-654-    def flash(
+src\pyocd_debug_mcp\adapters\swd_process.py-655-        self,
+--
+src\pyocd_debug_mcp\adapters\swd_interface.py-96-    def close(self, handle: TargetSessionHandle) -> None:
+src\pyocd_debug_mcp\adapters\swd_interface.py-97-        """Close a previously opened session."""
+src\pyocd_debug_mcp\adapters\swd_interface.py-98-
+src\pyocd_debug_mcp\adapters\swd_interface.py-99-    @abstractmethod
+src\pyocd_debug_mcp\adapters\swd_interface.py:100:    def connect_under_reset(
+src\pyocd_debug_mcp\adapters\swd_interface.py-101-        self,
+src\pyocd_debug_mcp\adapters\swd_interface.py-102-        *,
+src\pyocd_debug_mcp\adapters\swd_interface.py-103-        board: BoardConfig | None,
+src\pyocd_debug_mcp\adapters\swd_interface.py-104-        unique_id: str | None,
+--
+src\pyocd_debug_mcp\adapters\swd_interface.py-166-    def step(self, handle: TargetSessionHandle) -> None:
+src\pyocd_debug_mcp\adapters\swd_interface.py-167-        """Single-step one instruction."""
+src\pyocd_debug_mcp\adapters\swd_interface.py-168-
+src\pyocd_debug_mcp\adapters\swd_interface.py-169-    @abstractmethod
+src\pyocd_debug_mcp\adapters\swd_interface.py:170:    def reset(self, handle: TargetSessionHandle) -> None:
+src\pyocd_debug_mcp\adapters\swd_interface.py-171-        """Reset and run the target."""
+src\pyocd_debug_mcp\adapters\swd_interface.py-172-
+src\pyocd_debug_mcp\adapters\swd_interface.py-173-    @abstractmethod
+src\pyocd_debug_mcp\adapters\swd_interface.py-174-    def reset_and_halt(self, handle: TargetSessionHandle) -> None:
+src\pyocd_debug_mcp\adapters\swd_interface.py-175-        """Reset and halt the target."""
+src\pyocd_debug_mcp\adapters\swd_interface.py-176-
+src\pyocd_debug_mcp\adapters\swd_interface.py-177-    @abstractmethod
+src\pyocd_debug_mcp\adapters\swd_interface.py:178:    def release_reset(self, handle: TargetSessionHandle) -> None:
+src\pyocd_debug_mcp\adapters\swd_interface.py-179-        """Deassert the connected probe's wired reset line."""
+src\pyocd_debug_mcp\adapters\swd_interface.py-180-
+src\pyocd_debug_mcp\adapters\swd_interface.py-181-    @abstractmethod
+src\pyocd_debug_mcp\adapters\swd_interface.py-182-    def flash(
+--
+src\pyocd_debug_mcp\adapters\provider_worker_runtime.py-233-                connect_mode=arguments.get("connect_mode"),
+src\pyocd_debug_mcp\adapters\provider_worker_runtime.py-234-                frequency_hz=arguments.get("frequency_hz"),
+src\pyocd_debug_mcp\adapters\provider_worker_runtime.py-235-            )
+src\pyocd_debug_mcp\adapters\provider_worker_runtime.py-236-        else:
+src\pyocd_debug_mcp\adapters\provider_worker_runtime.py:237:            handle = adapter.connect_under_reset(**kwargs)
+src\pyocd_debug_mcp\adapters\provider_worker_runtime.py-238-        return handle, _metadata(handle), False
+src\pyocd_debug_mcp\adapters\provider_worker_runtime.py-239-    if operation == "close":
+src\pyocd_debug_mcp\adapters\provider_worker_runtime.py-240-        if handle is not None:
+src\pyocd_debug_mcp\adapters\provider_worker_runtime.py-241-            adapter.close(handle)
+--
+src\pyocd_debug_mcp\adapters\provider_worker_runtime.py-276-        result = adapter.resume(handle)
+src\pyocd_debug_mcp\adapters\provider_worker_runtime.py-277-    elif operation == "step":
+src\pyocd_debug_mcp\adapters\provider_worker_runtime.py-278-        result = adapter.step(handle)
+src\pyocd_debug_mcp\adapters\provider_worker_runtime.py-279-    elif operation == "reset":
+src\pyocd_debug_mcp\adapters\provider_worker_runtime.py:280:        result = adapter.reset(handle)
+src\pyocd_debug_mcp\adapters\provider_worker_runtime.py-281-    elif operation == "reset_and_halt":
+src\pyocd_debug_mcp\adapters\provider_worker_runtime.py-282-        result = adapter.reset_and_halt(handle)
+src\pyocd_debug_mcp\adapters\provider_worker_runtime.py-283-    elif operation == "flash":
+src\pyocd_debug_mcp\adapters\provider_worker_runtime.py-284-        result = adapter.flash(
+--
+src\pyocd_debug_mcp\adapters\provider_worker_runtime.py-292-        result = adapter.set_breakpoint(handle, int(arguments["address"]))
+src\pyocd_debug_mcp\adapters\provider_worker_runtime.py-293-    elif operation == "remove_breakpoint":
+src\pyocd_debug_mcp\adapters\provider_worker_runtime.py-294-        result = adapter.remove_breakpoint(handle, int(arguments["address"]))
+src\pyocd_debug_mcp\adapters\provider_worker_runtime.py-295-    elif operation == "release_reset":
+src\pyocd_debug_mcp\adapters\provider_worker_runtime.py:296:        result = adapter.release_reset(handle)
+src\pyocd_debug_mcp\adapters\provider_worker_runtime.py-297-    else:
+src\pyocd_debug_mcp\adapters\provider_worker_runtime.py-298-        raise ValueError(f"unknown worker operation: {operation}")
+src\pyocd_debug_mcp\adapters\provider_worker_runtime.py-299-    return handle, result, False
+src\pyocd_debug_mcp\adapters\provider_worker_runtime.py-300-
+--
+src\pyocd_debug_mcp\adapters\swd_pyocd.py-543-
+src\pyocd_debug_mcp\adapters\swd_pyocd.py-544-    def close(self, handle: TargetSessionHandle) -> None:
+src\pyocd_debug_mcp\adapters\swd_pyocd.py-545-        _close_session(handle.session)
+src\pyocd_debug_mcp\adapters\swd_pyocd.py-546-
+src\pyocd_debug_mcp\adapters\swd_pyocd.py:547:    def connect_under_reset(
+src\pyocd_debug_mcp\adapters\swd_pyocd.py-548-        self,
+src\pyocd_debug_mcp\adapters\swd_pyocd.py-549-        *,
+src\pyocd_debug_mcp\adapters\swd_pyocd.py-550-        board: BoardConfig | None,
+src\pyocd_debug_mcp\adapters\swd_pyocd.py-551-        unique_id: str | None,
+--
+src\pyocd_debug_mcp\adapters\swd_pyocd.py-601-                    pack_object,
+src\pyocd_debug_mcp\adapters\swd_pyocd.py-602-                    pdsc_device,
+src\pyocd_debug_mcp\adapters\swd_pyocd.py-603-                )
+src\pyocd_debug_mcp\adapters\swd_pyocd.py-604-                # pyOCD's under-reset init sequence owns assertion, reset catch,
+src\pyocd_debug_mcp\adapters\swd_pyocd.py:605:                # halt, and release. Calling assert_reset() before Session.open()
+src\pyocd_debug_mcp\adapters\swd_pyocd.py-606-                # is invalid for probes that have not been opened yet and would
+src\pyocd_debug_mcp\adapters\swd_pyocd.py-607-                # also duplicate pyOCD's reset sequence. Some real targets start
+src\pyocd_debug_mcp\adapters\swd_pyocd.py-608-                # running again as nRESET is released, so explicitly halt once
+src\pyocd_debug_mcp\adapters\swd_pyocd.py-609-                # more after open and verify the observable postcondition before
+--
+src\pyocd_debug_mcp\adapters\swd_pyocd.py-629-            # If initialisation failed after pyOCD asserted nRESET, release it
+src\pyocd_debug_mcp\adapters\swd_pyocd.py-630-            # best-effort before closing the partially opened session.
+src\pyocd_debug_mcp\adapters\swd_pyocd.py-631-            try:
+src\pyocd_debug_mcp\adapters\swd_pyocd.py-632-                with _backend_stdout_to_stderr():
+src\pyocd_debug_mcp\adapters\swd_pyocd.py:633:                    assert_reset(False)
+src\pyocd_debug_mcp\adapters\swd_pyocd.py-634-            except Exception:
+src\pyocd_debug_mcp\adapters\swd_pyocd.py-635-                pass
+src\pyocd_debug_mcp\adapters\swd_pyocd.py-636-            try:
+src\pyocd_debug_mcp\adapters\swd_pyocd.py-637-                _close_session(session)
+--
+src\pyocd_debug_mcp\adapters\swd_pyocd.py-743-                handle.session.target.step()
+src\pyocd_debug_mcp\adapters\swd_pyocd.py-744-        except Exception as exc:  # noqa: BLE001 - preserve backend context
+src\pyocd_debug_mcp\adapters\swd_pyocd.py-745-            raise _typed_backend_error(exc) from exc
+src\pyocd_debug_mcp\adapters\swd_pyocd.py-746-
+src\pyocd_debug_mcp\adapters\swd_pyocd.py:747:    def reset(self, handle: TargetSessionHandle) -> None:
+src\pyocd_debug_mcp\adapters\swd_pyocd.py-748-        try:
+src\pyocd_debug_mcp\adapters\swd_pyocd.py-749-            with _backend_stdout_to_stderr():
+src\pyocd_debug_mcp\adapters\swd_pyocd.py:750:                handle.session.target.reset()
+src\pyocd_debug_mcp\adapters\swd_pyocd.py-751-        except Exception as exc:  # noqa: BLE001 - preserve backend context
+src\pyocd_debug_mcp\adapters\swd_pyocd.py-752-            raise _typed_backend_error(exc) from exc
+src\pyocd_debug_mcp\adapters\swd_pyocd.py-753-
+src\pyocd_debug_mcp\adapters\swd_pyocd.py-754-    def reset_and_halt(self, handle: TargetSessionHandle) -> None:
+--
+src\pyocd_debug_mcp\adapters\swd_pyocd.py-757-                handle.session.target.reset_and_halt()
+src\pyocd_debug_mcp\adapters\swd_pyocd.py-758-        except Exception as exc:  # noqa: BLE001 - preserve backend context
+src\pyocd_debug_mcp\adapters\swd_pyocd.py-759-            raise _typed_backend_error(exc) from exc
+src\pyocd_debug_mcp\adapters\swd_pyocd.py-760-
+src\pyocd_debug_mcp\adapters\swd_pyocd.py:761:    def release_reset(self, handle: TargetSessionHandle) -> None:
+src\pyocd_debug_mcp\adapters\swd_pyocd.py-762-        assert_reset = getattr(getattr(handle.session, "probe", None), "assert_reset", None)
+src\pyocd_debug_mcp\adapters\swd_pyocd.py-763-        if not callable(assert_reset):
+src\pyocd_debug_mcp\adapters\swd_pyocd.py-764-            raise ResetLineUnavailableError(
+src\pyocd_debug_mcp\adapters\swd_pyocd.py-765-                "The selected probe does not expose wired reset-line control."
+src\pyocd_debug_mcp\adapters\swd_pyocd.py-766-            )
+src\pyocd_debug_mcp\adapters\swd_pyocd.py-767-        try:
+src\pyocd_debug_mcp\adapters\swd_pyocd.py-768-            with _backend_stdout_to_stderr():
+src\pyocd_debug_mcp\adapters\swd_pyocd.py:769:                assert_reset(False)
+src\pyocd_debug_mcp\adapters\swd_pyocd.py-770-        except NotImplementedError as exc:
+src\pyocd_debug_mcp\adapters\swd_pyocd.py-771-            raise ResetLineUnavailableError(
+src\pyocd_debug_mcp\adapters\swd_pyocd.py-772-                "The selected probe does not support wired reset-line control."
+src\pyocd_debug_mcp\adapters\swd_pyocd.py-773-            ) from exc
+--
+src\pyocd_debug_mcp\adapters\swd_pyocd.py-799-                FileProgrammer(handle.session, chip_erase="sector").program(str(firmware))
+src\pyocd_debug_mcp\adapters\swd_pyocd.py-800-                if halt_after_reset:
+src\pyocd_debug_mcp\adapters\swd_pyocd.py-801-                    target.reset_and_halt()
+src\pyocd_debug_mcp\adapters\swd_pyocd.py-802-                else:
+src\pyocd_debug_mcp\adapters\swd_pyocd.py:803:                    target.reset()
+src\pyocd_debug_mcp\adapters\swd_pyocd.py-804-        except TransferError as exc:
+src\pyocd_debug_mcp\adapters\swd_pyocd.py-805-            # `pyocd load` tolerates a transient transfer drop during the final reset.
+src\pyocd_debug_mcp\adapters\swd_pyocd.py-806-            if halt_after_reset:
+src\pyocd_debug_mcp\adapters\swd_pyocd.py-807-                raise _typed_backend_error(exc) from exc
+--
+src\pyocd_debug_mcp\services\target_control.py-48-def close_session(handle: TargetSessionHandle) -> None:
+src\pyocd_debug_mcp\services\target_control.py-49-    _BACKEND.close(handle)
+src\pyocd_debug_mcp\services\target_control.py-50-
+src\pyocd_debug_mcp\services\target_control.py-51-
+src\pyocd_debug_mcp\services\target_control.py:52:def connect_under_reset(
+src\pyocd_debug_mcp\services\target_control.py-53-    *,
+src\pyocd_debug_mcp\services\target_control.py-54-    board: BoardConfig | None,
+src\pyocd_debug_mcp\services\target_control.py-55-    unique_id: str | None = None,
+src\pyocd_debug_mcp\services\target_control.py-56-    target: str | None = None,
+--
+src\pyocd_debug_mcp\services\target_control.py-59-    pack_sha256: str | None = None,
+src\pyocd_debug_mcp\services\target_control.py-60-    pdsc_device: str | None = None,
+src\pyocd_debug_mcp\services\target_control.py-61-    operation_timeout_seconds: float | None = None,
+src\pyocd_debug_mcp\services\target_control.py-62-) -> TargetSessionHandle:
+src\pyocd_debug_mcp\services\target_control.py:63:    return _BACKEND.connect_under_reset(
+src\pyocd_debug_mcp\services\target_control.py-64-        board=board,
+src\pyocd_debug_mcp\services\target_control.py-65-        unique_id=unique_id,
+src\pyocd_debug_mcp\services\target_control.py-66-        target=target,
+src\pyocd_debug_mcp\services\target_control.py-67-        server_timeouts=server_timeouts,
+--
+src\pyocd_debug_mcp\services\target_control.py-90-        operation_timeout_seconds=operation_timeout_seconds,
+src\pyocd_debug_mcp\services\target_control.py-91-    )
+src\pyocd_debug_mcp\services\target_control.py-92-
+src\pyocd_debug_mcp\services\target_control.py-93-
+src\pyocd_debug_mcp\services\target_control.py:94:def release_reset(handle: TargetSessionHandle) -> None:
+src\pyocd_debug_mcp\services\target_control.py:95:    _BACKEND.release_reset(handle)
+src\pyocd_debug_mcp\services\target_control.py-96-
+src\pyocd_debug_mcp\services\target_control.py-97-
+src\pyocd_debug_mcp\services\target_control.py-98-def read_memory_block(handle: TargetSessionHandle, address: int, length: int) -> list[int]:
+src\pyocd_debug_mcp\services\target_control.py-99-    return _BACKEND.read_memory_block(handle, address, length)
+--
+src\pyocd_debug_mcp\services\target_control.py-129-    _BACKEND.step(handle)
+src\pyocd_debug_mcp\services\target_control.py-130-    return read_core_register(handle, "pc")
+src\pyocd_debug_mcp\services\target_control.py-131-
+src\pyocd_debug_mcp\services\target_control.py-132-
+src\pyocd_debug_mcp\services\target_control.py:133:def reset(handle: TargetSessionHandle, *, halt_after: bool = True) -> None:
+src\pyocd_debug_mcp\services\target_control.py-134-    if halt_after:
+src\pyocd_debug_mcp\services\target_control.py-135-        _BACKEND.reset_and_halt(handle)
+src\pyocd_debug_mcp\services\target_control.py-136-    else:
+src\pyocd_debug_mcp\services\target_control.py:137:        _BACKEND.reset(handle)
+src\pyocd_debug_mcp\services\target_control.py-138-
+src\pyocd_debug_mcp\services\target_control.py-139-
+src\pyocd_debug_mcp\services\target_control.py-140-def flash_firmware(
+src\pyocd_debug_mcp\services\target_control.py-141-    handle: TargetSessionHandle,
+rg: tests\test_*flash*: The filename, directory name, or volume label syntax is incorrect. (os error 123)
+rg: tests\test_*reset*: The filename, directory name, or volume label syntax is incorrect. (os error 123)
+
+2026-07-23T22:27:39.965803Z ERROR codex_models_manager::manager: failed to renew cache TTL: missing field `supports_reasoning_summaries` at line 88 column 5
+2026-07-23T22:27:46.108950Z ERROR codex_core::tools::router: error=Exit code: 1
+Wall time: 0.6 seconds
+Output:
+        except ValueError:
+            return False
+        if len(payload) < 5 or len(payload) != payload[0] + 5 or sum(payload) % 256:
+            return False
+        saw_record = True
+        address = int.from_bytes(payload[1:3], "big")
+        record_type = payload[3]
+        if record_type not in {0, 1, 2, 3, 4, 5}:
+            return False
+        fixed_lengths = {1: 0, 2: 2, 3: 4, 4: 2, 5: 4}
+        if record_type in fixed_lengths and (
+            payload[0] != fixed_lengths[record_type] or address != 0
+        ):
+            return False
+        if record_type == 1:
+            saw_eof = True
+    return saw_record and saw_eof
+
+
+def _command_tokens(args: argparse.Namespace) -> list[str]:
+    command = list(cast(Sequence[str], getattr(args, "command", ()) or ()))
+    if command[:1] == ["--"]:
+        command = command[1:]
+    if any("\x00" in token for token in command):
+        raise RuntimeError("Build argv must not contain NUL characters.")
+    if command and not command[0]:
+        raise RuntimeError("Build executable must be nonempty.")
+    return command
+
+
+def _environment_overrides(
+    values: Sequence[str], *, platform_name: str = os.name
+) -> dict[str, str]:
+    overrides: dict[str, str] = {}
+    normalized_keys: dict[str, str] = {}
+    for value in values:
+        key, separator, setting = value.partition("=")
+        if not separator or not key or "\x00" in key or "\x00" in setting:
+            raise RuntimeError("Environment overrides must use nonempty KEY=VALUE form.")
+        normalized = key.casefold() if platform_name == "nt" else key
+        if previous := normalized_keys.get(normalized):
+            overrides.pop(previous, None)
+        normalized_keys[normalized] = key
+        overrides[key] = setting
+    return overrides
+
+
+def _apply_environment_overrides(
+    environment: Mapping[str, str],
+    overrides: Mapping[str, str],
+    *,
+    platform_name: str = os.name,
+) -> dict[str, str]:
+    result = dict(environment)
+    if platform_name == "nt":
+        effective_overrides: dict[str, str] = {}
+        normalized_overrides: dict[str, str] = {}
+        for key, value in overrides.items():
+            normalized = key.casefold()
+            if previous := normalized_overrides.get(normalized):
+                effective_overrides.pop(previous, None)
+            normalized_overrides[normalized] = key
+            effective_overrides[key] = value
+        inherited_keys = {key.casefold(): key for key in result}
+        for key in effective_overrides:
+            if previous := inherited_keys.get(key.casefold()):
+                result.pop(previous, None)
+        result.update(effective_overrides)
+        return result
+    result.update(overrides)
+    return result
+
+
+def _resolve_cwd(value: str | None, *, default: Path) -> Path:
+    cwd = Path(value).expanduser().resolve() if value else default.resolve()
+    if not cwd.is_dir():
+        raise RuntimeError(f"Build working directory does not exist: {cwd}")
+    return cwd
+
+
+def _declared_artifacts(args: argparse.Namespace) -> dict[str, str | None] | None:
+    values = {
+        "elf": getattr(args, "artifact_elf", None),
+        "hex": getattr(args, "artifact_hex", None),
+        "map": getattr(args, "artifact_map", None),
+    }
+    for declaration in getattr(args, "artifact", ()) or ():
+        role, separator, path = declaration.partition("=")
+        if not separator or not _ARTIFACT_ROLE.fullmatch(role) or not path or "\x00" in path:
+            raise RuntimeError(
+                "Named artifacts must use ROLE=PATH with a non-empty alphanumeric role."
+            )
+        normalized = role.casefold()
+        if normalized in values and values[normalized] is not None:
+            raise RuntimeError(f"Artifact role was declared more than once: {normalized}")
+        values[normalized] = path
+    if not any(values.values()):
+        return None
+    return values
+
+
+def _artifact_candidate(build_dir: Path, value: str) -> Path:
+    raw = Path(value).expanduser()
+    candidate = raw if raw.is_absolute() else build_dir / raw
+    return candidate.resolve()
+
+
+def _validate_declared_artifacts(
+    build_dir: Path,
+    values: Mapping[str, str | None],
+    *,
+    expected_root: Path,
+) -> dict[str, str | None]:
+    if build_dir.resolve(strict=True) != expected_root:
+        raise RuntimeError("Artifact search root was replaced or redirected during the build.")
+    result: dict[str, str | None] = {}
+    for role, value in values.items():
+        if value is None:
+            result[role] = None
+            continue
+        candidate = _artifact_candidate(build_dir, value)
+        try:
+            resolved = candidate.resolve(strict=True)
+        except OSError as exc:
+            raise RuntimeError(
+                f"Declared {role.upper()} artifact does not exist: {candidate}"
+            ) from exc
+        if not resolved.is_file():
+            raise RuntimeError(f"Declared {role.upper()} artifact is not a file: {resolved}")
+        if not resolved.is_relative_to(expected_root):
+            raise RuntimeError(
+                f"Declared {role.upper()} artifact is outside the captured build root: {resolved}"
+            )
+        if resolved.stat().st_size == 0:
+            raise RuntimeError(f"Declared {role.upper()} artifact is empty: {resolved}")
+        result[role] = str(resolved)
+    declared_paths = [path for path in result.values() if path is not None]
+    if len(set(declared_paths)) != len(declared_paths):
+        raise RuntimeError("Declared artifact roles must refer to different files.")
+    if elf_value := result.get("elf"):
+        elf = Path(elf_value)
+        if not _is_loadable_elf(elf):
+            raise RuntimeError(f"Declared ELF artifact is not a loadable ELF image: {elf}")
+    if map_value := result.get("map"):
+        linker_map = Path(map_value)
+        if _has_elf_magic(linker_map):
+            raise RuntimeError(
+                f"Declared linker-map artifact is an ELF file, not a map: {linker_map}"
+            )
+    if hex_value := result.get("hex"):
+        intel_hex = Path(hex_value)
+        if not _is_intel_hex(intel_hex):
+            raise RuntimeError(f"Declared HEX artifact is not valid Intel HEX: {intel_hex}")
+    return result
+
+
+def _artifact_assurance(
+    artifacts: Mapping[str, str | None],
+    *,
+    declared: bool,
+) -> dict[str, object]:
+    elf_path = artifacts.get("elf")
+    if elf_path is not None and not _is_loadable_elf(Path(elf_path)):
+        raise RuntimeError(f"Reported ELF artifact is not a loadable ELF image: {elf_path}")
+    hex_path = artifacts.get("hex")
+    if hex_path is not None and not _is_intel_hex(Path(hex_path)):
+        raise RuntimeError(f"Reported HEX artifact is not valid Intel HEX: {hex_path}")
+    map_assurance = (
+        ("agent-declared-existing" if declared else "unique-discovered-existing")
+        if artifacts.get("map") is not None
+        else None
+    )
+    known = {"elf", "hex", "map"}
+    opaque = {
+        role: "existing-nonempty-file; format-not-interpreted"
+        for role, path in artifacts.items()
+        if role not in known and path is not None
+    }
+    return {
+        "elf": "loadable-elf-structure-verified" if elf_path is not None else None,
+        "hex": "intel-hex-format-verified" if hex_path is not None else None,
+        "map": map_assurance,
+        "map_elf_coherence": "not-machine-verifiable; downstream consumers must not assume it",
+        "opaque_declared_outputs": opaque,
+    }
+
+
+def _timeout_seconds(value: str | int | float) -> float:
+    try:
+        timeout = float(value)
+    except (TypeError, ValueError) as exc:
+        raise RuntimeError("Build timeout must be a positive number of seconds.") from exc
+    if not 0 < timeout < float("inf"):
+        raise RuntimeError("Build timeout must be a positive finite number of seconds.")
+    return timeout
+
+
+def _powershell_command(argv: Sequence[str]) -> str:
+    """Render literal argv as a pasteable PowerShell command."""
+
+    rendered = ("'" + value.replace("'", "''") + "'" for value in argv)
+    return "& " + " ".join(rendered)
+
+
+def _offline_environment(
+    environment: Mapping[str, str], *, platform_name: str = os.name
+) -> dict[str, str]:
+    guards = {
+        "PIP_NO_INDEX": "1",
+        "UV_OFFLINE": "1",
+        "CARGO_NET_OFFLINE": "true",
+        "NPM_CONFIG_OFFLINE": "true",
+        "GIT_TERMINAL_PROMPT": "0",
+        "HTTP_PROXY": "http://127.0.0.1:9",
+        "HTTPS_PROXY": "http://127.0.0.1:9",
+        "ALL_PROXY": "http://127.0.0.1:9",
+        "NO_PROXY": "",
+        "http_proxy": "http://127.0.0.1:9",
+        "https_proxy": "http://127.0.0.1:9",
+        "all_proxy": "http://127.0.0.1:9",
+        "no_proxy": "",
+        "GIT_CONFIG_COUNT": "2",
+        "GIT_CONFIG_KEY_0": "http.proxy",
+        "GIT_CONFIG_VALUE_0": "http://127.0.0.1:9",
+        "GIT_CONFIG_KEY_1": "https.proxy",
+        "GIT_CONFIG_VALUE_1": "http://127.0.0.1:9",
+    }
+    if platform_name == "nt":
+        for key in ("http_proxy", "https_proxy", "all_proxy", "no_proxy"):
+            guards.pop(key)
+    return _apply_environment_overrides(
+        environment,
+        guards,
+        platform_name=platform_name,
+    )
+
+
+def run_build(args: argparse.Namespace) -> int:
+    command = _command_tokens(args)
+    if not command:
+        raise RuntimeError(
+            "No build command was supplied. Inspect the project's build files and pass its exact "
+            "native argv after '--'. The server does not select a build system, SDK, compiler, "
+            "or target."
+        )
+    project_dir, build_dir = _validate_paths(
+        args.project_dir,
+        args.build_dir,
+        require_fresh_build=False,
+    )
+    declared_artifacts = _declared_artifacts(args)
+    for value in declared_artifacts.values() if declared_artifacts else ():
+        if value is not None:
+            _artifact_candidate(build_dir, value)
+
+    offline = bool(getattr(args, "offline", False))
+    timeout_seconds = _timeout_seconds(getattr(args, "timeout_seconds", BUILD_TIMEOUT_SECONDS))
+    overrides = _environment_overrides(getattr(args, "env", ()) or ())
+    argv = command
+    cwd = _resolve_cwd(getattr(args, "cwd", None), default=project_dir)
+        *,
+        halt_after_reset: bool,
+    ) -> None:
+        if firmware.suffix.lower() not in SUPPORTED_FLASH_SUFFIXES:
+            raise UnsupportedArtifactError(
+                f"Unsupported artifact type '{firmware.suffix}' - use one of: "
+                f"{', '.join(sorted(SUPPORTED_FLASH_SUFFIXES))}"
+            )
+
+        target = handle.session.target
+        # Match `pyocd load`'s proven pre-reset sequence. On STM32/ST-Link, skipping
+        # this can make the Python API flash path fail even though the CLI succeeds.
+        try:
+            with _backend_stdout_to_stderr():
+                target.reset_and_halt()
+                # Containment pre-computes and validates every implied erase sector.
+                # Force pyOCD to honor that sector scope even when a host/session option
+                # would otherwise select auto or whole-chip erase.
+                FileProgrammer(handle.session, chip_erase="sector").program(str(firmware))
+                if halt_after_reset:
+                    target.reset_and_halt()
+                else:
+                    target.reset()
+        except TransferError as exc:
+            # `pyocd load` tolerates a transient transfer drop during the final reset.
+            if halt_after_reset:
+                raise _typed_backend_error(exc) from exc
+        except Exception as exc:  # noqa: BLE001 - preserve backend context
+            raise _typed_backend_error(exc) from exc
+
+    def recover(self, handle: TargetSessionHandle) -> None:
+        try:
+            with _backend_stdout_to_stderr():
+                FlashEraser(handle.session, FlashEraser.Mode.MASS).erase()
+        except Exception as exc:  # noqa: BLE001 - preserve backend context
+            raise _typed_backend_error(exc) from exc
+
+    def supports_recovery(self, handle: TargetSessionHandle, mechanism: str) -> bool:
+        with _backend_stdout_to_stderr():
+            return (
+                mechanism == "backend_mass_erase"
+                and getattr(handle.session, "target", None) is not None
+            )
+
+    def set_breakpoint(self, handle: TargetSessionHandle, address: int) -> None:
+        with _backend_stdout_to_stderr():
+            address &= ~1
+            target = handle.session.target
+            manager_flush_succeeded = False
+            try:
+                existing = target.find_breakpoint(address)
+                if existing is not None:
+                    # find_breakpoint() also returns queued UnrealizedBreakpoint
+                    # entries. Only an enabled provider object proves an already
+                    # installed breakpoint. Flush a pre-existing queued request,
+                    # but never claim ownership of or roll back that request.
+                    if bool(getattr(existing, "enabled", False)):
+                        return
+                    try:
+                        target.selected_core_or_raise.bp_manager.flush()
+                        target.flush()
+                        realized = target.find_breakpoint(address)
+                    except Exception as exc:  # noqa: BLE001 - pre-existing state is unowned
+                        raise TargetStateError(
+                            f"Pre-existing breakpoint state at 0x{address:08X} could not be "
+
+
+def reset(handle: TargetSessionHandle, *, halt_after: bool = True) -> None:
+    if halt_after:
+        _BACKEND.reset_and_halt(handle)
+    else:
+        _BACKEND.reset(handle)
+
+
+def flash_firmware(
+    handle: TargetSessionHandle,
+    firmware: Path,
+    *,
+    halt_after_reset: bool = False,
+) -> Path:
+    path = Path(firmware).expanduser().resolve()
+    if not path.exists():
+        raise FileNotFoundError(f"Firmware artifact does not exist: {path}")
+    _BACKEND.flash(handle, path, halt_after_reset=halt_after_reset)
+    return path
+
+
+def recover_target(
+    handle: TargetSessionHandle,
+    *,
+    recover_mode: str | None = None,
+) -> str:
+    """Run one typed vendor recovery primitive, never an arbitrary target write."""
+
+    board = handle.board
+    configured = board.recover_mode if board is not None else None
+    if configured == RECOVER_MODE_MANUAL_ONLY:
+        display_name = board.display_name if board is not None else "This board"
+        raise RuntimeError(
+            f"{display_name} requires a manual recover procedure for this family; this repo "
+            "does not automate recover_mode=manual_only."
+        )
+    selected = (recover_mode or configured or "").strip()
+    if not selected:
+        display_name = board.display_name if board is not None else "This target"
+        raise RuntimeError(f"{display_name} does not define a recover mode.")
+    if configured and configured != selected:
+        raise RuntimeError(
+            f"Requested recover mode {selected!r} does not match configured mode {configured!r}."
+        )
+    if selected == RECOVER_MODE_BACKEND_MASS_ERASE:
+        if not _BACKEND.supports_recovery(handle, selected):
+            raise RuntimeError("The connected target backend does not support typed mass erase.")
+        _BACKEND.recover(handle)
+        return "typed backend mass erase"
+    raise RuntimeError(f"Unsupported recover mode: {selected}")
+
+
+def supports_recovery(handle: TargetSessionHandle, mechanism: str) -> bool:
+    """Check a destructive capability on the live typed backend before authorization."""
+tests\test_swd_pyocd_jlink_multisession.py
+tests\test_swd_pyocd_breakpoints.py
+
+2026-07-23T22:27:46.182393Z ERROR codex_models_manager::manager: failed to renew cache TTL: missing field `supports_reasoning_summaries` at line 88 column 5
+2026-07-23T22:27:52.929975Z ERROR codex_models_manager::manager: failed to renew cache TTL: missing field `supports_reasoning_summaries` at line 88 column 5
+2026-07-23T22:27:59.374770Z ERROR codex_models_manager::manager: failed to renew cache TTL: missing field `supports_reasoning_summaries` at line 88 column 5
+2026-07-23T22:28:06.546595Z ERROR codex_models_manager::manager: failed to renew cache TTL: missing field `supports_reasoning_summaries` at line 88 column 5
+2026-07-23T22:28:12.054237Z ERROR codex_models_manager::manager: failed to renew cache TTL: missing field `supports_reasoning_summaries` at line 88 column 5
+2026-07-23T22:29:17.991667Z ERROR codex_models_manager::manager: failed to renew cache TTL: missing field `supports_reasoning_summaries` at line 88 column 5
+2026-07-23T22:29:22.853480Z ERROR codex_models_manager::manager: failed to renew cache TTL: missing field `supports_reasoning_summaries` at line 88 column 5
+2026-07-23T22:29:35.064780Z ERROR codex_models_manager::manager: failed to renew cache TTL: missing field `supports_reasoning_summaries` at line 88 column 5

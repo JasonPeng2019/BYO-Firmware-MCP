@@ -15,13 +15,25 @@ import re
 import subprocess
 import sys
 from pathlib import Path
-from typing import Mapping, Sequence, cast
+from typing import Mapping, Sequence, TypedDict, cast
 
 from pyocd_debug_mcp.kernel.processes import run_owned
 
 
 BUILD_TIMEOUT_SECONDS = 1800.0
 _ARTIFACT_ROLE = re.compile(r"[A-Za-z][A-Za-z0-9_.-]*\Z")
+
+
+class DiscoveredArtifacts(TypedDict):
+    """Automatic artifact selection plus non-authorizing ambiguity evidence."""
+
+    elf: str | None
+    hex: str | None
+    map: str | None
+    elf_candidates: list[str]
+    map_candidates: list[str]
+    artifact_selection: str
+    artifact_selection_remedy: str | None
 
 
 class BuildEvidenceError(RuntimeError):
@@ -71,7 +83,7 @@ def _artifact_paths(
     build_dir: Path,
     *,
     expected_root: Path | None = None,
-) -> dict[str, str | None]:
+) -> DiscoveredArtifacts:
     root = expected_root or build_dir.resolve(strict=True)
     if build_dir.resolve(strict=True) != root:
         raise RuntimeError("Artifact search root was replaced or redirected during the build.")
@@ -80,38 +92,48 @@ def _artifact_paths(
         for path in build_dir.rglob("*")
         if path.is_file() and path.resolve().is_relative_to(root)
     )
-    elves = tuple(path.resolve() for path in files if _is_loadable_elf(path))
-    if len(elves) != 1:
-        raise RuntimeError(
-            "Native build must produce exactly one ELF below the artifact search root; "
-            f"found {len(elves)}. Pass --artifact-elf and --artifact-map for multi-image or "
-            "nonstandard output layouts."
-        )
-    elf = elves[0]
-    maps = tuple(
+    elves = tuple(sorted((path.resolve() for path in files if _is_loadable_elf(path)), key=str))
+    maps = tuple(sorted((
         path.resolve()
         for path in files
         if path.suffix.casefold() == ".map" and path.stat().st_size > 0 and not _has_elf_magic(path)
-    )
-    if len(maps) != 1:
+    ), key=str))
+    if not elves or not maps:
         raise RuntimeError(
-            "Native build must produce exactly one linker map; "
-            f"found {len(maps)}. Pass --artifact-elf and --artifact-map for multi-image or "
-            "nonstandard output layouts."
+            "Native build succeeded without a discoverable loadable ELF and nonempty linker map. "
+            "Declare outputs with --artifact-elf and --artifact-map."
         )
+    ambiguous = len(elves) > 1 or len(maps) > 1
+    elf = next(iter(elves), None) if not ambiguous else None
     hexes = tuple(
         path.resolve()
         for path in files
-        if path.suffix.casefold() == ".hex" and path.stem == elf.stem
+        if elf is not None and path.suffix.casefold() == ".hex" and path.stem == elf.stem
     )
     if len(hexes) > 1:
         raise RuntimeError(
             "Native build produced multiple same-stem HEX artifacts; pass --artifact-hex."
         )
     return {
-        "elf": str(elf),
-        "hex": str(hexes[0]) if hexes else None,
-        "map": str(maps[0]),
+        "elf": str(elf) if elf is not None else None,
+        "hex": str(next(iter(hexes), None)) if hexes else None,
+        # A selected ELF/MAP pair is one atomic flash-planning fact. Do not
+        # retain the singleton side when the other required role is ambiguous.
+        "map": str(next(iter(maps), None)) if not ambiguous else None,
+        # An ambiguous ELF/MAP pair must expose both sides, including the
+        # singleton one, so callers can make one complete explicit selection.
+        "elf_candidates": [str(path) for path in elves] if ambiguous else [],
+        "map_candidates": [str(path) for path in maps] if ambiguous else [],
+        "artifact_selection": (
+            "explicit_declaration_required"
+            if ambiguous
+            else "selected"
+        ),
+        "artifact_selection_remedy": (
+            "Pass --artifact-elf and/or --artifact-map (or --artifact ROLE=PATH) to select one output."
+            if ambiguous
+            else None
+        ),
     }
 
 
@@ -518,22 +540,40 @@ def run_build(args: argparse.Namespace) -> int:
             ) from exc
         if root_changed:
             raise RuntimeError("Artifact search root was replaced or redirected during the build.")
+        selected_artifacts: dict[str, str | None]
+        metadata: dict[str, object]
         if completed.returncode != 0:
-            artifacts = {"elf": None, "hex": None, "map": None}
+            selected_artifacts = {"elf": None, "hex": None, "map": None}
+            metadata = {}
         elif declared_artifacts is not None:
-            artifacts = _validate_declared_artifacts(
+            selected_artifacts = _validate_declared_artifacts(
                 build_dir, declared_artifacts, expected_root=created_build_root
             )
+            metadata = {}
         else:
-            artifacts = _artifact_paths(build_dir, expected_root=created_build_root)
-        if completed.returncode == 0 and not any(artifacts.values()):
+            discovered = _artifact_paths(build_dir, expected_root=created_build_root)
+            selected_artifacts = {
+                role: discovered[role] for role in ("elf", "hex", "map")
+            }
+            metadata = {
+                role: discovered[role]
+                for role in (
+                    "elf_candidates",
+                    "map_candidates",
+                    "artifact_selection",
+                    "artifact_selection_remedy",
+                )
+            }
+        if completed.returncode == 0 and not any(
+            selected_artifacts.values()
+        ) and not any(metadata.get(role) for role in ("elf_candidates", "map_candidates")):
             raise RuntimeError(
                 "Native build succeeded without a declared or discoverable output. Declare any "
                 "project-native output with --artifact ROLE=PATH."
             )
         assurance = (
             _artifact_assurance(
-                artifacts,
+                selected_artifacts,
                 declared=declared_artifacts is not None,
             )
             if completed.returncode == 0
@@ -542,7 +582,7 @@ def run_build(args: argparse.Namespace) -> int:
     except RuntimeError as exc:
         evidence["artifact_validation_error"] = str(exc)
         raise BuildEvidenceError(str(exc), evidence) from exc
-    evidence["artifacts"] = artifacts
+    evidence["artifacts"] = {**selected_artifacts, **metadata}
     evidence["artifact_assurance"] = assurance
     print(json.dumps(evidence, sort_keys=True))
     return completed.returncode

@@ -1,0 +1,66 @@
+
+There are no discarded input sections
+
+Memory Configuration
+
+Name             Origin             Length             Attributes
+FLASH            0x08000000         0x00100000         xr
+RAM              0x20000000         0x00018000         xrw
+*default*        0x00000000         0xffffffff
+
+Linker script and memory map
+
+                0x20017ffc                        _estack = ((ORIGIN (RAM) + LENGTH (RAM)) - 0x4)
+
+.isr_vector     0x08000000        0x8
+ *(.isr_vector)
+ .isr_vector    0x08000000        0x8 C:\Users\Jason\AppData\Local\Temp\ccIc8Iji.o
+                0x08000000                vectors
+
+.text           0x08000008        0x8
+ *(.text*)
+ .text          0x08000008        0x8 C:\Users\Jason\AppData\Local\Temp\ccIc8Iji.o
+                0x08000008                Reset_Handler
+ *(.rodata*)
+
+.glue_7         0x08000010        0x0
+ .glue_7        0x08000010        0x0 linker stubs
+
+.glue_7t        0x08000010        0x0
+ .glue_7t       0x08000010        0x0 linker stubs
+
+.vfp11_veneer   0x08000010        0x0
+ .vfp11_veneer  0x08000010        0x0 linker stubs
+
+.v4_bx          0x08000010        0x0
+ .v4_bx         0x08000010        0x0 linker stubs
+
+.iplt           0x08000010        0x0
+ .iplt          0x08000010        0x0 C:\Users\Jason\AppData\Local\Temp\ccIc8Iji.o
+
+.rel.dyn        0x08000010        0x0
+ .rel.iplt      0x08000010        0x0 C:\Users\Jason\AppData\Local\Temp\ccIc8Iji.o
+
+.data           0x20000000        0x0 load address 0x08000010
+ *(.data*)
+ .data          0x20000000        0x0 C:\Users\Jason\AppData\Local\Temp\ccIc8Iji.o
+
+.igot.plt       0x20000000        0x0 load address 0x08000010
+ .igot.plt      0x20000000        0x0 C:\Users\Jason\AppData\Local\Temp\ccIc8Iji.o
+
+.bss            0x20000000        0x0 load address 0x08000010
+ *(.bss*)
+ .bss           0x20000000        0x0 C:\Users\Jason\AppData\Local\Temp\ccIc8Iji.o
+ *(COMMON)
+LOAD C:\Users\Jason\AppData\Local\Temp\ccIc8Iji.o
+OUTPUT(C:\Users\Jason\Documents\Jason\FirmCLI_Tester\Firmware-Test-Manual\MCP-Trial-3\BYO-Firmware-MCP\testing_folder\work\stm32_hil\build\candidate_d.elf elf32-littlearm)
+LOAD linker stubs
+
+.comment        0x00000000       0x43
+ .comment       0x00000000       0x43 C:\Users\Jason\AppData\Local\Temp\ccIc8Iji.o
+                                 0x44 (size before relaxing)
+
+.ARM.attributes
+                0x00000000       0x2e
+ .ARM.attributes
+                0x00000000       0x2e C:\Users\Jason\AppData\Local\Temp\ccIc8Iji.o

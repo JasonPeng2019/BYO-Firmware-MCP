@@ -91,7 +91,6 @@ def _validate_result(operation: str, value: object, arguments: dict[str, Any] | 
         "step",
         "reset",
         "reset_and_halt",
-        "flash",
         "recover",
         "set_breakpoint",
         "remove_breakpoint",
@@ -101,6 +100,10 @@ def _validate_result(operation: str, value: object, arguments: dict[str, Any] | 
         if value is not None:
             raise ValueError("worker void operation returned data")
         return None
+    if operation == "flash":
+        if value not in {"running", "halted", "reset_state_unconfirmed"}:
+            raise ValueError("worker flash state result was invalid")
+        return value
     if operation == "get_state":
         if not isinstance(value, str) or not value:
             raise ValueError("worker state result was invalid")
@@ -657,12 +660,12 @@ class ProcessIsolatedSWDInterface(SWDInterface):
         firmware: Path,
         *,
         halt_after_reset: bool,
-    ) -> None:
-        self._call(
+    ) -> str:
+        return cast(str, self._call(
             handle,
             "flash",
             {"path": str(firmware), "halt_after_reset": halt_after_reset},
-        )
+        ))
 
     def recover(self, handle: TargetSessionHandle) -> None:
         self._call(handle, "recover")

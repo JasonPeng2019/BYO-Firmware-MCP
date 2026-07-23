@@ -108,7 +108,7 @@ class UnlockToolServices:
     current_map_digest: Callable[[str], str]
     supports_recovery: Callable[[TargetSessionHandle, str], bool]
     recover_target: Callable[[TargetSessionHandle, str], str]
-    mark_recover_completed: Callable[[str], None]
+    finalize_recovery: Callable[[str], None]
     revoke_permission: Callable[[str, str], None]
 
 
@@ -637,7 +637,19 @@ class UnlockCoordinator:
                 fields=fields,
             )
             raise
-        self.services.mark_recover_completed(board_id)
+        try:
+            self.services.finalize_recovery(board_id)
+        except Exception as exc:
+            report = self._report(
+                status="unlock_completed_cleanup_uncertain_reconnect_required",
+                board_id=board_id,
+                plan_id=plan_id,
+                fields={**fields, "backend": backend, "cleanup_error": str(exc)},
+            )
+            raise RuntimeError(
+                "Target recovery completed, but connection cleanup was uncertain. The old "
+                f"connection was revoked; reconnect and run board_validate before further use. Report: {report}"
+            ) from exc
         report = self._report(
             status="unlock_completed_revalidation_required",
             board_id=board_id,
@@ -646,8 +658,8 @@ class UnlockCoordinator:
         )
         return (
             f"Target unlock completed using {approved.mechanism.description}. The operation "
-            f"performed mass erase and consumed plan {plan_id}. The validation gate remains "
-            f"closed; run board_validate before any guarded read or write. Report: {report}"
+            f"performed mass erase and consumed plan {plan_id}. The board was disconnected; "
+            f"reconnect and run board_validate before any debug, validation, read, or write action. Report: {report}"
         )
 
 

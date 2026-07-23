@@ -1,0 +1,10 @@
+HIL results are in [HIL_RESULTS.md](C:\Users\Jason\Documents\Jason\FirmCLI_Tester\Firmware-Test-Manual\MCP-Trial-3\BYO-Firmware-MCP\testing_folder\HIL_RESULTS.md).
+
+- ST NUCLEO-L476RG: setup/validation PASS; multi-output artifact-selection PASS; known test firmware flash PASS with final observed state `RUNNING`.
+- ST under-reset test: BLOCKED by its live-plan prerequisite—normal attach had succeeded, while the plan requires a recorded normal-attach failure. No second controlled live registration mechanism was available to test conflicting ambient `PYOCD_*` routing.
+- ST recovery: NOT EXERCISED; live contract reported no recovery mode, so no erase was attempted.
+- Nordic nRF52840 DK: BLOCKED before setup. The live server exposed two otherwise indistinguishable Nordic J-Link probes (identifiers ending `710208` and `854191`); I did not associate one by enumeration order.
+
+Evidence includes the exact MCP transcript at [nested-agent.jsonl](C:\Users\Jason\Documents\Jason\FirmCLI_Tester\Firmware-Test-Manual\MCP-Trial-3\BYO-Firmware-MCP\testing_folder\agent\nested-agent.jsonl) and STM32 artifacts at [stm32_hil](C:\Users\Jason\Documents\Jason\FirmCLI_Tester\Firmware-Test-Manual\MCP-Trial-3\BYO-Firmware-MCP\testing_folder\work\stm32_hil).
+
+The temporary MCP registration was removed. No production source was edited; no recovery/mass erase occurred.

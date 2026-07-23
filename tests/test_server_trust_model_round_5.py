@@ -61,7 +61,7 @@ class ConvergenceLockoutRemovalTests(unittest.TestCase):
             maybe_handle_for=lambda _board: None,
             handle_for=lambda _board: object(),
             resolve_request=refuse_resolve,
-            flash_target=lambda *_args: Path("unused"),
+            flash_target=lambda *_args: (Path("unused"), "running"),
             error_code=lambda _exc: "flash/backend",
         )
         refusal_handler = build_flash_handlers(refusal_services)["flash_application"]
@@ -81,7 +81,7 @@ class ConvergenceLockoutRemovalTests(unittest.TestCase):
             identity=SimpleNamespace(as_log_fields=lambda: {"artifact_sha256": "same"}),
         )
 
-        def fail_backend(*_args: object) -> Path:
+        def fail_backend(*_args: object) -> tuple[Path, str]:
             nonlocal backend_calls
             backend_calls += 1
             raise RuntimeError("programmer backend failed")

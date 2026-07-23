@@ -557,13 +557,10 @@ class PyOCDSWDInterface(SWDInterface):
         operation_timeout_seconds: float | None = None,
     ) -> TargetSessionHandle:
         del operation_timeout_seconds
-        probe_uid = unique_id or os.environ.get("PYOCD_PROBE_UID") or None
-        target_override = (
-            target
-            or (board.pyocd_target if board else None)
-            or os.environ.get("PYOCD_TARGET")
-            or None
-        )
+        # Reset-connect is action/profile-bound. Unlike ordinary open(), it
+        # must not inherit ambient launch overrides when an input is omitted.
+        probe_uid = unique_id
+        target_override = target or (board.pyocd_target if board else None)
         options = dict(build_session_options(board, target_override, server_timeouts) or {})
         options["connect_mode"] = "under-reset"
         if pack_path is not None:
@@ -780,7 +777,7 @@ class PyOCDSWDInterface(SWDInterface):
         firmware: Path,
         *,
         halt_after_reset: bool,
-    ) -> None:
+    ) -> str:
         if firmware.suffix.lower() not in SUPPORTED_FLASH_SUFFIXES:
             raise UnsupportedArtifactError(
                 f"Unsupported artifact type '{firmware.suffix}' - use one of: "
@@ -797,16 +794,34 @@ class PyOCDSWDInterface(SWDInterface):
                 # Force pyOCD to honor that sector scope even when a host/session option
                 # would otherwise select auto or whole-chip erase.
                 FileProgrammer(handle.session, chip_erase="sector").program(str(firmware))
+        except TransferError as exc:
+            # A pre-program reset or programming transfer failure is a real failure.
+            raise _typed_backend_error(exc) from exc
+        except Exception as exc:  # noqa: BLE001 - preserve backend context
+            raise _typed_backend_error(exc) from exc
+        try:
+            with _backend_stdout_to_stderr():
                 if halt_after_reset:
                     target.reset_and_halt()
                 else:
                     target.reset()
-        except TransferError as exc:
-            # `pyocd load` tolerates a transient transfer drop during the final reset.
-            if halt_after_reset:
-                raise _typed_backend_error(exc) from exc
-        except Exception as exc:  # noqa: BLE001 - preserve backend context
-            raise _typed_backend_error(exc) from exc
+        except TransferError:
+            # `pyocd load` tolerates a transient transport drop during final reset,
+            # but it cannot prove the target's resulting execution state.
+            return "reset_state_unconfirmed"
+        except Exception:
+            # Programming already completed successfully. A final-reset failure
+            # leaves execution state unknown, irrespective of backend exception type.
+            return "reset_state_unconfirmed"
+        try:
+            state = str(target.get_state().name).casefold()
+        except Exception:  # final reset completed but its state cannot be observed
+            return "reset_state_unconfirmed"
+        if state == "running":
+            return "running"
+        if state == "halted":
+            return "halted"
+        return "reset_state_unconfirmed"
 
     def recover(self, handle: TargetSessionHandle) -> None:
         try:

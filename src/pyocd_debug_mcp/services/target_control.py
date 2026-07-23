@@ -142,12 +142,12 @@ def flash_firmware(
     firmware: Path,
     *,
     halt_after_reset: bool = False,
-) -> Path:
+) -> tuple[Path, str]:
     path = Path(firmware).expanduser().resolve()
     if not path.exists():
         raise FileNotFoundError(f"Firmware artifact does not exist: {path}")
-    _BACKEND.flash(handle, path, halt_after_reset=halt_after_reset)
-    return path
+    state = _BACKEND.flash(handle, path, halt_after_reset=halt_after_reset)
+    return path, state
 
 
 def recover_target(

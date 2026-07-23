@@ -327,7 +327,7 @@ class RoundThreeRegressionTests(unittest.TestCase):
             lambda _: None,
             lambda _: None,
             lambda *a: (_ for _ in ()).throw(RuntimeError(message)),
-            lambda *a: Path("unused"),
+            lambda *a: (Path("unused"), "running"),
             lambda _: "runtime/error",
         )
         with self.assertRaisesRegex(RuntimeError, suffix):

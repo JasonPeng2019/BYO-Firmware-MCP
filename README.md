@@ -84,7 +84,9 @@ For a server-directed build, inspect the project's own build files and use the
 `pyocd_debug_mcp.native_build` argv template from `get_setup_status.build_guidance`. Put the exact
 native build argv after `--`; the helper runs it directly without a shell and reports its cwd,
 network policy, exit code, ELF/HEX format checks, and map provenance. It does not invent universal
-ELF/map coherence where linker-map formats cannot prove it. `--cwd`, repeatable `--env KEY=VALUE`,
+ELF/map coherence where linker-map formats cannot prove it. If discovery finds multiple ELF or map
+outputs, it reports sorted candidates without selecting one; rerun with `--artifact-elf`,
+`--artifact-map`, or `--artifact ROLE=PATH`. `--cwd`, repeatable `--env KEY=VALUE`,
 `--timeout-seconds`, and repeatable `--artifact ROLE=PATH` declarations cover arbitrary SDKs,
 vendor CLIs, IDE wrappers, output formats, and future build systems without a server adapter. Known
 ELF/HEX formats receive structural checks; opaque formats are reported only as existing nonempty

@@ -1256,13 +1256,16 @@ def _connect_under_reset_impl(
                 board_id=board_id,
                 session=_runtime_for(board_id),
             )
-        board = resolve_board_config(board_id, None)
-        resolved_uid = _resolve_probe_uid_for_connect(board, probe_uid)
+        # This recovery route is intentionally isolated from launch-time
+        # overrides: the approved action and persisted board profile are its
+        # entire routing authority.
+        board = resolve_board_config(board_id, None, allow_environment_overrides=False)
+        resolved_uid = _resolve_probe_uid_for_connect(
+            board, probe_uid, allow_environment_override=False
+        )
         resolved_target = (
             target_override
             or (board.pyocd_target if board else None)
-            or os.environ.get("PYOCD_TARGET")
-            or None
         )
         try:
             stored_profile = _profile_repository.load(board_id)
@@ -1895,7 +1898,7 @@ def flash_firmware(
             )
             active_handle = _handle(board_id)
             normalized_args.update(request.identity.as_log_fields())
-            flashed = target_control.flash_firmware(
+            flashed, state = target_control.flash_firmware(
                 active_handle,
                 request.artifact_path,
                 halt_after_reset=halt_after_reset,
@@ -1925,7 +1928,6 @@ def flash_firmware(
             )
             raise
 
-        state = "halted" if halt_after_reset else "running"
         _record_event(
             "flash_firmware",
             normalized_args,
@@ -1936,10 +1938,12 @@ def flash_firmware(
             board_id=board_id,
             session=runtime,
         )
-        return (
-            f"Flashed {flashed} via {session_metadata(active_handle).route_used}; "
+        suffix = (
             f"target left {state}."
+            if state != "reset_state_unconfirmed"
+            else "final reset state is unconfirmed; reconnect and check target state before use."
         )
+        return f"Flashed {flashed} via {session_metadata(active_handle).route_used}; {suffix}"
 
 
 @mcp.tool()
@@ -5491,10 +5495,31 @@ for _setup_action in SETUP_GUARDED_ACTIONS:
     forbid_unknown_tool_arguments(mcp, _setup_action)
 
 
-def _mark_unlock_completed(board_id: str) -> None:
-    runtime = _runtime_for(board_id)
-    if runtime is not None:
-        _session_store.mark_recover_completed(runtime)
+def _finalize_unlock_recovery(board_id: str) -> None:
+    """Revoke a destructively recovered connection even if cleanup is imperfect."""
+
+    with connection_manager.lock_for(board_id):
+        connection = connection_manager.clear(board_id)
+        gate_manager.clear(board_id, "target recovery completed; reconnect and validate required")
+        assignment_store.clear_board(board_id)
+        plan_engine.invalidate_board(board_id, "target recovery completed")
+        if connection is None:
+            return
+        failures: list[str] = []
+        try:
+            _session_store.mark_recover_completed(connection.runtime_session)
+        except Exception as exc:  # noqa: BLE001 - close remains mandatory
+            failures.append(f"recovery record: {type(exc).__name__}: {exc}")
+        try:
+            target_control.close_session(connection.handle)
+        except Exception as exc:  # noqa: BLE001 - assignment is already revoked
+            failures.append(f"worker close: {type(exc).__name__}: {exc}")
+        try:
+            _session_store.close_session(connection.runtime_session)
+        except Exception as exc:  # noqa: BLE001 - expose lifecycle uncertainty
+            failures.append(f"runtime close: {type(exc).__name__}: {exc}")
+        if failures:
+            raise RuntimeError("Recovery completed but cleanup reported: " + "; ".join(failures))
 
 
 def _revoke_unlock_permission(board_id: str, reason: str) -> None:
@@ -5517,7 +5542,7 @@ _unlock_coordinator = UnlockCoordinator(
         recover_target=lambda handle, mechanism: target_control.recover_target(
             handle, recover_mode=mechanism
         ),
-        mark_recover_completed=_mark_unlock_completed,
+        finalize_recovery=_finalize_unlock_recovery,
         revoke_permission=_revoke_unlock_permission,
     )
 )

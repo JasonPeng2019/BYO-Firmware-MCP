@@ -185,8 +185,8 @@ class SWDInterface(ABC):
         firmware: Path,
         *,
         halt_after_reset: bool,
-    ) -> None:
-        """Flash a target artifact using the backend's native path."""
+    ) -> str:
+        """Flash and return an observed or unconfirmed post-reset target state."""
 
     @abstractmethod
     def recover(self, handle: TargetSessionHandle) -> None:

@@ -28,7 +28,7 @@ class FlashToolServices:
     maybe_handle_for: Callable[[str], Any | None]
     handle_for: Callable[[str], Any]
     resolve_request: Callable[[Any | None, str, ActionContext], Any]
-    flash_target: Callable[[Any, Path], Path]
+    flash_target: Callable[[Any, Path], tuple[Path, str]]
     error_code: Callable[[Exception], str]
     validate_flash: Callable[[str, str, Path], None] | None = None
     prepare_symbol_artifact: Callable[[str, str, Path], object] | None = None
@@ -81,7 +81,7 @@ def build_flash_handlers(
             operation = current_operation()
             if operation is not None:
                 operation.begin_non_interruptible()
-            flashed = services.flash_target(handle, request.artifact_path)
+            flashed, target_state = services.flash_target(handle, request.artifact_path)
             if symbol_binding is not None and services.bind_symbol_artifact is not None:
                 services.bind_symbol_artifact(board_id, symbol_binding)
         except PolicyRefusal as refusal:
@@ -123,13 +123,16 @@ def build_flash_handlers(
             outcome_kind=ToolOutcome.SUCCESS,
             error_code=None,
             duration_ms=services.duration_ms(started),
-            details={"target_state": "running", "safety_map_checked": True},
+            details={"target_state": target_state, "safety_map_checked": True},
             board_id=board_id,
             session=runtime,
         )
-        return wrap_layer2_response(
-            f"Flashed {flashed} as {tool_name} within its mapped partition; target left running."
+        suffix = (
+            f"target left {target_state}."
+            if target_state != "reset_state_unconfirmed"
+            else "final reset state is unconfirmed; reconnect and check target state before use."
         )
+        return wrap_layer2_response(f"Flashed {flashed} as {tool_name} within its mapped partition; {suffix}")
 
     def flash_application(
         board_id: str,

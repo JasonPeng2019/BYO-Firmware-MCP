@@ -1,0 +1,10 @@
+{"code":"setup/input-verified","phase":"input","recorded_at":"2026-07-23T23:41:17.752619Z","state":"verified"}
+{"code":"setup/live-preflight-complete","phase":"preflight","recorded_at":"2026-07-23T23:41:17.756618Z","state":"verified"}
+{"code":"setup/selections-resolved","phase":"selection","recorded_at":"2026-07-23T23:41:17.759619Z","state":"verified"}
+{"code":"setup/exact-target-detected","phase":"target_resolution","recorded_at":"2026-07-23T23:41:17.762618Z","state":"verified"}
+{"code":"setup/target-support-present","phase":"target_support","recorded_at":"2026-07-23T23:41:17.765623Z","state":"verified"}
+{"code":"setup/core-profile-committed-after-connect","phase":"connection","recorded_at":"2026-07-23T23:41:17.768620Z","state":"verified"}
+{"code":"setup/non-destructive-hardware-validation-passed","phase":"validation","recorded_at":"2026-07-23T23:41:17.770619Z","state":"verified"}
+{"code":"setup/safety-sources-verified","phase":"safety_research","recorded_at":"2026-07-23T23:41:17.773620Z","state":"verified"}
+{"code":"setup/safety-map-consistent","phase":"safety_map","recorded_at":"2026-07-23T23:41:17.775633Z","state":"verified"}
+{"code":"setup/safety-reference-committed-and-validated","phase":"commit","recorded_at":"2026-07-23T23:41:17.777618Z","state":"verified"}

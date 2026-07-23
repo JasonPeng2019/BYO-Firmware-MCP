@@ -404,7 +404,7 @@ class RoundFourRegressionTests(unittest.TestCase):
             resolve_request=lambda *_args: (_ for _ in ()).throw(
                 RuntimeError("x" * 350 + "FLASH-SUFFIX")
             ),
-            flash_target=lambda *_args: Path("unused"),
+            flash_target=lambda *_args: (Path("unused"), "running"),
             error_code=lambda _exc: "flash/test",
         )
         with self.assertRaisesRegex(RuntimeError, "FLASH-SUFFIX"):
