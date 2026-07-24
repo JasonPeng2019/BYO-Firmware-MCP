@@ -1,0 +1,8 @@
+BLOCKED before P1 creation: the live server required external routine-permission approval (`permission-60232250e1a0517eeb911a18`) and explicitly prohibits the agent from running its approval command.
+
+No destructive action, connection, or setup execution occurred. The relocking fix was therefore not exercised.
+
+Evidence written to:
+
+- [HIL_RESULTS.md](C:\Users\Jason\Documents\Jason\FirmCLI_Tester\Firmware-Test-Manual\MCP-Trial-3\BYO-Firmware-MCP\testing_folder\HIL_RESULTS.md)
+- [nested-agent-final-summary.md](C:\Users\Jason\Documents\Jason\FirmCLI_Tester\Firmware-Test-Manual\MCP-Trial-3\BYO-Firmware-MCP\testing_folder\agent\nested-agent-final-summary.md)

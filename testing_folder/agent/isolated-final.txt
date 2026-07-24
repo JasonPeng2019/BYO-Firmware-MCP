@@ -1,0 +1,6 @@
+BLOCKED: P1 formed the required genuine CMSIS-Pack continuation, and P2 replaced it in the same server run. P2’s continuation cannot complete because the required local official `.pack` archive is absent; paired repair never became eligible.
+
+Reports with the exact live response, run ID, and board identity:
+
+- [HIL_RESULTS.md](C:\Users\Jason\Documents\Jason\FirmCLI_Tester\Firmware-Test-Manual\MCP-Trial-3\BYO-Firmware-MCP\testing_folder\HIL_RESULTS.md)
+- [isolated-final-summary.md](C:\Users\Jason\Documents\Jason\FirmCLI_Tester\Firmware-Test-Manual\MCP-Trial-3\BYO-Firmware-MCP\testing_folder\agent\isolated-final-summary.md)

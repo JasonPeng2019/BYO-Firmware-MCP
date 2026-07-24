@@ -1100,7 +1100,14 @@ class PlanEngine:
             )
         return state
 
-    def complete_paired_plan(self, action_name: str, board_id: str, reason: str) -> None:
+    def complete_paired_plan(
+        self,
+        action_name: str,
+        board_id: str,
+        reason: str,
+        *,
+        expected_plan_id: str | None = None,
+    ) -> None:
         """Close a paired workflow early and consume any one-time authorization.
 
         Setup calls this when it completes, is cancelled, or reaches a terminal
@@ -1114,6 +1121,9 @@ class PlanEngine:
             state = self.server_run.plans.get(key)
             if not isinstance(state, _PlanState) or state.status is not PlanStatus.ACTIVE:
                 return
+            if expected_plan_id is not None and state.plan_id != expected_plan_id:
+                return
+            matched_plan_id = state.plan_id
             authorization = state.authorization
         if definition.permission_mode is not PermissionMode.NONE and authorization is not None:
             try:
@@ -1126,7 +1136,13 @@ class PlanEngine:
                 # Revocation may already have removed the grant; closure still relocks.
                 pass
         with self._guard:
-            self._invalidate_locked(key, reason)
+            state = self.server_run.plans.get(key)
+            if (
+                isinstance(state, _PlanState)
+                and state.status is PlanStatus.ACTIVE
+                and state.plan_id == matched_plan_id
+            ):
+                self._invalidate_locked(key, reason)
 
     def active_plan(self, action_name: str, board_id: str) -> ActivePlan | None:
         definition = _definition(action_name)

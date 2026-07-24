@@ -822,12 +822,18 @@ def _run_cmd(
     cmd: list[str],
     timeout_seconds: float = DEFAULT_EXTERNAL_COMMAND_TIMEOUT_SECONDS,
 ) -> tuple[int, str, str]:
+    # pyOCD's probe table contains Unicode status glyphs. On Windows its child
+    # stdout can otherwise inherit a legacy code page and abort midway through
+    # enumeration, silently hiding every probe after the first non-ASCII row.
+    child_env = os.environ.copy()
+    child_env["PYTHONIOENCODING"] = "utf-8"
     try:
         result = run_owned(
             cmd,
             stdin=subprocess.DEVNULL,
             capture_output=True,
-            text=True,
+            env=child_env,
+            text=False,
             timeout=timeout_seconds,
         )
     except FileNotFoundError:
@@ -839,7 +845,9 @@ def _run_cmd(
             subprocess_timeout_stream_text(exc.stdout),
             f"command timed out after {timeout_seconds:.0f}s: {' '.join(cmd)}",
         )
-    return result.returncode, result.stdout or "", result.stderr or ""
+    stdout = bytes(result.stdout or b"").decode("utf-8", errors="replace")
+    stderr = bytes(result.stderr or b"").decode("utf-8", errors="replace")
+    return result.returncode, stdout, stderr
 
 
 def resolve_board_config(
@@ -1353,6 +1361,7 @@ def disconnect(board_id: str) -> str:
             loader = globals().get("setup_tool_loader")
             if isinstance(loader, SetupToolLoadState):
                 loader.clear_allowance(board_id)
+            _clear_setup_continuation(board_id)
             started = time.monotonic()
             result = "Not connected."
             _record_event(
@@ -1379,6 +1388,7 @@ def disconnect(board_id: str) -> str:
         loader = globals().get("setup_tool_loader")
         if isinstance(loader, SetupToolLoadState):
             loader.clear_allowance(board_id)
+        _clear_setup_continuation(board_id)
         cleared = connection_manager.clear_if_current(board_id, connection)
         if cleared is None:
             raise RuntimeError(
@@ -4401,6 +4411,7 @@ def _replace_setup_assignments(
         loader = globals().get("setup_tool_loader")
         if isinstance(loader, SetupToolLoadState):
             loader.clear_allowance(board_id)
+        _clear_setup_continuation(board_id)
 
 
 def _same_setup_connection(left: str, right: str) -> bool:
@@ -5359,7 +5370,14 @@ def _setup_continue(
     }
 
 
-def _clear_setup_continuation(board_id: str) -> None:
+def _clear_setup_continuation(
+    board_id: str, expected_allowance_id: str | None = None
+) -> None:
+    if (
+        expected_allowance_id is not None
+        and setup_tool_loader.allowance_for(board_id) != expected_allowance_id
+    ):
+        return
     _setup_target_overrides.pop(board_id, None)
     _setup_attachment_overrides.pop(board_id, None)
     _setup_builtin_candidates.pop(board_id, None)
@@ -5370,11 +5388,14 @@ def _clear_setup_continuation(board_id: str) -> None:
     _setup_research.clear(board_id)
 
 
-def _close_setup_allowance(board_id: str, reason: str) -> None:
+def _close_setup_allowance(board_id: str, allowance_id: str, reason: str) -> None:
     """Close paired authority and every run-scoped continuation fact together."""
 
-    plan_engine.complete_paired_plan("board_setup", board_id, reason)
-    _clear_setup_continuation(board_id)
+    plan_engine.complete_paired_plan(
+        "board_setup", board_id, reason, expected_plan_id=allowance_id
+    )
+    _clear_setup_continuation(board_id, allowance_id)
+    setup_tool_loader.clear_allowance(board_id, allowance_id)
 
 
 def _setup_plan_eligibility(board_id: str) -> tuple[bool, str]:

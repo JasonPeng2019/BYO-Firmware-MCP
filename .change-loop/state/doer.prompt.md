@@ -19,7 +19,7 @@ success merely because implementation looks complete.
 
 ## Current turn
 
-- Iteration: 1
+- Iteration: 2
 - Repository root: /c/Users/Jason/Documents/Jason/FirmCLI_Tester/Firmware-Test-Manual/MCP-Trial-3/BYO-Firmware-MCP
 - Plan: /c/Users/Jason/Documents/Jason/FirmCLI_Tester/Firmware-Test-Manual/MCP-Trial-3/BYO-Firmware-MCP/.change-loop/plan.md
 - Latest neutral report: /c/Users/Jason/Documents/Jason/FirmCLI_Tester/Firmware-Test-Manual/MCP-Trial-3/BYO-Firmware-MCP/.change-loop/state/test_report.md

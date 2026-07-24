@@ -1,0 +1,44 @@
+board_id: nucleo_l476rg
+display_name: NUCLEO-L476RG
+mcu_part_number: STM32L476RGT6
+mcu_family: stm32l476rgt6
+probe_family: stlink
+pyocd_target: stm32l476rgtx
+schema_version: 2
+created_at: '2026-07-24T00:54:37.809797Z'
+updated_at: '2026-07-24T00:54:54.259211Z'
+probe_type: ST-Link
+probe_hint_terms:
+- l476rg
+- nucleo
+- st-link
+- stlink
+- stm32l476rgt6
+- stm32l476rgtx
+serial_hint_terms:
+- l476rg
+- nucleo
+- st-link
+- stlink
+- stm32l476rgt6
+- stm32l476rgtx
+- virtual com
+requires_recover_validation: false
+test_read_address: 134217728
+datasheet_sha256: a45a857e3aa75ac166dd532c76d76d5dd8377b9c5bf6f15c03c9cf85aeec0f65
+datasheet_ref: .firm/evidence/datasheets/a45a857e3aa75ac166dd532c76d76d5dd8377b9c5bf6f15c03c9cf85aeec0f65.pdf
+device_support:
+  kind: resolved_pack
+  support_id: 69022bbeab343281e2e663e82ddf68c8d2264dbdd99599819ec61f9bd43bbf83
+  pack_id: Keil.STM32L4xx_DFP
+  pack_filename: Keil.STM32L4xx_DFP.3.1.0.pack
+  pack_sha256: 5672383c07fbdcee0e471a33f4f8beb2e1f3200bc999244dcd6858e0e8e8203f
+  pdsc_device: STM32L476RGTx
+  pyocd_target: stm32l476rgtx
+silicon_id_address: 3758157056
+silicon_id_expected: 49728
+silicon_id_mask: 65520
+silicon_id_width_bits: 32
+silicon_id_label: Cortex-M4 CPUID compatibility identity
+debug_connect_mode: attach
+safety_ref: .firm/safety/nucleo_l476rg/memory_map.yaml

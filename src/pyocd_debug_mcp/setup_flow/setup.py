@@ -127,7 +127,7 @@ class SetupPhaseContext:
 SetupPhaseHandler = Callable[[SetupPhaseContext], SetupPhaseOutcome]
 AssignmentAction = Callable[[], object]
 InventoryProvider = Callable[[SetupUserInput], PreflightInventory]
-AllowanceClosed = Callable[[str, str], None]
+AllowanceClosed = Callable[[str, str, str], None]
 CacheConfirmationHandler = Callable[[SetupUserInput, PreflightDecision], None]
 CancellationCheckpoint = Callable[[], None]
 
@@ -336,7 +336,9 @@ class SetupWorkflow:
                 SetupPhase.TARGET_RESOLUTION,
             }
         }
-        self.on_allowance_closed = on_allowance_closed or (lambda board_id, reason: None)
+        self.on_allowance_closed = on_allowance_closed or (
+            lambda board_id, allowance_id, reason: None
+        )
         self.on_cache_confirmation = on_cache_confirmation or (lambda user_input, decision: None)
         self.cancellation_checkpoint = cancellation_checkpoint or (lambda: None)
         self._allowances: dict[str, _SetupAllowance] = {}
@@ -839,7 +841,7 @@ class SetupWorkflow:
         allowance.close_reason = reason
         if self._current_allowance_by_board.get(allowance.board_id) == allowance_id:
             self._current_allowance_by_board.pop(allowance.board_id, None)
-        self.on_allowance_closed(allowance.board_id, reason)
+        self.on_allowance_closed(allowance.board_id, allowance.allowance_id, reason)
 
 
 @dataclass(frozen=True, slots=True)

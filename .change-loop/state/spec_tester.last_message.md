@@ -1,1 +1,1 @@
-Remaining ambiguity: there is no public native-build-to-flash-planning interface to assert candidate rejection directly; tests enforce that ambiguous results have no selected fields and expose all candidates.
+Remaining ambiguity: the plan names the external-UART confirmation contract but does not specify its exact response payload; the test verifies the handler routing and allowance identity, not hardware-specific confirmation fields.

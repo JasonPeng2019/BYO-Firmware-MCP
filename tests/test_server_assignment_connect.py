@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import subprocess
+import sys
 import threading
 import unittest
 from pathlib import Path
@@ -420,18 +421,28 @@ class AssignmentAwareConnectTests(unittest.TestCase):
         )
 
     def test_cli_command_uses_null_stdin_and_preserves_owned_runner_contract(self) -> None:
-        completed = SimpleNamespace(returncode=7, stdout="listed", stderr="diagnostic")
+        completed = SimpleNamespace(returncode=7, stdout=b"listed", stderr=b"diagnostic")
         with patch.object(server, "run_owned", return_value=completed) as run_owned:
             result = server._run_cmd(["pyocd", "list", "--probes"], timeout_seconds=4.25)
 
         self.assertEqual(result, (7, "listed", "diagnostic"))
-        run_owned.assert_called_once_with(
-            ["pyocd", "list", "--probes"],
-            stdin=subprocess.DEVNULL,
-            capture_output=True,
-            text=True,
-            timeout=4.25,
+        kwargs = run_owned.call_args.kwargs
+        self.assertEqual(run_owned.call_args.args, (["pyocd", "list", "--probes"],))
+        self.assertIs(kwargs["stdin"], subprocess.DEVNULL)
+        self.assertTrue(kwargs["capture_output"])
+        self.assertFalse(kwargs["text"])
+        self.assertEqual(kwargs["timeout"], 4.25)
+        self.assertEqual(kwargs["env"]["PYTHONIOENCODING"], "utf-8")
+
+    def test_cli_command_preserves_unicode_output_on_legacy_windows_hosts(self) -> None:
+        result = server._run_cmd(
+            [sys.executable, "-c", "print('probe status: \\u2716\\ufe0e')"],
+            timeout_seconds=4.25,
         )
+
+        self.assertEqual(result[0], 0)
+        self.assertEqual(result[1].splitlines(), ["probe status: \u2716\ufe0e"])
+        self.assertEqual(result[2], "")
 
     def test_cli_inventory_hanging_child_is_bounded_and_terminated(self) -> None:
         import sys

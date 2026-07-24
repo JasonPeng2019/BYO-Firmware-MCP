@@ -1,0 +1,8 @@
+BLOCKED, not PASS/FAIL.
+
+Clean run `run-20260724T004754Z-cac9f60a` found a persisted, complete NUCLEO-L476RG profile from the aborted prior repair. The live server required validation instead of authorizing a new P1 setup plan; validation passed. I did not bypass that routing to fabricate P1/P2.
+
+The live session was deliberately disconnected successfully. No destructive operation occurred.
+
+- [HIL results](C:\Users\Jason\Documents\Jason\FirmCLI_Tester\Firmware-Test-Manual\MCP-Trial-3\BYO-Firmware-MCP\testing_folder\HIL_RESULTS.md)
+- [Parent summary](C:\Users\Jason\Documents\Jason\FirmCLI_Tester\Firmware-Test-Manual\MCP-Trial-3\BYO-Firmware-MCP\testing_folder\agent\nested-agent-summary.md)

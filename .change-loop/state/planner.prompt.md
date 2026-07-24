@@ -30,16 +30,39 @@ by item without the tester interpreting intent.
 
 ## Requested changes
 
-﻿# Verify and, only where needed, fix four reported MCP server correctness bugs
+# Setup plan relocking bug
 
-Use `.change-loop/design_charter.md` as the governing design standard. Inspect current code and tests before asserting that any issue exists. Do not edit unrelated behavior. For each item, record whether the bug exists, the evidence, and the smallest general fix if needed.
+Fix only the setup-authorization bookkeeping defect where closing stale setup
+allowance P1 can invalidate replacement PlanEngine plan P2 for the same board.
 
-1. Ambient overrides in `connect_under_reset`: `PYOCD_BOARD_CONFIG` and `PYOCD_PROBE_UID` are outside action parameters and may invisibly override a correct agent plan. Ensure the action cannot be redirected by ambient environment state. Resolve toward an explicit, truthful, general contract rather than assuming a sanitized launch environment.
+Required behavior:
 
-2. Overstrict build-output discovery: valid Zephyr/NCS multi-image builds may produce multiple ELF/MAP files. Do not treat multiple candidates as a generic build failure. Report candidate artifacts and require/select an explicit artifact using the existing interface patterns, without guessing which image is correct.
+1. SetupWorkflow allowance-close callbacks carry `board_id`, `allowance_id`,
+   and `reason`.
+2. `PlanEngine.complete_paired_plan()` accepts optional `expected_plan_id` and
+   only consumes permission / invalidates when the active plan matches it.
+3. Recheck the matching active plan after permission cleanup so a concurrently
+   installed replacement is not invalidated.
+4. Server setup allowance closure passes the closing allowance ID.
+5. Setup tool wrappers pass the allowance/plan ID wherever already known.
+6. Replacing incomplete P1 with P2 must leave P2 active and its paired
+   `board_fix_setup` callable; closing matching P1 must still relock normally.
+7. Cover the full external-UART continuation route and replacement-during-
+   completion race with automated tests.
+8. Scope the adjacent loader allowance and continuation cleanup by the same
+   expected allowance identity. Reorder binding if necessary so synchronous P1
+   retirement clears P1 state before P2 becomes the loader's current allowance.
+   A late P1 callback/wrapper must not clear P2's loader allowance, accepted
+   selections, or continuation facts.
 
-3. False final-reset reporting: after programming, a failed or unobservable final reset must not be reported as `running`. Distinguish observed running, observed halted, and reset-state unconfirmed. Never claim running unless observed.
+Follow `../.codex/design_charter.md`: use identity-based correctness rather
+than broad guards, preserve one-time permission boundaries, keep the change
+general and simple, and do not introduce board-, port-, or OS-specific logic.
 
-4. Stale session after recovery: mass erase/recovery may invalidate the debug session. Close and invalidate the session after recovery, then require or perform a clean reconnect before later validation/debug operations.
+The broader limitation around multiple sequential repair passes is explicitly
+out of scope.
 
-Preserve public compatibility where it does not conflict with truthful reporting. Update tool contracts/docs and focused tests for every confirmed bug. Avoid hardware-specific branches, environment-specific constants, speculative abstractions, commits, deployment, and physical hardware actions. Verification must be automated and must not require a connected board.
+Preserve all unrelated pre-existing working-tree changes, including the earlier
+UTF-8 probe-inventory fix. Do not edit or restore deleted `testing_folder`
+content; a fresh hardware-only `testing_folder` will be created after the
+software change loop is green.

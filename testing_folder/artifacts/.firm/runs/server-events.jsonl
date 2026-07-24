@@ -1,0 +1,1 @@
+{"board_id": "nucleo_l476rg", "details": {}, "duration_ms": 0, "error_code": null, "event_id": "evt-8335772217da", "normalized_args": {"board_id": "nucleo_l476rg"}, "outcome_kind": "success", "probe_uid": null, "route_used": null, "session_id": null, "timestamp": "2026-07-24T00:52:43.788067Z", "tool_name": "get_board_info"}

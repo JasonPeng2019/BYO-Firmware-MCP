@@ -1,1 +1,1 @@
-uv run python -m unittest -v tests.test_regression_change_loop
+PYTHONPATH=src .venv/Scripts/python.exe -m unittest tests.test_regression_stale_setup_allowance

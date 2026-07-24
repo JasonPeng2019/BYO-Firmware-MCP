@@ -217,8 +217,13 @@ class SetupToolLoadState:
         with self._guard:
             return self._allowance_by_board.get(board_id)
 
-    def clear_allowance(self, board_id: str) -> None:
+    def clear_allowance(self, board_id: str, expected_allowance_id: str | None = None) -> None:
         with self._guard:
+            if (
+                expected_allowance_id is not None
+                and self._allowance_by_board.get(board_id) != expected_allowance_id
+            ):
+                return
             self._allowance_by_board.pop(board_id, None)
 
 
@@ -234,7 +239,7 @@ class SetupToolServices:
     setup_overview: Callable[..., Mapping[str, Any]] | None = None
     setup_continue: Callable[[str, str, Mapping[str, object]], Mapping[str, Any]] | None = None
     setup_selections: Callable[[str], PreflightSelections] | None = None
-    clear_setup_continuation: Callable[[str], None] | None = None
+    clear_setup_continuation: Callable[[str, str | None], None] | None = None
     setup_plan_eligible: Callable[[str], tuple[bool, str]] | None = None
     require_assignment: Callable[[str, str], None] | None = None
     assigned_connection: Callable[[str], str | None] | None = None
@@ -431,14 +436,19 @@ def build_setup_handlers(services: SetupToolServices) -> dict[str, Callable[...,
             serial_id,
             datasheet_path,
         )
-        services.loader.bind_allowance(board_id, active.plan_id)
         services.workflow.begin_plan(active.plan_id, user_input, mode=mode)  # type: ignore[arg-type]
+        services.loader.bind_allowance(board_id, active.plan_id)
         response = services.workflow.board_setup(active.plan_id, user_input)
         if response.status == "setup_completed":
-            services.loader.clear_allowance(board_id)
-            services.plan_engine.complete_paired_plan("board_setup", board_id, "setup completed")
+            services.plan_engine.complete_paired_plan(
+                "board_setup",
+                board_id,
+                "setup completed",
+                expected_plan_id=active.plan_id,
+            )
             if services.clear_setup_continuation is not None:
-                services.clear_setup_continuation(board_id)
+                services.clear_setup_continuation(board_id, active.plan_id)
+            services.loader.clear_allowance(board_id, active.plan_id)
         return _json(response.to_payload())
 
     def board_fix_setup(
@@ -478,12 +488,15 @@ def build_setup_handlers(services: SetupToolServices) -> dict[str, Callable[...,
             else PreflightSelections()
         )
         response = services.workflow.board_fix_setup(allowance_id, selections=selections)
-        services.loader.clear_allowance(board_id)
         services.plan_engine.complete_paired_plan(
-            "board_setup", board_id, f"repair ended with {response.status}"
+            "board_setup",
+            board_id,
+            f"repair ended with {response.status}",
+            expected_plan_id=allowance_id,
         )
         if services.clear_setup_continuation is not None:
-            services.clear_setup_continuation(board_id)
+            services.clear_setup_continuation(board_id, allowance_id)
+        services.loader.clear_allowance(board_id, allowance_id)
         return _json(response.to_payload())
 
     def continue_setup(

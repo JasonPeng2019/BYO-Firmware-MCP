@@ -1,5 +1,5 @@
 packs:
-- id: Keil::STM32L4xx_DFP
+- id: Keil.STM32L4xx_DFP
   version: 3.1.0
   filename: Keil.STM32L4xx_DFP.3.1.0.pack
   url: https://www.keil.com/pack/Keil.STM32L4xx_DFP.3.1.0.pack
@@ -261,7 +261,7 @@ packs:
   - stm32l4s9zitx
   - stm32l4s9ziyx
   needed_by_boards:
-  - st_nucleo_l476rg
+  - nucleo_l476rg
   device_bindings:
   - part_number: STM32L476RGT6
     pdsc_device: STM32L476RGTx

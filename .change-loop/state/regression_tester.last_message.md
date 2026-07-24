@@ -1,1 +1,1 @@
-All 11 focused tests pass; the owned test module typechecks cleanly.
+Residual risk: existing separate tester-owned coverage handles the full handler/continuation and permission race paths.
