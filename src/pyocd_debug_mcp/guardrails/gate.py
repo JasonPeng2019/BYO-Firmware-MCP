@@ -334,9 +334,9 @@ class GateManager:
             self._state.pop(self._identity_key(board), None)
             self._state.pop(self._map_key(board), None)
             self._clear_mismatches_locked(board_id=board)
-            self._state[
-                self._mismatch_key(board, connection, probe, expected, observed)
-            ] = allowance
+            self._state[self._mismatch_key(board, connection, probe, expected, observed)] = (
+                allowance
+            )
             self._closure_reasons[board] = "live MCU identity mismatched the established profile"
         return allowance
 

@@ -1265,10 +1265,7 @@ def _connect_under_reset_impl(
         resolved_uid = _resolve_probe_uid_for_connect(
             board, probe_uid, allow_environment_override=False
         )
-        resolved_target = (
-            target_override
-            or (board.pyocd_target if board else None)
-        )
+        resolved_target = target_override or (board.pyocd_target if board else None)
         try:
             stored_profile = _profile_repository.load(board_id)
         except ProfileError:
@@ -5364,9 +5361,7 @@ def _setup_continue(
     }
 
 
-def _clear_setup_continuation(
-    board_id: str, expected_allowance_id: str | None = None
-) -> None:
+def _clear_setup_continuation(board_id: str, expected_allowance_id: str | None = None) -> None:
     if (
         expected_allowance_id is not None
         and setup_tool_loader.allowance_for(board_id) != expected_allowance_id
@@ -5385,9 +5380,7 @@ def _clear_setup_continuation(
 def _close_setup_allowance(board_id: str, allowance_id: str, reason: str) -> None:
     """Close paired authority and every run-scoped continuation fact together."""
 
-    plan_engine.complete_paired_plan(
-        "board_setup", board_id, reason, expected_plan_id=allowance_id
-    )
+    plan_engine.complete_paired_plan("board_setup", board_id, reason, expected_plan_id=allowance_id)
     _clear_setup_continuation(board_id, allowance_id)
     setup_tool_loader.clear_allowance(board_id, allowance_id)
 

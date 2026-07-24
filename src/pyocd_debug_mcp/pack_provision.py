@@ -316,9 +316,7 @@ def read_pack_bytes(path: Path) -> bytes:
     return payload
 
 
-def verified_pack_for_spec(
-    spec: PackSpec, *, packs_dir: Path = PACKS_DIR
-) -> VerifiedPack:
+def verified_pack_for_spec(spec: PackSpec, *, packs_dir: Path = PACKS_DIR) -> VerifiedPack:
     """Load one exact manifest-selected package without target-wide provider lookup."""
 
     roots = [packs_dir]

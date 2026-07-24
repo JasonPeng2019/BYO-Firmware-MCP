@@ -142,9 +142,7 @@ def parse_pyocd_probe_listing(output: str) -> list[ProbeInfo]:
             state = columns[3].strip() if len(columns) >= 4 else ""
             if description and uid:
                 family = provider_qualified_family(uid)
-                source = (
-                    "provider_qualified_uid" if family is not None else "legacy_text_fallback"
-                )
+                source = "provider_qualified_uid" if family is not None else "legacy_text_fallback"
                 if family is None:
                     family = match_probe_family_text(raw)
                     if family == "unknown":

@@ -72,7 +72,10 @@ class WindowsProcessCleanupTests(unittest.TestCase):
             return process
 
         primary = OSError("real Job creation failed")
-        with tempfile.TemporaryDirectory() as temporary, warnings.catch_warnings(record=True) as seen:
+        with (
+            tempfile.TemporaryDirectory() as temporary,
+            warnings.catch_warnings(record=True) as seen,
+        ):
             warnings.simplefilter("always", ResourceWarning)
             store = processes.ProcessMarkerStore(Path(temporary))
             with (

@@ -23,9 +23,7 @@ from pyocd_debug_mcp.setup_flow.validate import (
     ValidationRequest,
 )
 
-SETUP_LOADABLE_TOOLS = frozenset(
-    {"board_setup-plan", "board_safety_refresh", "board_validate"}
-)
+SETUP_LOADABLE_TOOLS = frozenset({"board_setup-plan", "board_safety_refresh", "board_validate"})
 
 
 def _json(document: Mapping[str, Any]) -> str:

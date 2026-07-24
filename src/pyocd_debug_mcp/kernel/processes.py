@@ -23,6 +23,8 @@ def default_marker_root() -> Path:
     from pyocd_debug_mcp.application import application_config
 
     return application_config().runs_root / "owned-processes"
+
+
 _WINDOWS_JOB_HANDLES: dict[int, int] = {}
 _WINDOWS_JOB_GUARD = threading.Lock()
 DEFAULT_PROCESS_GROUP_CLEANUP_GRACE_SECONDS = 0.5

@@ -185,9 +185,7 @@ class ToolRegistry:
         definition = self.definition(name)
         prerequisite = definition.prerequisite or f"{name}-plan"
         board_text = f" for board '{board_id}'" if board_id else ""
-        raise ToolError(
-            f"Tool '{name}' is locked{board_text}. Call '{prerequisite}' first."
-        )
+        raise ToolError(f"Tool '{name}' is locked{board_text}. Call '{prerequisite}' first.")
 
     def _require_definition(self, name: str) -> ToolDefinition:
         try:
@@ -356,9 +354,7 @@ class RegistryFastMCP(FastMCP):
                 )
 
             def invoke_sync():  # type: ignore[no-untyped-def]
-                return anyio.run(
-                    partial(tool.run, arguments, context=context, convert_result=True)
-                )
+                return anyio.run(partial(tool.run, arguments, context=context, convert_result=True))
 
             return await dispatch(
                 name,

@@ -646,8 +646,7 @@ def _select_pdsc_member(members: Iterable[zipfile.ZipInfo]) -> zipfile.ZipInfo:
     pdsc_rows = tuple(
         member
         for member in members
-        if not member.is_dir()
-        and member.filename.replace("\\", "/").casefold().endswith(".pdsc")
+        if not member.is_dir() and member.filename.replace("\\", "/").casefold().endswith(".pdsc")
     )
     if len(pdsc_rows) != 1:
         raise PackProvisionError("CMSIS-Pack must contain exactly one PDSC document")
@@ -944,7 +943,9 @@ def _intersect_access_regions(
         writable = all(row.writable for row in covering)
         if not readable and not writable:
             continue
-        access = "read-write" if readable and writable else "read-only" if readable else "write-only"
+        access = (
+            "read-write" if readable and writable else "read-only" if readable else "write-only"
+        )
         names = sorted({row.name for row in covering}, key=str.casefold)
         name = names[0] if len(names) == 1 else f"{names[0]} (+{len(names) - 1} aliases)"
         if (
@@ -1221,11 +1222,7 @@ def resolve_registered_pack_geometry(
                     cursor = end
                 if not valid:
                     break
-        if (
-            valid
-            and sectors
-            and sectors[-1][1] == int(programmable_flash.start) + flash_length
-        ):
+        if valid and sectors and sectors[-1][1] == int(programmable_flash.start) + flash_length:
             candidate_erased = getattr(getattr(flm, "flash_info", None), "value_empty", None)
             if isinstance(candidate_erased, int) and 0 <= candidate_erased <= 0xFF:
                 erased_byte = candidate_erased

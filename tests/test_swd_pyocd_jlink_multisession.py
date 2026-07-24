@@ -53,7 +53,9 @@ class FakeProbe:
 
 
 class FakeSession:
-    def __init__(self, *, open_error: Exception | None = None, reset_supported: bool = True) -> None:
+    def __init__(
+        self, *, open_error: Exception | None = None, reset_supported: bool = True
+    ) -> None:
         self.probe = FakeProbe(reset_supported=reset_supported)
         self.target = FakeTarget()
         self.board = SimpleNamespace(name="Fake target board")

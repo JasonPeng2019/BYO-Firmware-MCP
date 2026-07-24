@@ -69,6 +69,7 @@ class UARTExchangeResult:
             and all(step.matched for step in self.steps)
         )
 
+
 def capture_uart_output(
     device: str,
     baudrate: int,

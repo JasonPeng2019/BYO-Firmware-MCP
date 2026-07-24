@@ -475,11 +475,7 @@ class ProfileRepository:
 
     def load(self, board_id: str) -> BoardProfile:
         identity = _require_board_id(board_id)
-        matches = [
-            profile
-            for profile in self.load_all()
-            if profile.board_id == identity
-        ]
+        matches = [profile for profile in self.load_all() if profile.board_id == identity]
         if not matches:
             raise ProfileError(f"Board profile not found: {identity}")
         return matches[0]

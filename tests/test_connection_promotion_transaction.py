@@ -47,9 +47,7 @@ class ConnectionPromotionTransactionTests(unittest.TestCase):
             patch.object(server.target_control, "close_session") as close_worker,
         ):
             with self.assertRaisesRegex(RuntimeError, "summary persistence failed"):
-                server._promote_open_session(
-                    "board-new", handle, gate_reason="validation required"
-                )
+                server._promote_open_session("board-new", handle, gate_reason="validation required")
 
         self.assertIsNone(manager.maybe_connection("board-new"))
         store.close_session.assert_not_called()
@@ -82,9 +80,7 @@ class ConnectionPromotionTransactionTests(unittest.TestCase):
             patch.object(server, "gate_manager", SimpleNamespace(clear=Mock())),
         ):
             with self.assertRaisesRegex(RuntimeError, "summary persistence failed"):
-                server._promote_open_session(
-                    "board-new", handle, gate_reason="validation required"
-                )
+                server._promote_open_session("board-new", handle, gate_reason="validation required")
 
         self.assertTrue(client._closed)
         self.assertFalse(marker.exists())
@@ -204,9 +200,7 @@ class ConnectionPromotionTransactionTests(unittest.TestCase):
             nonlocal replacement
             self.assertEqual((board_id, reason), ("board-new", "validation required"))
             manager.clear("board-new")
-            replacement = manager.assign(
-                "board-new", replacement_handle, replacement_runtime
-            )
+            replacement = manager.assign("board-new", replacement_handle, replacement_runtime)
             raise ValueError("gate persistence failed")
 
         store = SimpleNamespace(
@@ -256,9 +250,7 @@ class ConnectionPromotionTransactionTests(unittest.TestCase):
             ),
         ):
             with self.assertRaises(ValueError) as raised:
-                server._promote_open_session(
-                    "board-new", handle, gate_reason="validation required"
-                )
+                server._promote_open_session("board-new", handle, gate_reason="validation required")
 
         self.assertEqual(str(raised.exception), "primary gate failure")
         self.assertIsInstance(raised.exception.__cause__, RuntimeError)

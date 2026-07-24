@@ -189,7 +189,6 @@ class CatalogBoard:
         }
 
 
-
 def _required_string(raw: dict[str, object], name: str) -> str:
     value = raw.get(name)
     if not isinstance(value, str) or not value.strip():

@@ -149,7 +149,11 @@ def _load_runtime_contract(runtime_root: Path) -> RuntimeContract:
         payload = json.loads(manifest_path.read_text(encoding="utf-8"))
     except (OSError, UnicodeError, json.JSONDecodeError) as exc:
         raise ConfigurationError("runtime release manifest is missing or invalid") from exc
-    if not isinstance(payload, dict) or payload.get("schema") != 1 or payload.get("product") != "byo":
+    if (
+        not isinstance(payload, dict)
+        or payload.get("schema") != 1
+        or payload.get("product") != "byo"
+    ):
         raise ConfigurationError("runtime release manifest has an unsupported identity")
     required = {
         "version": str,
@@ -477,9 +481,7 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def _add_runtime_context_arguments(
-    parser: argparse.ArgumentParser, *, required: bool
-) -> None:
+def _add_runtime_context_arguments(parser: argparse.ArgumentParser, *, required: bool) -> None:
     parser.add_argument("--project-root", required=required)
     parser.add_argument("--runtime-root", required=required)
     parser.add_argument("--launcher-version", required=required)

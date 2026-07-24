@@ -203,9 +203,7 @@ def _stable_probe_identity_equal(left: str | None, right: str | None) -> bool:
     if left_normalized == right_normalized:
         return True
     if left_normalized.isdecimal() and right_normalized.isdecimal():
-        return (left_normalized.lstrip("0") or "0") == (
-            right_normalized.lstrip("0") or "0"
-        )
+        return (left_normalized.lstrip("0") or "0") == (right_normalized.lstrip("0") or "0")
     return False
 
 
@@ -286,9 +284,7 @@ class BoardValidator:
             observed["inventory"] = {"probes": [asdict(item) for item in inventory.probes]}
             steps.append(ValidationStep(2, "Enumerate debug probes", "passed"))
 
-            selected_probe, probe_choices = self._select_probe(
-                profile, inventory, request.probe_id
-            )
+            selected_probe, probe_choices = self._select_probe(profile, inventory, request.probe_id)
             if probe_choices:
                 choices = probe_choices
                 retry_arguments = {
@@ -339,9 +335,7 @@ class BoardValidator:
                 )
             steps.append(ValidationStep(4, "Confirm verified target support", "passed"))
 
-            connection = self._backend.connect(
-                profile, selected_probe, self._step_timeout_seconds
-            )
+            connection = self._backend.connect(profile, selected_probe, self._step_timeout_seconds)
             self._cancellation_checkpoint()
             steps.append(ValidationStep(5, "Connect without target mutation", "passed"))
 

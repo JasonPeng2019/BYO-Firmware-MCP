@@ -20,6 +20,8 @@ SUPPORTED_RECOVER_MODES = {
     RECOVER_MODE_BACKEND_MASS_ERASE,
     RECOVER_MODE_MANUAL_ONLY,
 }
+
+
 class ConfigError(Exception):
     """Raised when a tracked board-config file is malformed."""
 

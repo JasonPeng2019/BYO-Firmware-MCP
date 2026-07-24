@@ -54,16 +54,16 @@ class PackCandidate:
             raise PackCandidateError(
                 "package/invalid-candidate", "Package id, version, and source URL are required"
             )
-        if (
-            Path(self.filename).name != self.filename
-            or not self.filename.casefold().endswith(".pack")
+        if Path(self.filename).name != self.filename or not self.filename.casefold().endswith(
+            ".pack"
         ):
             raise PackCandidateError(
                 "package/invalid-filename", "Package filename must be a plain .pack filename"
             )
-        if self.official_sha256 is not None and _SHA256_PATTERN.fullmatch(
-            self.official_sha256
-        ) is None:
+        if (
+            self.official_sha256 is not None
+            and _SHA256_PATTERN.fullmatch(self.official_sha256) is None
+        ):
             raise PackCandidateError(
                 "package/invalid-checksum", "Official checksum must be 64 hexadecimal digits"
             )
@@ -213,9 +213,7 @@ class PackCandidatePipeline:
                     derive_candidate_binding,
                 )
 
-                replayed_binding = derive_candidate_binding(
-                    destination, device_binding.part_number
-                )
+                replayed_binding = derive_candidate_binding(destination, device_binding.part_number)
                 if replayed_binding != device_binding:
                     if not existed:
                         self._store.remove_artifact(destination)
@@ -330,6 +328,7 @@ class PackCandidatePipeline:
                     ),
                 )
             )
+
             def merge(manifest_path: Path) -> Mapping[str, Any]:
                 # Rebind the final file to the exact bounded payload used by
                 # validation/live attach while the manifest merge is locked.
@@ -338,9 +337,7 @@ class PackCandidatePipeline:
                         "package/staged-bytes-changed",
                         "The quarantined package changed before promotion",
                     )
-                self._store.atomic_write_bytes(
-                    validated.staged_path, validated.validated_payload
-                )
+                self._store.atomic_write_bytes(validated.staged_path, validated.validated_payload)
                 if sha256_file(validated.staged_path) != validated.actual_sha256:
                     raise PackCandidateError(
                         "package/staged-bytes-changed",
@@ -359,7 +356,10 @@ class PackCandidatePipeline:
                 for index, existing in enumerate(packs):
                     if not isinstance(existing, Mapping):
                         continue
-                    if existing.get("id") != entry["id"] and existing.get("filename") != entry["filename"]:
+                    if (
+                        existing.get("id") != entry["id"]
+                        and existing.get("filename") != entry["filename"]
+                    ):
                         continue
                     prior = next(
                         (

@@ -161,8 +161,10 @@ def validate_guarded_register_call(
     if action_name in {"write_cpu_register", "set_execution_state"}:
         name = arguments.get("name")
         value = arguments.get("value")
-        if not isinstance(name, str) or isinstance(value, bool) or not isinstance(
-            value, (str, int)
+        if (
+            not isinstance(name, str)
+            or isinstance(value, bool)
+            or not isinstance(value, (str, int))
         ):
             raise RegisterPreconditionError(
                 "Refused [register/invalid-value]: name and value have invalid types."
@@ -175,9 +177,7 @@ def validate_guarded_register_call(
         )
         _raise_precondition(refusal)
         assert normalized is not None
-        _, refusal = _parse_value(
-            value, "value", maximum=_register_maximum(normalized)
-        )
+        _, refusal = _parse_value(value, "value", maximum=_register_maximum(normalized))
         _raise_precondition(refusal)
         return
 
@@ -212,9 +212,7 @@ def build_register_handlers(
     def read_cpu_register(board_id: str, name: str) -> str:
         """Read one runtime-supported ordinary CPU or floating-point register."""
 
-        normalized, refusal = _validate_supported(
-            services, board_id, name, execution_state=False
-        )
+        normalized, refusal = _validate_supported(services, board_id, name, execution_state=False)
         if refusal is not None:
             return refusal
         assert normalized is not None
@@ -223,9 +221,7 @@ def build_register_handlers(
     def read_execution_state(board_id: str, name: str) -> str:
         """Read one runtime-supported control-flow or execution-state register."""
 
-        normalized, refusal = _validate_supported(
-            services, board_id, name, execution_state=True
-        )
+        normalized, refusal = _validate_supported(services, board_id, name, execution_state=True)
         if refusal is not None:
             return refusal
         assert normalized is not None
@@ -234,15 +230,11 @@ def build_register_handlers(
     def write_cpu_register(board_id: str, name: str, value: str | int) -> str:
         """Write one ordinary R0-R12 or floating-point register under a fixed plan."""
 
-        normalized, refusal = _validate_supported(
-            services, board_id, name, execution_state=False
-        )
+        normalized, refusal = _validate_supported(services, board_id, name, execution_state=False)
         if refusal is not None:
             return refusal
         assert normalized is not None
-        parsed, refusal = _parse_value(
-            value, "value", maximum=_register_maximum(normalized)
-        )
+        parsed, refusal = _parse_value(value, "value", maximum=_register_maximum(normalized))
         if refusal is not None:
             return refusal
         assert parsed is not None
@@ -251,15 +243,11 @@ def build_register_handlers(
     def set_execution_state(board_id: str, name: str, value: str | int) -> str:
         """Set one control-flow/mode register under a permission-carrying fixed plan."""
 
-        normalized, refusal = _validate_supported(
-            services, board_id, name, execution_state=True
-        )
+        normalized, refusal = _validate_supported(services, board_id, name, execution_state=True)
         if refusal is not None:
             return refusal
         assert normalized is not None
-        parsed, refusal = _parse_value(
-            value, "value", maximum=_register_maximum(normalized)
-        )
+        parsed, refusal = _parse_value(value, "value", maximum=_register_maximum(normalized))
         if refusal is not None:
             return refusal
         assert parsed is not None

@@ -44,7 +44,9 @@ def _write_loadable_elf(path: Path) -> None:
 
 
 class NativeBuildAmbiguityRegressionTests(unittest.TestCase):
-    def test_multi_image_discovery_exposes_candidates_without_selecting_or_authorizing_one(self) -> None:
+    def test_multi_image_discovery_exposes_candidates_without_selecting_or_authorizing_one(
+        self,
+    ) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             for name in ("z.elf", "a.elf"):
@@ -59,10 +61,12 @@ class NativeBuildAmbiguityRegressionTests(unittest.TestCase):
             self.assertIsNone(artifacts["hex"])
             self.assertEqual(artifacts["artifact_selection"], "explicit_declaration_required")
             self.assertEqual(
-                artifacts["elf_candidates"], [str((root / "a.elf").resolve()), str((root / "z.elf").resolve())]
+                artifacts["elf_candidates"],
+                [str((root / "a.elf").resolve()), str((root / "z.elf").resolve())],
             )
             self.assertEqual(
-                artifacts["map_candidates"], [str((root / "a.map").resolve()), str((root / "z.map").resolve())]
+                artifacts["map_candidates"],
+                [str((root / "a.map").resolve()), str((root / "z.map").resolve())],
             )
             self.assertIn("--artifact-elf", str(artifacts["artifact_selection_remedy"]))
             selected = {role: artifacts[role] for role in ("elf", "hex", "map")}
@@ -87,9 +91,14 @@ class NativeBuildAmbiguityRegressionTests(unittest.TestCase):
             self.assertEqual(selected["elf"], str((root / "b.elf").resolve()))
             self.assertEqual(selected["map"], str((root / "b.map").resolve()))
 
-    def test_one_sided_ambiguity_clears_all_selected_fields_in_helper_and_build_evidence(self) -> None:
+    def test_one_sided_ambiguity_clears_all_selected_fields_in_helper_and_build_evidence(
+        self,
+    ) -> None:
         for ambiguous_role in ("elf", "map"):
-            with self.subTest(ambiguous_role=ambiguous_role), tempfile.TemporaryDirectory() as temporary:
+            with (
+                self.subTest(ambiguous_role=ambiguous_role),
+                tempfile.TemporaryDirectory() as temporary,
+            ):
                 root = Path(temporary)
                 project = root / "project"
                 build = root / "build"
@@ -124,14 +133,25 @@ class NativeBuildAmbiguityRegressionTests(unittest.TestCase):
                 self.assertEqual(len(singleton_candidates), 1)
 
                 args = argparse.Namespace(
-                    project_dir=str(project), build_dir=str(build), command=["fake-build"],
-                    cwd=None, env=[], offline=False, timeout_seconds=1, artifact=[],
-                    artifact_elf=None, artifact_hex=None, artifact_map=None,
+                    project_dir=str(project),
+                    build_dir=str(build),
+                    command=["fake-build"],
+                    cwd=None,
+                    env=[],
+                    offline=False,
+                    timeout_seconds=1,
+                    artifact=[],
+                    artifact_elf=None,
+                    artifact_hex=None,
+                    artifact_map=None,
                 )
                 output = io.StringIO()
-                with patch.object(
-                    native_build, "run_owned", return_value=SimpleNamespace(returncode=0)
-                ), redirect_stdout(output):
+                with (
+                    patch.object(
+                        native_build, "run_owned", return_value=SimpleNamespace(returncode=0)
+                    ),
+                    redirect_stdout(output),
+                ):
                     self.assertEqual(native_build.run_build(args), 0)
 
                 evidence = json.loads(output.getvalue())
@@ -139,7 +159,9 @@ class NativeBuildAmbiguityRegressionTests(unittest.TestCase):
                     {role: evidence["artifacts"][role] for role in ("elf", "hex", "map")},
                     {"elf": None, "hex": None, "map": None},
                 )
-                self.assertEqual(evidence["artifacts"]["artifact_selection"], "explicit_declaration_required")
+                self.assertEqual(
+                    evidence["artifacts"]["artifact_selection"], "explicit_declaration_required"
+                )
                 self.assertEqual(
                     evidence["artifacts"]["elf_candidates"],
                     [str((build / name).resolve()) for name in elf_names],
@@ -159,9 +181,7 @@ class NativeBuildAmbiguityRegressionTests(unittest.TestCase):
 class FlashStateRegressionTests(unittest.TestCase):
     @staticmethod
     def _handle(target: object) -> TargetSessionHandle:
-        board = BoardConfig(
-            "board", "Board", "mcu", "probe", "target", "probe", (), (), 0
-        )
+        board = BoardConfig("board", "Board", "mcu", "probe", "target", "probe", (), (), 0)
         return TargetSessionHandle(SimpleNamespace(target=target), board, "probe", "route", None)
 
     def test_final_reset_transport_loss_is_unconfirmed_not_running(self) -> None:
@@ -173,8 +193,9 @@ class FlashStateRegressionTests(unittest.TestCase):
                 raise swd_pyocd.TransferError("link dropped")
 
         programmer = Mock()
-        with tempfile.TemporaryDirectory() as temporary, patch.object(
-            swd_pyocd, "FileProgrammer", return_value=programmer
+        with (
+            tempfile.TemporaryDirectory() as temporary,
+            patch.object(swd_pyocd, "FileProgrammer", return_value=programmer),
         ):
             state = swd_pyocd.PyOCDSWDInterface().flash(
                 self._handle(Target()), Path(temporary) / "firmware.elf", halt_after_reset=False
@@ -231,8 +252,9 @@ class FlashStateRegressionTests(unittest.TestCase):
             def get_state() -> object:
                 return SimpleNamespace(name="RUNNING")
 
-        with tempfile.TemporaryDirectory() as temporary, patch.object(
-            swd_pyocd, "FileProgrammer", return_value=Mock()
+        with (
+            tempfile.TemporaryDirectory() as temporary,
+            patch.object(swd_pyocd, "FileProgrammer", return_value=Mock()),
         ):
             state = swd_pyocd.PyOCDSWDInterface().flash(
                 self._handle(Target()), Path(temporary) / "firmware.elf", halt_after_reset=False
@@ -282,7 +304,9 @@ class ResetConnectRoutingRegressionTests(unittest.TestCase):
     def _board() -> BoardConfig:
         return BoardConfig("board", "Board", "mcu", "probe", "profile-target", "probe", (), (), 0)
 
-    def test_reset_connect_ignores_ambient_uid_and_target_but_normal_resolution_keeps_compatibility(self) -> None:
+    def test_reset_connect_ignores_ambient_uid_and_target_but_normal_resolution_keeps_compatibility(
+        self,
+    ) -> None:
         board = self._board()
         manager = ConnectionManager()
         handle = TargetSessionHandle(None, board, "profile-uid", "route", "profile-target")
@@ -301,7 +325,9 @@ class ResetConnectRoutingRegressionTests(unittest.TestCase):
             patch.object(server, "connection_manager", manager),
             patch.object(server, "_profile_repository", repository),
             patch.object(server, "resolve_board_config", return_value=board) as resolve_board,
-            patch.object(server, "_resolve_probe_uid_for_connect", return_value="profile-uid") as resolve_uid,
+            patch.object(
+                server, "_resolve_probe_uid_for_connect", return_value="profile-uid"
+            ) as resolve_uid,
             patch.object(server.target_control, "connect_under_reset", connect),
             patch.object(server, "_promote_open_session", return_value=assignment),
             patch.object(server, "_record_event"),
@@ -380,8 +406,15 @@ class RecoveryCleanupRegressionTests(unittest.TestCase):
         handle = TargetSessionHandle(None, None, "probe", "route", None)
         root = Path("test-run")
         runtime = SessionRecord(
-            "session", "board", "connection", "probe", "route", "now",
-            root, root / "events", root / "summary",
+            "session",
+            "board",
+            "connection",
+            "probe",
+            "route",
+            "now",
+            root,
+            root / "events",
+            root / "summary",
         )
         manager.assign("board", handle, runtime)
         gate = Mock()
@@ -415,8 +448,15 @@ class RecoveryCleanupRegressionTests(unittest.TestCase):
         handle = TargetSessionHandle(None, None, "probe", "route", None)
         root = Path("test-run")
         runtime = SessionRecord(
-            "session", "board", "connection", "probe", "route", "now",
-            root, root / "events", root / "summary",
+            "session",
+            "board",
+            "connection",
+            "probe",
+            "route",
+            "now",
+            root,
+            root / "events",
+            root / "summary",
         )
         manager.assign("board", handle, runtime)
         gate = Mock()
@@ -430,7 +470,9 @@ class RecoveryCleanupRegressionTests(unittest.TestCase):
             patch.object(server, "assignment_store", assignments),
             patch.object(server, "plan_engine", plans),
             patch.object(server, "_session_store", sessions),
-            patch.object(server.target_control, "close_session", side_effect=OSError("worker close failed")),
+            patch.object(
+                server.target_control, "close_session", side_effect=OSError("worker close failed")
+            ),
             self.assertRaisesRegex(RuntimeError, "worker close failed"),
         ):
             server._finalize_unlock_recovery("board")

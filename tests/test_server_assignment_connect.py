@@ -41,9 +41,7 @@ def _board(board_id: str) -> BoardConfig:
 
 def _inventory(*probe_uids: str) -> ValidationInventory:
     return ValidationInventory(
-        probes=tuple(
-            ValidationProbe(uid, f"J-Link {uid}", "jlink", uid) for uid in probe_uids
-        )
+        probes=tuple(ValidationProbe(uid, f"J-Link {uid}", "jlink", uid) for uid in probe_uids)
     )
 
 
@@ -130,9 +128,7 @@ class AssignmentAwareConnectTests(unittest.TestCase):
                 layout=SimpleNamespace(board_profile=lambda unused: Path("missing-profile.json"))
             ),
         )
-        assignment_store = SimpleNamespace(
-            connection_for=Mock(return_value=assigned_connection)
-        )
+        assignment_store = SimpleNamespace(connection_for=Mock(return_value=assigned_connection))
 
         with (
             patch.object(server, "assignment_store", assignment_store),
@@ -226,7 +222,9 @@ class AssignmentAwareConnectTests(unittest.TestCase):
         open_session.assert_not_called()
         generic_resolution.assert_called_once()
 
-    def test_parent_validation_and_connect_inventory_never_call_native_pyocd_discovery(self) -> None:
+    def test_parent_validation_and_connect_inventory_never_call_native_pyocd_discovery(
+        self,
+    ) -> None:
         native = Mock(side_effect=AssertionError("parent invoked native discovery"))
         cli_listing = f"0  J-Link Probe  jlink:{FIRST_PROBE}\n"
         with (
@@ -491,17 +489,16 @@ class AssignmentAwareConnectTests(unittest.TestCase):
                 )
                 + operations.CANCELLATION_CLEANUP_GRACE_SECONDS
             )
-            with self.subTest(fallback_count=fallback_count), patch.object(
-                operations, "configured_probe_cli_commands", return_value=commands
+            with (
+                self.subTest(fallback_count=fallback_count),
+                patch.object(operations, "configured_probe_cli_commands", return_value=commands),
             ):
                 for tool_name, prior_timeout in existing.items():
                     with self.subTest(tool_name=tool_name):
                         self.assertEqual(
                             operations.operation_timeout_seconds(
                                 tool_name,
-                                {"probe_uid": None}
-                                if tool_name == "connect_override"
-                                else None,
+                                {"probe_uid": None} if tool_name == "connect_override" else None,
                             ),
                             max(prior_timeout, derived),
                         )
@@ -520,9 +517,7 @@ class AssignmentAwareConnectTests(unittest.TestCase):
         from pyocd_debug_mcp.probe_inventory import list_connected_probes_cli
 
         execution_timeout = 0.05
-        commands = tuple(
-            (sys.executable, "-c", "import time; time.sleep(60)") for _ in range(2)
-        )
+        commands = tuple((sys.executable, "-c", "import time; time.sleep(60)") for _ in range(2))
         marker_root = Path.home() / ".pyocd-debug-mcp" / "runs" / "owned-processes"
         before = set(marker_root.glob("*.json")) if marker_root.exists() else set()
         derived_budget = (

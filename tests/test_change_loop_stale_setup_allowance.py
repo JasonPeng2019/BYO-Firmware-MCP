@@ -200,9 +200,7 @@ class StaleSetupAllowanceSpecTests(unittest.TestCase):
         loader = SetupToolLoadState(ServerRun(run_id="run-test"))
         loader.bind_allowance("board", "P1")
         active = SimpleNamespace(plan_id="P2")
-        engine = SimpleNamespace(
-            active_plan=Mock(return_value=active), complete_paired_plan=Mock()
-        )
+        engine = SimpleNamespace(active_plan=Mock(return_value=active), complete_paired_plan=Mock())
         continuation = Mock(return_value={"status": "setup_continued"})
         selections = Mock(return_value=SimpleNamespace())
 
@@ -214,8 +212,17 @@ class StaleSetupAllowanceSpecTests(unittest.TestCase):
 
         workflow = SimpleNamespace(
             begin_plan=Mock(side_effect=begin_plan),
-            board_setup=Mock(return_value=SimpleNamespace(status="setup_needs_user_input", to_payload=lambda: {"status": "setup_needs_user_input"})),
-            board_fix_setup=Mock(return_value=SimpleNamespace(status="setup_completed", to_payload=lambda: {"status": "setup_completed"})),
+            board_setup=Mock(
+                return_value=SimpleNamespace(
+                    status="setup_needs_user_input",
+                    to_payload=lambda: {"status": "setup_needs_user_input"},
+                )
+            ),
+            board_fix_setup=Mock(
+                return_value=SimpleNamespace(
+                    status="setup_completed", to_payload=lambda: {"status": "setup_completed"}
+                )
+            ),
         )
         services = SimpleNamespace(
             loader=loader,
@@ -227,10 +234,22 @@ class StaleSetupAllowanceSpecTests(unittest.TestCase):
             require_assignment=None,
         )
         handlers = build_setup_handlers(services)
-        arguments = ("board", "setup", "connection", "Board", "MCU", True, 115200, "uart", "data.pdf")
+        arguments = (
+            "board",
+            "setup",
+            "connection",
+            "Board",
+            "MCU",
+            True,
+            115200,
+            "uart",
+            "data.pdf",
+        )
 
         first = json.loads(handlers["board_setup"](*arguments))
-        continued = json.loads(handlers["continue_setup"]("board", "external-confirm", {"confirmed": True}))
+        continued = json.loads(
+            handlers["continue_setup"]("board", "external-confirm", {"confirmed": True})
+        )
         repaired = json.loads(handlers["board_fix_setup"](*arguments))
 
         self.assertEqual(first["status"], "setup_needs_user_input")

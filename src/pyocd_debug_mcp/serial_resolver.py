@@ -167,8 +167,10 @@ def _load_serial_fallbacks(path: Path) -> tuple[SerialFallbackSpec, ...]:
             raise RuntimeError(f"Duplicate serial fallback provider: {provider_id}")
         if parser not in _SUPPORTED_FALLBACK_PARSERS:
             raise RuntimeError(f"Unsupported serial fallback parser: {parser}")
-        if not isinstance(families, list) or not families or not all(
-            isinstance(item, str) and item for item in families
+        if (
+            not isinstance(families, list)
+            or not families
+            or not all(isinstance(item, str) and item for item in families)
         ):
             raise RuntimeError("Serial fallback probe_families must be a non-empty string list")
         if not isinstance(argv, list) or not all(isinstance(item, str) and item for item in argv):
@@ -499,7 +501,9 @@ def _resolve_nordic_serial(
     matching = sorted(
         matching,
         key=lambda entry: (
-            0 if spec.preferred_label and entry.label.upper() == spec.preferred_label.upper() else 1,
+            0
+            if spec.preferred_label and entry.label.upper() == spec.preferred_label.upper()
+            else 1,
             normalize_port_name(entry.port),
         ),
     )
@@ -583,13 +587,9 @@ def resolve_serial_port(
     for fallback in SERIAL_FALLBACKS:
         vendor_resolution = None
         if fallback.parser == "nrfjprog_com":
-            vendor_resolution = _resolve_nordic_serial(
-                fallback, board, ports, probe, run_cmd
-            )
+            vendor_resolution = _resolve_nordic_serial(fallback, board, ports, probe, run_cmd)
         elif fallback.parser == "stm32_programmer_list":
-            vendor_resolution = _resolve_stlink_serial(
-                fallback, board, ports, probe, run_cmd
-            )
+            vendor_resolution = _resolve_stlink_serial(fallback, board, ports, probe, run_cmd)
         if vendor_resolution is not None:
             return vendor_resolution
 

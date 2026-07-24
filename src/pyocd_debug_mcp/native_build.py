@@ -93,11 +93,18 @@ def _artifact_paths(
         if path.is_file() and path.resolve().is_relative_to(root)
     )
     elves = tuple(sorted((path.resolve() for path in files if _is_loadable_elf(path)), key=str))
-    maps = tuple(sorted((
-        path.resolve()
-        for path in files
-        if path.suffix.casefold() == ".map" and path.stat().st_size > 0 and not _has_elf_magic(path)
-    ), key=str))
+    maps = tuple(
+        sorted(
+            (
+                path.resolve()
+                for path in files
+                if path.suffix.casefold() == ".map"
+                and path.stat().st_size > 0
+                and not _has_elf_magic(path)
+            ),
+            key=str,
+        )
+    )
     if not elves or not maps:
         raise RuntimeError(
             "Native build succeeded without a discoverable loadable ELF and nonempty linker map. "
@@ -124,11 +131,7 @@ def _artifact_paths(
         # singleton one, so callers can make one complete explicit selection.
         "elf_candidates": [str(path) for path in elves] if ambiguous else [],
         "map_candidates": [str(path) for path in maps] if ambiguous else [],
-        "artifact_selection": (
-            "explicit_declaration_required"
-            if ambiguous
-            else "selected"
-        ),
+        "artifact_selection": ("explicit_declaration_required" if ambiguous else "selected"),
         "artifact_selection_remedy": (
             "Pass --artifact-elf and/or --artifact-map (or --artifact ROLE=PATH) to select one output."
             if ambiguous
@@ -552,9 +555,7 @@ def run_build(args: argparse.Namespace) -> int:
             metadata = {}
         else:
             discovered = _artifact_paths(build_dir, expected_root=created_build_root)
-            selected_artifacts = {
-                role: discovered[role] for role in ("elf", "hex", "map")
-            }
+            selected_artifacts = {role: discovered[role] for role in ("elf", "hex", "map")}
             metadata = {
                 role: discovered[role]
                 for role in (
@@ -564,9 +565,11 @@ def run_build(args: argparse.Namespace) -> int:
                     "artifact_selection_remedy",
                 )
             }
-        if completed.returncode == 0 and not any(
-            selected_artifacts.values()
-        ) and not any(metadata.get(role) for role in ("elf_candidates", "map_candidates")):
+        if (
+            completed.returncode == 0
+            and not any(selected_artifacts.values())
+            and not any(metadata.get(role) for role in ("elf_candidates", "map_candidates"))
+        ):
             raise RuntimeError(
                 "Native build succeeded without a declared or discoverable output. Declare any "
                 "project-native output with --artifact ROLE=PATH."

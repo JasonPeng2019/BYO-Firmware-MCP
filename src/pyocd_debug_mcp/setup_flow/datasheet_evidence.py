@@ -63,8 +63,12 @@ def capture_datasheet_evidence(store: FirmStore, source: Path) -> DatasheetEvide
         if destination.read_bytes() != payload:
             raise DatasheetEvidenceError("datasheet evidence digest collision")
     except OSError as exc:
-        raise DatasheetEvidenceError(f"captured datasheet evidence could not be read: {exc}") from exc
-    reference = PurePosixPath(destination.relative_to(store.layout.project_root).as_posix()).as_posix()
+        raise DatasheetEvidenceError(
+            f"captured datasheet evidence could not be read: {exc}"
+        ) from exc
+    reference = PurePosixPath(
+        destination.relative_to(store.layout.project_root).as_posix()
+    ).as_posix()
     return DatasheetEvidence(digest, reference)
 
 

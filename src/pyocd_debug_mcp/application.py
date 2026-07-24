@@ -58,7 +58,9 @@ class ServerApplicationConfig:
             or any(not isinstance(item, str) or not item or "\0" in item for item in worker_argv)
             or not Path(worker_argv[0]).is_absolute()
         ):
-            raise ValueError("provider worker argv must use an absolute executable and explicit arguments")
+            raise ValueError(
+                "provider worker argv must use an absolute executable and explicit arguments"
+            )
         runs = self.runs_root.expanduser().resolve(strict=False)
         expected_runs = (project / ".firm" / "runs").resolve(strict=False)
         if runs != expected_runs:

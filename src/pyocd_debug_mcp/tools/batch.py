@@ -10,6 +10,7 @@ from pydantic import BaseModel, ConfigDict, Field, JsonValue
 
 from pyocd_debug_mcp.kernel.operations import SAFE_EXIT_REMINDER
 
+
 class BatchChild(BaseModel):
     """One JSON-only MCP child call with no extra or authority-bearing fields."""
 
@@ -52,14 +53,10 @@ def _validate_children(
                 f"actions[{index}].tool_name must not contain surrounding whitespace"
             )
         if not tool_exists(name):
-            raise BatchValidationError(
-                f"actions[{index}] names unknown tool '{name}'"
-            )
+            raise BatchValidationError(f"actions[{index}] names unknown tool '{name}'")
         child_board = child.arguments.get("board_id")
         if not isinstance(child_board, str) or not child_board:
-            raise BatchValidationError(
-                f"actions[{index}] must contain a non-empty string board_id"
-            )
+            raise BatchValidationError(f"actions[{index}] must contain a non-empty string board_id")
         if child_board != board:
             raise BatchValidationError(
                 f"actions[{index}] targets board '{child_board}', not shared board '{board}'"
@@ -71,8 +68,7 @@ def _validate_children(
 def _json_result(value: Any) -> JsonValue:
     if isinstance(value, list):
         return [
-            item.model_dump(mode="json") if isinstance(item, BaseModel) else item
-            for item in value
+            item.model_dump(mode="json") if isinstance(item, BaseModel) else item for item in value
         ]
     if isinstance(value, BaseModel):
         return value.model_dump(mode="json")
@@ -127,9 +123,7 @@ def build_batch_handlers(
             "completed": list(completed),
             "failure": dict(failure) if failure is not None else None,
         }
-        body = json.dumps(
-            payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")
-        )
+        body = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
         return f"{body}\n{SAFE_EXIT_REMINDER}"
 
     return {"action_batch": action_batch}
