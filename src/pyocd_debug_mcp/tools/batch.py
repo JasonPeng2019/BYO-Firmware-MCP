@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Coroutine
 from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, JsonValue
@@ -81,7 +81,7 @@ def build_batch_handlers(
     dispatch_child: ChildDispatcher,
     *,
     tool_exists: ToolLookup,
-) -> dict[str, Callable[..., Awaitable[str]]]:
+) -> dict[str, Callable[..., Coroutine[Any, Any, str]]]:
     """Build the batch tool without introducing a second authorization path."""
 
     async def action_batch(board_id: str, actions: list[BatchChild]) -> str:
@@ -126,7 +126,8 @@ def build_batch_handlers(
         body = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
         return f"{body}\n{SAFE_EXIT_REMINDER}"
 
-    return {"action_batch": action_batch}
+    handlers: dict[str, Callable[..., Coroutine[Any, Any, str]]] = {"action_batch": action_batch}
+    return handlers
 
 
 __all__ = [

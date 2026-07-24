@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import argparse
 import asyncio
 import math
 import tempfile
@@ -29,6 +30,7 @@ from pyocd_debug_mcp.safety.regions import (
     SourceAuthority,
 )
 from pyocd_debug_mcp.services.uart_exchange_schema import validate_serial_exchange_parameters
+from pyocd_debug_mcp.services.symbols import ResolvedSymbol
 from pyocd_debug_mcp.setup_flow.packs import (
     PackCandidate,
     PackCandidateError,
@@ -59,6 +61,10 @@ class _Registry:
     def is_unlocked(self, name: str, board_id: str | None) -> bool:
         del name, board_id
         return False
+
+
+def _unexpected_symbol(_path: Path, _name: str) -> ResolvedSymbol:
+    raise AssertionError("symbol resolution is not expected in this test")
 
 
 class RoundOneTrustedCallerTests(unittest.TestCase):
@@ -241,7 +247,7 @@ class RoundOneTrustedCallerTests(unittest.TestCase):
             handle_for=lambda _: object(),
             symbol_artifact_for=lambda _: Path("unused"),
             find_symbols=lambda *_: (),
-            resolve_symbol=lambda *_: None,
+            resolve_symbol=_unexpected_symbol,
             read_target_memory=lambda *_: 0,
             read_target_block=lambda _handle, _address, length: block_reads.append(length) or [0],
             write_target_memory=lambda *_: None,
@@ -271,15 +277,13 @@ class RoundOneTrustedCallerTests(unittest.TestCase):
         self.assertRaises(RuntimeError, _timeout_seconds, math.inf)
         role = "ArtifactRole" + ("x" * 80)
         declared = _declared_artifacts(
-            type(
-                "Arguments",
-                (),
-                {
-                    "artifact_elf": None,
-                    "artifact_hex": None,
-                    "artifact_map": None,
-                    "artifact": [f"{role}=image.bin"],
-                },
-            )()
+            argparse.Namespace(
+                artifact_elf=None,
+                artifact_hex=None,
+                artifact_map=None,
+                artifact=[f"{role}=image.bin"],
+            )
         )
+        self.assertIsNotNone(declared)
+        assert declared is not None
         self.assertEqual(declared[role.casefold()], "image.bin")

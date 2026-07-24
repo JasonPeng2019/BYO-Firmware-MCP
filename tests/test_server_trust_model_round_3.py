@@ -11,6 +11,7 @@ import zipfile
 from dataclasses import asdict
 from pathlib import Path
 from types import SimpleNamespace
+from collections.abc import Callable, Mapping
 from unittest.mock import Mock, patch
 
 from pyocd_debug_mcp import server
@@ -64,7 +65,29 @@ def _exchange() -> dict[str, object]:
     }
 
 
-def _memory(artifact: Path, finder: object) -> MemoryToolServices:
+def _unexpected_symbol(_path: Path, _name: str) -> ResolvedSymbol:
+    raise AssertionError("symbol resolution is not expected in this test")
+
+
+def _route_display_names(overview: Mapping[str, object]) -> list[str]:
+    routes = overview.get("routes")
+    if not isinstance(routes, list):
+        raise AssertionError("setup overview routes must be a list")
+    names: list[str] = []
+    for route in routes:
+        if not isinstance(route, dict):
+            raise AssertionError("setup overview route must be an object")
+        display_name = route.get("display_name")
+        if not isinstance(display_name, str):
+            raise AssertionError("setup overview display_name must be a string")
+        names.append(display_name)
+    return names
+
+
+def _memory(
+    artifact: Path,
+    finder: Callable[[Path, str], tuple[ResolvedSymbol, ...]],
+) -> MemoryToolServices:
     return MemoryToolServices(
         lambda _: None,
         lambda _: None,
@@ -74,12 +97,12 @@ def _memory(artifact: Path, finder: object) -> MemoryToolServices:
         lambda _: object(),
         lambda _: artifact,
         finder,
-        lambda *_: None,
+        _unexpected_symbol,
         lambda *_: 0,
         lambda *_: [],
         lambda *_: None,
         lambda *_: None,
-    )  # type: ignore[arg-type]
+    )
 
 
 def _serial() -> SerialToolServices:
@@ -242,7 +265,7 @@ class RoundThreeRegressionTests(unittest.TestCase):
         ):
             overview = server._setup_overview(names, assignments)
         self.assertEqual(overview["status"], "setup_routes_ready")
-        self.assertEqual([route["display_name"] for route in overview["routes"]], names)
+        self.assertEqual(_route_display_names(overview), names)
 
     def test_r3_04_artifact_collector_allows_empty_selected_directory_link(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

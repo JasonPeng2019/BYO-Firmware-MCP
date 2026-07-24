@@ -11,6 +11,7 @@ import subprocess
 import tempfile
 import unittest
 import zipfile
+from collections.abc import Callable, Mapping
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
@@ -52,7 +53,29 @@ from pyocd_debug_mcp.tools.memory import MemoryToolServices, build_memory_handle
 from pyocd_debug_mcp.tools.serial import SerialToolServices, read_serial, write_serial
 
 
-def _memory_services(artifact: Path, finder: object) -> MemoryToolServices:
+def _unexpected_symbol(_path: Path, _name: str) -> ResolvedSymbol:
+    raise AssertionError("symbol resolution is not expected in this test")
+
+
+def _route_display_names(overview: Mapping[str, object]) -> list[str]:
+    routes = overview.get("routes")
+    if not isinstance(routes, list):
+        raise AssertionError("setup overview routes must be a list")
+    names: list[str] = []
+    for route in routes:
+        if not isinstance(route, dict):
+            raise AssertionError("setup overview route must be an object")
+        display_name = route.get("display_name")
+        if not isinstance(display_name, str):
+            raise AssertionError("setup overview display_name must be a string")
+        names.append(display_name)
+    return names
+
+
+def _memory_services(
+    artifact: Path,
+    finder: Callable[[Path, str], tuple[ResolvedSymbol, ...]],
+) -> MemoryToolServices:
     return MemoryToolServices(
         runtime_for=lambda _board: None,
         active_session_id=lambda _board: None,
@@ -61,8 +84,8 @@ def _memory_services(artifact: Path, finder: object) -> MemoryToolServices:
         format_refusal=lambda refusal, **kwargs: f"Refused [{refusal.code}]: {refusal.message}",
         handle_for=lambda _board: object(),
         symbol_artifact_for=lambda _handle: artifact,
-        find_symbols=finder,  # type: ignore[arg-type]
-        resolve_symbol=lambda *_args: None,  # type: ignore[arg-type]
+        find_symbols=finder,
+        resolve_symbol=_unexpected_symbol,
         read_target_memory=lambda *_args: 0,
         read_target_block=lambda *_args: [],
         write_target_memory=lambda *_args: None,
@@ -271,8 +294,9 @@ class RoundFourRegressionTests(unittest.TestCase):
         ):
             overview = server._setup_overview(names, assignments)
             self.assertEqual(overview["status"], "setup_routes_ready")
-            self.assertEqual([route["display_name"] for route in overview["routes"]], names)
-            self.assertGreater(len(str(overview["routes"][-1]["display_name"])), 100)
+            display_names = _route_display_names(overview)
+            self.assertEqual(display_names, names)
+            self.assertGreater(len(display_names[-1]), 100)
             with self.assertRaisesRegex(ValueError, "non-empty"):
                 server._setup_overview([""], {})
             with self.assertRaisesRegex(ValueError, "unique"):

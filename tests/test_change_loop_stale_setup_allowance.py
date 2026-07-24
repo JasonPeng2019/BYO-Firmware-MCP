@@ -4,17 +4,25 @@ from __future__ import annotations
 
 import json
 import unittest
+from collections.abc import Callable
 from types import SimpleNamespace
+from typing import cast
 from unittest.mock import Mock, patch
 
 from pyocd_debug_mcp import server
 from pyocd_debug_mcp.guardrails.plan_defs import definition_for_action
 from pyocd_debug_mcp.guardrails.plan_engine import PlanEngine, PlanStatus, _PlanState
+from pyocd_debug_mcp.firmstore.reports import ReportWriter
 from pyocd_debug_mcp.kernel.run_state import ServerRun
 from pyocd_debug_mcp.services.session_runtime import PolicyRefusal
-from pyocd_debug_mcp.setup_flow.preflight import SetupUserInput
+from pyocd_debug_mcp.setup_flow.preflight import PreflightInventory, SetupUserInput
 from pyocd_debug_mcp.setup_flow.setup import SetupWorkflow
-from pyocd_debug_mcp.tools.setup import SetupToolLoadState, build_setup_handlers
+from pyocd_debug_mcp.setup_flow.validate import BoardValidator
+from pyocd_debug_mcp.tools.setup import (
+    SetupToolLoadState,
+    SetupToolServices,
+    build_setup_handlers,
+)
 
 
 class _Registry:
@@ -51,6 +59,24 @@ class _PermissionProvider:
         pass
 
 
+class _UnusedReportWriter(ReportWriter):
+    def __init__(self) -> None:
+        """Avoid filesystem setup; these allowance tests never write a report."""
+
+
+def _workflow(*, on_allowance_closed: object | None = None) -> SetupWorkflow:
+    callback = (
+        cast(Callable[[str, str, str], None], on_allowance_closed)
+        if on_allowance_closed is not None
+        else None
+    )
+    return SetupWorkflow(
+        _UnusedReportWriter(),
+        lambda _input: PreflightInventory(),
+        on_allowance_closed=callback,
+    )
+
+
 def _state(plan_id: str, authorization: object) -> _PlanState:
     definition = definition_for_action("board_setup")
     return _PlanState(
@@ -73,13 +99,11 @@ def _state(plan_id: str, authorization: object) -> _PlanState:
 class StaleSetupAllowanceSpecTests(unittest.TestCase):
     def test_cl001_replacement_and_terminal_callbacks_carry_closed_identity_once(self) -> None:
         closed: list[tuple[str, str, str]] = []
-        workflow = SetupWorkflow(
-            None,
-            lambda _input: None,
+        workflow = _workflow(
             on_allowance_closed=lambda board, allowance, reason: closed.append(
                 (board, allowance, reason)
-            ),
-        )  # type: ignore[arg-type]
+            )
+        )
         input_ = SetupUserInput("board", "connection", "Board", "MCU", None, requires_uart=False)
 
         workflow.begin_plan("P1", input_, mode="setup")
@@ -94,7 +118,7 @@ class StaleSetupAllowanceSpecTests(unittest.TestCase):
 
     def test_cl001_unknown_or_already_closed_allowance_never_notifies(self) -> None:
         closed = Mock()
-        workflow = SetupWorkflow(None, lambda _input: None, on_allowance_closed=closed)  # type: ignore[arg-type]
+        workflow = _workflow(on_allowance_closed=closed)
         input_ = SetupUserInput("board", "connection", "Board", "MCU", None, requires_uart=False)
 
         workflow._close_allowance_locked("unknown", "ignored")  # type: ignore[attr-defined]
@@ -224,12 +248,16 @@ class StaleSetupAllowanceSpecTests(unittest.TestCase):
                 )
             ),
         )
-        services = SimpleNamespace(
+        clear_setup_continuation = Mock()
+        services = SetupToolServices(
             loader=loader,
-            plan_engine=engine,
-            workflow=workflow,
+            plan_engine=cast(PlanEngine, engine),
+            workflow=cast(SetupWorkflow, workflow),
+            validator=cast(BoardValidator, Mock(spec=BoardValidator)),
+            safety_setup=lambda _board: {},
+            safety_refresh=lambda **_kwargs: {},
             setup_selections=selections,
-            clear_setup_continuation=Mock(),
+            clear_setup_continuation=clear_setup_continuation,
             setup_continue=continuation,
             require_assignment=None,
         )
@@ -259,7 +287,7 @@ class StaleSetupAllowanceSpecTests(unittest.TestCase):
         engine.complete_paired_plan.assert_called_once_with(
             "board_setup", "board", "repair ended with setup_completed", expected_plan_id="P2"
         )
-        services.clear_setup_continuation.assert_called_once_with("board", "P2")
+        clear_setup_continuation.assert_called_once_with("board", "P2")
 
 
 if __name__ == "__main__":

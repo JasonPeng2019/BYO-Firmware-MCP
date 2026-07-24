@@ -70,6 +70,8 @@ def _create_windows_kill_job(process: subprocess.Popen[Any]) -> int:
     import ctypes
     from ctypes import wintypes
 
+    from pyocd_debug_mcp.kernel.windows_api import last_error, library
+
     class IO_COUNTERS(ctypes.Structure):
         _fields_ = [
             ("ReadOperationCount", ctypes.c_ulonglong),
@@ -103,18 +105,18 @@ def _create_windows_kill_job(process: subprocess.Popen[Any]) -> int:
             ("PeakJobMemoryUsed", ctypes.c_size_t),
         ]
 
-    kernel32 = ctypes.windll.kernel32
+    kernel32 = library("kernel32")
     kernel32.CreateJobObjectW.restype = wintypes.HANDLE
     job = kernel32.CreateJobObjectW(None, None)
     if not job:
-        raise OSError(ctypes.get_last_error(), "CreateJobObjectW failed")
+        raise OSError(last_error(), "CreateJobObjectW failed")
     information = EXTENDED_LIMIT_INFORMATION()
     information.BasicLimitInformation.LimitFlags = 0x00002000
     process_handle = wintypes.HANDLE(int(getattr(process, "_handle")))
     if not kernel32.SetInformationJobObject(
         job, 9, ctypes.byref(information), ctypes.sizeof(information)
     ) or not kernel32.AssignProcessToJobObject(job, process_handle):
-        error = ctypes.get_last_error()
+        error = last_error()
         kernel32.CloseHandle(job)
         raise OSError(error, "Unable to assign owned subprocess to a kill-on-close job")
     return int(job)
@@ -124,7 +126,9 @@ def _resume_windows_process(process: subprocess.Popen[Any]) -> None:
     import ctypes
     from ctypes import wintypes
 
-    resume = ctypes.windll.ntdll.NtResumeProcess
+    from pyocd_debug_mcp.kernel.windows_api import library
+
+    resume = library("ntdll").NtResumeProcess
     resume.argtypes = (wintypes.HANDLE,)
     resume.restype = ctypes.c_long
     status = resume(wintypes.HANDLE(int(getattr(process, "_handle"))))
@@ -135,6 +139,8 @@ def _resume_windows_process(process: subprocess.Popen[Any]) -> None:
 def _close_windows_job(pid: int, handle: int, *, terminate: bool, deadline: float) -> bool:
     import ctypes
     from ctypes import wintypes
+
+    from pyocd_debug_mcp.kernel.windows_api import library
 
     class BASIC_ACCOUNTING_INFORMATION(ctypes.Structure):
         _fields_ = [
@@ -148,7 +154,7 @@ def _close_windows_job(pid: int, handle: int, *, terminate: bool, deadline: floa
             ("TotalTerminatedProcesses", wintypes.DWORD),
         ]
 
-    kernel32 = ctypes.windll.kernel32
+    kernel32 = library("kernel32")
     if terminate and not kernel32.TerminateJobObject(wintypes.HANDLE(handle), 1):
         return False
     while True:
@@ -186,7 +192,9 @@ def _windows_start_token(pid: int, kernel32: Any | None = None) -> str | None:
         import ctypes
         from ctypes import wintypes
 
-        selected = ctypes.windll.kernel32 if kernel32 is None else kernel32
+        from pyocd_debug_mcp.kernel.windows_api import library
+
+        selected = library("kernel32") if kernel32 is None else kernel32
         open_process = selected.OpenProcess
         if kernel32 is None:
             open_process.argtypes = (wintypes.DWORD, wintypes.BOOL, wintypes.DWORD)
