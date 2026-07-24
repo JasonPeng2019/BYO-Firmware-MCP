@@ -24,6 +24,11 @@ pyocd-collect-artifacts = "pyocd_debug_mcp.artifact_collector:main"
 pyocd-native-build = "pyocd_debug_mcp.native_build:main"
 
 [dependency-groups]
+build = [
+    "nuitka==2.8.9",
+    "ordered-set==4.1.0",
+    "zstandard==0.25.0",
+]
 dev = [
     "pyright>=1.1",
     "ruff>=0.6",
