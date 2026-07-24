@@ -22,7 +22,7 @@ import subprocess
 import time
 import unicodedata
 from collections.abc import Callable, Mapping
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, cast
 
@@ -30,6 +30,7 @@ from pyocd.target.pack.cmsis_pack import CmsisPack  # type: ignore[import-untype
 from elftools.common.exceptions import ELFError
 
 from pyocd_debug_mcp.adapters.swd_interface import TargetSessionHandle, session_metadata
+from pyocd_debug_mcp.application import ServerApplicationConfig, application_config
 from pyocd_debug_mcp.board_config import (
     BoardConfig,
     ConfigError,
@@ -50,7 +51,6 @@ from pyocd_debug_mcp.firmstore.cache import (
 from pyocd_debug_mcp.firmstore.profiles import BoardProfile, ProfileError, ProfileRepository
 from pyocd_debug_mcp.firmstore.reports import ReportWriter
 from pyocd_debug_mcp.firmstore.store import FirmStore
-from pyocd_debug_mcp.local_env import load_local_env
 from pyocd_debug_mcp.kernel.registry import RegistryFastMCP
 from pyocd_debug_mcp.kernel.operations import (
     ManagedOperation,
@@ -273,16 +273,10 @@ from pyocd_debug_mcp.tools.unlock import (
     build_unlock_handlers,
 )
 
-load_local_env()
+_application_config = application_config()
+_project_root = _application_config.project_root
 
-_artifact_root_value = os.environ.get("BYO_MCP_ARTIFACT_ROOT", "").strip()
-_project_root = (
-    Path(_artifact_root_value).expanduser().resolve()
-    if _artifact_root_value
-    else Path.cwd().resolve()
-)
-
-mcp = RegistryFastMCP("pyocd-debug")
+mcp = RegistryFastMCP("pyocd-debug", version=_application_config.build_version)
 tool_registry = mcp.registry
 server_run = create_server_run()
 assignment_store = RunAssignmentStore(server_run.assignments)
@@ -5742,6 +5736,26 @@ def main() -> None:
                 pass
         plan_engine.close_run()
         tool_registry.reset()
+
+
+@dataclass(frozen=True, slots=True)
+class ServerApplication:
+    """Explicit owner of one already-configured server process."""
+
+    config: ServerApplicationConfig
+
+    def run(self) -> None:
+        if self.config != _application_config:
+            raise RuntimeError("server application configuration changed after construction")
+        main()
+
+
+def create_server_application(config: ServerApplicationConfig) -> ServerApplication:
+    """Create the server after dispatcher validation installed its configuration."""
+
+    if config != _application_config:
+        raise RuntimeError("server module was imported with a different application configuration")
+    return ServerApplication(config)
 
 
 if __name__ == "__main__":

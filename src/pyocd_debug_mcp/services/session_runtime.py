@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import os
 import secrets
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -11,10 +10,9 @@ from enum import Enum
 from pathlib import Path
 from typing import Any
 
-_configured_root = os.environ.get("BYO_MCP_ARTIFACT_ROOT", "").strip()
-_PROJECT_ROOT = (
-    Path(_configured_root).expanduser().resolve() if _configured_root else Path.cwd().resolve()
-)
+from pyocd_debug_mcp.application import application_config
+
+_PROJECT_ROOT = application_config().project_root
 RUNS_ROOT = _PROJECT_ROOT / ".firm" / "runs"
 
 

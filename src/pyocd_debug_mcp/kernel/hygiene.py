@@ -8,10 +8,10 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from pyocd_debug_mcp.kernel.processes import (
-    DEFAULT_MARKER_ROOT,
     ProcessMarker,
     ProcessIdentityUnavailable,
     _start_token,
+    default_marker_root,
     terminate_marked_group,
 )
 
@@ -30,10 +30,11 @@ class HygieneResult:
 
 
 def cleanup_stale_owned_processes(
-    root: Path = DEFAULT_MARKER_ROOT,
+    root: Path | None = None,
     *,
     timeout_seconds: float = 2.0,
 ) -> HygieneResult:
+    root = default_marker_root() if root is None else root
     root = root.resolve()
     if not root.exists():
         return HygieneResult(0, 0, 0, 0, 0)
@@ -100,7 +101,8 @@ def cleanup_stale_owned_processes(
     return HygieneResult(inspected, terminated, stale, live_owner_skipped, unresolved)
 
 
-def require_clean_startup(root: Path = DEFAULT_MARKER_ROOT) -> HygieneResult:
+def require_clean_startup(root: Path | None = None) -> HygieneResult:
+    root = default_marker_root() if root is None else root
     result = cleanup_stale_owned_processes(root)
     if result.unresolved:
         raise RuntimeError(

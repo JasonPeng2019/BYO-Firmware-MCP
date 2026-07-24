@@ -221,6 +221,7 @@ class RegistryFastMCP(FastMCP):
         *,
         registry: ToolRegistry | None = None,
         timeout_resolver: TimeoutResolver = operation_timeout_seconds,
+        version: str | None = None,
         **settings: Any,
     ) -> None:
         self.registry = registry or ToolRegistry()
@@ -230,6 +231,7 @@ class RegistryFastMCP(FastMCP):
         self._operation_resource_binder: OperationResourceBinder | None = None
         self._finalizer_resolver: OperationFinalizerResolver | None = None
         super().__init__(name=name, **settings)
+        self._mcp_server.version = version
 
     def configure_operation_resources(self, binder: OperationResourceBinder) -> None:
         """Bind persistent board resources into each managed hardware invocation."""

@@ -648,9 +648,9 @@ def build_parser() -> argparse.ArgumentParser:
 
 def command_template() -> dict[str, object]:
     argv = [
-        sys.executable,
-        "-m",
-        "pyocd_debug_mcp.native_build",
+        "byo",
+        "internal",
+        "native-build",
         "--project-dir",
         "<project-dir>",
         "--build-dir",

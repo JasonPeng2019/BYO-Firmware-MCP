@@ -17,7 +17,8 @@ dependencies = [
 ]
 
 [project.scripts]
-pyocd-debug-mcp = "pyocd_debug_mcp.server:main"
+byo-mcp-sidecar = "pyocd_debug_mcp.sidecar:main"
+pyocd-debug-mcp = "pyocd_debug_mcp.sidecar:main"
 pyocd-pack-repair = "pyocd_debug_mcp.pack_index_repair:main"
 pyocd-collect-artifacts = "pyocd_debug_mcp.artifact_collector:main"
 pyocd-native-build = "pyocd_debug_mcp.native_build:main"

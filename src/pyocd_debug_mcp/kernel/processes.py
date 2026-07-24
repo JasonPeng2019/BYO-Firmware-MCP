@@ -10,7 +10,6 @@ import signal
 import subprocess
 import threading
 import time
-import tempfile
 import uuid
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
@@ -20,16 +19,10 @@ from typing import Any, IO, Sequence
 import psutil
 
 
-def _default_runs_root() -> Path:
-    if configured := os.environ.get("PYOCD_MCP_RUNS_ROOT"):
-        return Path(configured).expanduser()
-    try:
-        return Path.home() / ".pyocd-debug-mcp" / "runs"
-    except RuntimeError:
-        return Path(tempfile.gettempdir()) / "pyocd-debug-mcp-runs"
+def default_marker_root() -> Path:
+    from pyocd_debug_mcp.application import application_config
 
-
-DEFAULT_MARKER_ROOT = _default_runs_root() / "owned-processes"
+    return application_config().runs_root / "owned-processes"
 _WINDOWS_JOB_HANDLES: dict[int, int] = {}
 _WINDOWS_JOB_GUARD = threading.Lock()
 DEFAULT_PROCESS_GROUP_CLEANUP_GRACE_SECONDS = 0.5
@@ -65,8 +58,9 @@ def validate_argv(argv: Sequence[str]) -> tuple[str, ...]:
 def process_group_options(platform: str | None = None) -> dict[str, object]:
     selected = platform or os.name
     if selected == "nt":
+        new_process_group = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0x00000200)
         suspended = getattr(subprocess, "CREATE_SUSPENDED", 0x00000004)
-        return {"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP | suspended}
+        return {"creationflags": new_process_group | suspended}
     return {"start_new_session": True}
 
 
@@ -264,8 +258,8 @@ class ProcessMarker:
 
 
 class ProcessMarkerStore:
-    def __init__(self, root: Path = DEFAULT_MARKER_ROOT) -> None:
-        self.root = root
+    def __init__(self, root: Path | None = None) -> None:
+        self.root = default_marker_root() if root is None else root
         self._guard = threading.Lock()
 
     def create(self, process: subprocess.Popen[Any], argv: tuple[str, ...]) -> Path | None:
@@ -351,6 +345,18 @@ def terminate_process_group(
         return process.returncode is not None
 
     process_group = process.pid
+    # Reap a leader that completed naturally before signalling its group.
+    # On POSIX, an unreaped zombie can make killpg(0) transiently report a
+    # group even when the worker had no descendants. Polling is non-blocking;
+    # if descendants still exist the group probe succeeds and normal bounded
+    # group termination continues below.
+    if process.poll() is not None:
+        try:
+            os.killpg(process_group, 0)
+        except ProcessLookupError:
+            return True
+        except PermissionError:
+            return False
     try:
         os.killpg(process_group, signal.SIGTERM)
     except ProcessLookupError:

@@ -111,7 +111,11 @@ def _validate_destination(destination: Path, sources: Mapping[ArtifactRole, Path
         if any(resolved.iterdir()):
             raise ValueError(f"Output directory must be absent or empty: {resolved}")
     for source in sources.values():
-        if source == resolved or source.is_relative_to(resolved):
+        # Canonicalize both sides before containment checks. On macOS, paths
+        # under /tmp and /var commonly resolve through /private; comparing one
+        # canonical path with one lexical path can otherwise miss containment.
+        canonical_source = source.expanduser().resolve()
+        if canonical_source == resolved or canonical_source.is_relative_to(resolved):
             raise ValueError("Artifact sources cannot be inside the output directory.")
     return resolved
 

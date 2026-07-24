@@ -11,7 +11,6 @@ import json
 import math
 import queue
 import subprocess
-import sys
 import threading
 import time
 from dataclasses import asdict
@@ -54,6 +53,14 @@ _ERROR_TYPES: dict[str, type[TargetControlError]] = {
     "target_state": TargetStateError,
     "unsupported_artifact": UnsupportedArtifactError,
 }
+
+
+def _default_worker_argv() -> tuple[str, ...]:
+    """Return the immutable dispatcher-selected worker command."""
+
+    from pyocd_debug_mcp.application import application_config
+
+    return application_config().provider_worker_argv
 
 
 def _strict_int(value: object, name: str) -> int:
@@ -228,7 +235,7 @@ class _WorkerClient:
         self._cleanup_confirmed = False
         self._responses: queue.Queue[object] = queue.Queue()
         startup_deadline = deadline if deadline is not None else _operation_deadline()
-        argv = tuple(worker_argv or (sys.executable, "-m", "pyocd_debug_mcp.adapters.provider_worker"))
+        argv = tuple(worker_argv or _default_worker_argv())
         self._process, self._marker = popen_owned(
             argv,
             stdin=subprocess.PIPE,

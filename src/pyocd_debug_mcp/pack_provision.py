@@ -16,17 +16,14 @@ only and never grants target-resolution authority.
 from __future__ import annotations
 
 import hashlib
-import os
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from pyocd_debug_mcp.application import application_config
 from pyocd_debug_mcp.firmstore.store import FirmStore
 
-_artifact_root = os.environ.get("BYO_MCP_ARTIFACT_ROOT", "").strip()
-_DEFAULT_PROJECT_ROOT = (
-    Path(_artifact_root).expanduser().resolve() if _artifact_root else Path.cwd().resolve()
-)
+_DEFAULT_PROJECT_ROOT = application_config().project_root
 _DEFAULT_STORE = FirmStore(_DEFAULT_PROJECT_ROOT)
 PACKS_DIR = _DEFAULT_STORE.layout.pack_files
 MANIFEST_PATH = _DEFAULT_STORE.layout.pack_manifest
