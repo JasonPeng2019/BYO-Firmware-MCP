@@ -1,7 +1,7 @@
 # BYO Server package metadata.
 [project]
 name = "pyocd-debug-mcp"
-version = "0.1.0"
+version = "0.1.1"
 description = "Headless local MCP server for embedded debug and flash control via pyOCD"
 readme = "README.md"
 requires-python = ">=3.10"

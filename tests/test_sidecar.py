@@ -95,7 +95,7 @@ class SidecarConfigurationTests(unittest.TestCase):
                         "--runtime-root",
                         raw_runtime,
                         "--launcher-version",
-                        "0.1.0",
+                        "0.1.1",
                         "--workflow-protocol",
                         "99",
                     ]
