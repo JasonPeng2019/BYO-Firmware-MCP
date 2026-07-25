@@ -43,6 +43,12 @@ _INHERITED_ENVIRONMENT = (
     "WINDIR",
     "COMSPEC",
     "PATHEXT",
+    "USERPROFILE",
+    "HOMEDRIVE",
+    "HOMEPATH",
+    "APPDATA",
+    "LOCALAPPDATA",
+    "PROGRAMDATA",
 )
 
 

@@ -45,6 +45,18 @@ class SidecarConfigurationTests(unittest.TestCase):
             ):
                 self.assertNotIn(name, os.environ)
 
+    def test_worker_environment_preserves_windows_profile_resolution(self) -> None:
+        self.assertTrue(
+            {
+                "USERPROFILE",
+                "HOMEDRIVE",
+                "HOMEPATH",
+                "APPDATA",
+                "LOCALAPPDATA",
+                "PROGRAMDATA",
+            }.issubset(sidecar._INHERITED_ENVIRONMENT)
+        )
+
     def test_running_sidecar_prefers_invoked_compiled_binary(self) -> None:
         with tempfile.TemporaryDirectory() as raw_root:
             binary = Path(raw_root) / "byo-mcp-sidecar"
