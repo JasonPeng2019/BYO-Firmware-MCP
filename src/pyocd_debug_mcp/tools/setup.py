@@ -580,7 +580,10 @@ def build_setup_handlers(services: SetupToolServices) -> dict[str, Callable[...,
         """Report whether durable setup and this run's live validated session are ready.
 
         Call this as the final barrier before an external coding workflow begins. It never opens
-        a connection or gate and never treats persisted reports as authority. UART readiness is
+        a connection or gate and never treats persisted reports as authority. The additive
+        attachment_cache diagnostic identifies the project-relative hint artifact, its read-only
+        state, and recovery steps; it is never setup, safety, permission, gate, or live-identity
+        authority. UART readiness is
         reported separately so a project that does not need a console is not blocked, while a
         console-dependent workflow can require ready_for_uart_work before it starts. For a known
         MCU, build_guidance returns the parameterized general native-build helper and
@@ -603,6 +606,14 @@ def build_setup_handlers(services: SetupToolServices) -> dict[str, Callable[...,
                     "ready_for_code": False,
                     "uart_attachment_ready": False,
                     "ready_for_uart_work": False,
+                    "attachment_cache": {
+                        "record_kind": "attachment_cache",
+                        "authority": "non_authoritative_hint_only",
+                        "record_path": None,
+                        "present": False,
+                        "state": "unavailable",
+                        "remedy": "Setup status service is unavailable; stop before hardware access.",
+                    },
                 }
             )
         return _json(services.setup_status(board_id))

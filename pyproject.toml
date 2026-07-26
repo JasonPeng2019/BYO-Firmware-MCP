@@ -11,6 +11,7 @@ dependencies = [
     "psutil>=5.9",
     "pyocd>=0.44.0",
     "pyelftools>=0.33",
+    "pypdf>=5.0",
     "pyserial>=3.5",
     "python-dotenv>=1.0",
     "pyyaml>=6.0",
@@ -25,6 +26,7 @@ pyocd-native-build = "pyocd_debug_mcp.native_build:main"
 [dependency-groups]
 dev = [
     "pyright>=1.1",
+    "pytest>=8",
     "ruff>=0.6",
 ]
 
@@ -47,3 +49,6 @@ include = [
 [tool.ruff]
 target-version = "py310"
 line-length = 100
+
+[tool.pyright]
+include = ["src"]

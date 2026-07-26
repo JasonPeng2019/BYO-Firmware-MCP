@@ -12,23 +12,24 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, cast
 
-from pyocd.target.pack.cmsis_pack import CmsisPack  # type: ignore[import-untyped]
-from pyocd.target import TARGET, normalise_target_type_name  # type: ignore[import-untyped]
 from pyocd.debug.svd.parser import SVDParser  # type: ignore[import-untyped]
+from pyocd.target import TARGET, normalise_target_type_name  # type: ignore[import-untyped]
+from pyocd.target.pack.cmsis_pack import CmsisPack  # type: ignore[import-untyped]
 
+from pyocd_debug_mcp.firmstore.store import FirmStore
 from pyocd_debug_mcp.pack_provision import (
     MANIFEST_PATH,
     PACKS_DIR,
     DeviceBinding,
     LiveIdentityProof,
-    PackSpec,
     PackProvisionError,
+    PackSpec,
     VerifiedPack,
     load_manifest,
     read_pack_bytes,
     verified_pack_for_spec,
 )
-from pyocd_debug_mcp.firmstore.store import FirmStore
+from pyocd_debug_mcp.setup_flow.datasheet_evidence import DatasheetIdentityTerm
 
 _ARM_CPUID_PARTNO = {
     "cortexm0": 0xC20,
@@ -218,6 +219,37 @@ def _derive_verified_binding(selected: VerifiedPack, part_number: str) -> Device
     return DeviceBinding(part_number, leaf, target, _compatible_core_identity(device))
 
 
+def _pdsc_ancestry_terms(selected: VerifiedPack, pdsc_device: str) -> tuple[str, ...]:
+    """Read family/subfamily terms from the exact leaf's verified PDSC ancestry."""
+
+    try:
+        with zipfile.ZipFile(io.BytesIO(selected.payload)) as archive:
+            root = ET.fromstring(archive.read(_select_pdsc_member(archive.infolist())))
+    except (ET.ParseError, OSError, zipfile.BadZipFile) as exc:
+        raise PackProvisionError("verified PDSC ancestry could not be parsed") from exc
+    def visit(
+        element: ET.Element, family: str | None, subfamily: str | None
+    ) -> tuple[str, ...] | None:
+        tag = element.tag.rsplit("}", 1)[-1]
+        family = element.attrib.get("Dfamily", "").strip() if tag == "family" else family
+        subfamily = (
+            element.attrib.get("DsubFamily", "").strip() if tag == "subFamily" else subfamily
+        )
+        leaf = element.attrib.get("Dname", element.attrib.get("Dvariant", ""))
+        if tag in {"device", "variant"} and leaf.casefold() == pdsc_device.casefold():
+            return tuple(value for value in (family, subfamily) if value)
+        for child in element:
+            terms = visit(child, family, subfamily)
+            if terms is not None:
+                return terms
+        return None
+
+    terms = visit(root, None, None)
+    if terms:
+        return terms
+    raise PackProvisionError("exact verified PDSC leaf has no family/subfamily ancestry")
+
+
 def derive_candidate_binding(pack_path: Path, part_number: str) -> DeviceBinding:
     """Derive one exact/wildcard PDSC leaf and canonical target from quarantined bytes."""
 
@@ -243,18 +275,24 @@ class DeviceSupportCandidate:
     pack_id: str
     pack_filename: str
     pack_sha256: str
+    pdsc_ancestry_terms: tuple[str, ...]
     identity_proof: LiveIdentityProof | None = None
 
     @classmethod
     def from_verified_pack(
         cls, selected: VerifiedPack, binding: DeviceBinding
     ) -> "DeviceSupportCandidate":
+        ancestry_terms = _pdsc_ancestry_terms(selected, binding.pdsc_device)
         material = "\0".join(
             (
                 selected.spec.sha256,
                 binding.part_number.casefold(),
                 binding.pdsc_device.casefold(),
                 binding.pyocd_target.casefold(),
+                *(
+                    term.casefold()
+                    for term in ancestry_terms
+                ),
                 str(binding.identity_proof.to_document() if binding.identity_proof else None),
             )
         ).encode("utf-8")
@@ -266,6 +304,7 @@ class DeviceSupportCandidate:
             selected.spec.id,
             selected.spec.filename,
             selected.spec.sha256,
+            ancestry_terms,
             binding.identity_proof,
         )
 
@@ -281,6 +320,21 @@ class DeviceSupportCandidate:
 
         return self.candidate_id
 
+    @property
+    def legacy_support_id(self) -> str:
+        """Reproduce the pre-ancestry identifier for offline legacy-profile replay."""
+
+        material = "\0".join(
+            (
+                self.pack_sha256,
+                self.part_number.casefold(),
+                self.pdsc_device.casefold(),
+                self.pyocd_target.casefold(),
+                str(self.identity_proof.to_document() if self.identity_proof else None),
+            )
+        ).encode("utf-8")
+        return hashlib.sha256(material).hexdigest()
+
     def to_authority_document(self) -> dict[str, str]:
         """Return the closed server-generated source record for a profile/map."""
 
@@ -293,6 +347,25 @@ class DeviceSupportCandidate:
             "pdsc_device": self.pdsc_device,
             "pyocd_target": self.pyocd_target,
         }
+
+    def datasheet_identity_terms(self) -> tuple[DatasheetIdentityTerm, ...]:
+        """Return exact terms plus PDSC ancestry permitted to use family placeholders."""
+
+        return (
+            DatasheetIdentityTerm(self.part_number),
+            DatasheetIdentityTerm(self.pdsc_device),
+            *(DatasheetIdentityTerm(term, True) for term in self.pdsc_ancestry_terms),
+        )
+
+    def matches_authority_document(self, source: Mapping[str, str]) -> bool:
+        """Accept a legacy ID only when every immutable pack field still replays exactly."""
+
+        expected = self.to_authority_document()
+        return (
+            all(source.get(key) == value for key, value in expected.items() if key != "support_id")
+            and source.get("support_id") in {self.support_id, self.legacy_support_id}
+            and set(source) == set(expected)
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -331,6 +404,11 @@ class BuiltInTargetSupportCandidate:
             self.geometry_sha256,
             proof,
         )
+
+    def datasheet_identity_terms(self) -> tuple[DatasheetIdentityTerm, ...]:
+        """Built-in targets have no independent family authority beyond the exact part."""
+
+        return (DatasheetIdentityTerm(self.part_number),)
 
     def to_authority_document(self) -> dict[str, str]:
         if self.identity_proof is None:
@@ -899,7 +977,7 @@ def resolve_persisted_pack_support(
                         "Persisted device binding no longer matches the exact verified PDSC leaf"
                     )
                 candidate = DeviceSupportCandidate.from_verified_pack(selected, binding)
-                if candidate.to_authority_document() != source:
+                if not candidate.matches_authority_document(source):
                     raise PackProvisionError(
                         "Persisted device-support authority does not match verified pack bytes"
                     )

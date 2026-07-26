@@ -57,6 +57,7 @@ _OPTIONAL_FIELDS = frozenset(
         "silicon_id_label",
         "datasheet_sha256",
         "datasheet_ref",
+        "datasheet_applicability",
         "expected_uart_substring",
         "debug_protocol",
         "debug_connect_mode",
@@ -73,6 +74,7 @@ _PROFILE_METADATA_FIELDS = frozenset(
         "safety_ref",
         "datasheet_sha256",
         "datasheet_ref",
+        "datasheet_applicability",
         "device_support",
     }
 )
@@ -255,7 +257,9 @@ def _verify_registered_device_support(
         ) from exc
     if expected["pyocd_target"].casefold() != board.pyocd_target.casefold():
         raise ProfileError("device_support target does not match the profile target")
-    if dict(source) != expected:
+    if not (
+        getattr(candidate, "matches_authority_document", lambda value: dict(value) == expected)(source)
+    ):
         raise ProfileError("device_support does not match the current verified binding")
     proof = candidate.identity_proof
     actual_identity = (
@@ -408,6 +412,19 @@ class ProfileRepository:
             raise ProfileError(
                 "generic device_support requires captured datasheet_sha256 and datasheet_ref"
             )
+        applicability = document.get("datasheet_applicability")
+        if applicability is not None:
+            expected_proof_fields = {
+                "requested_identity", "matched_term", "evidence_locus", "pdf_sha256", "parser_version"
+            }
+            if (
+                not isinstance(applicability, Mapping)
+                or set(applicability) != expected_proof_fields
+                or not all(isinstance(value, str) and value for value in applicability.values())
+            ):
+                raise ProfileError("datasheet_applicability must be a complete server-generated proof")
+            if applicability["pdf_sha256"] != datasheet_sha256:
+                raise ProfileError("datasheet_applicability must bind the captured datasheet digest")
         created_at = _validate_absolute_timestamp(document.get("created_at"), "created_at")
         updated_at = _validate_absolute_timestamp(document.get("updated_at"), "updated_at")
 

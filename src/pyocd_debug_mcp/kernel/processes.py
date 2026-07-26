@@ -15,7 +15,7 @@ import uuid
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, IO, Sequence
+from typing import Any, IO, Literal, Protocol, Sequence, overload
 
 import psutil
 
@@ -65,9 +65,60 @@ def validate_argv(argv: Sequence[str]) -> tuple[str, ...]:
 def process_group_options(platform: str | None = None) -> dict[str, object]:
     selected = platform or os.name
     if selected == "nt":
+        new_group = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0x00000200)
         suspended = getattr(subprocess, "CREATE_SUSPENDED", 0x00000004)
-        return {"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP | suspended}
+        return {"creationflags": new_group | suspended}
     return {"start_new_session": True}
+
+
+class _WindowsFunction(Protocol):
+    argtypes: tuple[object, ...] | None
+    restype: object
+
+    def __call__(self, *args: object, **kwargs: object) -> int: ...
+
+
+class _WindowsKernel32(Protocol):
+    CreateJobObjectW: _WindowsFunction
+    SetInformationJobObject: _WindowsFunction
+    AssignProcessToJobObject: _WindowsFunction
+    TerminateJobObject: _WindowsFunction
+    QueryInformationJobObject: _WindowsFunction
+    CloseHandle: _WindowsFunction
+    OpenProcess: _WindowsFunction
+    GetLastError: _WindowsFunction
+    GetExitCodeProcess: _WindowsFunction
+    GetProcessTimes: _WindowsFunction
+
+
+class _WindowsNtdll(Protocol):
+    NtResumeProcess: _WindowsFunction
+
+
+@overload
+def _windows_library(name: Literal["kernel32"]) -> _WindowsKernel32: ...
+
+
+@overload
+def _windows_library(name: Literal["ntdll"]) -> _WindowsNtdll: ...
+
+
+def _windows_library(name: str) -> object:
+    try:
+        import ctypes
+
+        return getattr(getattr(ctypes, "windll"), name)
+    except (AttributeError, OSError) as exc:
+        raise OSError(f"Windows API access is unavailable for {name}") from exc
+
+
+def _windows_get_last_error() -> int:
+    try:
+        import ctypes
+
+        return getattr(ctypes, "get_last_error")()
+    except (AttributeError, OSError) as exc:
+        raise OSError("Windows API access is unavailable for GetLastError") from exc
 
 
 def _create_windows_kill_job(process: subprocess.Popen[Any]) -> int:
@@ -107,18 +158,18 @@ def _create_windows_kill_job(process: subprocess.Popen[Any]) -> int:
             ("PeakJobMemoryUsed", ctypes.c_size_t),
         ]
 
-    kernel32 = ctypes.windll.kernel32
+    kernel32 = _windows_library("kernel32")
     kernel32.CreateJobObjectW.restype = wintypes.HANDLE
     job = kernel32.CreateJobObjectW(None, None)
     if not job:
-        raise OSError(ctypes.get_last_error(), "CreateJobObjectW failed")
+        raise OSError(_windows_get_last_error(), "CreateJobObjectW failed")
     information = EXTENDED_LIMIT_INFORMATION()
     information.BasicLimitInformation.LimitFlags = 0x00002000
     process_handle = wintypes.HANDLE(int(getattr(process, "_handle")))
     if not kernel32.SetInformationJobObject(
         job, 9, ctypes.byref(information), ctypes.sizeof(information)
     ) or not kernel32.AssignProcessToJobObject(job, process_handle):
-        error = ctypes.get_last_error()
+        error = _windows_get_last_error()
         kernel32.CloseHandle(job)
         raise OSError(error, "Unable to assign owned subprocess to a kill-on-close job")
     return int(job)
@@ -128,7 +179,7 @@ def _resume_windows_process(process: subprocess.Popen[Any]) -> None:
     import ctypes
     from ctypes import wintypes
 
-    resume = ctypes.windll.ntdll.NtResumeProcess
+    resume = _windows_library("ntdll").NtResumeProcess
     resume.argtypes = (wintypes.HANDLE,)
     resume.restype = ctypes.c_long
     status = resume(wintypes.HANDLE(int(getattr(process, "_handle"))))
@@ -152,7 +203,7 @@ def _close_windows_job(pid: int, handle: int, *, terminate: bool, deadline: floa
             ("TotalTerminatedProcesses", wintypes.DWORD),
         ]
 
-    kernel32 = ctypes.windll.kernel32
+    kernel32 = _windows_library("kernel32")
     if terminate and not kernel32.TerminateJobObject(wintypes.HANDLE(handle), 1):
         return False
     while True:
@@ -185,12 +236,12 @@ def _start_token(pid: int) -> str | None:
     return _posix_start_token(pid)
 
 
-def _windows_start_token(pid: int, kernel32: Any | None = None) -> str | None:
+def _windows_start_token(pid: int, kernel32: _WindowsKernel32 | None = None) -> str | None:
     try:
         import ctypes
         from ctypes import wintypes
 
-        selected = ctypes.windll.kernel32 if kernel32 is None else kernel32
+        selected = _windows_library("kernel32") if kernel32 is None else kernel32
         open_process = selected.OpenProcess
         if kernel32 is None:
             open_process.argtypes = (wintypes.DWORD, wintypes.BOOL, wintypes.DWORD)
@@ -208,15 +259,18 @@ def _windows_start_token(pid: int, kernel32: Any | None = None) -> str | None:
         kernel = wintypes.FILETIME()
         user = wintypes.FILETIME()
         exit_code = wintypes.DWORD()
+        primary_failure = False
         try:
-            if not selected.GetExitCodeProcess(handle, ctypes.byref(exit_code)):
+            get_exit_code_process = selected.GetExitCodeProcess
+            if not get_exit_code_process(handle, ctypes.byref(exit_code)):
                 error = int(selected.GetLastError())
                 raise ProcessIdentityUnavailable(
                     f"Cannot check process liveness for PID {pid}; Windows error {error}"
                 )
             if exit_code.value != 259:
                 return None
-            if not selected.GetProcessTimes(
+            get_process_times = selected.GetProcessTimes
+            if not get_process_times(
                 handle,
                 ctypes.byref(creation),
                 ctypes.byref(exit_time),
@@ -228,8 +282,15 @@ def _windows_start_token(pid: int, kernel32: Any | None = None) -> str | None:
                     f"Cannot read process birth time for PID {pid}; Windows error {error}"
                 )
             return f"win:{creation.dwHighDateTime:08x}{creation.dwLowDateTime:08x}"
+        except (ProcessIdentityUnavailable, AttributeError, OSError):
+            primary_failure = True
+            raise
         finally:
-            selected.CloseHandle(handle)
+            try:
+                selected.CloseHandle(handle)
+            except (AttributeError, OSError):
+                if not primary_failure:
+                    raise
     except ProcessIdentityUnavailable:
         raise
     except (AttributeError, OSError) as exc:

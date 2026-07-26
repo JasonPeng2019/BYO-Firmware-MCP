@@ -1,0 +1,1 @@
+uv run pytest -q tests/test_h03_manifest_canonical.py

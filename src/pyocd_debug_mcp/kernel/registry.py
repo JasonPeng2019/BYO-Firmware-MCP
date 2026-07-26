@@ -3,16 +3,17 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping
+from contextvars import ContextVar
 from dataclasses import dataclass, replace
 from functools import partial
 from threading import RLock
 from typing import Any, ContextManager
 
-import anyio
 from mcp.server.fastmcp import FastMCP
 from mcp.server.fastmcp.exceptions import ToolError
 from mcp.server.lowlevel import NotificationOptions
 from mcp.server.stdio import stdio_server
+from mcp.shared.exceptions import UrlElicitationRequiredError
 from mcp.types import Icon, ToolAnnotations
 
 from pyocd_debug_mcp.kernel.operations import (
@@ -229,6 +230,9 @@ class RegistryFastMCP(FastMCP):
         self._layer2_tools: set[str] = set()
         self._operation_resource_binder: OperationResourceBinder | None = None
         self._finalizer_resolver: OperationFinalizerResolver | None = None
+        self._dispatch_revision: ContextVar[int | None] = ContextVar(
+            f"registry_dispatch_revision_{id(self)}", default=None
+        )
         super().__init__(name=name, **settings)
 
     def configure_operation_resources(self, binder: OperationResourceBinder) -> None:
@@ -280,7 +284,15 @@ class RegistryFastMCP(FastMCP):
             meta=meta,
             structured_output=structured_output,
         )
-        self.registry.register(name or fn.__name__)
+        tool_name = name or fn.__name__
+        tool = self._tool_manager.get_tool(tool_name)
+        if tool is None:
+            raise RuntimeError(f"Tool registration failed: {tool_name}")
+        argument_model = tool.fn_metadata.arg_model
+        argument_model.model_config["extra"] = "forbid"
+        argument_model.model_rebuild(force=True)
+        tool.parameters = argument_model.model_json_schema(by_alias=True)
+        self.registry.register(tool_name)
 
     def remove_tool(self, name: str) -> None:
         super().remove_tool(name)
@@ -292,51 +304,58 @@ class RegistryFastMCP(FastMCP):
         return [tool for tool in tools if tool.name in advertised]
 
     async def call_tool(self, name: str, arguments: dict[str, Any]):  # type: ignore[no-untyped-def]
-        board_value = arguments.get("board_id")
-        board_id = board_value if isinstance(board_value, str) and board_value else None
+        revision_before = self._dispatch_revision.get()
+        dispatch_token = None
+        if revision_before is None:
+            revision_before = self.registry.list_revision
+            dispatch_token = self._dispatch_revision.set(revision_before)
         try:
-            self.registry.require_unlocked(name, board_id)
-        except ToolError as exc:
-            if name in self._layer2_tools:
-                raise ToolError(wrap_layer2_response(str(exc))) from exc
-            raise
-        revision_before = self.registry.list_revision
-        dispatch_policy = self._guarded_dispatch.get(name)
-        before_execution = None
-        execution_lock = None
-        if dispatch_policy is not None:
-            if board_id is None:
-                raise ToolError(f"Guarded tool '{name}' requires a non-empty board_id.")
-            before_execution = partial(
-                dispatch_policy.guard,
-                name,
-                board_id,
-                dict(arguments),
-            )
-            execution_lock = dispatch_policy.lock_for_board(board_id)
-        tool = self._tool_manager.get_tool(name)
-        if tool is None:
-            raise ToolError(f"Unknown tool: {name}")
-        context = self.get_context()
-        timeout = self._timeout_resolver(name, arguments)
-        finalizer = None
-        if arguments.get("on_exit") is not None:
-            if board_id is None or self._finalizer_resolver is None:
-                raise ToolError(f"Tool '{name}' cannot accept an on_exit finalizer.")
+            board_value = arguments.get("board_id")
+            board_id = board_value if isinstance(board_value, str) and board_value else None
             try:
-                finalizer = self._finalizer_resolver(name, board_id, arguments)
-            except ValueError as exc:
-                raise ToolError(str(exc)) from exc
-        try:
-            request_id = context.request_id
-        except ValueError:
-            request_id = None
+                self.registry.require_unlocked(name, board_id)
+            except ToolError as exc:
+                if name in self._layer2_tools:
+                    raise ToolError(wrap_layer2_response(str(exc))) from exc
+                raise
+            tool = self._tool_manager.get_tool(name)
+            if tool is None:
+                raise ToolError(f"Unknown tool: {name}")
+            validated_arguments = self._validated_arguments(tool, arguments)
+            dispatch_policy = self._guarded_dispatch.get(name)
+            before_execution = None
+            execution_lock = None
+            if dispatch_policy is not None:
+                if board_id is None:
+                    raise ToolError(f"Guarded tool '{name}' requires a non-empty board_id.")
+                before_execution = partial(
+                    dispatch_policy.guard,
+                    name,
+                    board_id,
+                    dict(arguments),
+                )
+                execution_lock = dispatch_policy.lock_for_board(board_id)
+            context = self.get_context()
+            timeout = self._timeout_resolver(name, arguments)
+            finalizer = None
+            if arguments.get("on_exit") is not None:
+                if board_id is None or self._finalizer_resolver is None:
+                    raise ToolError(f"Tool '{name}' cannot accept an on_exit finalizer.")
+                try:
+                    finalizer = self._finalizer_resolver(name, board_id, arguments)
+                except ValueError as exc:
+                    raise ToolError(str(exc)) from exc
+            try:
+                request_id = context.request_id
+            except ValueError:
+                request_id = None
 
-        try:
             if tool.is_async:
 
                 async def invoke_async():  # type: ignore[no-untyped-def]
-                    return await tool.run(arguments, context=context, convert_result=True)
+                    return await self._invoke_validated_async(
+                        tool, validated_arguments, context
+                    )
 
                 return await dispatch(
                     name,
@@ -354,9 +373,7 @@ class RegistryFastMCP(FastMCP):
                 )
 
             def invoke_sync():  # type: ignore[no-untyped-def]
-                return anyio.run(
-                    partial(tool.run, arguments, context=context, convert_result=True)
-                )
+                return self._invoke_validated_sync(tool, validated_arguments, context)
 
             return await dispatch(
                 name,
@@ -385,8 +402,50 @@ class RegistryFastMCP(FastMCP):
                 raise ToolError(wrap_layer2_response(str(exc))) from exc
             raise
         finally:
-            if self.registry.list_revision != revision_before:
-                await self._send_tool_list_changed()
+            if dispatch_token is not None:
+                try:
+                    if self.registry.list_revision != revision_before:
+                        await self._send_tool_list_changed()
+                finally:
+                    self._dispatch_revision.reset(dispatch_token)
+
+    @staticmethod
+    def _validated_arguments(tool: Any, arguments: dict[str, Any]) -> dict[str, Any]:
+        """Apply FastMCP's ordinary input parsing once before guarded dispatch."""
+
+        try:
+            parsed = tool.fn_metadata.pre_parse_json(arguments)
+            return tool.fn_metadata.arg_model.model_validate(parsed).model_dump_one_level()
+        except Exception as exc:
+            raise ToolError(f"Error executing tool {tool.name}: {exc}") from exc
+
+    @staticmethod
+    async def _invoke_validated_async(
+        tool: Any, arguments: dict[str, Any], context: Any
+    ) -> Any:
+        try:
+            invocation_arguments = dict(arguments)
+            if tool.context_kwarg is not None:
+                invocation_arguments[tool.context_kwarg] = context
+            result = await tool.fn(**invocation_arguments)
+            return tool.fn_metadata.convert_result(result)
+        except UrlElicitationRequiredError:
+            raise
+        except Exception as exc:
+            raise ToolError(f"Error executing tool {tool.name}: {exc}") from exc
+
+    @staticmethod
+    def _invoke_validated_sync(tool: Any, arguments: dict[str, Any], context: Any) -> Any:
+        try:
+            invocation_arguments = dict(arguments)
+            if tool.context_kwarg is not None:
+                invocation_arguments[tool.context_kwarg] = context
+            result = tool.fn(**invocation_arguments)
+            return tool.fn_metadata.convert_result(result)
+        except UrlElicitationRequiredError:
+            raise
+        except Exception as exc:
+            raise ToolError(f"Error executing tool {tool.name}: {exc}") from exc
 
     def create_initialization_options(self):  # type: ignore[no-untyped-def]
         """Advertise the tool-list notification capability to MCP clients."""

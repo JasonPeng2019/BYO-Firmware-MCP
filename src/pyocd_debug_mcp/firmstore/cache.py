@@ -9,7 +9,7 @@ from dataclasses import asdict, dataclass, replace
 from datetime import datetime, timezone
 from typing import Any, Literal
 
-from pyocd_debug_mcp.firmstore.store import FirmStore, ensure_no_persisted_authority
+from pyocd_debug_mcp.firmstore.store import FirmStore, FirmStoreError, ensure_no_persisted_authority
 
 CACHE_SCHEMA_VERSION = 1
 
@@ -183,6 +183,16 @@ class CacheResolution:
     port_path: str | None = None
 
 
+@dataclass(frozen=True, slots=True)
+class CacheInspection:
+    """Read-only cache artifact state for diagnostics."""
+
+    present: bool
+    state: Literal["missing", "valid", "corrupt"]
+    record_count: int | None = None
+    error: str | None = None
+
+
 class AttachmentCache:
     """Persist and resolve non-authoritative attachment hints."""
 
@@ -191,6 +201,22 @@ class AttachmentCache:
         self.path = store.layout.cache_artifact("attachments.json")
         self._lock = threading.RLock()
 
+    @property
+    def record_path(self) -> str:
+        """Return the canonical project-relative cache artifact reference."""
+
+        return self.path.relative_to(self.store.layout.project_root).as_posix()
+
+    def inspect(self) -> CacheInspection:
+        """Inspect the cache without creating, modifying, or resolving it."""
+
+        if not self.path.exists():
+            return CacheInspection(False, "missing")
+        try:
+            return CacheInspection(True, "valid", record_count=len(self.load_records()))
+        except AttachmentCacheError as exc:
+            return CacheInspection(True, "corrupt", error=str(exc))
+
     def load_records(self) -> list[AttachmentRecord]:
         if not self.path.exists():
             return []
@@ -198,7 +224,10 @@ class AttachmentCache:
             raw = json.loads(self.path.read_text(encoding="utf-8"))
         except (OSError, UnicodeError, json.JSONDecodeError) as exc:
             raise AttachmentCacheError(f"Could not parse attachment cache: {exc}") from exc
-        ensure_no_persisted_authority(raw, location="attachment cache")
+        try:
+            ensure_no_persisted_authority(raw, location="attachment cache")
+        except FirmStoreError as exc:
+            raise AttachmentCacheError(str(exc)) from exc
         if not isinstance(raw, dict) or raw.get("schema_version") != CACHE_SCHEMA_VERSION:
             raise AttachmentCacheError(
                 f"Attachment cache must declare schema_version {CACHE_SCHEMA_VERSION}"
@@ -224,7 +253,9 @@ class AttachmentCache:
         if not probe.is_stable:
             raise AttachmentCacheError("A stable probe family and USB serial are required")
         if not uart.has_stable_identity:
-            raise AttachmentCacheError("Stable UART USB serial, vendor ID, and product ID are required")
+            raise AttachmentCacheError(
+                "Stable UART USB serial, vendor ID, and product ID are required"
+            )
         assert probe.usb_serial is not None
         uart_key = uart.stable_key()
         assert uart_key is not None
@@ -243,17 +274,6 @@ class AttachmentCache:
         confirmed_at: str | None = None,
     ) -> AttachmentRecord:
         identity, probe_key, uart_key = self._validated_identity(board_id, probe, uart)
-        timestamp = _absolute_timestamp(confirmed_at or _timestamp(), "confirmed_at")
-        candidate = AttachmentRecord(
-            board_id=identity,
-            probe_family=probe_key[0],
-            probe_usb_serial=probe_key[1],
-            uart_usb_serial=uart_key[0],
-            uart_vid=uart_key[1],
-            uart_pid=uart_key[2],
-            confirmed=True,
-            confirmed_at=timestamp,
-        )
         with self._lock:
             records = self.load_records()
             matching = [
@@ -263,8 +283,19 @@ class AttachmentCache:
                 and record.probe_key == probe_key
                 and record.uart_key == uart_key
             ]
-            if len(matching) == 1 and matching[0] == candidate:
+            if len(matching) == 1 and matching[0].confirmed and matching[0].revoked_at is None:
                 return matching[0]
+            timestamp = _absolute_timestamp(confirmed_at or _timestamp(), "confirmed_at")
+            candidate = AttachmentRecord(
+                board_id=identity,
+                probe_family=probe_key[0],
+                probe_usb_serial=probe_key[1],
+                uart_usb_serial=uart_key[0],
+                uart_vid=uart_key[1],
+                uart_pid=uart_key[2],
+                confirmed=True,
+                confirmed_at=timestamp,
+            )
             records = [
                 record
                 for record in records

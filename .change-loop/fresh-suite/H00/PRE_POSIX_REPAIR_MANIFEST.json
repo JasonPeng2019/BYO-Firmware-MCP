@@ -1,0 +1,14 @@
+{
+  "schema_version": 1,
+  "recorded_at": "2026-07-24T07:20:00+00:00",
+  "baseline_commit": "6f3da0a9a0bb97fb535c8c0ba11a4d2b31f5e876",
+  "purpose": "Freeze the accepted H00 candidate immediately before the POSIX portability repair. README, metadata, and lockfile must remain byte-identical; processes.py is the only production change. Tester-owned H00 tests may change only for the portability assertions and complete-candidate materialization named in plan.md, with this manifest serving as their diff baseline.",
+  "files": {
+    "README.md": "c83118328647cef54106eba8aa3db8dbe208a27cad6e32a57f321e9e386c51b6",
+    "pyproject.toml": "357b4bf783b0226d04d33035fc78fd63535bb279bf20b7e25be11637a335a454",
+    "uv.lock": "1b0ea27f91dddbd00c215b8d9da487d7960e1fb4f1e1afa4c07bc4811c7ff0cf",
+    "src/pyocd_debug_mcp/kernel/processes.py": "8be02664a98f2b974c9592e9a18a2cd9007bc974a8d0eb66ad00555d1ee8954a",
+    "tests/test_h00_repository_contract.py": "161eb4ea301ebfeead12902caae6ca7b8e0657c1439cd49f31321f5620a8c20d",
+    "tests/test_h00_repository_regressions.py": "7dfac8b3b876eb770e38aee4fe797a45698676588f7cc819eba50d3f1f03c535"
+  }
+}

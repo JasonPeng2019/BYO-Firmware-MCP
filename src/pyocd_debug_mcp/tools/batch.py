@@ -6,6 +6,7 @@ import json
 from collections.abc import Awaitable, Callable
 from typing import Any
 
+from mcp.server.fastmcp.exceptions import ToolError
 from pydantic import BaseModel, ConfigDict, Field, JsonValue
 
 from pyocd_debug_mcp.kernel.operations import SAFE_EXIT_REMINDER
@@ -130,6 +131,8 @@ def build_batch_handlers(
         body = json.dumps(
             payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")
         )
+        if failure is not None:
+            raise ToolError(f"{body}\n{SAFE_EXIT_REMINDER}")
         return f"{body}\n{SAFE_EXIT_REMINDER}"
 
     return {"action_batch": action_batch}

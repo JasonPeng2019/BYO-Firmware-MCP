@@ -243,6 +243,8 @@ _DEFINITIONS = (
         "resolves the current UART port and computes the datasheet digest.",
         paired_actions=("board_fix_setup",),
         action_validator=_validate_setup_parameters,
+        artifact_binding_field="datasheet_path",
+        artifact_binding_suffixes=(".pdf",),
     ),
     PlanDefinition(
         "connect_override",

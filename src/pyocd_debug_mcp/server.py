@@ -43,6 +43,7 @@ from pyocd_debug_mcp.guardrails.plan_defs import PLAN_DEFINITIONS, PlanDefinitio
 from pyocd_debug_mcp.guardrails.plan_engine import PlanEngine, PlanRefusal
 from pyocd_debug_mcp.firmstore.cache import (
     AttachmentCache,
+    AttachmentCacheError,
     CacheResolution,
     ProbeIdentity,
     SerialEndpoint,
@@ -151,7 +152,11 @@ from pyocd_debug_mcp.setup_flow.device_support import (
     verified_pack_for_candidate,
 )
 from pyocd_debug_mcp.setup_flow.datasheet_evidence import (
+    DatasheetApplicabilityError,
+    DatasheetApplicabilityProof,
     capture_datasheet_evidence,
+    prove_datasheet_applicability,
+    read_datasheet_pdf,
     replay_datasheet_evidence,
 )
 from pyocd_debug_mcp.setup_flow.setup import (
@@ -2533,8 +2538,26 @@ def _replay_profile_device_support(profile) -> DeviceSupportAuthority:
     if device_support is None or part_number is None:
         raise PackProvisionError("generic profile has no exact device-support authority")
     if device_support.get("kind") == "resolved_builtin_target":
-        return resolve_persisted_builtin_target_support(part_number, device_support)
-    return resolve_persisted_pack_support(_profile_repository.store, part_number, device_support)
+        candidate = resolve_persisted_builtin_target_support(part_number, device_support)
+    else:
+        candidate = resolve_persisted_pack_support(
+            _profile_repository.store, part_number, device_support
+        )
+    document = profile.to_document()
+    digest = document.get("datasheet_sha256")
+    reference = document.get("datasheet_ref")
+    proof = document.get("datasheet_applicability")
+    if not isinstance(digest, str) or not isinstance(reference, str):
+        raise PackProvisionError("generic profile has no captured datasheet evidence")
+    replay_datasheet_evidence(_profile_repository.store, reference, digest)
+    replayed = prove_datasheet_applicability(
+        read_datasheet_pdf(_profile_repository.store.layout.datasheet_evidence(digest)),
+        requested_part=part_number,
+        authority_terms=candidate.datasheet_identity_terms(),
+    )
+    if proof is not None and replayed.to_document() != proof:
+        raise PackProvisionError("generic datasheet applicability proof no longer replays")
+    return candidate
 
 
 def _verified_pack_for_profile(profile):
@@ -2544,7 +2567,12 @@ def _verified_pack_for_profile(profile):
     if device_support is None:
         return None
     candidate = _replay_profile_device_support(profile)
-    if candidate.to_authority_document() != dict(device_support):
+    authority_matches = (
+        candidate.matches_authority_document(dict(device_support))
+        if isinstance(candidate, DeviceSupportCandidate)
+        else candidate.to_authority_document() == dict(device_support)
+    )
+    if not authority_matches:
         raise PackProvisionError("generic profile no longer matches its exact support binding")
     if isinstance(candidate, BuiltInTargetSupportCandidate):
         return None
@@ -2786,7 +2814,12 @@ def _derive_generic_safety_map(board_id: str) -> GenericSafetyMapDocument:
     if profile.mcu_part_number is None or profile.device_support is None:
         raise SafetyMapError("profile lacks a resolved generic device-support source")
     candidate = _replay_profile_device_support(profile)
-    if profile.device_support != candidate.to_authority_document():
+    authority_matches = (
+        candidate.matches_authority_document(profile.device_support)
+        if isinstance(candidate, DeviceSupportCandidate)
+        else candidate.to_authority_document() == profile.device_support
+    )
+    if not authority_matches:
         raise SafetyMapError("profile generic device-support source no longer matches the registry")
     if profile.board.pyocd_target.casefold() != candidate.pyocd_target.casefold():
         raise SafetyMapError("profile target no longer matches the generic device-support source")
@@ -3318,21 +3351,38 @@ _setup_pack_pipelines: dict[
 class _ResolvedGenericSetupSupport:
     """Ephemeral generic setup result; intentionally has no persisted authority state."""
 
-    __slots__ = ("candidate", "datasheet_path", "datasheet_sha256")
+    __slots__ = ("candidate", "datasheet_path", "datasheet_proof", "datasheet_sha256")
 
     def __init__(
         self,
         candidate: DeviceSupportAuthority,
         datasheet_path: Path,
         datasheet_sha256: str,
+        datasheet_proof: DatasheetApplicabilityProof,
     ) -> None:
         self.candidate = candidate
         self.datasheet_path = datasheet_path
         self.datasheet_sha256 = datasheet_sha256
+        self.datasheet_proof = datasheet_proof
 
 
 def _is_generic_support(value: object) -> bool:
     return isinstance(value, _ResolvedGenericSetupSupport)
+
+
+def _prove_generic_datasheet(
+    path: Path, digest: str, part_number: str, candidate: DeviceSupportAuthority
+) -> DatasheetApplicabilityProof:
+    """Bind current local PDF bytes to exact support before generic promotion."""
+
+    proof = prove_datasheet_applicability(
+        read_datasheet_pdf(path),
+        requested_part=part_number,
+        authority_terms=candidate.datasheet_identity_terms(),
+    )
+    if proof.pdf_sha256 != digest:
+        raise DatasheetApplicabilityError("datasheet bytes changed during applicability review")
+    return proof
 
 
 def _resolve_setup_support(user_input: SetupUserInput):
@@ -3345,7 +3395,10 @@ def _resolve_setup_support(user_input: SetupUserInput):
             user_input.mcu_part_number
         ):
             raise PackProvisionError("pending built-in target belongs to a different MCU part")
-        return _ResolvedGenericSetupSupport(pending_builtin, path, digest)
+        return _ResolvedGenericSetupSupport(
+            pending_builtin, path, digest,
+            _prove_generic_datasheet(path, digest, user_input.mcu_part_number, pending_builtin),
+        )
     try:
         existing_generic = _profile_repository.load(user_input.board_id)
     except ProfileError:
@@ -3357,8 +3410,10 @@ def _resolve_setup_support(user_input: SetupUserInput):
             raise PackProvisionError("existing generic profile belongs to a different MCU part")
         if existing_generic.to_document().get("datasheet_sha256") != digest:
             raise PackProvisionError("setup datasheet does not match the existing generic profile")
+        candidate = _replay_profile_device_support(existing_generic)
         return _ResolvedGenericSetupSupport(
-            _replay_profile_device_support(existing_generic), path, digest
+            candidate, path, digest,
+            _prove_generic_datasheet(path, digest, user_input.mcu_part_number, candidate),
         )
     try:
         candidate = resolve_available_pack_support(
@@ -3384,7 +3439,10 @@ def _resolve_setup_support(user_input: SetupUserInput):
                 "Fresh setup requires an exact verified generic device-support binding"
             )
         return resolve_reviewed_support_from_datasheet(user_input.mcu_part_number, path)
-    return _ResolvedGenericSetupSupport(candidate, path, digest)
+    return _ResolvedGenericSetupSupport(
+        candidate, path, digest,
+        _prove_generic_datasheet(path, digest, user_input.mcu_part_number, candidate),
+    )
 
 
 def _setup_inventory(user_input: SetupUserInput) -> PreflightInventory:
@@ -3642,6 +3700,7 @@ def _setup_connection_phase(context: SetupPhaseContext) -> SetupPhaseOutcome:
 
     opened: list[TargetSessionHandle] = []
     captured_datasheet_ref: str | None = None
+    datasheet_proof = generic_support.datasheet_proof if generic_support is not None else None
     identity_proof = (
         generic_support.candidate.identity_proof if generic_support is not None else None
     )
@@ -3802,6 +3861,15 @@ def _setup_connection_phase(context: SetupPhaseContext) -> SetupPhaseOutcome:
             )
             if evidence.sha256 != actual_datasheet_hash:
                 raise BoardCatalogError("datasheet bytes changed during live setup")
+            if generic_support is not None:
+                replayed_proof = _prove_generic_datasheet(
+                    Path(context.user_input.datasheet_path),
+                    evidence.sha256,
+                    context.user_input.mcu_part_number,
+                    generic_support.candidate,
+                )
+                if replayed_proof != datasheet_proof:
+                    raise BoardCatalogError("datasheet applicability evidence changed during live setup")
             captured_datasheet_ref = evidence.reference
         finally:
             target_control.close_session(handle)
@@ -3813,6 +3881,11 @@ def _setup_connection_phase(context: SetupPhaseContext) -> SetupPhaseOutcome:
             _profile_repository.store.layout.datasheet_evidence(actual_datasheet_hash)
             .relative_to(_profile_repository.store.layout.project_root)
             .as_posix()
+        ),
+        **(
+            {"datasheet_applicability": datasheet_proof.to_document()}
+            if datasheet_proof is not None
+            else {}
         ),
         **(
             {"device_support": generic_support.candidate.to_authority_document()}
@@ -4127,6 +4200,27 @@ def _confirm_setup_cache(user_input: SetupUserInput, decision) -> None:
 def _get_setup_status(board_id: str) -> Mapping[str, object]:
     """Return a non-authoritative setup barrier for external orchestration."""
 
+    cache_inspection = _attachment_cache.inspect()
+    attachment_cache: dict[str, object] = {
+        "record_kind": "attachment_cache",
+        "authority": "non_authoritative_hint_only",
+        "record_path": _attachment_cache.record_path,
+        "present": cache_inspection.present,
+        "state": cache_inspection.state,
+        "remedy": (
+            "Complete setup with a stable selected probe and UART pair to record a hint."
+            if cache_inspection.state == "missing"
+            else (
+                "Remove only this non-authoritative hint file and repeat setup."
+                if cache_inspection.state == "corrupt"
+                else "The cache is a hint only; current hardware identity remains authoritative."
+            )
+        ),
+    }
+    if cache_inspection.record_count is not None:
+        attachment_cache["record_count"] = cache_inspection.record_count
+    if cache_inspection.error is not None:
+        attachment_cache["error"] = cache_inspection.error
     configuration_ready = False
     configuration_reason = "schema-v2 profile or current safety evidence is missing"
     aggregate: str | None = None
@@ -4191,16 +4285,27 @@ def _get_setup_status(board_id: str) -> Mapping[str, object]:
                     "connection_id": connection.connection_id,
                     "probe_family": profile.board.probe_family,
                 }
-            resolution = _attachment_cache.resolve(
-                board_id,
-                ProbeIdentity(profile.board.probe_family, probe_uid),
-                endpoints,
-            )
             direct_matches = [
                 item
                 for item in inventory.serial_ports
                 if _stable_identity_equal(probe_uid, item.usb_serial)
             ]
+            resolution = CacheResolution(False, "no_record")
+            if cache_inspection.state == "valid":
+                try:
+                    resolution = _attachment_cache.resolve(
+                        board_id,
+                        ProbeIdentity(profile.board.probe_family, probe_uid),
+                        endpoints,
+                    )
+                    attachment_cache["resolution_reason"] = resolution.reason
+                    attachment_cache["reused"] = resolution.reused
+                except AttachmentCacheError as exc:
+                    attachment_cache["state"] = "corrupt"
+                    attachment_cache["error"] = str(exc)
+                    attachment_cache["remedy"] = (
+                        "Remove only this non-authoritative hint file and repeat setup."
+                    )
             selected_uart = next(
                 (
                     item
@@ -4311,6 +4416,7 @@ def _get_setup_status(board_id: str) -> Mapping[str, object]:
         "uart_reason": uart_reason,
         "resolved_uart": resolved_uart,
         "resolved_probe": resolved_probe,
+        "attachment_cache": attachment_cache,
         "configuration_reason": configuration_reason,
         "remedy": remedy,
         "build_guidance": build_guidance,

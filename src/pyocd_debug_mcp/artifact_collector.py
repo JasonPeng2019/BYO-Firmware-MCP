@@ -175,9 +175,9 @@ def collect_artifacts(
                 for record in records
             },
         }
-        (stage / MANIFEST_NAME).write_text(
-            json.dumps(manifest, ensure_ascii=False, separators=(",", ":"), sort_keys=True) + "\n",
-            encoding="utf-8",
+        (stage / MANIFEST_NAME).write_bytes(
+            json.dumps(manifest, ensure_ascii=False, separators=(",", ":"), sort_keys=True).encode("utf-8")
+            + b"\n"
         )
         if destination.exists():
             destination.rmdir()  # It was validated empty; refuse if another writer raced us.

@@ -1,0 +1,9 @@
+test_changed_pdf_after_primary_refuses_paired_fix_without_completion_authority (tests.test_h04_stale_datasheet_plan_spec.StaleDatasheetPlanSpecTests.test_changed_pdf_after_primary_refuses_paired_fix_without_completion_authority) ... ok
+test_changed_primary_pdf_relocks_both_actions_before_work_or_permission_use (tests.test_h04_stale_datasheet_plan_spec.StaleDatasheetPlanSpecTests.test_changed_primary_pdf_relocks_both_actions_before_work_or_permission_use) ... ok
+test_definition_and_accepted_payload_declare_exact_pdf_byte_binding (tests.test_h04_stale_datasheet_plan_spec.StaleDatasheetPlanSpecTests.test_definition_and_accepted_payload_declare_exact_pdf_byte_binding) ... ok
+test_unchanged_pdf_keeps_primary_and_one_paired_allowance (tests.test_h04_stale_datasheet_plan_spec.StaleDatasheetPlanSpecTests.test_unchanged_pdf_keeps_primary_and_one_paired_allowance) ... ok
+
+----------------------------------------------------------------------
+Ran 4 tests in 0.047s
+
+OK

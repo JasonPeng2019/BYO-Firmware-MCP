@@ -7,7 +7,8 @@ the command appears to succeed.
 
 This module provides a deterministic repair path:
 
-1. Download the master `index.pidx`.
+1. Download the master `index.pidx`, or reuse retained validated evidence for
+   the exact index URL during a missing-only repair.
 2. Select exact descriptors to repair (all missing, or a vendor/name subset).
 3. Fetch those PDSCs one-by-one with retries.
 4. Rebuild the local `index.json` / `aliases.json` from every cached PDSC.
@@ -19,6 +20,7 @@ active project's pinned `.pack` manifest for target support.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import time
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass
@@ -63,7 +65,7 @@ class RepairResult:
     data_path: Path
 
 
-def parse_master_index(xml_text: str) -> list[PdscRef]:
+def parse_master_index(xml_text: str | bytes) -> list[PdscRef]:
     try:
         root = ET.fromstring(xml_text)
     except ET.ParseError as exc:
@@ -92,6 +94,45 @@ def fetch_master_index(
             f"Failed to fetch CMSIS master index {index_url}: {exc}"
         ) from exc
     return parse_master_index(response.text)
+
+
+def _fetch_master_index_content(index_url: str, timeout: float) -> bytes:
+    """Fetch raw master evidence; callers must parse it before retaining it."""
+    try:
+        response = httpx.get(index_url, follow_redirects=True, timeout=timeout)
+        response.raise_for_status()
+    except Exception as exc:
+        raise PackIndexRepairError(
+            f"Failed to fetch CMSIS master index {index_url}: {exc}"
+        ) from exc
+    return response.content
+
+
+def _master_cache_path(data_path: Path, index_url: str) -> Path:
+    """Keep master evidence local to the selected descriptor cache and exact URL."""
+    identity = hashlib.sha256(index_url.encode("utf-8")).hexdigest()
+    return data_path / f"master-index-{identity}.pidx"
+
+
+def _load_retained_master(path: Path) -> tuple[bytes, list[PdscRef]]:
+    try:
+        content = path.read_bytes()
+        return content, parse_master_index(content)
+    except (OSError, PackIndexRepairError) as exc:
+        raise PackIndexRepairError(
+            f"Retained master evidence {path} is invalid; rerun with --refresh: {exc}"
+        ) from exc
+
+
+def _write_retained_master(path: Path, content: bytes) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary_path = path.parent / f"{path.name}.part"
+    try:
+        temporary_path.write_bytes(content)
+        temporary_path.replace(path)
+    except OSError as exc:
+        temporary_path.unlink(missing_ok=True)
+        raise PackIndexRepairError(f"Failed to retain master evidence {path}: {exc}") from exc
 
 
 def select_refs(
@@ -137,7 +178,7 @@ def _download_descriptor(ref: PdscRef, dest: Path, *, timeout: float, retries: i
     tmp = dest.parent / f"{dest.name}.part"
     last_error: Exception | None = None
 
-    for attempt in range(1, retries + 1):
+    for attempt in range(retries + 1):
         try:
             with httpx.stream(
                 "GET",
@@ -158,7 +199,7 @@ def _download_descriptor(ref: PdscRef, dest: Path, *, timeout: float, retries: i
             tmp.unlink(missing_ok=True)
             last_error = exc
             if attempt < retries:
-                time.sleep(min(float(attempt), 3.0))
+                time.sleep(min(float(attempt + 1), 3.0))
 
     assert last_error is not None
     raise PackIndexRepairError(
@@ -204,20 +245,31 @@ def repair_live_pack_index(
     json_path: str | None = None,
     data_path: str | None = None,
 ) -> RepairResult:
+    if retries < 0:
+        raise PackIndexRepairError("Descriptor retries must be zero or greater")
+
     cache = Cache(True, False, json_path=json_path, data_path=data_path)
-    refs = fetch_master_index(index_url=index_url, timeout=timeout)
+    cache_dir = Path(cache.data_path)
+    retained_master_path = _master_cache_path(cache_dir, index_url)
+    fresh_master_content: bytes | None = None
+    if missing_only and retained_master_path.exists():
+        _, refs = _load_retained_master(retained_master_path)
+    else:
+        fresh_master_content = _fetch_master_index_content(index_url, timeout)
+        refs = parse_master_index(fresh_master_content)
     selected = select_refs(
         refs, vendors=vendors, pack_names=pack_names, name_contains=name_contains
     )
     if not selected:
         raise PackIndexRepairError("No descriptors matched the requested filters")
 
-    cache_dir = Path(cache.data_path)
     downloads = plan_downloads(selected, cache_dir, missing_only=missing_only)
     for ref in downloads:
         _download_descriptor(ref, descriptor_path(cache_dir, ref), timeout=timeout, retries=retries)
 
     cached_pdsc_count, device_count = rebuild_cached_index(cache)
+    if fresh_master_content is not None:
+        _write_retained_master(retained_master_path, fresh_master_content)
     return RepairResult(
         master_count=len(refs),
         selected_count=len(selected),
@@ -253,7 +305,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--refresh",
         action="store_true",
-        help="Redownload matching descriptors even if they already exist locally.",
+        help=(
+            "Fetch the master index and redownload matching descriptors. Use this to "
+            "refresh or recover invalid retained master evidence."
+        ),
     )
     parser.add_argument(
         "--timeout",
@@ -265,12 +320,15 @@ def build_parser() -> argparse.ArgumentParser:
         "--retries",
         type=int,
         default=3,
-        help="Retry attempts per descriptor (default: 3).",
+        help="Additional retries after the initial request per descriptor (default: 3).",
     )
     parser.add_argument(
         "--index-url",
         default=DEFAULT_MASTER_INDEX_URL,
-        help="Override the master CMSIS pack index URL.",
+        help=(
+            "Override the master CMSIS pack index URL. Missing-only repairs reuse "
+            "retained validated evidence for this exact URL when available, including offline."
+        ),
     )
     parser.add_argument("--json-path", help="Override the cmsis-pack-manager json cache path.")
     parser.add_argument(

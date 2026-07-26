@@ -1,0 +1,12 @@
+{
+    "schema_version":  1,
+    "baseline_commit":  "6f3da0a9a0bb97fb535c8c0ba11a4d2b31f5e876",
+    "files":  {
+                  "README.md":  "c83118328647cef54106eba8aa3db8dbe208a27cad6e32a57f321e9e386c51b6",
+                  "pyproject.toml":  "357b4bf783b0226d04d33035fc78fd63535bb279bf20b7e25be11637a335a454",
+                  "uv.lock":  "1b0ea27f91dddbd00c215b8d9da487d7960e1fb4f1e1afa4c07bc4811c7ff0cf",
+                  "src/pyocd_debug_mcp/kernel/processes.py":  "e5d3384e57c8f7e65ecac7b391b2a6d2965f6c5ad49a886b595c62a13e5a8ae8",
+                  "tests/test_h00_repository_contract.py":  "e70507cf2e09f6ec4b8d2569b7eade4651db70951944115a447e665f87af21f9",
+                  "tests/test_h00_repository_regressions.py":  "6cb0d14e55a899dbbcc28a322d944eb9226adf5b42ed4cd8ef5f724253a8acd1"
+              }
+}

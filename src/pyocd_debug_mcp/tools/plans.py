@@ -7,6 +7,7 @@ from collections.abc import Callable, Iterable, Mapping
 from typing import Any
 
 from mcp.server.fastmcp import FastMCP
+from mcp.server.fastmcp.utilities.func_metadata import FuncMetadata
 from pydantic import ConfigDict, model_validator
 
 from pyocd_debug_mcp.guardrails.plan_defs import (
@@ -20,6 +21,43 @@ from pyocd_debug_mcp.guardrails.plan_engine import PlanEngine
 
 
 SessionIdResolver = Callable[[str], str | None]
+
+
+class _PlanToolMetadata(FuncMetadata):
+    """Retain literal JSON-looking text at generated plan-tool boundaries."""
+
+    literal_string_fields: frozenset[str]
+
+    def pre_parse_json(self, data: dict[str, Any]) -> dict[str, Any]:
+        parsed_data = super().pre_parse_json(data)
+        parsed_data.update(
+            {
+                name: value
+                for name, value in data.items()
+                if name in self.literal_string_fields and isinstance(value, str)
+            }
+        )
+        return parsed_data
+
+
+def _preserve_plan_text_arguments(
+    mcp: FastMCP,
+    tool_name: str,
+    literal_string_fields: frozenset[str],
+) -> None:
+    """Install generated-plan text semantics without changing shared SDK metadata."""
+
+    tool = mcp._tool_manager.get_tool(tool_name)  # type: ignore[reportPrivateUsage]
+    if tool is None:  # pragma: no cover - SDK registration invariant
+        raise RuntimeError(f"Tool registration failed: {tool_name}")
+    metadata = tool.fn_metadata
+    tool.fn_metadata = _PlanToolMetadata(
+        arg_model=metadata.arg_model,
+        output_schema=metadata.output_schema,
+        output_model=metadata.output_model,
+        wrap_output=metadata.wrap_output,
+        literal_string_fields=literal_string_fields,
+    )
 
 
 def forbid_unknown_tool_arguments(
@@ -154,6 +192,15 @@ def register_plan_tools(
             mcp,
             definition.plan_tool_name,
             reject_populated_permission=definition.permission_mode is PermissionMode.NONE,
+        )
+        _preserve_plan_text_arguments(
+            mcp,
+            definition.plan_tool_name,
+            frozenset(
+                field.name
+                for field in definition.call_fields
+                if field.field_type in (FieldType.TEXT, FieldType.TEXT_OR_INTEGER)
+            ),
         )
         registered[definition.plan_tool_name] = handler
     return registered

@@ -1,0 +1,72 @@
+﻿{
+    "schema_version":  1,
+    "captured_utc":  "2026-07-25T03:22:28.0321504Z",
+    "baseline_commit":  "6f3da0a9a0bb97fb535c8c0ba11a4d2b31f5e876",
+    "accepted_pre_repair_production_diff_sha256":  "1bfb1569f7a6e174cb094c80255b587d7f4d961648b5802f90d95ddca1bcf65c",
+    "plan_sha256":  "ca11a4c2775ce75c7f0ac92369679506a5c0d62e1c17193aaf8b3ed356246f72",
+    "plan_amendment_sha256":  "d7aba9a5ac5c1fdadac03f0453b496d913e835f748a050ebb3b745ef65e6cf1b",
+    "plan_review_sha256":  "e478921016bafa2d3fcd04ddfa1f198515174f1af353c667221a22c921df3db6",
+    "target_production_files":  [
+                                    "src/pyocd_debug_mcp/kernel/registry.py",
+                                    "src/pyocd_debug_mcp/tools/batch.py"
+                                ],
+    "frozen_and_target_files":  [
+                                    {
+                                        "path":  "README.md",
+                                        "bytes":  8655,
+                                        "sha256":  "15a3c471426302805e866563bba78a2c0482b00133fce4fdbd262c8cd6763f1a"
+                                    },
+                                    {
+                                        "path":  "pyproject.toml",
+                                        "bytes":  1291,
+                                        "sha256":  "357b4bf783b0226d04d33035fc78fd63535bb279bf20b7e25be11637a335a454"
+                                    },
+                                    {
+                                        "path":  "src/pyocd_debug_mcp/kernel/processes.py",
+                                        "bytes":  23135,
+                                        "sha256":  "5f74cd9be7aeea3b2b72d97d9c0b00ad3120205902aacd17a96ca53ebac42435"
+                                    },
+                                    {
+                                        "path":  "src/pyocd_debug_mcp/tools/plans.py",
+                                        "bytes":  7491,
+                                        "sha256":  "2427ce3f0cb3986cc0ca89107d9e2d41a6edde8e6b3fef681c7eda4070ffee09"
+                                    },
+                                    {
+                                        "path":  "uv.lock",
+                                        "bytes":  267778,
+                                        "sha256":  "1b0ea27f91dddbd00c215b8d9da487d7960e1fb4f1e1afa4c07bc4811c7ff0cf"
+                                    },
+                                    {
+                                        "path":  "tests/test_h00_repository_contract.py",
+                                        "bytes":  27572,
+                                        "sha256":  "2f2dd37fe76b642b40fbd7177bef9ce12775eedc925b229489573615b33d597a"
+                                    },
+                                    {
+                                        "path":  "tests/test_h00_repository_regressions.py",
+                                        "bytes":  2612,
+                                        "sha256":  "56b72f516554016b9616db2828f437dfca4cb29767adeafa0e987bdd4afbf29b"
+                                    },
+                                    {
+                                        "path":  "tests/test_h01_plan_text_preservation.py",
+                                        "bytes":  6343,
+                                        "sha256":  "8eae1c0177b86d6d5d71d01cb35c120a1a34730ee9ddb91451b243a061e0883b"
+                                    },
+                                    {
+                                        "path":  "tests/test_h01_plan_text_regressions.py",
+                                        "bytes":  4435,
+                                        "sha256":  "2a98f72110c53e4e33b227864b1bee6e9ecbf82542b39ad0309428e0f2107b77"
+                                    },
+                                    {
+                                        "path":  "src/pyocd_debug_mcp/kernel/registry.py",
+                                        "bytes":  15620,
+                                        "sha256":  "e054fc1328b623cd0e3c3445fbd9f0f4cec58b4de049c7d38fdddc7e46b7565b"
+                                    },
+                                    {
+                                        "path":  "src/pyocd_debug_mcp/tools/batch.py",
+                                        "bytes":  5226,
+                                        "sha256":  "4c41febde68cc28006ca740d2a40024e257df3fdbdbdbbfa747858c9456425c9"
+                                    }
+                                ],
+    "git_status_short":  " M README.md\n M pyproject.toml\n M src/pyocd_debug_mcp/kernel/processes.py\n M src/pyocd_debug_mcp/tools/plans.py\n M uv.lock\n?? .change-loop/fresh-suite/\n?? tests/test_h00_repository_contract.py\n?? tests/test_h00_repository_regressions.py\n?? tests/test_h01_plan_text_preservation.py\n?? tests/test_h01_plan_text_regressions.py",
+    "no_hardware":  true
+}

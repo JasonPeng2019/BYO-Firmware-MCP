@@ -1,0 +1,14 @@
+{
+  "server_commit": "6f3da0a9a0bb97fb535c8c0ba11a4d2b31f5e876",
+  "accepted_h00_tracked_diff_sha256": "1d1c478f6c7299fca740c74029427441d52191bd4edc4bd41a168cc709114b8d",
+  "plan_sha256": "21b059867ac578caf99acb7f4410e47494ecc8aeaa1317c16dfa8d6051801cc8",
+  "files": {
+    "README.md": "15a3c471426302805e866563bba78a2c0482b00133fce4fdbd262c8cd6763f1a",
+    "pyproject.toml": "357b4bf783b0226d04d33035fc78fd63535bb279bf20b7e25be11637a335a454",
+    "src/pyocd_debug_mcp/kernel/processes.py": "5f74cd9be7aeea3b2b72d97d9c0b00ad3120205902aacd17a96ca53ebac42435",
+    "uv.lock": "1b0ea27f91dddbd00c215b8d9da487d7960e1fb4f1e1afa4c07bc4811c7ff0cf",
+    "tests/test_h00_repository_contract.py": "2f2dd37fe76b642b40fbd7177bef9ce12775eedc925b229489573615b33d597a",
+    "tests/test_h00_repository_regressions.py": "56b72f516554016b9616db2828f437dfca4cb29767adeafa0e987bdd4afbf29b",
+    "src/pyocd_debug_mcp/tools/plans.py": "5545cc538c654629f28bc24f29705977ccdc8031e1b47bcbd0f08baf4c3f22b6"
+  }
+}

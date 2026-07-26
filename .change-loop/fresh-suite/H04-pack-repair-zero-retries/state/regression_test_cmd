@@ -1,0 +1,1 @@
+uv run --locked pytest tests/test_regression_h04_pack_index_repair.py -q

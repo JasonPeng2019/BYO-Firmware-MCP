@@ -470,7 +470,7 @@ class SetupWorkflow:
                 prompt = decision.agent_prompt
                 choices = decision.choices
             else:
-                if decision.cache_confirmation_required:
+                if decision.selected_serial is not None:
                     self.cancellation_checkpoint()
                     self.on_cache_confirmation(state.user_input, decision)
                 terminal, prompt, choices = self._run_remaining_phases(

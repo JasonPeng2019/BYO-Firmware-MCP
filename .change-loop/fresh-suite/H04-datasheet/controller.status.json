@@ -1,0 +1,13 @@
+{
+  "state": "exited",
+  "controller_pid": 164528,
+  "run_loop_pid": 168756,
+  "started_utc": "2026-07-26T00:05:04Z",
+  "runtime_dir": ".change-loop/fresh-suite/H04-datasheet",
+  "models": "gpt-5.6-terra",
+  "reasoning_effort": "medium",
+  "sandbox": "danger-full-access",
+  "reason": "Windows workspace sandbox is known unable to launch role commands",
+  "exit_code": 0,
+  "ended_utc": "2026-07-26T00:18:47Z"
+}

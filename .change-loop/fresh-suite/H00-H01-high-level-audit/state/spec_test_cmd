@@ -1,0 +1,1 @@
+uv sync --locked && uv run --locked --no-sync pytest -q tests/test_h00_repository_contract.py

@@ -1,0 +1,1 @@
+uv run --locked --no-sync pytest -q tests/test_h01_strict_mcp_regressions.py

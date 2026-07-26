@@ -116,6 +116,40 @@ manual serial selection remain available without it. Destructive recovery
 uses the target-neutral `backend_mass_erase` capability after live-backend support, complete erase
 disclosure, and fresh one-time permission checks; `manual_only` remains fail-closed.
 
+## Contributor and verifier checks
+
+From a clean checkout, synchronize the locked development environment and run the verification
+commands in this order:
+
+```text
+uv sync --locked
+uv lock --check
+uv build
+```
+
+From an unrelated working directory, verify the installed project using the absolute path to the
+checkout (replace the quoted placeholder with the correct project location):
+
+```text
+uv run --project "<absolute-path-to-checkout>" --locked --no-sync python -c "import pyocd_debug_mcp; import pyocd_debug_mcp.server"
+```
+
+Back in the checkout, run the remaining locked checks:
+
+```text
+uv run --locked --no-sync ruff check .
+uv run --locked --no-sync pyright
+uv run --locked --no-sync pytest --collect-only -q
+uv run --locked --no-sync pytest
+```
+
+The default Pyright command checks the shipped `src` package. Test code is outside that typecheck
+gate and is executed by the complete pytest suite.
+
+If a no-sync command reports a missing tool, rerun `uv sync --locked`. If the lock and metadata
+disagree, refresh the lock only after an intentional dependency change. If the project location is
+incorrect, replace the quoted path placeholder with the checkout's absolute path.
+
 ## Further documentation
 
 - [Server operation and recovery](SERVER_GUIDE.md)

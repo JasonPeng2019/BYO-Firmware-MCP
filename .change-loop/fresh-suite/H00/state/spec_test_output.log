@@ -1,0 +1,9 @@
+============================= test session starts ==============================
+platform linux -- Python 3.12.13, pytest-9.1.1, pluggy-1.6.0
+rootdir: /mnt/c/Users/Jason/Documents/Jason/FirmCLI_Tester/Firmware-Test-Manual/MCP-Trial-3/BYO-Firmware-MCP
+configfile: pyproject.toml
+collected 11 items
+
+tests/test_h00_repository_contract.py ...........                        [100%]
+
+======================== 11 passed in 141.44s (0:02:21) ========================
