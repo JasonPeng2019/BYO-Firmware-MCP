@@ -436,7 +436,8 @@ class _WorkerClient:
                 except Exception:
                     # Process termination is the ownership authority. Graceful-close
                     # failures, including a deadline race, are only diagnostics.
-                    pass
+                    if self._cleanup_confirmed and self._marker is not None:
+                        raise
             finally:
                 if not self._closed:
                     self._closed = True

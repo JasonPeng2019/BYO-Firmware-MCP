@@ -478,6 +478,70 @@ class PackAddressRegion:
         }
 
 
+def _canonical_physical_regions(
+    candidates: Iterable[Any], *, memory_kind: str
+) -> tuple[PackAddressRegion, ...]:
+    """Keep deterministic, non-overlapping physical PDSC descriptors whole."""
+
+    def as_region(item: Any) -> PackAddressRegion:
+        return PackAddressRegion(
+            str(getattr(item, "name", str(item.type))),
+            int(item.start),
+            int(item.start + item.length),
+            str(getattr(item, "access", "r")),
+        )
+
+    def precedence(item: Any) -> tuple[int, int, int]:
+        return (
+            int(bool(getattr(item, "is_default", False))),
+            int(bool(getattr(item, "is_boot_memory", False))),
+            int(bool(getattr(item, "is_testable", False))),
+        )
+
+    def order(item: Any) -> tuple[int, int, int, str, str, str]:
+        rank = precedence(item)
+        return (
+            -rank[0],
+            -rank[1],
+            -rank[2],
+            str(getattr(item, "name", "")).casefold(),
+            str(getattr(item, "name", "")),
+            str(getattr(item, "access", "r")),
+        )
+
+    by_range: dict[tuple[int, int], Any] = {}
+    for item in candidates:
+        region = as_region(item)
+        key = (region.start, region.end)
+        existing = by_range.get(key)
+        if existing is None or order(item) < order(existing):
+            by_range[key] = item
+
+    accepted: list[tuple[Any, PackAddressRegion]] = []
+    for item in sorted(by_range.values(), key=order):
+        region = as_region(item)
+        conflicts = tuple(
+            (accepted_item, accepted_region)
+            for accepted_item, accepted_region in accepted
+            if region.start < accepted_region.end and accepted_region.start < region.end
+        )
+        if conflicts:
+            highest_item, highest = conflicts[0]
+            if precedence(item) == precedence(highest_item):
+                raise PackProvisionError(
+                    f"ambiguous verified PDSC physical {memory_kind} descriptions overlap: "
+                    f"[{region.start:#x}, {region.end:#x}) and "
+                    f"[{highest.start:#x}, {highest.end:#x})"
+                )
+            continue
+        accepted.append((item, region))
+    return tuple(
+        sorted(
+            (region for _, region in accepted), key=lambda item: (item.start, item.end, item.name)
+        )
+    )
+
+
 @dataclass(frozen=True, slots=True)
 class PackMemoryGeometry:
     """Conservative default memory geometry parsed from one verified PDSC leaf."""
@@ -1395,7 +1459,7 @@ def resolve_registered_pack_geometry(
             str(getattr(item, "access", "r")),
         )
 
-    def canonical_memory_regions(candidates: tuple[Any, ...]) -> tuple[PackAddressRegion, ...]:
+    def exact_memory_regions(candidates: tuple[Any, ...]) -> tuple[PackAddressRegion, ...]:
         by_range: dict[tuple[int, int], PackAddressRegion] = {}
         for item in sorted(candidates, key=lambda value: (int(value.start), str(value.name))):
             region = memory_region(item)
@@ -1407,9 +1471,9 @@ def resolve_registered_pack_geometry(
         if _compatible_core_identity(device) is not None
         else ()
     )
-    canonical_flash = canonical_memory_regions(flash_candidates)
-    canonical_ram = canonical_memory_regions(ram_candidates)
-    canonical_rom = canonical_memory_regions(rom_candidates)
+    canonical_flash = _canonical_physical_regions(flash_candidates, memory_kind="flash")
+    canonical_ram = _canonical_physical_regions(ram_candidates, memory_kind="RAM")
+    canonical_rom = exact_memory_regions(rom_candidates)
     peripheral_exclusions = (
         *canonical_flash,
         *canonical_ram,

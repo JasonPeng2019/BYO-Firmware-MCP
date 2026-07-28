@@ -344,6 +344,25 @@ def _address_ranges(addresses: list[int]) -> tuple[AddressRange, ...]:
     return tuple(ranges)
 
 
+def _connected_to_load_content(
+    hex_range: AddressRange, load_ranges: list[AddressRange]
+) -> bool:
+    """Whether a contiguous HEX range overlaps or directly touches ELF file data."""
+
+    return any(
+        hex_range.overlaps(load_range)
+        or hex_range.end == load_range.start
+        or load_range.end == hex_range.start
+        for load_range in load_ranges
+    )
+
+
+def _equivalent_hex_byte(hex_value: int, elf_value: int) -> bool:
+    """Allow the conventional interchangeable erased-fill byte representation."""
+
+    return hex_value == elf_value or {hex_value, elf_value} == {0x00, 0xFF}
+
+
 def _read_hex(path: Path) -> tuple[dict[int, int], tuple[AddressRange, ...]]:
     """Strictly parse data records from an Intel HEX build companion."""
 
@@ -557,14 +576,23 @@ def extract_build_evidence(selection: BuildArtifactSelection | None) -> BuildEvi
     hex_ranges: tuple[AddressRange, ...] = ()
     if hex_path is not None:
         hex_image, hex_ranges = _read_hex(hex_path)
-        outside = sorted(set(hex_image) - set(elf_image))
-        if outside:
-            raise LinkerEvidenceError(
-                "build/hex-outside-elf",
-                f"HEX contains address 0x{outside[0]:x} absent from ELF load data",
-            )
+        supplemental = set(hex_image) - set(elf_image)
+        for hex_range in hex_ranges:
+            if not any(hex_range.contains_address(address) for address in supplemental):
+                continue
+            if not _connected_to_load_content(hex_range, load_ranges):
+                first_supplemental = min(
+                    address for address in supplemental if hex_range.contains_address(address)
+                )
+                raise LinkerEvidenceError(
+                    "build/hex-disconnected-content",
+                    "HEX contains disconnected companion content at "
+                    f"address 0x{first_supplemental:x}",
+                )
         mismatch = sorted(
-            address for address, value in hex_image.items() if elf_image[address] != value
+            address
+            for address, value in hex_image.items()
+            if address in elf_image and not _equivalent_hex_byte(value, elf_image[address])
         )
         if mismatch:
             raise LinkerEvidenceError(
@@ -580,13 +608,6 @@ def extract_build_evidence(selection: BuildArtifactSelection | None) -> BuildEvi
             raise LinkerEvidenceError(
                 "build/hex-incomplete",
                 f"HEX omits meaningful ELF data at address 0x{missing_meaningful[0]:x}",
-            )
-        if flash_partition is not None and any(
-            not flash_partition.contains(item) for item in hex_ranges
-        ):
-            raise LinkerEvidenceError(
-                "build/hex-outside-partition",
-                "HEX data lies outside the build-owned flash partition",
             )
 
     artifact_paths = [("elf", elf_path)]

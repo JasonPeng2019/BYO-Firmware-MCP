@@ -1,0 +1,1 @@
+env PYTHONPATH=src uvx --from pytest --with pyelftools --with pyyaml pytest -q tests/test_a23_signed_hex_spec.py

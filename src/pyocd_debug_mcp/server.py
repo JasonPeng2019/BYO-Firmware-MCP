@@ -2111,6 +2111,9 @@ memory_services = MemoryToolServices(
     check_memory_read=_check_memory_read_safety,
     check_memory_write=_check_memory_safety,
     prepared_symbol_for=_prepared_symbol_write_for,
+    get_state=target_control.get_state,
+    halt=target_control.halt,
+    resume=target_control.resume,
 )
 memory_tool_handlers = build_memory_handlers(memory_services)
 

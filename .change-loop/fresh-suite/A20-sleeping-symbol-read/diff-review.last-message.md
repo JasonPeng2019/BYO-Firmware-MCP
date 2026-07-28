@@ -1,0 +1,17 @@
+Reviewer: `A20-diff-adversarial-reviewer-001`  
+Charter SHA-256 verified: `03347b0f7ce185922e07e373784a39d49f3a497c3ee8c35035bb3bfab5411bdb`  
+Plan SHA-256 verified: `a974e693dd8b16d03d993b27b0c16f1113891482de58e67160608b2cc6da0a07`
+
+VERDICT: NEEDS_FIX
+
+1. Actionable — cleanup is not guaranteed for all failures after the inserted halt. [`memory.py:127`](C:\Users\Jason\Documents\Jason\FirmCLI_Tester\Firmware-Test-Manual\MCP-Trial-3\BYO-Firmware-MCP\src\pyocd_debug_mcp\tools\memory.py:127) catches only `Exception`, so a `BaseException` raised by the read bypasses `resume`, leaving a previously non-halted target stopped. The plan requires a guaranteed cleanup/finally path, and the repository’s analogous helper uses `finally` at [`symbols.py:99`](C:\Users\Jason\Documents\Jason\FirmCLI_Tester\Firmware-Test-Manual\MCP-Trial-3\BYO-Firmware-MCP\src\pyocd_debug_mcp\services\symbols.py:99). The A20 tests cover only ordinary `Exception` failures at [`test_a20_sleeping_symbol_read_spec.py:123`](C:\Users\Jason\Documents\Jason\FirmCLI_Tester\Firmware-Test-Manual\MCP-Trial-3\BYO-Firmware-MCP\tests\test_a20_sleeping_symbol_read_spec.py:123).
+
+2. Actionable — published help does not fully meet the charter/plan usability contract. [`memory.py:315`](C:\Users\Jason\Documents\Jason\FirmCLI_Tester\Firmware-Test-Manual\MCP-Trial-3\BYO-Firmware-MCP\src\pyocd_debug_mcp\tools\memory.py:315) accurately documents the lifecycle and recovery, but does not clearly describe each parameter (`board_id`, `symbol`, optional `elf_artifact`) or provide an invocation example, required by the charter and CL-002. FastMCP publishes this exact docstring at [`server.py:2360`](C:\Users\Jason\Documents\Jason\FirmCLI_Tester\Firmware-Test-Manual\MCP-Trial-3\BYO-Firmware-MCP\src\pyocd_debug_mcp\server.py:2360); the test only checks selected lifecycle phrases at [`test_a20_sleeping_symbol_read_spec.py:174`](C:\Users\Jason\Documents\Jason\FirmCLI_Tester\Firmware-Test-Manual\MCP-Trial-3\BYO-Firmware-MCP\tests\test_a20_sleeping_symbol_read_spec.py:174).
+
+Nonblocking residual risks:
+
+1. Lifecycle ordering, generic state handling, success-after-restoration timing, raw read/write isolation, and production wiring are otherwise correctly evidenced by [`memory.py:121`](C:\Users\Jason\Documents\Jason\FirmCLI_Tester\Firmware-Test-Manual\MCP-Trial-3\BYO-Firmware-MCP\src\pyocd_debug_mcp\tools\memory.py:121), [`memory.py:420`](C:\Users\Jason\Documents\Jason\FirmCLI_Tester\Firmware-Test-Manual\MCP-Trial-3\BYO-Firmware-MCP\src\pyocd_debug_mcp\tools\memory.py:420), and [`server.py:2114`](C:\Users\Jason\Documents\Jason\FirmCLI_Tester\Firmware-Test-Manual\MCP-Trial-3\BYO-Firmware-MCP\src\pyocd_debug_mcp\server.py:2114). Dual ordinary-error reporting retains both messages and chains the primary error at [`memory.py:129`](C:\Users\Jason\Documents\Jason\FirmCLI_Tester\Firmware-Test-Manual\MCP-Trial-3\BYO-Firmware-MCP\src\pyocd_debug_mcp\tools\memory.py:129).
+
+2. Targeted diff inspection found only the intended A20 hunks in the two scoped files; unrelated dirty worktree changes were not attributed to A20. The recorded focused test report states both A20 suites passed; I did not rerun them.
+
+I made no edits, ran no server, and performed no hardware action.

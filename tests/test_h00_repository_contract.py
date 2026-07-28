@@ -45,6 +45,7 @@ FIXED_CANDIDATE_PATHS = (
     "src/pyocd_debug_mcp/kernel/processes.py",
     "tests/test_h00_repository_contract.py",
     "tests/test_h00_repository_regressions.py",
+    "tests/test_server_trust_model_round_3.py",
 )
 
 _PROCESSES_SPEC = importlib.util.spec_from_file_location(
@@ -464,11 +465,16 @@ class H00RepositoryContractTests(unittest.TestCase):
             head = self._run(["git", "rev-parse", "HEAD"], cwd=candidate)
             self.assertEqual(
                 head.stdout.strip(),
-                "6f3da0a9a0bb97fb535c8c0ba11a4d2b31f5e876",
+                "4e1393775167166146c6ee1a0ce310c9747ca3bf",
                 "candidate must be cloned from the exact approved baseline commit",
             )
             self._remove_candidate_tree(candidate / ".git")
             unrelated.mkdir()
+            for external_fixture in (
+                "stm32L476rgt.pdf",
+                "Nano_BLE_MCU-nRF52840_PS_v1.1.pdf",
+            ):
+                shutil.copy2(ROOT.parent / external_fixture, temporary_root / external_fixture)
             self.assertFalse((candidate / ".venv").exists())
             self.assertFalse((candidate / "dist").exists())
 

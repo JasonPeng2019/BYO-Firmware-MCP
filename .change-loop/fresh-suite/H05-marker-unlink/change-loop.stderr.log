@@ -1,0 +1,291 @@
+change-loop: starting iteration 1 of 8
+2026-07-26T06:21:48.074950Z  WARN codex_core::shell_snapshot: Failed to create shell snapshot for powershell: Shell snapshot not supported yet for PowerShell
+2026-07-26T06:22:54.794360Z ERROR codex_core::tools::router: error=Exit code: 1
+Wall time: 0.6 seconds
+Output:
+All checks passed!
+Would reformat: src\pyocd_debug_mcp\adapters\swd_process.py
+1 file would be reformatted
+
+Reading additional input from stdin...
+2026-07-26T06:23:31.847557Z  WARN codex_core::shell_snapshot: Failed to create shell snapshot for powershell: Shell snapshot not supported yet for PowerShell
+2026-07-26T06:24:57.219522Z ERROR codex_core::tools::router: error=Exit code: 1
+Wall time: 0.9 seconds
+Output:
+EEEE
+======================================================================
+ERROR: test_completed_nested_eof_invalidation_remains_a_successful_close (tests.test_h05_marker_unlink_spec.H05MarkerUnlinkSpecTests.test_completed_nested_eof_invalidation_remains_a_successful_close)
+CL-001 regression: EOF is diagnostic once death and marker cleanup are complete.
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "C:\Users\Jason\Documents\Jason\FirmCLI_Tester\Firmware-Test-Manual\MCP-Trial-3\BYO-Firmware-MCP\tests\test_h05_marker_unlink_spec.py", line 71, in test_completed_nested_eof_invalidation_remains_a_successful_close
+    from pyocd_debug_mcp.adapters import swd_process
+ModuleNotFoundError: No module named 'pyocd_debug_mcp'
+
+======================================================================
+ERROR: test_dead_worker_marker_unlink_failure_escapes_and_later_close_retries_marker_only (tests.test_h05_marker_unlink_spec.H05MarkerUnlinkSpecTests.test_dead_worker_marker_unlink_failure_escapes_and_later_close_retries_marker_only)
+CL-001: cleanup failure must not be hidden as a successful graceful close.
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "C:\Users\Jason\Documents\Jason\FirmCLI_Tester\Firmware-Test-Manual\MCP-Trial-3\BYO-Firmware-MCP\tests\test_h05_marker_unlink_spec.py", line 33, in test_dead_worker_marker_unlink_failure_escapes_and_later_close_retries_marker_only
+    from pyocd_debug_mcp.adapters import swd_process
+ModuleNotFoundError: No module named 'pyocd_debug_mcp'
+
+======================================================================
+ERROR: test_provider_close_diagnostic_is_suppressed_only_after_complete_cleanup (tests.test_h05_marker_unlink_spec.H05MarkerUnlinkSpecTests.test_provider_close_diagnostic_is_suppressed_only_after_complete_cleanup)
+CL-001 regression: a nonterminal graceful-close error remains non-fatal after cleanup.
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "C:\Users\Jason\Documents\Jason\FirmCLI_Tester\Firmware-Test-Manual\MCP-Trial-3\BYO-Firmware-MCP\tests\test_h05_marker_unlink_spec.py", line 88, in test_provider_close_diagnostic_is_suppressed_only_after_complete_cleanup
+    from pyocd_debug_mcp.adapters import swd_process
+ModuleNotFoundError: No module named 'pyocd_debug_mcp'
+
+======================================================================
+ERROR: test_unconfirmed_nested_eof_invalidation_is_actionable_and_retains_marker (tests.test_h05_marker_unlink_spec.H05MarkerUnlinkSpecTests.test_unconfirmed_nested_eof_invalidation_is_actionable_and_retains_marker)
+CL-001 regression: no marker removal occurs when worker death is unconfirmed.
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "C:\Users\Jason\Documents\Jason\FirmCLI_Tester\Firmware-Test-Manual\MCP-Trial-3\BYO-Firmware-MCP\tests\test_h05_marker_unlink_spec.py", line 113, in test_unconfirmed_nested_eof_invalidation_is_actionable_and_retains_marker
+    from pyocd_debug_mcp.adapters import swd_process
+ModuleNotFoundError: No module named 'pyocd_debug_mcp'
+
+----------------------------------------------------------------------
+Ran 4 tests in 0.007s
+
+FAILED (errors=4)
+
+2026-07-26T06:25:00.291688Z ERROR codex_core::tools::router: error=Exit code: 1
+Wall time: 0.9 seconds
+Output:
+E...
+======================================================================
+ERROR: test_completed_nested_eof_invalidation_remains_a_successful_close (tests.test_h05_marker_unlink_spec.H05MarkerUnlinkSpecTests.test_completed_nested_eof_invalidation_remains_a_successful_close)
+CL-001 regression: EOF is diagnostic once death and marker cleanup are complete.
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "C:\Users\Jason\Documents\Jason\FirmCLI_Tester\Firmware-Test-Manual\MCP-Trial-3\BYO-Firmware-MCP\tests\test_h05_marker_unlink_spec.py", line 71, in test_completed_nested_eof_invalidation_remains_a_successful_close
+    from pyocd_debug_mcp.adapters import swd_process
+  File "C:\Users\Jason\Documents\Jason\FirmCLI_Tester\Firmware-Test-Manual\MCP-Trial-3\BYO-Firmware-MCP\src\pyocd_debug_mcp\adapters\swd_process.py", line 27, in <module>
+    from pyocd_debug_mcp.kernel.operations import (
+    ...<2 lines>...
+    )
+  File "C:\Users\Jason\Documents\Jason\FirmCLI_Tester\Firmware-Test-Manual\MCP-Trial-3\BYO-Firmware-MCP\src\pyocd_debug_mcp\kernel\__init__.py", line 8, in <module>
+    from pyocd_debug_mcp.kernel.registry import (
+    ...<3 lines>...
+    )
+  File "C:\Users\Jason\Documents\Jason\FirmCLI_Tester\Firmware-Test-Manual\MCP-Trial-3\BYO-Firmware-MCP\src\pyocd_debug_mcp\kernel\registry.py", line 12, in <module>
+    from mcp.server.fastmcp import FastMCP
+ModuleNotFoundError: No module named 'mcp'
+
+----------------------------------------------------------------------
+Ran 4 tests in 0.328s
+
+FAILED (errors=1)
+
+2026-07-26T06:25:09.946913Z ERROR codex_core::tools::router: error=Exit code: 1
+Wall time: 0.5 seconds
+Output:
+
+Name                                       
+----                                       
+.agents                                    
+.change-loop                               
+.firm                                      
+.git                                       
+.h01-dist                                  
+.h01-dist-batchstrict                      
+.h01-dist-nullfix                          
+.h01-dist-postaudit                        
+.h01-venv-batchstrict                      
+.h01-venv-nullfix                          
+.pytest_cache                              
+.ruff_cache                                
+.tools                                     
+.venv                                      
+dist                                       
+docs                                       
+src                                        
+testing_folder                             
+tests                                      
+.env.example                               
+.gitignore                                 
+.python-version                            
+byo-hil-temp-20260723-163714               
+H03-manifest-line-ending-request.md        
+H04-cache-surface-request.md               
+H04-datasheet-part-binding-request.md      
+H04-pack-index-repair-request.md           
+H04-stale-datasheet-plan-binding-request.md
+H05-marker-unlink-cleanup-request.md       
+H05-marker-unlink-request.md               
+H05-stdio-wait-cancellation-request.md     
+pyproject.toml                             
+README.md                                  
+SERVER_GUIDE.md                            
+uv.lock                                    
+C:\Users\Jason\AppData\Local\Programs\Python\Python314\Scripts\uv.exe
+                                           
+                                           
+                                           
+                                           
+                                           
+                                           
+
+
+
+2026-07-26T06:25:20.141863Z ERROR codex_core::tools::router: error=Exit code: 1
+Wall time: 0.5 seconds
+Output:
+ M .change-loop/changes.md
+ M .change-loop/plan.md
+ M src/pyocd_debug_mcp/adapters/swd_process.py
+ M src/pyocd_debug_mcp/tools/misc.py
+?? .change-loop/fresh-suite/H05-cancellation/
+?? .change-loop/fresh-suite/H05-marker-unlink/
+?? H05-marker-unlink-cleanup-request.md
+?? H05-marker-unlink-request.md
+?? H05-stdio-wait-cancellation-request.md
+?? tests/test_h05_marker_unlink_spec.py
+?? tests/test_h05_wait_cancellation_spec.py
+?? tests/test_regression_h05_wait_cancellation.py
+"""Adversarial H05 contract tests for worker ownership-marker cleanup."""
+
+from __future__ import annotations
+
+import time
+import unittest
+from pathlib import Path
+from threading import RLock
+from types import SimpleNamespace
+from typing import Any, cast
+from unittest.mock import Mock, patch
+
+
+class H05MarkerUnlinkSpecTests(unittest.TestCase):
+    @staticmethod
+    def _dead_worker_client(marker: Path) -> Any:
+        from pyocd_debug_mcp.adapters import swd_process
+
+        client = cast(Any, object.__new__(swd_process._WorkerClient))
+        client._guard = RLock()
+        client._request_id = 0
+        client._closed = False
+        client._cleanup_confirmed = False
+        client._marker = marker
+        client._process = SimpleNamespace(stdin=None, stdout=None)
+        client._write = Mock()
+        client._read = Mock(side_effect=EOFError("worker pipe closed"))
+        client._terminate = Mock(return_value=True)
+        return client
+
+    def test_dead_worker_marker_unlink_failure_escapes_and_later_close_retries_marker_only(self) -> None:
+        """CL-001: cleanup failure must not be hidden as a successful graceful close."""
+        from pyocd_debug_mcp.adapters import swd_process
+        from pyocd_debug_mcp.target_errors import TargetConnectionError
+
+        marker = Path("h05-dead-worker-marker.json")
+        client = self._dead_worker_client(marker)
+
+        with patch.object(
+            swd_process.ProcessMarkerStore,
+            "remove",
+            side_effect=(OSError("H05_MARKER_UNLINK"), None),
+        ) as remove:
+            with self.assertRaises(TargetConnectionError) as raised:
+                client.close(deadline=time.monotonic() + 1)
+
+            self.assertIn("Recovery marker removal failed", str(raised.exception))
+            self.assertIn("H05_MARKER_UNLINK", str(raised.exception))
+            self.assertIsInstance(raised.exception.__cause__, OSError)
+            self.assertEqual(str(raised.exception.__cause__), "H05_MARKER_UNLINK")
+            self.assertTrue(client._closed)
+            self.assertTrue(client._cleanup_confirmed)
+            self.assertEqual(client._marker, marker)
+            self.assertEqual(client._request_id, 1)
+            client._write.assert_called_once()
+            client._read.assert_called_once()
+            client._terminate.assert_called_once_with()
+            remove.assert_called_once_with(marker)
+
+            client.close()
+
+        self.assertIsNone(client._marker)
+        self.assertEqual(client._request_id, 1)
+        client._write.assert_called_once()
+        client._read.assert_called_once()
+        client._terminate.assert_called_once_with()
+        self.assertEqual(remove.call_args_list, [((marker,), {}), ((marker,), {})])
+
+    def test_completed_nested_eof_invalidation_remains_a_successful_close(self) -> None:
+        """CL-001 regression: EOF is diagnostic once death and marker cleanup are complete."""
+        from pyocd_debug_mcp.adapters import swd_process
+
+        marker = Path("h05-clean-eof-marker.json")
+        client = self._dead_worker_client(marker)
+
+        with patch.object(swd_process.ProcessMarkerStore, "remove") as remove:
+            client.close(deadline=time.monotonic() + 1)
+
+        self.assertTrue(client._closed)
+        self.assertTrue(client._cleanup_confirmed)
+        self.assertIsNone(client._marker)
+        self.assertEqual(client._request_id, 1)
+        client._terminate.assert_called_once_with()
+        remove.assert_called_once_with(marker)
+
+    def test_provider_close_diagnostic_is_suppressed_only_after_complete_cleanup(self) -> None:
+        """CL-001 regression: a nonterminal graceful-close error remains non-fatal after cleanup."""
+        from pyocd_debug_mcp.adapters import swd_process
+
+        marker = Path("h05-provider-diagnostic-marker.json")
+        client = self._dead_worker_client(marker)
+        client._read = Mock(
+            return_value={
+                "version": 1,
+                "request_id": 1,
+                "ok": False,
+                "error": {"kind": "provider_failure", "message": "provider already exited"},
+            }
+        )
+
+        with patch.object(swd_process.ProcessMarkerStore, "remove") as remove:
+            client.close(deadline=time.monotonic() + 1)
+
+        self.assertTrue(client._closed)
+        self.assertTrue(client._cleanup_confirmed)
+        self.assertIsNone(client._marker)
+        self.assertEqual(client._request_id, 1)
+        client._terminate.assert_called_once_with()
+        remove.assert_called_once_with(marker)
+
+    def test_unconfirmed_nested_eof_invalidation_is_actionable_and_retains_marker(self) -> None:
+        """CL-001 regression: no marker removal occurs when worker death is unconfirmed."""
+        from pyocd_debug_mcp.adapters import swd_process
+        from pyocd_debug_mcp.target_errors import TargetConnectionError
+
+        marker = Path("h05-unconfirmed-worker-marker.json")
+        client = self._dead_worker_client(marker)
+        client._terminate.return_value = False
+
+        with patch.object(swd_process.ProcessMarkerStore, "remove") as remove:
+            with self.assertRaisesRegex(TargetConnectionError, "marker retained"):
+                client.close(deadline=time.monotonic() + 1)
+
+        self.assertTrue(client._closed)
+        self.assertFalse(client._cleanup_confirmed)
+        self.assertEqual(client._marker, marker)
+        self.assertEqual(client._request_id, 1)
+        client._terminate.assert_called_once_with()
+        remove.assert_not_called()
+
+warning: in the working copy of '.change-loop/changes.md', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of '.change-loop/plan.md', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'src/pyocd_debug_mcp/adapters/swd_process.py', LF will be replaced by CRLF the next time Git touches it
+
+Reading additional input from stdin...
+2026-07-26T06:25:42.385360Z  WARN codex_core::shell_snapshot: Failed to create shell snapshot for powershell: Shell snapshot not supported yet for PowerShell
+change-loop: starting iteration 2 of 8
+2026-07-26T06:27:27.614626Z  WARN codex_core::shell_snapshot: Failed to create shell snapshot for powershell: Shell snapshot not supported yet for PowerShell
+2026-07-26T06:28:10.516465Z  WARN codex_core::shell_snapshot: Failed to create shell snapshot for powershell: Shell snapshot not supported yet for PowerShell
+2026-07-26T06:29:42.115582Z  WARN codex_core::shell_snapshot: Failed to create shell snapshot for powershell: Shell snapshot not supported yet for PowerShell
+change-loop: green: both tester suites passed in iteration 2

@@ -385,6 +385,7 @@ class RoundThreeRegressionTests(unittest.TestCase):
             self.assertEqual(target.exception.code, "package/device-binding-target-mismatch")
 
     def test_r3_07_exact_device_ambiguity_refuses(self) -> None:
+        payload = _pack_bytes(_pdsc())
         first = VerifiedPack(
             Path("one.pack"),
             PackSpec(
@@ -397,7 +398,7 @@ class RoundThreeRegressionTests(unittest.TestCase):
                 (),
                 (DeviceBinding("TEST123", "TEST123", "one"),),
             ),
-            b"one",
+            payload,
         )
         second = VerifiedPack(
             Path("two.pack"),
@@ -411,7 +412,7 @@ class RoundThreeRegressionTests(unittest.TestCase):
                 (),
                 (DeviceBinding("TEST123", "TEST123", "two"),),
             ),
-            b"two",
+            payload,
         )
         resolver = DeviceSupportResolver(
             pack_loader=lambda target: {"one": first, "two": second}.get(target),

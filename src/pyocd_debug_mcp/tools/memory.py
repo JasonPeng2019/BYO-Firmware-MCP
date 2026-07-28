@@ -34,6 +34,9 @@ class MemoryToolServices:
     check_memory_read: Callable[[str, int, int], None]
     check_memory_write: Callable[[str, int, int], None] | None = None
     prepared_symbol_for: Callable[[str, str, str | None], ResolvedSymbol | None] | None = None
+    get_state: Callable[[Any], str] | None = None
+    halt: Callable[[Any], None] | None = None
+    resume: Callable[[Any], None] | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -105,6 +108,35 @@ def _record_success(
 
 def _valid_width(width: int) -> bool:
     return not isinstance(width, bool) and width in {8, 16, 32}
+
+
+def _read_coherent_scalar(
+    services: MemoryToolServices,
+    handle: Any,
+    address: int,
+    width: int,
+) -> int:
+    """Read one scalar while restoring execution after an inserted halt."""
+
+    if services.get_state is None or services.halt is None or services.resume is None:
+        raise RuntimeError("Memory service lifecycle operations are not configured.")
+    if services.get_state(handle).upper() == "HALTED":
+        return services.read_target_memory(handle, address, width)
+
+    services.halt(handle)
+    try:
+        value = services.read_target_memory(handle, address, width)
+    except BaseException as read_error:
+        try:
+            services.resume(handle)
+        except BaseException as resume_error:
+            raise RuntimeError(
+                f"{type(read_error).__name__}: {read_error}; execution restoration failed "
+                f"with {type(resume_error).__name__}: {resume_error}"
+            ) from read_error
+        raise
+    services.resume(handle)
+    return value
 
 
 def _hash_artifact(path: Path) -> str:
@@ -280,7 +312,18 @@ def build_memory_handlers(
         width: int = 32,
         elf_artifact: str | None = None,
     ) -> str:
-        """Read a mapped symbol; pass its project ELF after restart or before same-run flash."""
+        """Read one mapped scalar symbol (width 8, 16, or 32 bits) from the selected board.
+
+        `board_id` selects the configured board; `symbol` names the ELF variable; `width` is 8,
+        16, or 32 bits; and optional `elf_artifact` supplies the current local ELF after a restart
+        or before a same-run flash. For example, call
+        `read_memory_symbol("board-a", "scheduler_tick_count", 32, "build/app.elf")`.
+        A running or sleeping target is briefly halted for one coherent read and execution is
+        restored before this tool returns; an already halted target remains halted. The returned
+        text includes the resolved symbol and hexadecimal value. ELF, symbol, target-access, read,
+        or restoration failures are reported honestly rather than as invented data: retry with the
+        current ELF, reconnect the target, then retry the read.
+        """
 
         started = time.monotonic()
         runtime = services.runtime_for(board_id)
@@ -378,7 +421,7 @@ def build_memory_handlers(
                 runtime,
             )
         services.check_memory_read(board_id, resolved.address, requested_bytes)
-        value = services.read_target_memory(handle, resolved.address, width)
+        value = _read_coherent_scalar(services, handle, resolved.address, width)
         result = (
             f"Symbol {resolved.name} from {selection.path} @0x{resolved.address:08X} "
             f"size={resolved.size} type={resolved.type} value=0x{value:0{width // 4}X}"

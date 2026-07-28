@@ -1,0 +1,1 @@
+.venv/Scripts/python.exe -m pytest -q tests/test_regression_s12_nrf_pack_overlap.py

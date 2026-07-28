@@ -1,0 +1,15 @@
+Reviewer: `A20-diff-adversarial-reviewer-001`  
+Charter SHA-256 verified: `03347b0f7ce185922e07e373784a39d49f3a497c3ee8c35035bb3bfab5411bdb`  
+Plan SHA-256 verified: `a974e693dd8b16d03d993b27b0c16f1113891482de58e67160608b2cc6da0a07`
+
+VERDICT: ACCEPT
+
+1. The lifecycle helper now catches `BaseException` for both primary read and restoration failures, resumes after a non-`Exception` read failure, preserves the primary as the exception cause, and retains restoration type/message in the dual-failure result. Evidence: [`memory.py:127`](C:\Users\Jason\Documents\Jason\FirmCLI_Tester\Firmware-Test-Manual\MCP-Trial-3\BYO-Firmware-MCP\src\pyocd_debug_mcp\tools\memory.py:127); BaseException coverage at [`test_a20_sleeping_symbol_read_spec.py:130`](C:\Users\Jason\Documents\Jason\FirmCLI_Tester\Firmware-Test-Manual\MCP-Trial-3\BYO-Firmware-MCP\tests\test_a20_sleeping_symbol_read_spec.py:130) and [`test_a20_sleeping_symbol_read_spec.py:160`](C:\Users\Jason\Documents\Jason\FirmCLI_Tester\Firmware-Test-Manual\MCP-Trial-3\BYO-Firmware-MCP\tests\test_a20_sleeping_symbol_read_spec.py:160).
+
+2. Successful and already-HALTED paths remain unchanged: HALTED reads directly without resume; every other state halts, reads, restores, and records success only afterward. Evidence: [`memory.py:123`](C:\Users\Jason\Documents\Jason\FirmCLI_Tester\Firmware-Test-Manual\MCP-Trial-3\BYO-Firmware-MCP\src\pyocd_debug_mcp\tools\memory.py:123), [`memory.py:138`](C:\Users\Jason\Documents\Jason\FirmCLI_Tester\Firmware-Test-Manual\MCP-Trial-3\BYO-Firmware-MCP\src\pyocd_debug_mcp\tools\memory.py:138), and [`test_a20_sleeping_symbol_read_spec.py:91`](C:\Users\Jason\Documents\Jason\FirmCLI_Tester\Firmware-Test-Manual\MCP-Trial-3\BYO-Firmware-MCP\tests\test_a20_sleeping_symbol_read_spec.py:91).
+
+3. Published FastMCP help now documents all parameters, width units, an invocation example, result, lifecycle, and recovery. Registration still publishes the handler docstring directly at [`server.py:2360`](C:\Users\Jason\Documents\Jason\FirmCLI_Tester\Firmware-Test-Manual\MCP-Trial-3\BYO-Firmware-MCP\src\pyocd_debug_mcp\server.py:2360). Evidence: [`memory.py:315`](C:\Users\Jason\Documents\Jason\FirmCLI_Tester\Firmware-Test-Manual\MCP-Trial-3\BYO-Firmware-MCP\src\pyocd_debug_mcp\tools\memory.py:315), test assertions at [`test_a20_sleeping_symbol_read_spec.py:194`](C:\Users\Jason\Documents\Jason\FirmCLI_Tester\Firmware-Test-Manual\MCP-Trial-3\BYO-Firmware-MCP\tests\test_a20_sleeping_symbol_read_spec.py:194).
+
+4. No schema drift was introduced; the regression test verifies the original four parameters and defaults. [`test_regression_a20_sleeping_symbol_read.py:61`](C:\Users\Jason\Documents\Jason\FirmCLI_Tester\Firmware-Test-Manual\MCP-Trial-3\BYO-Firmware-MCP\tests\test_regression_a20_sleeping_symbol_read.py:61). The recorded gate reports 10 spec tests and 3 regression tests passing.
+
+I made no edits and performed no hardware action.

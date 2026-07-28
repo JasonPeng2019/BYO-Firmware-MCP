@@ -2,15 +2,52 @@
 
 from __future__ import annotations
 
+import sys
 import time
 from dataclasses import dataclass
 from typing import Callable
 
 from pyocd_debug_mcp.adapters.uart_interface import UARTInterface
 from pyocd_debug_mcp.adapters.uart_pyserial import PySerialUARTInterface
-from pyocd_debug_mcp.kernel.operations import cancellation_checkpoint
+from pyocd_debug_mcp.kernel.operations import OperationCancelledError, cancellation_checkpoint
 
 _BACKEND: UARTInterface = PySerialUARTInterface()
+
+
+def _compose_uart_close_error(
+    raw_close: Exception,
+    *,
+    operation: str,
+    device: str,
+    baudrate: int,
+    primary_error: BaseException | None,
+) -> RuntimeError | None:
+    """Attach a UART close failure without obscuring an active operation failure."""
+
+    raw_close.__context__ = None
+    close_error = RuntimeError(
+        f"Unable to close UART after {operation} on {device} at {baudrate} baud; "
+        f"handle cleanup is uncertain: {type(raw_close).__name__}: {raw_close}"
+    )
+    close_error.__cause__ = raw_close
+    close_error.__context__ = None
+    close_error.__suppress_context__ = True
+
+    if primary_error is None:
+        return close_error
+
+    if isinstance(primary_error, OperationCancelledError):
+        primary_error.__context__ = close_error
+        return
+
+    primary_error.args = (
+        f"{primary_error}; additionally, UART close failed and handle cleanup is uncertain: "
+        f"{type(raw_close).__name__}: {raw_close}",
+    )
+    raw_primary = primary_error.__cause__
+    if raw_primary is not None:
+        raw_primary.__context__ = close_error
+    return None
 
 
 @dataclass(frozen=True)
@@ -68,6 +105,7 @@ class UARTExchangeResult:
             and self.expected_step_count > 0
             and all(step.matched for step in self.steps)
         )
+
 
 def capture_uart_output(
     device: str,
@@ -158,11 +196,26 @@ def capture_uart_output(
                             reopen_count=reopen_count,
                             duration_seconds=time.monotonic() - started,
                         )
+        except OperationCancelledError:
+            raise
         except Exception as exc:  # noqa: BLE001 - want the raw serial error
             raise RuntimeError(f"Unable to read {device} at {baudrate} baud: {exc}") from exc
         finally:
             if port_handle is not None:
-                backend.close(port_handle)
+                primary_error = sys.exc_info()[1]
+                close_failure = None
+                try:
+                    backend.close(port_handle)
+                except Exception as close_error:  # noqa: BLE001 - retain cleanup failure
+                    close_failure = _compose_uart_close_error(
+                        close_error,
+                        operation="read",
+                        device=device,
+                        baudrate=baudrate,
+                        primary_error=primary_error,
+                    )
+                if close_failure is not None:
+                    raise close_failure
 
         if attempt < total_attempts - 1:
             reopen_count += 1
@@ -206,11 +259,26 @@ def write_uart_output(
         cancellation_checkpoint()
         bytes_written = backend.write(port_handle, payload)
         cancellation_checkpoint()
+    except OperationCancelledError:
+        raise
     except Exception as exc:  # noqa: BLE001 - want the raw serial error
         raise RuntimeError(f"Unable to write {device} at {baudrate} baud: {exc}") from exc
     finally:
         if port_handle is not None:
-            backend.close(port_handle)
+            primary_error = sys.exc_info()[1]
+            close_failure = None
+            try:
+                backend.close(port_handle)
+            except Exception as close_error:  # noqa: BLE001 - retain cleanup failure
+                close_failure = _compose_uart_close_error(
+                    close_error,
+                    operation="write",
+                    device=device,
+                    baudrate=baudrate,
+                    primary_error=primary_error,
+                )
+            if close_failure is not None:
+                raise close_failure
     return UARTWriteResult(
         bytes_written=bytes_written,
         duration_seconds=time.monotonic() - started,
@@ -307,13 +375,28 @@ def exchange_uart_output(
                 step_results.append(step_result)
                 if not step_result.matched:
                     break
+    except OperationCancelledError:
+        raise
     except Exception as exc:  # noqa: BLE001 - normalize backend-specific serial failures
         raise RuntimeError(
             f"Unable to exchange data on {device} at {baudrate} baud: {exc}"
         ) from exc
     finally:
         if port_handle is not None:
-            backend.close(port_handle)
+            primary_error = sys.exc_info()[1]
+            close_failure = None
+            try:
+                backend.close(port_handle)
+            except Exception as close_error:  # noqa: BLE001 - retain cleanup failure
+                close_failure = _compose_uart_close_error(
+                    close_error,
+                    operation="exchange",
+                    device=device,
+                    baudrate=baudrate,
+                    primary_error=primary_error,
+                )
+            if close_failure is not None:
+                raise close_failure
     return UARTExchangeResult(
         captured.decode("utf-8", errors="replace"),
         expected_text,

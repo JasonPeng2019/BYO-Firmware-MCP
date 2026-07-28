@@ -1,0 +1,353 @@
+2026-07-27T08:56:18.540240Z ERROR codex_models_manager::cache: failed to load models cache: missing field `supports_reasoning_summaries` at line 88 column 5
+2026-07-27T08:56:19.121753Z  WARN codex_core::shell_snapshot: Failed to create shell snapshot for powershell: Shell snapshot not supported yet for PowerShell
+2026-07-27T08:56:27.317493Z ERROR codex_models_manager::manager: failed to renew cache TTL: missing field `supports_reasoning_summaries` at line 88 column 5
+2026-07-27T08:56:37.101201Z ERROR codex_models_manager::manager: failed to renew cache TTL: missing field `supports_reasoning_summaries` at line 88 column 5
+2026-07-27T08:56:41.213046Z ERROR codex_models_manager::manager: failed to renew cache TTL: missing field `supports_reasoning_summaries` at line 88 column 5
+2026-07-27T08:56:47.852655Z ERROR codex_models_manager::manager: failed to renew cache TTL: missing field `supports_reasoning_summaries` at line 88 column 5
+2026-07-27T08:56:51.982508Z ERROR codex_models_manager::manager: failed to renew cache TTL: missing field `supports_reasoning_summaries` at line 88 column 5
+2026-07-27T08:56:59.341471Z ERROR codex_models_manager::manager: failed to renew cache TTL: missing field `supports_reasoning_summaries` at line 88 column 5
+2026-07-27T08:57:04.945096Z ERROR codex_models_manager::cache: failed to load models cache: missing field `supports_reasoning_summaries` at line 88 column 5
+2026-07-27T08:57:05.383049Z  WARN codex_core::shell_snapshot: Failed to create shell snapshot for powershell: Shell snapshot not supported yet for PowerShell
+2026-07-27T08:57:33.077276Z ERROR codex_core::tools::router: error=Exit code: 1
+Wall time: 0.4 seconds
+Output:
+15-#     http://www.apache.org/licenses/LICENSE-2.0
+16-#
+17-# Unless required by applicable law or agreed to in writing, software
+18-# distributed under the License is distributed on an "AS IS" BASIS,
+19-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+20-# See the License for the specific language governing permissions and
+21-# limitations under the License.
+22-
+23-from dataclasses import (dataclass, field)
+24-from xml.etree.ElementTree import (ElementTree, Element)
+25-import zipfile
+26-import logging
+27-import io
+28-import errno
+29-from pathlib import Path
+30-import posixpath
+31-from typing import (Any, Callable, Dict, List, IO, Optional, Tuple, TypeVar, Set, Union)
+32-
+33-from .flash_algo import PackFlashAlgo
+34-from ...core import exceptions
+35:from ...core.memory_map import (
+36-    FlashRegion,
+37-    MemoryMap,
+38-    MemoryRange,
+39:    MemoryRegion,
+40-    MemoryType,
+41-    MEMORY_TYPE_CLASS_MAP,
+42-)
+43-from ...coresight.ap import (
+44-    APAddressBase,
+45-    APv1Address,
+46-    APv2Address,
+47-)
+48-from ...debug.sequences.sequences import (
+49-    Block,
+50-    DebugSequence,
+51-    DebugSequenceNode,
+52-    IfControl,
+53-    WhileControl,
+54-)
+55-from ...flash.flash_dsq import FlashDebugSequence
+56-
+57-LOG = logging.getLogger(__name__)
+58-
+59-class MalformedCmsisPackError(exceptions.TargetSupportError):
+60-    """@brief Exception raised for errors parsing a CMSIS-Pack."""
+61-    pass
+62-
+63-@dataclass
+64-class _DeviceInfo:
+65-    """@brief Simple container class to hold XML elements describing a device."""
+66-    element: Element
+67-    families: List[str] = field(default_factory=list)
+68-    processors: List[Element] = field(default_factory=list)
+69-    memories: List[Element] = field(default_factory=list)
+70-    algos: List[Element] = field(default_factory=list)
+71-    debugs: List[Element] = field(default_factory=list)
+72-    sequences: List[Element] = field(default_factory=list)
+73-    debugvars: List[Element] = field(default_factory=list)
+74-    debugports: List[Element] = field(default_factory=list)
+75-    accessports: List[Element] = field(default_factory=list)
+76-    flashinfo: List[Element] = field(default_factory=list)
+77-
+78-@dataclass
+79-class ProcessorInfo:
+80-    """@brief Descriptor for a processor defined in a DFP."""
+81-    ## The Pname attribute, or Dcore if not Pname was provided.
+82-    name: str = "unknown"
+83-    ## PE unit number within an MPCore. For single cores this will be 0.
+84-    unit: int = -1
+85-    ## Total number of cores in an MPCore.
+86-    total_units: int = 1
+87-    ## Address of AP through which the PE can be accessed.
+88-    ap_address: APAddressBase = APv1Address(-1)
+89:    ## Base address of the PE's memory mapped debug registers. Not used and 0 for M-profile.
+90-    address: int = 0
+91-    ## SVD file path relative to the pack.
+92-    svd_path: Optional[str] = None
+93-    ## Default reset sequence name.
+94-    default_reset_sequence: str = "ResetSystem"
+95-
+96-def _get_part_number_from_element(element: Element) -> str:
+97-    """@brief Extract the part number from a device or variant XML element."""
+98-    assert element.tag in ("device", "variant")
+99-    # Both device and variant may have 'Dname' according to the latest spec.
+100-    if 'Dname' in element.attrib:
+101-        return element.attrib['Dname']
+102-    elif element.tag == "variant":
+103-        return element.attrib['Dvariant']
+104-    else:
+105-        raise ValueError("element is neither device nor variant")
+106-
+107-class CmsisPack:
+108-    """@brief Wraps a CMSIS Device Family Pack.
+109-
+110-    This class provides a top-level interface for extracting device information from CMSIS-Packs.
+111-    After an instance is constructed, a list of the devices described within the pack is available
+112-    from the `devices` property. Each item in the list is a CmsisPackDevice object.
+113-
+114-    The XML element hierarchy that defines devices is as follows.
+115-    ```
+116-    family [-> subFamily] -> device [-> variant]
+117-    ```
+118-
+119-    Internally, this class is responsible for collecting the device-related XML elements from each
+120-    of the levels of the hierarchy described above. It determines which elements belong to each
+121-    defined device and passes those to CmsisPackDevice. It is then CmsisPackDevice that performs
+122-    the parsing of each element type into pyOCD-compatible data.
+123-    """
+124-    def __init__(self, file_or_path: Union[str, zipfile.ZipFile, IO[bytes], Path]) -> None:
+125-        """@brief Constructor.
+126-
+127-        Opens the CMSIS-Pack and builds instances of CmsisPackDevice for all the devices
+128-        and variants defined within the pack.
+129-
+130-        @param self
+131-        @param file_or_path The .pack file to open. These values are supported:
+132-            - String that is the path to a .pack file (a Zip file).
+133-            - String that is the path to the root directory of an expanded pack.
+134-            - `ZipFile` object.
+135-            - File-like object that is already opened.
+136-
+137-        @exception MalformedCmsisPackError The pack is not a zip file, or the .pdsc file is missing
+138-            from within the pack.
+139-        """
+140-        self._is_dir = False
+141-        self._pack_path = ''
+142-        if isinstance(file_or_path, zipfile.ZipFile):
+143-            self._pack_file = file_or_path
+144-            self._pack_path = file_or_path.filename or ''
+145-        else:
+146-            if isinstance(file_or_path, (str, Path)):
+147-                path = Path(file_or_path).expanduser()
+148-                self._pack_path = str(path)
+149-                if path.is_dir():
+150-                    self._is_dir = True
+151-                    self._dir_path = path
+152-                else:
+153-                    file_or_path = path  # use expanded path for ZipFile
+154-
+155-            if not self._is_dir:
+156-                try:
+157-                    self._pack_file = zipfile.ZipFile(file_or_path, 'r')
+158-                except zipfile.BadZipFile as err:
+159-                    raise MalformedCmsisPackError(
+160-                        f"Failed to open CMSIS-Pack '{self._pack_path or 'stream'}': {err}") from err
+161-
+162-        # Find and open the .pdsc file.
+163-        if self._is_dir:
+164-            for child_path in self._dir_path.iterdir():
+165-                if child_path.suffix == '.pdsc':
+166-                    self._pdsc_name = child_path.name
+167-                    with child_path.open('rb') as pdsc_file:
+168-                        self._pdsc = CmsisPackDescription(self, pdsc_file)
+169-                    break
+170-            else:
+171-                raise MalformedCmsisPackError(f"CMSIS-Pack '{self._pack_path}' is missing a .pdsc file")
+172-        else:
+173-            for name in self._pack_file.namelist():
+174-                if name.endswith('.pdsc'):
+175-                    self._pdsc_name = name
+176-                    with self._pack_file.open(name) as pdsc_file:
+177-                        self._pdsc = CmsisPackDescription(self, pdsc_file)
+178-                    break
+179-            else:
+180-                raise MalformedCmsisPackError(f"CMSIS-Pack '{self._pack_path}' is missing a .pdsc file")
+181-
+182-    @property
+183-    def pack_path(self) -> str:
+184-        """@brief The file path or directory of the pack root (zip file or expanded directory)."""
+185-        return self._pack_path
+186-
+187-    @property
+188-    def pdsc(self) -> "CmsisPackDescription":
+189-        """@brief Accessor for the CmsisPackDescription instance for the pack's PDSC file."""
+190-        return self._pdsc
+191-
+192-    @property
+193-    def devices(self) -> List["CmsisPackDevice"]:
+194-        """@brief A list of CmsisPackDevice objects for every part number defined in the pack."""
+195-        return self._pdsc.devices
+196-
+197-    def get_file(self, filename: str) -> IO[bytes]:
+198-        """@brief Return file-like object for a file within the pack.
+199-
+200-        @param self
+201-        @param filename Relative path within the pack. May use forward or back slashes and '..'.
+202-        @return A BytesIO object is returned that contains all of the data from the file
+203-            in the pack. This is done to isolate the returned file from how the pack was
+204-            opened (due to particularities of the ZipFile implementation).
+205-        """
+206-        filename = posixpath.normpath(filename.replace('\\', '/'))
+207-
+208-        # Some vendors place their pdsc in some subdirectories of the pack archive,
+209-        # use relative directory to the pdsc file while reading other files.
+210-        pdsc_base = self._pdsc_name.rsplit('/', 1)
+211-        if len(pdsc_base) == 2:
+212-            filename = f'{pdsc_base[0]}/{filename}'
+213-
+214-        if self._is_dir:
+215-            path = self._dir_path / filename
+216-            return io.BytesIO(path.read_bytes())
+217-        else:
+218-            return io.BytesIO(self._pack_file.read(filename))
+219-
+220-class CmsisPackDescription:
+221-    """@brief Parser for the PDSC XML file describing a CMSIS-Pack.
+222-    """
+223-
+224-    def __init__(self, pack: CmsisPack, pdsc_file: IO[bytes]) -> None:
+225-        """@brief Constructor.
+226-
+227-        @param self This object.
+228-        @param pack Reference to the CmsisPack instance.
+229-        @param pdsc_file A file-like object for the .pdsc contained in _pack_.
+230-        """
+231-        self._pack = pack
+232-
+233-        # Convert PDSC into an ElementTree.
+234-        self._pdsc = ElementTree(file=pdsc_file)
+235-
+236-        self._state_stack: List[_DeviceInfo] = []
+237-        self._devices: List["CmsisPackDevice"] = []
+238-
+239:        # Remember if we have already warned about overlapping memory regions
+240-        # so we can limit these to one warning per DFP
+241:        self._warned_overlapping_memory_regions = False
+242-
+243-        # Extract devices.
+244-        for family in self._pdsc.iter('family'):
+245-            self._parse_devices(family)
+246-
+247-    @property
+248-    def pack_name(self) -> Optional[str]:
+249-        """@brief Name of the CMSIS-Pack.
+250-        @return Contents of the required <name> element, or None if missing.
+251-        """
+252-        return self._pdsc.findtext('name')
+253-
+254-    @property
+255-    def pack(self) -> CmsisPack:
+256-        """@brief Reference to the containing CmsisPack object."""
+257-        return self._pack
+258-
+259-    @property
+260-    def pack_path(self) -> str:
+261-        """@brief The file path or directory of the pack that defines this description."""
+262-        return self._pack.pack_path if self._pack else ''
+263-
+264-    @property
+265-    def devices(self) -> List["CmsisPackDevice"]:
+266-        """@brief A list of CmsisPackDevice objects for every part number defined in the pack."""
+267-        return self._devices
+268-
+269-    def _parse_devices(self, parent: Element) -> None:
+270-        # Extract device description elements we care about.
+271-        newState = _DeviceInfo(element=parent)
+272-        children: List[Element] = []
+273-        for elem in parent:
+274:            if elem.tag == 'memory':
+275-                newState.memories.append(elem)
+276-            elif elem.tag == 'processor':
+277-                newState.processors.append(elem)
+278-            elif elem.tag == 'algorithm':
+279-                newState.algos.append(elem)
+280-            elif elem.tag == 'debug':
+281-                newState.debugs.append(elem)
+282-            elif elem.tag == 'sequences':
+283-                newState.sequences += elem.findall('sequence')
+284-            elif elem.tag == 'debugvars':
+285-                newState.debugvars.append(elem)
+286-            elif elem.tag == 'debugport':
+287-                newState.debugports.append(elem)
+288-            elif elem.tag in ('accessportV1', 'accessportV2'):
+289-                newState.accessports.append(elem)
+290-            elif elem.tag == 'flashinfo':
+291-                newState.flashinfo.append(elem)
+292-            # Save any elements that we will recurse into.
+293-            elif elem.tag in ('subFamily', 'device', 'variant'):
+294-                children.append(elem)
+295-
+296-        # Push the new device description state onto the stack.
+297-        self._state_stack.append(newState)
+298-
+299-        # Create a device object if this element defines one.
+300-        if parent.tag in ('device', 'variant'):
+301-            # Build device info from elements applying to this device.
+302-            deviceInfo = _DeviceInfo(element=parent,
+303-                                        families=self._extract_families(),
+304-                                        processors=self._extract_processors(),
+305-                                        memories=self._extract_memories(),
+306-                                        algos=self._extract_algos(),
+307-                                        debugs=self._extract_debugs(),
+308-                                        sequences=self._extract_sequences(),
+309-                                        debugvars=self._extract_debugvars(),
+310-                                        debugports=self._extract_debugports(),
+311-                                        accessports=self._extract_accessports(),
+312-                                        flashinfo=self._extract_flashinfo(),
+313-                                        )
+314-
+
+2026-07-27T08:58:55.633866Z ERROR codex_models_manager::manager: failed to renew cache TTL: missing field `supports_reasoning_summaries` at line 88 column 5
+2026-07-27T08:59:00.806363Z ERROR codex_models_manager::manager: failed to renew cache TTL: missing field `supports_reasoning_summaries` at line 88 column 5
+2026-07-27T08:59:17.600583Z ERROR codex_models_manager::manager: failed to renew cache TTL: missing field `supports_reasoning_summaries` at line 88 column 5
+2026-07-27T08:59:24.339992Z ERROR codex_models_manager::manager: failed to renew cache TTL: missing field `supports_reasoning_summaries` at line 88 column 5
+2026-07-27T08:59:28.996001Z ERROR codex_core::tools::router: error=Exit code: 1
+Wall time: 1.1 seconds
+Output:
+
+2026-07-27T08:59:29.161657Z ERROR codex_models_manager::manager: failed to renew cache TTL: missing field `supports_reasoning_summaries` at line 88 column 5
+2026-07-27T08:59:33.228700Z ERROR codex_models_manager::manager: failed to renew cache TTL: missing field `supports_reasoning_summaries` at line 88 column 5
+2026-07-27T08:59:38.294576Z ERROR codex_core::tools::router: error=Exit code: 1
+Wall time: 0.3 seconds
+Output:
+13:            Updated support for nRF52840_xxAA.
+16:            Updated support for nRF52840_xxAA.
+22:            Updated support for nRF52840_xxAA.
+90:            Fixed capabilities of device nRF52840_xxAA.
+95:            Updated support for nRF52840_xxAA.
+665:            <device Dname="nRF52840_xxAA">
+693:                <description>nRF52840_xxAA is a microcontroller from the NRF52 Series family of microcontrollers with 1024kB of Flash and 256kB of RAM ideally fitted for the S110 Bluetooth Low Energy Peripheral protocol stack, S120 Bluetooth Low Energy Central protocol stack, S130 Bluetooth Low Energy Multi-role protocol stack, IEEE 802.15.4 protocol stacks and proprietary 2.4GHz protocol stacks, including Gazell, all available free of charge in the nRF52 Software Development Kit.</description>
+822:            <accept Dvendor="Nordic Semiconductor:54" Dname="nRF52840_xxAA"/>
+
+2026-07-27T08:59:38.348002Z ERROR codex_models_manager::manager: failed to renew cache TTL: missing field `supports_reasoning_summaries` at line 88 column 5
+2026-07-27T08:59:41.274234Z ERROR codex_models_manager::manager: failed to renew cache TTL: missing field `supports_reasoning_summaries` at line 88 column 5
+2026-07-27T08:59:44.684892Z ERROR codex_models_manager::manager: failed to renew cache TTL: missing field `supports_reasoning_summaries` at line 88 column 5
+2026-07-27T08:59:48.160504Z ERROR codex_models_manager::manager: failed to renew cache TTL: missing field `supports_reasoning_summaries` at line 88 column 5
+2026-07-27T09:01:32.122623Z  WARN codex_core::shell_snapshot: Failed to create shell snapshot for powershell: Shell snapshot not supported yet for PowerShell
+2026-07-27T09:01:54.392551Z ERROR codex_models_manager::manager: failed to renew cache TTL: missing field `supports_reasoning_summaries` at line 88 column 5
+2026-07-27T09:02:03.771339Z ERROR codex_models_manager::manager: failed to renew cache TTL: missing field `supports_reasoning_summaries` at line 88 column 5
+2026-07-27T09:02:11.673096Z ERROR codex_models_manager::manager: failed to renew cache TTL: missing field `supports_reasoning_summaries` at line 88 column 5
+2026-07-27T09:02:22.827038Z ERROR codex_models_manager::manager: failed to renew cache TTL: missing field `supports_reasoning_summaries` at line 88 column 5
+2026-07-27T09:02:30.097170Z ERROR codex_models_manager::manager: failed to renew cache TTL: missing field `supports_reasoning_summaries` at line 88 column 5
+2026-07-27T09:02:54.769530Z ERROR codex_models_manager::manager: failed to renew cache TTL: missing field `supports_reasoning_summaries` at line 88 column 5
+2026-07-27T09:02:58.579873Z ERROR codex_models_manager::manager: failed to renew cache TTL: missing field `supports_reasoning_summaries` at line 88 column 5
+2026-07-27T09:03:06.356958Z ERROR codex_models_manager::manager: failed to renew cache TTL: missing field `supports_reasoning_summaries` at line 88 column 5
+2026-07-27T09:03:18.112683Z ERROR codex_models_manager::manager: failed to renew cache TTL: missing field `supports_reasoning_summaries` at line 88 column 5
+2026-07-27T09:03:22.104372Z ERROR codex_models_manager::manager: failed to renew cache TTL: missing field `supports_reasoning_summaries` at line 88 column 5
+2026-07-27T09:03:29.597641Z ERROR codex_models_manager::manager: failed to renew cache TTL: missing field `supports_reasoning_summaries` at line 88 column 5
+2026-07-27T09:03:34.086284Z ERROR codex_models_manager::manager: failed to renew cache TTL: missing field `supports_reasoning_summaries` at line 88 column 5

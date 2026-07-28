@@ -139,23 +139,31 @@ def prove_datasheet_applicability(
 
         reader = PdfReader(io.BytesIO(payload))
         metadata = " ".join(str(value) for value in (reader.metadata or {}).values())
-        sources = [("metadata", metadata)] + [
-            (f"page:{index + 1}", page.extract_text() or "")
-            for index, page in enumerate(reader.pages)
-        ]
+        for normalized_term, original_term, permits_placeholder in terms:
+            if _contains_identity_term(
+                metadata, original_term, permits_family_placeholder=permits_placeholder
+            ):
+                return DatasheetApplicabilityProof(
+                    requested, normalized_term, "metadata", digest, f"{PARSER_VERSION}-{pypdf_version}"
+                )
+        for index, page in enumerate(reader.pages):
+            source = page.extract_text() or ""
+            for normalized_term, original_term, permits_placeholder in terms:
+                if _contains_identity_term(
+                    source, original_term, permits_family_placeholder=permits_placeholder
+                ):
+                    return DatasheetApplicabilityProof(
+                        requested,
+                        normalized_term,
+                        f"page:{index + 1}",
+                        digest,
+                        f"{PARSER_VERSION}-{pypdf_version}",
+                    )
     except Exception as exc:  # pypdf exposes several malformed/encrypted PDF exceptions
         raise DatasheetApplicabilityError(
             "datasheet PDF could not be read for MCU applicability; provide verifiable official "
             f"datasheet evidence for {requested_part}"
         ) from exc
-    for locus, source in sources:
-        for normalized_term, original_term, permits_placeholder in terms:
-            if _contains_identity_term(
-                source, original_term, permits_family_placeholder=permits_placeholder
-            ):
-                return DatasheetApplicabilityProof(
-                    requested, normalized_term, locus, digest, f"{PARSER_VERSION}-{pypdf_version}"
-                )
     raise DatasheetApplicabilityError(
         "datasheet applicability to requested MCU "
         f"{requested_part} was not established; provide verifiable official datasheet evidence"

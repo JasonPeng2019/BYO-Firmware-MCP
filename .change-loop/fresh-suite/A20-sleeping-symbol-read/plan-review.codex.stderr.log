@@ -1,0 +1,420 @@
+2026-07-28T06:05:34.743978Z ERROR codex_models_manager::cache: failed to load models cache: missing field `supports_reasoning_summaries` at line 88 column 5
+2026-07-28T06:05:35.882892Z  WARN codex_core::shell_snapshot: Failed to create shell snapshot for powershell: Shell snapshot not supported yet for PowerShell
+2026-07-28T06:06:04.979523Z ERROR codex_core::tools::router: error=Exit code: 1
+Wall time: 0.8 seconds
+Output:
+---ALL MEMORY SERVICE CONSTRUCTORS---
+.\src\pyocd_debug_mcp\server.py-2096-
+.\src\pyocd_debug_mcp\server.py-2097-
+.\src\pyocd_debug_mcp\server.py:2098:memory_services = MemoryToolServices(
+.\src\pyocd_debug_mcp\server.py-2099-    runtime_for=_runtime_for,
+.\src\pyocd_debug_mcp\server.py-2100-    active_session_id=_active_session_id,
+--
+.\tests\test_server_trust_model_round_1.py-233-        checked: list[tuple[int, int]] = []
+.\tests\test_server_trust_model_round_1.py-234-        block_reads: list[int] = []
+.\tests\test_server_trust_model_round_1.py:235:        services = MemoryToolServices(
+.\tests\test_server_trust_model_round_1.py-236-            runtime_for=lambda _: None,
+.\tests\test_server_trust_model_round_1.py-237-            active_session_id=lambda _: None,
+--
+.\tests\test_server_trust_model_round_3.py-66-
+.\tests\test_server_trust_model_round_3.py-67-def _memory(artifact: Path, finder: object) -> MemoryToolServices:
+.\tests\test_server_trust_model_round_3.py:68:    return MemoryToolServices(
+.\tests\test_server_trust_model_round_3.py-69-        lambda _: None,
+.\tests\test_server_trust_model_round_3.py-70-        lambda _: None,
+--
+.\tests\test_server_trust_model_round_4.py-54-
+.\tests\test_server_trust_model_round_4.py-55-def _memory_services(artifact: Path, finder: object) -> MemoryToolServices:
+.\tests\test_server_trust_model_round_4.py:56:    return MemoryToolServices(
+.\tests\test_server_trust_model_round_4.py-57-        runtime_for=lambda _board: None,
+.\tests\test_server_trust_model_round_4.py-58-        active_session_id=lambda _board: None,
+---SERVER CONTEXT---
+    prepared = operation.prepared.pop("write_memory_symbol", None)
+    if prepared is None:
+        raise RuntimeError("Guarded symbol write has no prepared containment result.")
+    prepared_board, prepared_symbol, prepared_elf, resolved = cast(
+        tuple[str, str, str | None, ResolvedSymbol], prepared
+    )
+    if prepared_board != board_id or prepared_symbol != symbol or prepared_elf != elf_artifact:
+        raise RuntimeError("Prepared symbol write does not match the guarded invocation.")
+    return resolved
+
+
+memory_services = MemoryToolServices(
+    runtime_for=_runtime_for,
+    active_session_id=_active_session_id,
+    duration_ms=_duration_ms,
+    record_event=_record_event,
+    format_refusal=_format_refusal,
+    handle_for=_handle,
+    symbol_artifact_for=_symbol_artifact_for_handle,
+    find_symbols=lambda artifact, query: find_symbols(artifact, query),
+    resolve_symbol=resolve_symbol,
+    read_target_memory=target_control.read_memory,
+    read_target_block=target_control.read_memory_block,
+    write_target_memory=target_control.write_memory,
+    check_memory_read=_check_memory_read_safety,
+    check_memory_write=_check_memory_safety,
+    prepared_symbol_for=_prepared_symbol_write_for,
+)
+memory_tool_handlers = build_memory_handlers(memory_services)
+
+
+class _PendingGenericAllocation:
+    __slots__ = ("expected_map_digest", "artifact_digest", "connection_id", "document")
+
+    def __init__(
+        self,
+        expected_map_digest: str,
+        artifact_digest: str,
+        connection_id: str,
+        document: GenericSafetyMapDocument,
+    ) -> None:
+        self.expected_map_digest = expected_map_digest
+        self.artifact_digest = artifact_digest
+        self.connection_id = connection_id
+        self.document = document
+
+
+_pending_generic_allocations: dict[str, _PendingGenericAllocation] = {}
+
+
+def _stage_generic_allocation(
+    board_id: str,
+    artifact: Path,
+    pending_handle: object,
+) -> None:
+---CURRENT CHARTER CHECKS---
+# A20 coherent symbol-read repair â€” design-charter checks
+
+Authoritative charter:
+`../.codex/design_charter.md` relative to the `BYO-Firmware-MCP` repository root.
+
+Reviewed charter SHA-256:
+`03347b0f7ce185922e07e373784a39d49f3a497c3ee8c35035bb3bfab5411bdb`
+
+Every repair role must reread the authoritative charter, not rely only on this summary, and append
+its stage check here before changing behavior or tests. This file is runtime evidence, not
+production documentation.
+
+## Post-spec check â€” main/orchestrating model
+
+- **Correctness:** The accepted defect is a successful but incoherent scalar read from a sleeping
+  target, reproduced on two independent boards and contradicted by an immediate halted read. The
+  repair must return a coherent value or an honest error; it must not reject legitimate zero.
+- **Simplicity:** The narrow existing halt/read/finally-resume pattern is sufficient. No retry,
+  polling, state machine, or transaction framework is justified.
+- **Generalizability and dynamism:** State observation and halt/resume are generic provider
+  capabilities. The request excludes all board, MCU, probe, OS, toolchain, application, and
+  low-power-state branches.
+- **Neatness and usability:** The memory tool remains the single owner of its scalar read contract,
+  while the injected target-control operations keep it testable. Public help must disclose the
+  brief halt and recovery behavior.
+- **Trust boundary:** The operator's symbol and ELF remain trusted but correctness-validated. The
+  repair adds no approval, refusal, hostility check, arbitrary cap, or paternalistic guard.
+- **Scope discipline:** Raw reads/writes, flash, setup, permissions, plans, firmware, fixtures, and
+  unrelated server behavior remain untouched.
+
+## Post-plan check â€” main/orchestrating model
+
+- **Correctness decision:** Only `HALTED` reads directly. Any other reported target state uses one
+  halt, one read, and one guaranteed resume attempt. Read and restoration failures are both
+  preserved when simultaneous; success is impossible while restoration is uncertain.
+- **Simplicity decision:** Add three injected lifecycle callables plus one local helper rather than
+  coupling the tool to a concrete backend or expanding the legacy fixed-width symbol helper.
+- **Generalizability decision:** Normalize provider state text case-insensitively and use only the
+  generic lifecycle interface. The plan deliberately contains no fixture-derived constant.
+- **Usability decision:** The exact affected MCP help text is in scope because FastMCP publishes the
+  handler docstring. No unrelated documentation sweep is allowed.
+- **Rejected alternatives:** Do not retry a sleeping read, treat zero as invalid, special-case
+  `SLEEPING`, inspect a particular counter twice, leave the target halted, silently ignore resume
+  failure, or broaden coherent halting to raw memory operations.
+- **Accepted interpretation:** `resume` restores execution eligibility, not an exact firmware
+  low-power state. A failed halt is reported without a speculative resume because no successful
+  inserted state transition was established.
+
+## Pre-implementation check
+
+Pending. The main model and implementation doer must reread the charter immediately before the
+first production edit and append their checks here.
+
+## Between implementation features
+
+Pending. Append a check after CL-001 and before CL-002.
+
+## Pre-verification check
+
+Pending. Append before the neutral gate and repository-wide verification.
+
+## Post-risky-diff check
+
+Pending. Append after adversarial inspection of the production diff.
+
+## Pre-acceptance check
+
+Pending. Append before the repaired snapshot is accepted for A20 targeted retest.
+
+---TARGET ERROR TRANSLATION---
+20-import secrets
+21-import subprocess
+22-import time
+23-import unicodedata
+24-from collections.abc import Callable, Mapping
+25-from dataclasses import replace
+26-from pathlib import Path
+27-from typing import Any, cast
+28-
+29-from pyocd.target.pack.cmsis_pack import CmsisPack  # type: ignore[import-untyped]
+30:from elftools.common.exceptions import ELFError
+31-
+32-from pyocd_debug_mcp.adapters.swd_interface import TargetSessionHandle, session_metadata
+33-from pyocd_debug_mcp.board_config import (
+34-    BoardConfig,
+35-    ConfigError,
+36-    load_board_configs_from_paths,
+37-    select_boards_by_id,
+38-)
+39-from pyocd_debug_mcp.guardrails.flash_gate import resolve_flash_request
+40-from pyocd_debug_mcp.guardrails.gate import GateManager, GateRefusal
+--
+212-    RegionKind,
+213-    SafetyRegion,
+214-    SourceAuthority,
+215-)
+216-from pyocd_debug_mcp.target_errors import (
+217-    LockedTargetError,
+218-    ProbeNotFoundError,
+219-    ReferenceArtifactError,
+220-    SymbolLookupError,
+221-    TargetConnectionError,
+222:    TargetControlError,
+223-    UnsupportedArtifactError,
+224-)
+225-from pyocd_debug_mcp.timeouts import (
+226-    DEFAULT_EXTERNAL_COMMAND_TIMEOUT_SECONDS,
+227-    default_server_timeout_config,
+228-    subprocess_timeout_stream_text,
+229-)
+230-from pyocd_debug_mcp.services.connections import (
+231-    BoardNotConnectedError,
+232-    ConnectionAssignmentError,
+--
+363-
+364-def _validate_plan_scope(
+365-    definition: PlanDefinition,
+366-    board_id: str,
+367-    session_id: str | None,
+368-) -> None:
+369-    connection = connection_manager.maybe_connection(board_id)
+370-    if definition.action_name == "board_setup":
+371-        try:
+372-            profile = _profile_repository.load(board_id)
+373:        except ProfileError:
+374-            profile = None
+375-        existing_profile_paths = tuple(
+376-            _profile_repository.store.layout.board_profile(board_id, suffix=suffix)
+377-            for suffix in (".yaml", ".yml", ".json")
+378-        )
+379-        if profile is not None or any(path.exists() for path in existing_profile_paths):
+380-            active = plan_engine.active_plan("board_setup", board_id)
+381-            mode = active.action_parameters.get("mode") if active is not None else None
+382-            if mode != "repair" or profile is None or not _profile_needs_repair(profile):
+383-                raise PlanRefusal(
+--
+392-                "plan/setup-session-active",
+393-                f"Board '{board_id}' already has an active debug session; use validation or "
+394-                "disconnect before first-time setup.",
+395-                session_id=session_id,
+396-            )
+397-        return
+398-    if definition.action_name in {"connect_override", "connect_under_reset"}:
+399-        if connection is not None:
+400-            raise PlanRefusal(
+401-                "plan/session-already-active",
+402:                f"Board '{board_id}' is already connected; disconnect it before exceptional "
+403-                "connection setup.",
+404-                session_id=session_id,
+405-            )
+406-        if session_id is not None:
+407-            raise PlanRefusal(
+408-                "plan/session-invalid",
+409-                f"Board '{board_id}' has a stale session identity; submit a new plan.",
+410-                session_id=session_id,
+411-            )
+412-        return
+--
+484-            current_target=_current_target(board_id),
+485-        )
+486-        return
+487-    try:
+488-        _safety_policy.check_flash(
+489-            board_id,
+490-            role,
+491-            artifact,
+492-            current_target=_current_target(board_id),
+493-        )
+494:    except SafetyPolicyError as exc:
+495-        if (
+496-            role is not BuildRole.APPLICATION
+497-            or exc.code != "safety/partition-authority-unavailable"
+498-        ):
+499-            raise
+500-        _safety_policy.check_generic_application_candidate(
+501-            board_id,
+502-            artifact,
+503-            current_target=_current_target(board_id),
+504-        )
+--
+514-        else:
+515-            aggregate = _safety_policy.current_aggregate(board_id)
+516-            stamp = gate_manager.require_write(board_id, connection.connection_id, aggregate)
+517-            if tool_name == "flash_bootloader" and stamp.identity_capability != "exact":
+518-                raise GateRefusal(
+519-                    "gate/exact-identity-required",
+520-                    "Bootloader flash requires an exact live silicon proof; compatible identity "
+521-                    "is sufficient only for artifact-contained application programming.",
+522-                    remedy=("establish_exact_identity_evidence", "board_validate"),
+523-                )
+524:    except (GateRefusal, SafetyPolicyError) as exc:
+525-        code = exc.code
+526-        raise PlanRefusal(
+527-            code,
+528-            str(exc),
+529-            session_id=_active_session_id(board_id),
+530-        ) from exc
+531-
+532-
+533-def _parse_action_integer(value: object, field_name: str) -> int:
+534-    if isinstance(value, bool):
+--
+576-            )
+577-            _safety_policy.check_memory_read(board_id, address, size_bytes)
+578-        elif tool_name == "write_memory":
+579-            operation = current_operation()
+580-            if operation is not None:
+581-                operation.prepared.pop("write_memory_symbol", None)
+582-            width = _parse_action_integer(parameters["width"], "width")
+583-            target = parameters["symbol_or_address"]
+584-            try:
+585-                address = _parse_action_integer(target, "symbol_or_address")
+586:            except (TypeError, ValueError):
+587-                if not isinstance(target, str) or not target.strip():
+588-                    raise ValueError("symbol_or_address must be a symbol or address")
+589-                supplied_elf = parameters.get("elf_artifact")
+590-                if supplied_elf is None:
+591-                    elf_path = _symbol_artifact_for_handle(_handle(board_id))
+592-                elif isinstance(supplied_elf, str) and supplied_elf.strip():
+593-                    elf_path = Path(supplied_elf).expanduser().resolve(strict=True)
+594-                else:
+595-                    raise ValueError("elf_artifact must be NULL or a non-empty local ELF path")
+596-                resolved = resolve_symbol(elf_path, target)
+--
+608-                        target,
+609-                        supplied_elf,
+610-                        resolved,
+611-                    )
+612-            _safety_policy.check_memory_write(board_id, address, width)
+613-        elif tool_name == "set_breakpoint":
+614-            target = parameters["symbol_or_address"]
+615-            elf_path = Path(cast(str, parameters["elf_artifact"])).expanduser().resolve()
+616-            try:
+617-                address = _parse_action_integer(target, "symbol_or_address")
+618:            except (TypeError, ValueError):
+619-                if not isinstance(target, str) or not target.strip():
+620-                    raise ValueError("symbol_or_address must be a symbol or address")
+621-                address = resolve_symbol(elf_path, target).address
+622-            address = canonicalize_breakpoint_address(address)
+623-            _safety_policy.check_breakpoint(board_id, address, elf_path)
+624-        elif tool_name in {"flash_application", "flash_bootloader"}:
+625-            handle = _maybe_handle(board_id)
+626-            context = _action_context(tool_name, board_id)
+627-            request = resolve_flash_request(
+628-                handle,
+629-                explicit_path=cast(str, parameters["artifact"]),
+630-                action_context=context,
+631-            )
+632-            _check_flash_safety(tool_name, board_id, request.artifact_path)
+633-            if tool_name == "flash_application":
+634-                _stage_generic_allocation(board_id, request.artifact_path, handle)
+635:    except (
+636-        SafetyPolicyError,
+637-        ReferenceArtifactError,
+638-        SymbolLookupError,
+639-        ELFError,
+640-        OSError,
+641-        ValueError,
+642-        KeyError,
+643-    ) as exc:
+644-        code = exc.code if isinstance(exc, SafetyPolicyError) else "safety/invalid-request"
+645-        raise PlanRefusal(
+--
+660-        if tool_name in {"board_setup", "board_fix_setup"}:
+661-            connection_id = parameters.get("connection_id")
+662-            if not isinstance(connection_id, str):
+663-                raise PlanRefusal(
+664-                    "plan/setup-assignment-invalid",
+665-                    "Setup requires the exact connection_id returned by setup_overview.",
+666-                    session_id=_active_session_id(board_id),
+667-                )
+668-            try:
+669-                assignment_store.require(connection_id, board_id)
+670:            except SetupWorkflowError as exc:
+671-                raise PlanRefusal(
+672-                    "plan/setup-assignment-invalid",
+673-                    str(exc),
+674-                    session_id=_active_session_id(board_id),
+675-                ) from exc
+676-        _require_layer0(tool_name, board_id)
+677-        if tool_name == "target_unlock":
+678-            _unlock_coordinator.validate_execution(board_id, parameters)
+679-        if tool_name in {"write_cpu_register", "set_execution_state", "register_write"}:
+680-            try:
+681-                validate_guarded_register_call(
+682-                    register_services,
+683-                    tool_name,
+684-                    board_id,
+685-                    parameters,
+686-                )
+687:            except RegisterPreconditionError as exc:
+688-                raise PlanRefusal(
+689-                    "plan/layer2-precondition",
+690-                    str(exc),
+691-                    session_id=_active_session_id(board_id),
+692-                ) from exc
+693-        _enforce_action_containment(tool_name, board_id, parameters)
+694-
+695-    plan_engine.enforce(
+696-        tool_name,
+697-        board_id,
+--
+834-    child_env["PYTHONIOENCODING"] = "utf-8"
+835-    try:
+836-        result = run_owned(
+837-            cmd,
+838-            stdin=subprocess.DEVNULL,
+839-            capture_output=True,
+840-            env=child_env,
+841-            text=False,
+842-            timeout=timeout_seconds,
+843-        )
+844:    except FileNotFoundError:
+845-        executable = cmd[0] if cmd else "<unknown>"
+846-        return 127, "", f"command not found: {executable}"
+847:    except subprocess.TimeoutExpired as exc:
+848-        return (
+849-            124,
+850-            subprocess_timeout_stream_text(exc.stdout),
+851-            f"command timed out after {timeout_seconds:.0f}s: {' '.join(cmd)}",
+852-        )
+853-    stdout = bytes(result.stdout or b"").decode("utf-8", errors="replace")
+854-    stderr = bytes(result.stderr or b"").decode("utf-8", errors="replace")
+855-    return result.returncode, stdout, stderr
+856-
+857-
+--
+872-        return None
+873-    environment_config = (
+874-        os.environ.get("PYOCD_BOARD_CONFIG") if allow_environment_overrides else None
+
+2026-07-28T06:06:10.113084Z ERROR codex_core::tools::router: error=`"C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command "Get-FileHash -Algorithm SHA256 '..\\.codex\\design_charter.md'; Get-Content -Raw '..\\.codex\\design_charter.md' | Out-Null; Get-FileHash -Algorithm SHA256 '.change-loop\\fresh-suite\\A20-sleeping-symbol-read\\plan.md'"` rejected: blocked by policy
+2026-07-28T06:06:13.243329Z ERROR codex_core::tools::router: error=`"C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command "Get-FileHash -Algorithm SHA256 '..\\.codex\\design_charter.md'; Get-Content -Raw '..\\.codex\\design_charter.md'; Get-FileHash -Algorithm SHA256 '.change-loop\\fresh-suite\\A20-sleeping-symbol-read\\plan.md'"` rejected: blocked by policy
+2026-07-28T06:06:27.544088Z ERROR codex_core::tools::router: error=patch rejected: writing is blocked by read-only sandbox; rejected by user approval settings
