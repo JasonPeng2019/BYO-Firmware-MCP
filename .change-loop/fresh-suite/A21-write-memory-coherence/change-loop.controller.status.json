@@ -1,0 +1,16 @@
+{
+  "state": "exited",
+  "controller_pid": 163188,
+  "bash_pid": 177052,
+  "started_utc": "2026-07-28T19:21:43Z",
+  "runtime": ".change-loop/fresh-suite/A21-write-memory-coherence",
+  "doer_model": "gpt-5.6-terra",
+  "spec_tester_model": "gpt-5.6-terra",
+  "regression_tester_model": "gpt-5.6-terra",
+  "reasoning_effort": "medium",
+  "service_tier": "priority",
+  "sandbox": "danger-full-access",
+  "sandbox_fallback_reason": "Windows workspace-write helper repeatedly failed with CreateProcessWithLogonW error 2; repository scope and ignore-user-config remain",
+  "exit_code": 0,
+  "ended_utc": "2026-07-28T19:33:45Z"
+}

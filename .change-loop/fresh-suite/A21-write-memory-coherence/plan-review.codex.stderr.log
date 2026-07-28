@@ -1,0 +1,33 @@
+2026-07-28T19:10:19.575975Z ERROR codex_models_manager::cache: failed to load models cache: missing field `supports_reasoning_summaries` at line 86 column 5
+2026-07-28T19:10:20.998045Z  WARN codex_core::shell_snapshot: Failed to create shell snapshot for powershell: Shell snapshot not supported yet for PowerShell
+2026-07-28T19:10:31.151553Z ERROR codex_models_manager::manager: failed to renew cache TTL: missing field `supports_reasoning_summaries` at line 86 column 5
+2026-07-28T19:10:31.374068Z  WARN codex_analytics::client: failed to send events request: error sending request for url (https://chatgpt.com/backend-api/codex/analytics-events/events)
+2026-07-28T19:10:40.720536Z ERROR codex_models_manager::manager: failed to renew cache TTL: missing field `supports_reasoning_summaries` at line 86 column 5
+2026-07-28T19:10:47.238211Z ERROR codex_models_manager::manager: failed to renew cache TTL: missing field `supports_reasoning_summaries` at line 86 column 5
+2026-07-28T19:10:53.577219Z ERROR codex_models_manager::manager: failed to renew cache TTL: missing field `supports_reasoning_summaries` at line 86 column 5
+2026-07-28T19:11:03.556765Z ERROR codex_models_manager::manager: failed to renew cache TTL: missing field `supports_reasoning_summaries` at line 86 column 5
+2026-07-28T19:11:09.029725Z ERROR codex_models_manager::manager: failed to renew cache TTL: missing field `supports_reasoning_summaries` at line 86 column 5
+2026-07-28T19:11:16.856405Z ERROR codex_models_manager::manager: failed to renew cache TTL: missing field `supports_reasoning_summaries` at line 86 column 5
+2026-07-28T19:11:36.966576Z ERROR codex_core::tools::router: error=apply_patch verification failed: Failed to read file to update C:\Users\Jason\Documents\Jason\FirmCLI_Tester\Firmware-Test-Manual\MCP-Trial-3\BYO-Firmware-MCP\.change-loop\fresh-suite\A21-write-memory-coherence\DESIGN_CHARTER_CHECKS.md: fs sandbox helper failed with status exit code: 1: windows sandbox failed: CreateProcessWithLogonW failed: 2
+2026-07-28T19:11:37.061902Z ERROR codex_models_manager::manager: failed to renew cache TTL: missing field `supports_reasoning_summaries` at line 86 column 5
+2026-07-28T19:11:53.333306Z ERROR codex_core::tools::router: error=apply_patch verification failed: Failed to read file to update C:\Users\Jason\Documents\Jason\FirmCLI_Tester\Firmware-Test-Manual\MCP-Trial-3\BYO-Firmware-MCP\.change-loop\fresh-suite\A21-write-memory-coherence\DESIGN_CHARTER_CHECKS.md: fs sandbox helper failed with status exit code: 1: windows sandbox failed: CreateProcessWithLogonW failed: 2
+2026-07-28T19:11:53.437047Z ERROR codex_models_manager::manager: failed to renew cache TTL: missing field `supports_reasoning_summaries` at line 86 column 5
+2026-07-28T19:12:07.239271Z ERROR codex_core::tools::router: error=apply_patch verification failed: invalid hunk at line 12, 'defect. It places one provider-neutral lifecycle/readback primitive next to the established' is not a valid hunk header. Valid hunk headers: '*** Add File: {path}', '*** Delete File: {path}', '*** Update File: {path}'
+2026-07-28T19:12:07.325622Z ERROR codex_models_manager::manager: failed to renew cache TTL: missing field `supports_reasoning_summaries` at line 86 column 5
+2026-07-28T19:12:22.471069Z ERROR codex_models_manager::cache: failed to load models cache: missing field `supports_reasoning_summaries` at line 86 column 5
+2026-07-28T19:12:22.775508Z ERROR codex_models_manager::manager: failed to renew cache TTL: missing field `supports_reasoning_summaries` at line 86 column 5
+2026-07-28T19:12:24.500577Z  WARN codex_protocol::openai_models: Model personality requested but model_messages is missing, falling back to base instructions. model=codex-auto-review personality=pragmatic
+2026-07-28T19:12:24.673959Z ERROR codex_models_manager::manager: failed to renew cache TTL: missing field `supports_reasoning_summaries` at line 86 column 5
+2026-07-28T19:12:31.581102Z ERROR codex_core::tools::router: error=apply_patch verification failed: Failed to read file to update C:\Users\Jason\Documents\Jason\FirmCLI_Tester\Firmware-Test-Manual\MCP-Trial-3\BYO-Firmware-MCP\.change-loop\fresh-suite\A21-write-memory-coherence\DESIGN_CHARTER_CHECKS.md: fs sandbox helper failed with status exit code: 1: windows sandbox failed: CreateProcessWithLogonW failed: 2
+2026-07-28T19:12:43.498764Z ERROR codex_models_manager::manager: failed to renew cache TTL: missing field `supports_reasoning_summaries` at line 86 column 5
+2026-07-28T19:12:49.322562Z ERROR codex_models_manager::manager: failed to renew cache TTL: missing field `supports_reasoning_summaries` at line 86 column 5
+2026-07-28T19:12:58.834235Z ERROR codex_core::tools::router: error=Exit code: 1
+Wall time: 0.4 seconds
+Output:
+$(subexpression) is missing the closing ')'.
+    + CategoryInfo          : ParserError: (:) [], ParentContainsErrorRecordException
+    + FullyQualifiedErrorId : IncompleteDollarSubexpressionReference
+ 
+
+2026-07-28T19:12:58.922511Z ERROR codex_models_manager::manager: failed to renew cache TTL: missing field `supports_reasoning_summaries` at line 86 column 5
+2026-07-28T19:13:04.011207Z ERROR codex_models_manager::manager: failed to renew cache TTL: missing field `supports_reasoning_summaries` at line 86 column 5

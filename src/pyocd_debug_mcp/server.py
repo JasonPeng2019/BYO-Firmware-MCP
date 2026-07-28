@@ -1769,7 +1769,32 @@ def write_memory(
     reason: str | None = None,
     elf_artifact: str | None = None,
 ) -> str:
-    """Write a planned symbol using its ELF, or a justified mapped raw address."""
+    """Write and immediately verify a planned symbol or justified mapped RAM address.
+
+    Use a symbol when the current project's ELF identifies the variable; provide that ELF through
+    `elf_artifact`. Use a raw address only for unsymbolized mapped RAM, with
+    `allow_address_fallback=True`, a concrete `reason`, and no ELF. Do not use this tool for flash
+    or peripheral registers.
+
+    Parameters: `board_id` is the configured board identifier; `symbol_or_address` is the ELF
+    symbol or mapped RAM address; `value` is the requested integer; `width` is the transfer width
+    in bits (8, 16, or 32); `allow_address_fallback` explicitly enables a raw address; `reason`
+    explains why symbols are unsuitable; and `elf_artifact` is the current local ELF for a symbol
+    write and must be omitted for a raw address. For example:
+    `write_memory("board-a", "scheduler_tick_count", 1, 32, False, None, "build/app.elf")`.
+
+    Returns the normal Layer-2 response containing `Wrote 0x... to mapped RAM at ...` only after
+    the exact value is read back at the same address and width. Running or sleeping targets are
+    briefly halted for one write and readback, then restored; already-halted targets remain halted.
+    Success proves only this immediate coherent mutation, because resumed firmware may later overwrite
+    the value.
+
+    Invalid widths or values, missing raw-fallback justification, symbol/ELF failures, unmapped or
+    prohibited memory, and lifecycle, write, verification, or restoration failures are reported honestly
+    rather than as success. Inspect or reconnect the target, then retry with the current
+    ELF or a deliberately halted target; rebuild/select the correct ELF or symbol when resolution
+    fails, and provide a concrete reason only when an intentional raw mapped-RAM write is needed.
+    """
 
     return memory_tool_handlers["write_memory"](
         board_id,

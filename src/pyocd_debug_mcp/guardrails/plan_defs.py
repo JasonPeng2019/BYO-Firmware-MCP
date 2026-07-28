@@ -814,14 +814,20 @@ _GUIDANCE: Final = MappingProxyType(
             "The server verifies a validated session, open gate, current safety-map stamp, exact plan, "
             "and full mapped-RAM containment. A raw address without the flag is rejected with 'Try a "
             "symbol first.' Prohibited and unknown regions are denied.",
-            "A wrong memory write can crash the application; recover by reset or reflash.",
+            "A running or sleeping target is briefly halted for one write plus exact same-address, "
+            "same-width readback, then restored; an already halted target remains halted. Success "
+            "proves only that immediate coherent mutation, because resumed firmware may later overwrite "
+            "the value. Lifecycle, write, verification, or restoration failures are reported honestly; "
+            "inspect or reconnect the target and retry with the current ELF or a deliberately halted "
+            "target. A wrong memory write can crash the application; recover by reset or reflash.",
             (
                 "Attempt and show symbol resolution first.",
                 "Confirm the value and width match the variable type and size.",
                 "State a reversal or recovery step.",
                 "State the readback that will confirm the write.",
             ),
-            "Read back the location and remember the board may now behave differently by design.",
+            "The server performs the authoritative immediate readback; inspect the location again when "
+            "needed and remember resumed firmware may later change it by design.",
             {
                 "symbol_or_address": "motor_speed_target",
                 "value": "0x12C",

@@ -172,7 +172,7 @@ class CoherentSymbolReadSpecTests(unittest.TestCase):
         self.assertEqual(self.calls, ["state", "halt", "read:0x20000000:32", "resume"])
         self.assertEqual(self.recorded, [])
 
-    def test_pre_io_refusals_and_raw_operations_do_not_acquire_lifecycle_behavior(self) -> None:
+    def test_pre_io_refusals_and_raw_reads_do_not_acquire_lifecycle_behavior(self) -> None:
         services = self._services()
         handlers = build_memory_handlers(services)
         with patch("pyocd_debug_mcp.tools.memory.is_elf_artifact", return_value=True):
@@ -181,15 +181,8 @@ class CoherentSymbolReadSpecTests(unittest.TestCase):
         self.assertEqual(self.calls, [])
 
         result = handlers["read_memory_address"]("board", 0x20000000, 32)
-        written = handlers["write_memory"](
-            "board", 0x20000004, 1, 32, allow_address_fallback=True, reason="unsymbolized"
-        )
         self.assertIn("0x00001234", result)
-        self.assertIn("Wrote 0x1", written)
-        self.assertEqual(
-            self.calls,
-            ["read:0x20000000:32", "write:0x20000004:0x1:32"],
-        )
+        self.assertEqual(self.calls, ["read:0x20000000:32"])
 
     def test_production_wiring_and_published_help_expose_the_exact_contract(self) -> None:
         self.assertIs(server.memory_services.get_state, target_control.get_state)

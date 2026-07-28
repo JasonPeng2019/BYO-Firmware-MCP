@@ -139,6 +139,48 @@ def _read_coherent_scalar(
     return value
 
 
+def _write_coherent_scalar(
+    services: MemoryToolServices,
+    handle: Any,
+    address: int,
+    value: int,
+    width: int,
+) -> None:
+    """Write and verify one scalar while restoring execution after an inserted halt."""
+
+    if services.get_state is None or services.halt is None or services.resume is None:
+        raise RuntimeError("Memory service lifecycle operations are not configured.")
+    if services.get_state(handle).upper() == "HALTED":
+        services.write_target_memory(handle, address, value, width)
+        observed = services.read_target_memory(handle, address, width)
+        if observed != value:
+            raise RuntimeError(
+                f"Memory write verification failed at 0x{address:08X}: expected "
+                f"0x{value:0{width // 4}X}, observed 0x{observed:0{width // 4}X}."
+            )
+        return
+
+    services.halt(handle)
+    try:
+        services.write_target_memory(handle, address, value, width)
+        observed = services.read_target_memory(handle, address, width)
+        if observed != value:
+            raise RuntimeError(
+                f"Memory write verification failed at 0x{address:08X}: expected "
+                f"0x{value:0{width // 4}X}, observed 0x{observed:0{width // 4}X}."
+            )
+    except BaseException as write_error:
+        try:
+            services.resume(handle)
+        except BaseException as resume_error:
+            raise RuntimeError(
+                f"{type(write_error).__name__}: {write_error}; execution restoration failed "
+                f"with {type(resume_error).__name__}: {resume_error}"
+            ) from write_error
+        raise
+    services.resume(handle)
+
+
 def _hash_artifact(path: Path) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as stream:
@@ -515,7 +557,31 @@ def build_memory_handlers(
         reason: str | None = None,
         elf_artifact: str | None = None,
     ) -> str:
-        """Write a symbol from elf_artifact, or a justified mapped raw address without an ELF."""
+        """Write and immediately verify a symbol or justified mapped RAM scalar address.
+
+        Use a symbol when the current project's ELF identifies the variable; provide that ELF through
+        `elf_artifact`. Use a raw address only for unsymbolized mapped RAM, with
+        `allow_address_fallback=true`, a concrete `reason`, and no ELF. Do not use this tool for flash
+        or peripheral registers.
+
+        Parameters: `board_id` selects the configured board; `symbol_or_address` is the ELF symbol
+        or mapped RAM address; `value` is the requested integer; `width` is the transfer width in bits
+        (8, 16, or 32); `allow_address_fallback` explicitly enables a raw address; `reason` explains
+        why symbols are unsuitable; and `elf_artifact` is the current local ELF for a symbol write and
+        must be omitted for a raw address. For example, call
+        `write_memory("board-a", "scheduler_tick_count", 1, 32, False, None, "build/app.elf")`.
+
+        Returns the normal Layer-2 response containing `Wrote 0x... to mapped RAM at ...` only after
+        the exact value is read back at the same address and width. A running or sleeping target is
+        briefly halted for one write and readback, then restored; an already halted target remains
+        halted. Success proves only this immediate coherent mutation, because resumed firmware may
+        later overwrite the variable.
+
+        Invalid widths or values, missing raw-fallback justification, symbol/ELF failures, unmapped or prohibited memory,
+        and lifecycle, write, verification, or restoration failures are reported honestly rather than as success. Inspect or reconnect the target, then retry with the current
+        ELF or a deliberately halted target; rebuild/select the correct ELF or symbol when resolution
+        fails, and provide a concrete reason only when an intentional raw mapped-RAM write is needed.
+        """
 
         started = time.monotonic()
         runtime = services.runtime_for(board_id)
@@ -685,7 +751,7 @@ def build_memory_handlers(
             )
         if services.check_memory_write is not None:
             services.check_memory_write(board_id, address, width)
-        services.write_target_memory(handle, address, parsed_value, width)
+        _write_coherent_scalar(services, handle, address, parsed_value, width)
         target = f"0x{address:08X}" if is_address else str(symbol_or_address)
         result = f"Wrote 0x{parsed_value:X} to mapped RAM at {target}."
         return _record_success(services, "write_memory", board_id, args, result, started, runtime)

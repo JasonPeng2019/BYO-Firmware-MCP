@@ -1,0 +1,16 @@
+{
+  "state": "exited",
+  "controller_pid": 156012,
+  "wsl_pid": 161192,
+  "started_utc": "2026-07-28T19:18:45Z",
+  "runtime": ".change-loop/fresh-suite/A21-write-memory-coherence",
+  "doer_model": "gpt-5.6-terra",
+  "spec_tester_model": "gpt-5.6-terra",
+  "regression_tester_model": "gpt-5.6-terra",
+  "reasoning_effort": "medium",
+  "service_tier": "priority",
+  "sandbox": "workspace-write",
+  "codex_bin": "/mnt/c/Users/Jason/AppData/Local/Programs/OpenAI/Codex/bin/codex.exe",
+  "exit_code": 2,
+  "ended_utc": "2026-07-28T19:21:07Z"
+}

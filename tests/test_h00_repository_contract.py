@@ -465,7 +465,7 @@ class H00RepositoryContractTests(unittest.TestCase):
             head = self._run(["git", "rev-parse", "HEAD"], cwd=candidate)
             self.assertEqual(
                 head.stdout.strip(),
-                "4e1393775167166146c6ee1a0ce310c9747ca3bf",
+                "db3fb8660c8186d351508050bf622a6aaf0b50fc",
                 "candidate must be cloned from the exact approved baseline commit",
             )
             self._remove_candidate_tree(candidate / ".git")
