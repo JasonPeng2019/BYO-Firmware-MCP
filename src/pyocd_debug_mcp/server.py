@@ -75,12 +75,29 @@ from pyocd_debug_mcp.discovery_hooks import (
     execute_eligible_hooks,
     load_hook_snapshot,
 )
+from pyocd_debug_mcp.discovery_failures import (
+    DISCOVERY_HOOK_FAILED,
+    PROBE_OPEN_FAILED,
+    contract_call,
+    hook_failure,
+    no_native_probe_failure,
+    no_native_uart_failure,
+    open_failure_payload,
+)
 from pyocd_debug_mcp.hardware_inventory import (
+    EMPTY_INVENTORY_SNAPSHOT,
     ActiveConnectionRow,
     HardwareInventoryService,
+    InventorySnapshot,
+    ProbeSelection,
     ProbeSelectionStore,
+    SelectionDisappeared,
+    SessionUartSelection,
     SessionUartSelectionStore,
+    UartRow,
+    snapshot_from_validation_inventory,
     stable_identity_equal,
+    validation_inventory_from,
 )
 from pyocd_debug_mcp.probe_inventory import (
     list_connected_probes_detailed,
@@ -92,6 +109,7 @@ from pyocd_debug_mcp.serial_resolver import (
     ProbeLike,
     SerialPortInfo,
     list_serial_ports,
+    normalize_port_name,
     resolve_serial_port,
 )
 from pyocd_debug_mcp.services.session_runtime import (
@@ -985,14 +1003,67 @@ def _assigned_probe_uid_for_connect(board_id: str) -> str | None:
     assigned = assignment_store.connection_for(board_id)
     if assigned is None:
         return None
-    candidate = assigned.split(":", 1)[1] if assigned.casefold().startswith("probe:") else assigned
-    inventory = _validation_inventory()
-    if not any(_connection_matches_probe(candidate, probe) for probe in inventory.probes):
+    # Site 4 stays on `_validation_inventory()` per the guide, so it inherits hooks
+    # through the unified service without taking a second, independent scan.
+    snapshot = snapshot_from_validation_inventory(_validation_inventory())
+    try:
+        # Re-derive the recorded selection rather than parsing the token: the exact
+        # pyOCD selector for a UID-less provider is not recoverable from the string.
+        selection = _probe_selection_store.resolve(assigned, snapshot)
+    except SelectionDisappeared as exc:
         raise RuntimeError(
             f"The assigned probe for {board_id} is no longer present; rerun setup routing "
-            "to choose the current physical connection."
-        )
-    return candidate
+            f"to choose the current physical connection. ({exc.code}: {exc.reason})"
+        ) from exc
+    # The legacy inventory shape cannot carry hook provenance, so drift for a
+    # hook-discovered selection is checked against the admitted hook set instead.
+    _require_unchanged_hook_source(board_id, selection)
+    if selection.unique_id is not None:
+        return selection.unique_id
+    # A UID-less live session is identified only by its exact session token, which is
+    # what the downstream provider already expects for this run.
+    return selection.connection_id
+
+
+def _require_unchanged_hook_source(board_id: str, selection: ProbeSelection) -> None:
+    """Refuse a hook-discovered selection whose hook has changed or gone away."""
+
+    if selection.hook_source_sha256 is None:
+        return
+    hook_ids = {
+        token.split(":", 1)[1]
+        for token in selection.provenance
+        if token.startswith("hook:")
+    }
+    current = {
+        hook.hook_id: hook.file_sha256 for hook in _hook_snapshot_store.current().hooks
+    }
+    for hook_id in hook_ids:
+        if current.get(hook_id) != selection.hook_source_sha256:
+            raise RuntimeError(
+                f"The assigned probe for {board_id} is no longer present; the hook that "
+                "discovered it changed or was removed. Call refresh_discovery_hooks and "
+                "rerun setup routing to choose the current physical connection. "
+                "(discovery/hook-source-changed)"
+            )
+
+
+def _resolved_probe_uid_for_connection(connection_id: str) -> str:
+    """Turn an opaque server-issued connection token into an exact pyOCD selector.
+
+    Replaces treating everything after `probe:` as a `unique_id`, which is wrong for a
+    session-scoped selection. Resolution is against a fresh snapshot, so a token whose
+    hardware has gone is refused rather than passed to pyOCD as a stale UID.
+    """
+
+    snapshot = _hardware_inventory.snapshot()
+    try:
+        selection = _probe_selection_store.resolve(connection_id, snapshot)
+    except SelectionDisappeared as exc:
+        raise TargetControlError(
+            f"{exc.code}: {exc.reason}",
+        ) from exc
+    return selection.unique_id or selection.connection_id
 
 
 def _handle(board_id: str) -> TargetSessionHandle:
@@ -1174,13 +1245,30 @@ def _connect_impl(
                 pdsc_device=selected_pdsc_device,
             )
         except Exception as exc:  # noqa: BLE001 - preserve the original connect error
+            # Discovery already succeeded: the probe was found and named. This is an
+            # action failure, so the recorded diagnostic carries driver/contention/
+            # firmware/physical checks and deliberately no hook contract call -- looping
+            # back to discovery would send the agent to rewrite a working hook.
+            open_failure = (
+                open_failure_payload(
+                    PROBE_OPEN_FAILED,
+                    detail=str(exc),
+                    identity=uid,
+                )
+                if isinstance(exc, TargetConnectionError)
+                else None
+            )
             _record_event(
                 "connect",
                 normalized_args,
                 outcome_kind=ToolOutcome.FAILED,
                 error_code=_error_code(exc),
                 duration_ms=_duration_ms(started),
-                details={"message": str(exc)},
+                details=(
+                    {"message": str(exc), "open_failure": open_failure}
+                    if open_failure is not None
+                    else {"message": str(exc)}
+                ),
                 board_id=board_id,
                 probe_uid=uid,
                 route_used=None,
@@ -1505,19 +1593,64 @@ def _require_loaded_board(handle: TargetSessionHandle) -> BoardConfig:
     return handle.board
 
 
+def _uart_row_as_port(row: UartRow) -> SerialPortInfo:
+    """Present one inventory row in the shape every serial caller already consumes."""
+
+    return SerialPortInfo(
+        device=row.port_path,
+        description=row.description,
+        manufacturer="",
+        product="",
+        interface="",
+        hwid="",
+        serial_number=row.usb_serial or "",
+        location="",
+        vid=row.vid,
+        pid=row.pid,
+    )
+
+
 def _resolve_serial_port_for_session(
     handle: TargetSessionHandle,
     *,
     override: str | None,
 ) -> SerialPortInfo:
+    """Resolve this board's serial endpoint immediately before a UART action.
+
+    This is the hot path: it runs before `read_serial`, `write_serial`,
+    `serial_exchange`, and the `on_exit` finalizer. It never persists or blindly reuses a
+    `COM3` / `/dev/tty*` string -- the path is re-derived from a stable identity every
+    time, because a port path is not an identity.
+
+    Under the §0 gating rule a UART hook runs only when pyserial reports nothing, so a
+    machine with a working native port pays no subprocess cost here at all.
+    """
+
     board = _require_loaded_board(handle)
-    ports = list_serial_ports()
-    if ports is None:
+    snapshot = _hardware_inventory.snapshot()
+    if not snapshot.native_uart_available and not snapshot.uarts:
         raise RuntimeError("pyserial is not installed")
+
+    board_id = getattr(board, "board_id", "") or ""
+    metadata = session_metadata(handle)
+    probe_uid = metadata.probe_uid
+
+    # 1. An explicit override still wins, and is still scored, never trusted blindly.
+    if override is None:
+        # 2. A recorded selection is re-resolved to its *current* path.
+        resolved = _resolve_recorded_uart(
+            board_id,
+            ProbeIdentity(str(metadata.probe_family or "unknown"), probe_uid or None),
+            snapshot,
+        )
+        if resolved is not None:
+            return resolved
+
+    ports = [_uart_row_as_port(row) for row in snapshot.uarts]
     if not ports:
         raise RuntimeError("No serial ports detected")
 
-    probe_uid = session_metadata(handle).probe_uid
+    # 3. Fall back to the existing scoring only when there is no recorded selection.
     probe = _ProbeHint(probe_uid) if probe_uid else None
     resolution = resolve_serial_port(
         board=cast(BoardLike, board),
@@ -1530,7 +1663,80 @@ def _resolve_serial_port_for_session(
     )
     if resolution.port is None:
         raise RuntimeError(f"Serial port resolution failed: {resolution.note}")
+    _record_uart_selection(board_id, resolution.port, snapshot)
     return resolution.port
+
+
+def _resolve_recorded_uart(
+    board_id: str,
+    probe: ProbeIdentity,
+    snapshot: InventorySnapshot,
+) -> SerialPortInfo | None:
+    """Re-derive this board's recorded endpoint against a fresh snapshot.
+
+    Returns None to mean "nothing recorded; fall through to scoring". Raises only when a
+    recorded selection has become genuinely ambiguous, which is a routing decision the
+    caller must not paper over by picking one.
+    """
+
+    if not board_id:
+        return None
+    rows_by_path = {normalize_port_name(row.port_path): row for row in snapshot.uarts}
+    # Stable endpoints live in AttachmentCache, keyed on (usb_serial, vid, pid); it only
+    # ever *reports* port_path, so a path change between runs is handled for free.
+    endpoints = [
+        SerialEndpoint(row.port_path, row.usb_serial, row.vid, row.pid)
+        for row in snapshot.uarts
+        if row.identity_scope == "stable"
+    ]
+    if endpoints and probe.is_stable:
+        cached = _attachment_cache.resolve(board_id, probe, endpoints)
+        if cached.reused and cached.port_path:
+            row = rows_by_path.get(normalize_port_name(cached.port_path))
+            if row is not None:
+                return _uart_row_as_port(row)
+        elif cached.reason == "multiple_matches":
+            # Already modelled by CacheResolution; reuse the reason rather than guessing.
+            raise RuntimeError(
+                "uart/multiple-matches: more than one serial endpoint satisfies this "
+                "board's confirmed attachment; rerun setup_overview to reselect it"
+            )
+    # Session-local endpoints must never reach AttachmentCache -- `_validated_identity`
+    # raises for them, and that refusal is the boundary. They use the run-scoped map.
+    session_row = _session_uart_selections.resolve(board_id, snapshot)
+    if session_row is not None:
+        return _uart_row_as_port(session_row)
+    return None
+
+
+def _record_uart_selection(
+    board_id: str,
+    port: SerialPortInfo,
+    snapshot: InventorySnapshot,
+) -> None:
+    """Remember a session-local choice so the next action re-resolves the same endpoint."""
+
+    if not board_id:
+        return
+    row = next(
+        (
+            item
+            for item in snapshot.uarts
+            if normalize_port_name(item.port_path) == normalize_port_name(port.device)
+        ),
+        None,
+    )
+    if row is None or row.identity_scope != "session":
+        # A stable endpoint is the AttachmentCache's business, not this map's.
+        return
+    _session_uart_selections.record(
+        SessionUartSelection(
+            board_id=board_id,
+            port_path=row.port_path,
+            description=row.description,
+            provenance=row.provenance,
+        )
+    )
 
 
 def _run_logged_tool(
@@ -2483,10 +2689,43 @@ def _active_connection_rows() -> tuple[ActiveConnectionRow, ...]:
     return tuple(rows)
 
 
-def _validation_inventory() -> ValidationInventory:
-    """Legacy inventory shape, now served by the one unified inventory service."""
+def _validation_inventory(snapshot: InventorySnapshot | None = None) -> ValidationInventory:
+    """Legacy inventory shape, now served by the one unified inventory service.
 
+    Accepts an already-taken snapshot so an operation that also needs hook or native
+    diagnostics can satisfy "one snapshot per operation" without scanning twice. Callers
+    that pass nothing behave exactly as before.
+    """
+
+    if snapshot is not None:
+        return validation_inventory_from(snapshot)
     return _hardware_inventory.validation_inventory()
+
+
+def _selection_for_validation_probe(
+    connection_id: str,
+    probe: ValidationProbe,
+    snapshot: InventorySnapshot,
+) -> ProbeSelection:
+    """Record what a handed-out connection token refers to.
+
+    Prefers the snapshot row, which carries provenance and hook source. Falls back to
+    the legacy inventory shape's own fields so a caller supplying only a
+    `ValidationInventory` still gets a usable, native-provenance selection.
+    """
+
+    row = next((item for item in snapshot.probes if item.probe_id == probe.probe_id), None)
+    if row is not None:
+        return ProbeSelection.from_row(connection_id, row)
+    return ProbeSelection(
+        connection_id=connection_id,
+        provider=probe.probe_family,
+        unique_id=probe.usb_serial,
+        stable_identity=probe.usb_serial,
+        provenance=("native",),
+        hook_source_sha256=None,
+        identity_scope="stable" if probe.usb_serial else "session",
+    )
 
 
 def _validation_target_supported(target: str) -> bool | None:
@@ -3596,6 +3835,9 @@ def _setup_inventory(user_input: SetupUserInput) -> PreflightInventory:
         built_in_targets=tuple(target for target in targets if target not in manifest_targets),
         manifest_targets=manifest_targets,
         exact_detected_targets=exact,
+        # PreflightEngine is pure and has no server access, so it only renders these.
+        hook_contract_call=contract_call("probe"),
+        uart_hook_contract_call=contract_call("uart"),
     )
 
 
@@ -4226,9 +4468,13 @@ def _get_setup_status(board_id: str) -> Mapping[str, object]:
     uart_reason = "UART attachment has not been resolved for this live board connection"
     resolved_uart: dict[str, object] | None = None
     resolved_probe: dict[str, object] | None = None
+    uart_hook_contract_call: Mapping[str, object] | None = None
     if profile is not None and connection is not None:
         try:
-            inventory = _validation_inventory()
+            # One snapshot for this operation, shared by the UART readiness check and the
+            # hook diagnostics below.
+            status_snapshot = _hardware_inventory.snapshot()
+            inventory = _validation_inventory(status_snapshot)
             endpoints = [
                 SerialEndpoint(item.port_path, item.usb_serial, item.vid, item.pid)
                 for item in inventory.serial_ports
@@ -4272,7 +4518,15 @@ def _get_setup_status(board_id: str) -> Mapping[str, object]:
                     "pid": selected_uart.pid,
                 }
             elif len(inventory.serial_ports) == 0:
+                # UART is required for this board, native discovery found nothing, and a
+                # hook is the remaining option. Ambiguity is deliberately *not* a hook
+                # case, so the >1 branch below keeps the friendly-selection flow.
+                failure = no_native_uart_failure(
+                    hooks_available=True,
+                    hook_diagnostics=tuple(status_snapshot.hook_diagnostic_rows()),
+                )
                 uart_reason = "No UART port is currently visible"
+                uart_hook_contract_call = failure.hook_contract_call
             elif len(inventory.serial_ports) > 1:
                 uart_reason = "UART attachment is ambiguous; confirm one friendly choice in setup"
         except Exception as exc:  # noqa: BLE001 - readiness is diagnostic, never authority
@@ -4345,7 +4599,7 @@ def _get_setup_status(board_id: str) -> Mapping[str, object]:
                 "pass the resulting exact command/environment to the generic helper."
             ),
         }
-    return {
+    status: dict[str, object] = {
         "status": "setup_ready" if live_session_ready else "setup_not_ready",
         "board_id": board_id,
         "configuration_ready": configuration_ready,
@@ -4364,6 +4618,9 @@ def _get_setup_status(board_id: str) -> Mapping[str, object]:
         "remedy": remedy,
         "build_guidance": build_guidance,
     }
+    if uart_hook_contract_call is not None:
+        status["uart_hook_contract_call"] = dict(uart_hook_contract_call)
+    return status
 
 
 def _profile_name_key(value: str) -> str:
@@ -4514,6 +4771,69 @@ def _proposed_board_id(display_name: str, existing: set[str]) -> str:
     return candidate
 
 
+def _no_native_probe_overview(
+    profile_rows: list[dict[str, object]],
+    serial_rows: list[dict[str, object]],
+    inventory_error: str | None,
+    snapshot: InventorySnapshot,
+    *,
+    board_names: list[str],
+) -> Mapping[str, object]:
+    """Report a missing debugger as a missing debugger, with an exact way forward.
+
+    This is where hook guidance has to begin: with one requested board name and zero
+    visible probes, `len(validated_names) > len(connection_rows)` is true, so without an
+    explicit zero test the agent is told it has a board-naming ambiguity and no route is
+    ever built.
+    """
+
+    _replace_setup_assignments({}, "setup overview found no debug connection")
+    hook_rows = snapshot.hook_diagnostic_rows()
+    failures = snapshot.hook_failures
+    if failures:
+        # A hook was configured and did not work. That is a different problem from
+        # "no hook exists yet", and the remedy is repair-and-refresh, not write-a-hook.
+        first = failures[0]
+        failure = hook_failure(
+            first.failure_code or DISCOVERY_HOOK_FAILED,
+            "probe",
+            hook_diagnostics=tuple(hook_rows),
+            retry_id=_issue_overview_retry("probe", board_names),
+        )
+    else:
+        failure = no_native_probe_failure(
+            hooks_available=True,
+            native_diagnostics=snapshot.native_probe_diagnostics.diagnostic_row(),
+            hook_diagnostics=tuple(hook_rows),
+            retry_id=_issue_overview_retry("probe", board_names),
+        )
+    payload: dict[str, object] = {
+        "status": "setup_no_probe",
+        "code": failure.code,
+        "agent_prompt": failure.message,
+        "profiles": profile_rows,
+        "connections": [],
+        "serial_choices": serial_rows,
+        "inventory_error": inventory_error,
+        "routes": [],
+    }
+    for key, value in failure.to_payload().items():
+        if key not in {"code", "agent_prompt", "kind"}:
+            payload[key] = value
+    return payload
+
+
+def _issue_overview_retry(kind: str, board_names: list[str]) -> str:
+    """Mint the ticket that replays this exact overview once a hook is working."""
+
+    context = _discovery_retry_store.issue(
+        kind,
+        retry_tool="setup_overview",
+        retry_arguments={"board_names": list(board_names)} if board_names else {},
+    )
+    return context.retry_id
+
+
 def _setup_overview(
     board_names: list[str] | None,
     connection_assignments: Mapping[str, str] | None = None,
@@ -4564,8 +4884,12 @@ def _setup_overview(
         )
         by_name[_profile_name_key(profile.display_name)] = (profile, route_kind, reason)
 
+    # One snapshot per operation. Taken once here and threaded through, never re-taken,
+    # so probe rows and UART rows in this response always come from the same scan.
+    snapshot = EMPTY_INVENTORY_SNAPSHOT
     try:
-        inventory = _validation_inventory()
+        snapshot = _hardware_inventory.snapshot()
+        inventory = _validation_inventory(snapshot)
         connection_rows_by_identity: dict[str, dict[str, object]] = {}
         for probe in inventory.probes:
             connection_id = (
@@ -4573,14 +4897,19 @@ def _setup_overview(
                 if probe.usb_serial is not None
                 else probe.probe_id
             )
-            connection_rows_by_identity.setdefault(
-                _setup_connection_key(connection_id),
-                {
-                    "connection_id": connection_id,
-                    "friendly_name": probe.choice().label,
-                    "probe_family": probe.probe_family,
-                },
+            key = _setup_connection_key(connection_id)
+            if key in connection_rows_by_identity:
+                continue
+            # Record what this opaque token refers to before handing it to an agent, so
+            # it can later be re-derived against a fresh snapshot rather than parsed.
+            _probe_selection_store.record(
+                _selection_for_validation_probe(connection_id, probe, snapshot)
             )
+            connection_rows_by_identity[key] = {
+                "connection_id": connection_id,
+                "friendly_name": probe.choice().label,
+                "probe_family": probe.probe_family,
+            }
         connection_rows = list(connection_rows_by_identity.values())
         serial_rows = [
             {
@@ -4638,20 +4967,13 @@ def _setup_overview(
         ):
             raise ValueError("connection assignments must be unique current server connection IDs")
         if not connection_rows:
-            _replace_setup_assignments({}, "setup overview found no debug connection")
-            return {
-                "status": "setup_no_probe",
-                "agent_prompt": (
-                    "No debug probe is visible to the server. Tell the user to attach the "
-                    "intended board's debugger and retry. Do not ask which board is which; "
-                    "this is not a naming ambiguity. Do not expose this payload or internal IDs."
-                ),
-                "profiles": profile_rows,
-                "connections": connection_rows,
-                "serial_choices": serial_rows,
-                "inventory_error": inventory_error,
-                "routes": [],
-            }
+            return _no_native_probe_overview(
+                profile_rows,
+                serial_rows,
+                inventory_error,
+                snapshot,
+                board_names=[name for name, _key in validated_names],
+            )
         if len(validated_names) > len(connection_rows):
             _replace_setup_assignments({}, "setup overview requires assignment clarification")
             return {
@@ -4731,6 +5053,10 @@ def _setup_overview(
                     required_user_facts.append(
                         "if UART is used, attach and identify the board's UART connection"
                     )
+                    # Conditional by design: an empty UART inventory does not
+                    # short-circuit the way a missing probe does, because this workflow
+                    # may not use UART at all. Offer the contract, do not demand it.
+                    accepted_response["uart_hook_contract_call"] = contract_call("uart")
                 elif len(serial_rows) > 1:
                     required_user_facts.append(
                         "if UART is used, which friendly UART choice belongs to this board"
@@ -4887,7 +5213,9 @@ def _setup_overview(
                         "tool": "board_validate",
                         "arguments": {
                             "board_id": profile.board_id,
-                            "probe_id": selected_connection.removeprefix("probe:"),
+                            # An opaque server-issued token, not a UID. The server
+                            # resolves it against a fresh snapshot when validate runs.
+                            "probe_id": selected_connection,
                         },
                     },
                 }
@@ -5322,7 +5650,7 @@ def _setup_continue(
         if resolved_builtin is not None:
             try:
                 resolved_builtin, selected_policy = _live_test_builtin_setup_target(
-                    probe_uid=user_input.connection_id.removeprefix("probe:"),
+                    probe_uid=_resolved_probe_uid_for_connection(user_input.connection_id),
                     candidate=resolved_builtin,
                     requested_policy=staged_attachment,
                 )
@@ -5362,7 +5690,7 @@ def _setup_continue(
         official_sha = response.get("official_sha256")
         if official_sha is not None and not isinstance(official_sha, str):
             raise ResearchError("package/checksum-shape", "official_sha256 must be text or null")
-        probe_uid = user_input.connection_id.removeprefix("probe:")
+        probe_uid = _resolved_probe_uid_for_connection(user_input.connection_id)
         candidate = PackCandidate(
             str(response["pack_id"]),
             str(response["version"]),

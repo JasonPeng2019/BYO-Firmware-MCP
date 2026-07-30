@@ -287,11 +287,10 @@ def build_setup_handlers(services: SetupToolServices) -> dict[str, Callable[...,
                         ),
                     }
                 )
-            validation_probe_id = (
-                connection_id.removeprefix("probe:")
-                if connection_id.startswith("probe:")
-                else connection_id
-            )
+            # The opaque server-issued token, passed straight through. This value is only
+            # ever compared for equality against the assignment, so deriving a pyOCD UID
+            # here would be both unnecessary and wrong for a session-scoped selection.
+            validation_probe_id = connection_id
         return _json(
             services.loader.load(
                 board_id,
@@ -551,12 +550,9 @@ def build_setup_handlers(services: SetupToolServices) -> dict[str, Callable[...,
                 raise ValueError(
                     "board_validate requires the exact current setup_overview assignment"
                 )
-            expected_probe_id = (
-                assigned_connection.removeprefix("probe:")
-                if assigned_connection.startswith("probe:")
-                else assigned_connection
-            )
-            if probe_id != expected_probe_id:
+            # Equality only: compare the opaque connection tokens directly rather than
+            # deriving a UID from either side.
+            if probe_id != assigned_connection:
                 raise ValueError(
                     "board_validate probe_id does not match the exact current setup_overview "
                     "assignment"

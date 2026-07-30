@@ -8,6 +8,7 @@ from typing import Any, Mapping, cast
 from unittest.mock import Mock, patch
 
 from pyocd_debug_mcp import server
+from pyocd_debug_mcp.hardware_inventory import snapshot_from_validation_inventory
 from pyocd_debug_mcp.services.connections import probe_connection_id
 
 
@@ -21,6 +22,7 @@ def _probe(index: int, *, usb_serial: str | None = None) -> SimpleNamespace:
         usb_serial=serial,
         probe_id=f"probe-{index}",
         probe_family="cmsis-dap",
+        description=f"Probe {index}",
         choice=lambda: SimpleNamespace(label=f"Probe {index}"),
     )
 
@@ -37,15 +39,29 @@ def _serial_port(index: int) -> SimpleNamespace:
 
 
 class _OverviewHarness:
-    """Drive `_setup_overview` with a synthetic inventory and no profile store."""
+    """Drive `_setup_overview` with a synthetic inventory and no profile store.
+
+    Patches the inventory *service*, not just `_validation_inventory`. There is real
+    debug hardware on the developer bench this suite runs on, so a harness that only
+    patched the legacy shape would still take a live snapshot and report real probes in
+    the no-probe payload's diagnostics.
+    """
 
     def __init__(self, probes: tuple[SimpleNamespace, ...], serial: tuple[SimpleNamespace, ...]):
         self.inventory = SimpleNamespace(probes=probes, serial_ports=serial)
+        self.snapshot = snapshot_from_validation_inventory(
+            cast(Any, self.inventory),
+        )
         self.replace = Mock()
 
     def run(self, names: list[str] | None, assignments: dict[str, str] | None = None):
+        service = SimpleNamespace(
+            snapshot=lambda: self.snapshot,
+            validation_inventory=lambda: self.inventory,
+        )
         with (
             patch.object(server, "_profile_repository", SimpleNamespace(load_all=lambda: ())),
+            patch.object(server, "_hardware_inventory", service),
             patch.object(server, "_validation_inventory", return_value=self.inventory),
             patch.object(server, "_replace_setup_assignments", self.replace),
         ):
@@ -64,7 +80,7 @@ class SetupOverviewNoProbeTests(unittest.TestCase):
         self.assertEqual(overview["connections"], [])
         prompt = str(overview["agent_prompt"])
         self.assertIn("No debug probe is visible to the server", prompt)
-        self.assertIn("not a naming ambiguity", prompt)
+        self.assertIn("not a board-naming ambiguity", prompt)
 
     def test_no_probe_return_clears_provisional_assignments_like_its_siblings(self) -> None:
         harness = _OverviewHarness((), ())
@@ -81,8 +97,9 @@ class SetupOverviewNoProbeTests(unittest.TestCase):
 
         overview = harness.run(["Nucleo"])
 
-        self.assertEqual(
-            set(overview),
+        # Every key its sibling early returns carry is still present. Step 6 adds the
+        # typed code and the hook remedy on top; it does not drop any of these.
+        self.assertLessEqual(
             {
                 "status",
                 "agent_prompt",
@@ -92,7 +109,9 @@ class SetupOverviewNoProbeTests(unittest.TestCase):
                 "inventory_error",
                 "routes",
             },
+            set(overview),
         )
+        self.assertEqual(overview["code"], "discovery/no-native-probe")
         # The UART inventory is still reported even though the probe is missing.
         choice_ids = [row["choice_id"] for row in _rows(overview, "serial_choices")]
         self.assertEqual(choice_ids, ["serial-1"])

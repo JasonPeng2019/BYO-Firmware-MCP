@@ -60,6 +60,14 @@ class _ConnectionManager:
         del board_id
         return None
 
+    def connection_for(self, board_id: str) -> SimpleNamespace:
+        raise AssertionError(f"no live connection was assigned for {board_id}")
+
+    def assigned_board_ids(self) -> tuple[str, ...]:
+        # The unified inventory service injects already-open probes, which pyOCD omits.
+        # This double never holds a live connection, so there is nothing to inject.
+        return ()
+
     def assign(
         self,
         board_id: str,

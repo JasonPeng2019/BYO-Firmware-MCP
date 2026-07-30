@@ -106,7 +106,9 @@ class ValidationHonestyTests(unittest.TestCase):
         hardware_validation_payload = json.loads(
             handlers["board_validate"](
                 "hardware-prefix-board",
-                "session:hardware-uid",
+                # Step 5: the opaque connection token, passed back verbatim. The server
+                # resolves it against a fresh snapshot; it is never a pyOCD UID.
+                "probe:session:hardware-uid",
             )
         )
         with self.assertRaisesRegex(ValueError, "does not match"):
@@ -121,7 +123,7 @@ class ValidationHonestyTests(unittest.TestCase):
         self.assertEqual(hardware_validation_payload["status"], "validation_passed")
         self.assertEqual(
             [call.kwargs["validation_probe_id"] for call in loader.load.call_args_list],
-            ["session:runtime-uidless", "session:hardware-uid"],
+            ["session:runtime-uidless", "probe:session:hardware-uid"],
         )
         self.assertEqual(
             require_assignment.call_args_list,
@@ -135,7 +137,7 @@ class ValidationHonestyTests(unittest.TestCase):
         )
         self.assertEqual(
             [call.args[0].probe_id for call in validator.validate.call_args_list],
-            ["session:runtime-uidless", "session:hardware-uid"],
+            ["session:runtime-uidless", "probe:session:hardware-uid"],
         )
 
     def test_validation_connect_passes_its_step_deadline_to_the_worker_open(self) -> None:

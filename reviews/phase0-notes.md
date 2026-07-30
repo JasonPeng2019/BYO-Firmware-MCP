@@ -53,3 +53,50 @@ preserved. In `_setup_overview` a broad `except Exception` turns it into
 
 I wrote the `maybe_connection`-and-skip fix, then reverted it to stay faithful to
 Phase 0's "nothing more, nothing less". Expect this as an iteration-1 finding.
+
+## Environmental finding (matters for how these tests must be written)
+
+**There is real debug hardware attached to the machine this suite runs on.** A live
+snapshot during the run reported four probes:
+
+```
+0668FF514988525067213913 (stlink)   066FFF514988525067233337 (stlink)
+683710208 (jlink)                   683854191 (jlink)
+```
+
+`683710208` and `683854191` are exactly the `FIRST_PROBE` / `SECOND_PROBE` constants in
+`tests/test_server_assignment_connect.py` -- the fixtures were taken from this bench.
+
+Consequences, both of which bit me:
+
+1. `test_normal_connect_rejects_missing_assigned_probe_without_fallback` patches
+   `_validation_inventory` to *simulate* the assigned probe being absent. When I routed
+   `_assigned_probe_uid_for_connect` through `_hardware_inventory.snapshot()` instead, it
+   saw the genuinely attached `683854191` and resolved successfully, so the expected
+   refusal never fired. Fixed by keeping site 4 on `_validation_inventory()` and lifting
+   its result with the new `snapshot_from_validation_inventory`, which is also what the
+   guide prescribes ("sites 4, 5, 6, 7 keep calling `_validation_inventory`"). Test
+   runtime for that module dropped 7.1s -> 2.8s once it stopped scanning real hardware.
+
+2. Patching only `_validation_inventory` is not enough for `_setup_overview`, which also
+   reads the snapshot for hook and native diagnostics. The no-probe payload would have
+   carried "4 probes found" diagnostics while reporting no probes. `_OverviewHarness` now
+   patches the inventory *service*.
+
+Any further test for these paths must patch `_hardware_inventory`, not just the legacy
+shape, or it will silently exercise the bench.
+
+## Test contract changes required by step 5 (not test rot)
+
+`tests/test_validation_honesty.py::test_setup_tools_preserve_exact_session_local_validation_assignment`
+asserted that `board_validate` receives the assignment with its `probe:` prefix stripped
+-- i.e. exactly the "everything after `probe:` is a pyOCD unique_id" assumption step 5
+exists to delete. Updated to pass the opaque token verbatim
+(`probe:session:hardware-uid`). The test's actual intent -- that a session-local
+assignment is preserved exactly and two boards cannot be conflated -- is unchanged and
+still asserted, including the mismatch case.
+
+`tests/test_server_assignment_connect.py::_ConnectionManager` gained
+`assigned_board_ids()` and `connection_for()`. The real `ConnectionManager` has always
+had both, and `_validation_inventory` has always called `assigned_board_ids()`; the
+double only avoided them because the whole function was patched out.

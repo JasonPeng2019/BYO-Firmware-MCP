@@ -569,11 +569,19 @@ class ProbeSelectionStore:
 
         recorded = self.recorded(connection_id)
         if recorded is None:
-            raise SelectionNotRecorded(
-                connection_id,
-                "no probe selection was recorded for this connection in this run; "
-                "rerun setup_overview to choose the current physical connection",
-            )
+            # An assignment can predate this store: it may have been made by a path that
+            # does not mint selections, so derive one from the token the same way the
+            # former string surgery did, then record it. Deriving is still not trusting:
+            # the row must be present in *this* snapshot or the call fails below.
+            derived = derive_selection_from_token(connection_id, snapshot)
+            if derived is None:
+                raise SelectionNotRecorded(
+                    connection_id,
+                    "the assigned probe is no longer present; rerun setup routing to "
+                    "choose the current physical connection",
+                )
+            self.record(derived)
+            return derived
         row = find_selected_row(recorded, snapshot)
         if row is None:
             raise SelectionDisappeared(
@@ -586,6 +594,9 @@ class ProbeSelectionStore:
             and row.hook_source_sha256 is not None
             and row.hook_source_sha256 != recorded.hook_source_sha256
         ):
+            # Only *drift between two hook sources* is a refusal. A device that was
+            # native last refresh and is hook-visible this one (or the reverse) is the
+            # case the merge rules exist for, and its physical identity is unchanged.
             raise SelectionDisappeared(
                 connection_id,
                 "the hook that discovered this probe changed since it was selected; "
@@ -659,6 +670,33 @@ class SessionUartSelectionStore:
         return matches[0]
 
 
+def derive_selection_from_token(
+    connection_id: str,
+    snapshot: InventorySnapshot,
+) -> ProbeSelection | None:
+    """Recover a selection from a bare connection token, matching the legacy rule.
+
+    Reproduces exactly what `_connection_matches_probe` did: strip a `probe:` prefix,
+    then compare the remainder against each row's `probe_id` and stable identity under
+    `stable_identity_equal`. Needed because an assignment can predate any recorded
+    selection, and refusing those outright would strand a valid binding.
+    """
+
+    candidate = connection_id.strip()
+    if candidate.casefold().startswith("probe:"):
+        candidate = candidate.split(":", 1)[1]
+    for row in snapshot.probes:
+        if stable_identity_equal(candidate, row.probe_id) or stable_identity_equal(
+            candidate, row.stable_identity
+        ):
+            return ProbeSelection.from_row(connection_id, row)
+    # A session token is compared whole, since it carries its own `session:` prefix.
+    for row in snapshot.probes:
+        if row.probe_id.casefold() == connection_id.strip().casefold():
+            return ProbeSelection.from_row(connection_id, row)
+    return None
+
+
 def find_selected_row(selection: ProbeSelection, snapshot: InventorySnapshot) -> ProbeRow | None:
     """Locate the row a recorded selection still refers to, within its provider."""
 
@@ -674,6 +712,56 @@ def find_selected_row(selection: ProbeSelection, snapshot: InventorySnapshot) ->
         if stable_identity_equal(row.stable_identity, selection.stable_identity):
             return row
     return None
+
+
+def snapshot_from_validation_inventory(inventory: ValidationInventory) -> InventorySnapshot:
+    """Lift the legacy inventory shape back into a snapshot.
+
+    The inverse adapter, for call sites the guide keeps on `_validation_inventory()`.
+    Provenance is reported as native because the legacy shape does not carry it; a caller
+    that needs hook-source drift detection must check the hook snapshot separately, since
+    `hook_source_sha256` cannot be recovered from this shape.
+    """
+
+    snapshot_id = secrets.token_urlsafe(12)
+    counter = _RowIds(snapshot_id)
+    probes = tuple(
+        ProbeRow(
+            provider=probe.probe_family,
+            probe_id=probe.probe_id,
+            unique_id=probe.usb_serial,
+            row_id=counter.next(),
+            description=probe.description,
+            stable_identity=probe.usb_serial,
+            provenance=(NATIVE_PROVENANCE,),
+            hook_source_sha256=None,
+            identity_scope="stable" if probe.usb_serial else "session",
+            snapshot_id=snapshot_id,
+        )
+        for probe in inventory.probes
+    )
+    uarts = tuple(
+        UartRow(
+            port_path=port.port_path,
+            description=port.description,
+            usb_serial=port.usb_serial,
+            vid=port.vid,
+            pid=port.pid,
+            provenance=(NATIVE_PROVENANCE,),
+            identity_scope=_uart_scope(port.usb_serial, port.vid, port.pid),
+            row_id=counter.next(),
+            snapshot_id=snapshot_id,
+        )
+        for port in inventory.serial_ports
+    )
+    return InventorySnapshot(
+        snapshot_id=snapshot_id,
+        probes=probes,
+        uarts=uarts,
+        native_probe_diagnostics=EMPTY_NATIVE_PROBE_LISTING,
+        native_uart_available=True,
+        hook_diagnostics=(),
+    )
 
 
 def validation_inventory_from(snapshot: InventorySnapshot) -> ValidationInventory:
