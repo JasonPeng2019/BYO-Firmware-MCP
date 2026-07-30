@@ -192,6 +192,22 @@ reintroduce the removed public override channel.
 
 ## Setup and client relay boundary
 
+One `HardwareInventoryService` serves every discovery call site, and it is the only
+place that decides whether a hook runs. The rule is per kind, evaluated fresh on each
+snapshot: a kind's hooks execute only when that kind's native result is empty. Keeping
+the decision inside `snapshot()` is what stops a future caller from putting subprocess
+launches on the serial hot path -- `_resolve_serial_port_for_session` runs immediately
+before every UART action and before the `on_exit` finalizer. A hook therefore can never
+mask or outrank a natively visible device, because it never runs while one is present,
+and hook diagnostics are empty on a healthy machine.
+
+Hook programs are agent-authored under the project's gitignored
+`.firm/discovery_hooks`. `FirmStore` names and creates that directory and deliberately
+has no hook writer. Hooks run with their whole process group owned by the server, stdin
+closed, a hard per-hook deadline, and capped stdout that keeps draining past the cap so
+the child cannot block on a full pipe; a hook file whose bytes change after the refresh
+that admitted it is refused without being executed.
+
 Setup deterministically inventories probes, serial ports, cache matches,
 targets, builds, and exact verified pack bindings before requesting research.
 Unknown facts are returned as strict research requests; blocked physical
@@ -372,7 +388,10 @@ retains the existing exact-map disclosure and fresh one-time approval boundary.
 ## Runtime contracts
 
 The live MCP `tools/list` schemas, tool descriptions, and the plan definitions in
-`guardrails/plan_defs.py` are the runtime contract. The generated
+`guardrails/plan_defs.py` are the runtime contract. The discovery-hook manifest and
+output schemas are part of it too: `get_discovery_hook_contract` hands out the same
+example documents that the loader and parser validate against, so the contract the
+server offers is one it will accept back. The generated
 [plan-tool contract](plan-tool-contract.md) is the corresponding human-readable reference.
 
 The checkout, wheel, and sdist contain the same generic runtime. Board profiles, pack bytes,

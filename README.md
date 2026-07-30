@@ -33,7 +33,10 @@ The server is client-neutral and never launches a client workflow or silently co
 The server provides a guarded board-development surface:
 
 - **Board readiness:** discover connections, route familiar board names to validation or setup,
-  establish board profiles, validate live hardware, and report readiness.
+  establish board profiles, validate live hardware, and report readiness. When a machine cannot
+  enumerate a debugger or serial port natively, an agent can author a local discovery hook under
+  the project's `.firm/discovery_hooks` so the server can see it; hook output names hardware and
+  grants no authority.
 - **Debug and inspection:** inspect board, CPU, execution, symbol, and bounded-memory state;
   control breakpoints, stepping, reset/run, and other bounded diagnostic actions.
 - **Serial evidence:** capture UART output and run controlled serial exchanges for declared tests
