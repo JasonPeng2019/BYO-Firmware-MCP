@@ -681,7 +681,16 @@ class ProbeSelectionStore:
                 "the hook that discovered this probe changed since it was selected; "
                 "call refresh_discovery_hooks and rerun setup routing",
             )
-        return ProbeSelection.from_row(connection_id, row)
+        selection = ProbeSelection.from_row(connection_id, row)
+        # FIX 9 (C9): a successful resolution against an already-recorded entry is the
+        # common case -- every connect, board_validate, and status check for an
+        # already-set-up board -- so it must touch recency the same way an explicit
+        # `record()` does. Without this, eviction is pure insertion order and an
+        # actively-used, long-lived connection is no better protected from it than an
+        # entry nobody has ever resolved, which is what makes an eviction-driven
+        # cross-provider misresolution (C8) realistic rather than theoretical.
+        self.record(selection)
+        return selection
 
 
 @dataclass(frozen=True, slots=True)

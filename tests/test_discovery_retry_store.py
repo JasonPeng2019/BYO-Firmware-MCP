@@ -431,6 +431,45 @@ class RefreshUnhandledExceptionGuardTests(unittest.TestCase):
         self.assertIn("boom", payload["agent_prompt"])
         self.assertIn(REFRESH_TOOL, payload["agent_prompt"])
 
+    def test_the_backstop_carries_the_same_retry_affordance_as_the_normal_failure_path(
+        self,
+    ) -> None:
+        """FIX 11 (C11/D10): the backstop must not be a thinner response than normal.
+
+        The ordinary partial-failure path (reached via `executions`, not an exception)
+        attaches `retry_id`, `refresh_call`, and `board_id` when a ticket is present.
+        Before this fix the exception backstop built its payload independently and
+        omitted all three, leaving an agent that hit it without the breadcrumbs guide
+        step 8 requires every hook-failure response to carry.
+        """
+
+        def broken_run_hooks(
+            snapshot: DiscoveryHookSnapshot, kind: str
+        ) -> Sequence[HookExecution]:
+            raise RuntimeError("boom: simulated hook-runner failure")
+
+        handlers = self._handlers(broken_run_hooks)
+        ticket = self.store.issue(
+            "probe",
+            retry_tool="setup_overview",
+            retry_arguments={"board_names": ["Nucleo"]},
+            board_id="nucleo_1",
+        )
+
+        payload = json.loads(handlers[REFRESH_TOOL](ticket.retry_id))
+
+        self.assertEqual(payload["status"], "discovery_refresh_rejected")
+        self.assertEqual(payload["retry_id"], ticket.retry_id)
+        self.assertEqual(payload["refresh_call"]["arguments"]["retry_id"], ticket.retry_id)
+        self.assertEqual(payload["board_id"], "nucleo_1")
+        self.assertEqual(
+            payload["retry_call"],
+            {"tool": "setup_overview", "arguments": {"board_names": ["Nucleo"]}},
+        )
+        # The ticket must not be silently consumed by a failure the agent cannot yet
+        # have acted on.
+        self.assertTrue(self.store.known(ticket.retry_id))
+
 
 if __name__ == "__main__":  # pragma: no cover
     unittest.main()

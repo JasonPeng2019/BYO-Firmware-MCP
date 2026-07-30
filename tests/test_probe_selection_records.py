@@ -278,6 +278,50 @@ class BoundedStoreTests(unittest.TestCase):
         self.assertEqual(selection.unique_id, "683710208")
         self.assertTrue(selection.durable)
 
+    def test_a_repeatedly_resolved_entry_survives_eviction_pressure(self) -> None:
+        """FIX 9 (C9): a successful resolve() must touch recency like record() does.
+
+        Without this, eviction is pure insertion order and a long-lived, actively-used
+        connection is no better protected than an entry nobody has touched since it was
+        created -- exactly what makes an eviction-driven cross-provider misresolution
+        (C8) realistic. Interleaves resolve() calls with unrelated churn far exceeding
+        the cap; the kept entry must survive, and (to prove the churn was real, not a
+        vacuous test) an entry that was never re-touched must actually be evicted.
+        """
+
+        kept_row = _probe_row("jlink", "kept-uid")
+        kept_token = "probe:kept"
+        self.store.record(ProbeSelection.from_row(kept_token, kept_row))
+        snapshot = _snapshot(kept_row)
+
+        untouched_row = _probe_row("jlink", "untouched-uid")
+        untouched_token = "probe:untouched-first"
+        self.store.record(ProbeSelection.from_row(untouched_token, untouched_row))
+
+        batch_size = 50
+        for batch in range(10):
+            for index in range(batch_size):
+                self.store.record(
+                    ProbeSelection.from_row(
+                        f"probe:churn-{batch}-{index}",
+                        _probe_row("jlink", f"churn-{batch}-{index}"),
+                    )
+                )
+            # Simulates the common case -- connect / board_validate / status checks for
+            # an already-set-up board -- resolving the same entry again and again.
+            self.store.resolve(kept_token, snapshot)
+
+        # Total unrelated churn (500) is comfortably more than the cap (256), so the
+        # store definitely evicted *something* -- proving the pressure was real.
+        self.assertIsNone(
+            self.store.recorded(untouched_token),
+            "the churn was not actually enough to evict anything, making this test vacuous",
+        )
+        self.assertIsNotNone(
+            self.store.recorded(kept_token),
+            "an actively-resolved entry was evicted despite being resolved every batch",
+        )
+
 
 class SessionScopeTests(unittest.TestCase):
     def setUp(self) -> None:

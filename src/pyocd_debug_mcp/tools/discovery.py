@@ -370,19 +370,24 @@ def build_discovery_handlers(
                 # (a test double, or a future refactor) can raise, so the contract
                 # this tool promises -- a typed failure naming the hook, never an
                 # unhandled exception -- holds regardless of the cause.
-                return _json(
-                    {
-                        "status": "discovery_refresh_rejected",
-                        "code": "discovery/hook-failed",
-                        "agent_prompt": (
-                            f"Running the '{hook_kind}' discovery hook(s) failed "
-                            f"unexpectedly: {exc} Repair the hook or its manifest under "
-                            f"hook_root, then call {REFRESH_TOOL} again."
-                        ),
-                        "hook_root": str(services.hook_root()),
-                        "hook_kind": hook_kind,
-                    }
-                )
+                backstop_document: dict[str, Any] = {
+                    "status": "discovery_refresh_rejected",
+                    "code": "discovery/hook-failed",
+                    "agent_prompt": (
+                        f"Running the '{hook_kind}' discovery hook(s) failed "
+                        f"unexpectedly: {exc} Repair the hook or its manifest under "
+                        f"hook_root, then call {REFRESH_TOOL} again."
+                    ),
+                    "hook_root": str(services.hook_root()),
+                    "hook_kind": hook_kind,
+                }
+                # FIX 11 (C11/D10): this backstop is a failure response like any other
+                # reached through `executions`, so it must carry the same retry
+                # affordance -- `_failure_retry_fields` is the one place that shape is
+                # built, precisely so this path and the normal one below cannot
+                # independently drift apart again.
+                backstop_document.update(_failure_retry_fields(ticket))
+                return _json(backstop_document)
 
         probe_rows, uart_rows = _friendly_rows(executions)
         succeeded = [execution for execution in executions if execution.ok]
@@ -404,17 +409,16 @@ def build_discovery_handlers(
         }
 
         if ticket is not None:
-            original = ticket.retry_call()
-            if original is not None:
-                document["retry_call"] = original
-            if ticket.board_id is not None:
-                document["board_id"] = ticket.board_id
-            if not failed:
+            if failed:
+                document.update(_failure_retry_fields(ticket))
+            else:
+                original = ticket.retry_call()
+                if original is not None:
+                    document["retry_call"] = original
+                if ticket.board_id is not None:
+                    document["board_id"] = ticket.board_id
                 # Clear on successful replay so the same ticket cannot be reused.
                 services.retry_store.consume(ticket.retry_id)
-            else:
-                document["retry_id"] = ticket.retry_id
-                document["refresh_call"] = refresh_call(ticket.retry_id)
         elif failed:
             document["contract_call"] = contract_call(failed[0].kind)
 
@@ -482,6 +486,29 @@ def _example_for(kind: str) -> dict[str, Any]:
         "hook_filename": entry["entrypoint"],  # type: ignore[index]
         "hook_source": source,
     }
+
+
+def _failure_retry_fields(ticket: RetryContext | None) -> dict[str, Any]:
+    """The retry affordance a FAILED `refresh_discovery_hooks` response must carry.
+
+    One place, shared by the normal partial-failure branch (some hooks ran and
+    reported failures) and the FIX 3b exception backstop (`run_hooks` itself raised),
+    so the two paths cannot independently drift apart -- an agent that hits either one
+    gets the same `retry_call`/`retry_id`/`refresh_call`/`board_id` breadcrumbs back.
+    """
+
+    if ticket is None:
+        return {}
+    fields: dict[str, Any] = {
+        "retry_id": ticket.retry_id,
+        "refresh_call": refresh_call(ticket.retry_id),
+    }
+    original = ticket.retry_call()
+    if original is not None:
+        fields["retry_call"] = original
+    if ticket.board_id is not None:
+        fields["board_id"] = ticket.board_id
+    return fields
 
 
 def _friendly_rows(

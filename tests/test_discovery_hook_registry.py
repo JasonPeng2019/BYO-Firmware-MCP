@@ -683,6 +683,60 @@ class AggregateHookCapTests(_TempRoot):
 
         self.assertIn(str(2 * discovery_hooks.MAX_HOOKS_PER_MANIFEST), str(caught.exception))
 
+    def test_no_hashing_occurs_when_the_aggregate_cap_is_exceeded(self) -> None:
+        """FIX 10 (C10/D9): the count check must run before any per-declaration work.
+
+        `resolve_declaration` does symlink-safe path-containment resolution and a full
+        SHA-256 hash of up to `MAX_HOOK_FILE_BYTES` per file; a maximal 32+32 pair used
+        to pay for all of that before the old post-merge-only check could reject it.
+        Spying on `resolve_declaration` proves it is never called at all once the
+        parsed declaration count alone already exceeds the cap.
+        """
+
+        write_manifest(
+            self.project, self._entries("project", discovery_hooks.MAX_HOOKS_PER_MANIFEST)
+        )
+        write_manifest(
+            self.operator,
+            self._entries("operator", discovery_hooks.MAX_HOOKS_PER_MANIFEST),
+            filename="registry.json",
+        )
+
+        with unittest.mock.patch.object(discovery_hooks, "resolve_declaration") as spy:
+            with self.assertRaises(DiscoveryHookError):
+                load_hook_snapshot(self.project, environ=self._operator_env())
+
+        spy.assert_not_called()
+
+    def test_missing_entrypoints_never_surface_when_the_aggregate_cap_is_exceeded(self) -> None:
+        """Black-box companion to the spy test above, with no reliance on mocking.
+
+        Every declared hook points at an entrypoint that does not exist, so if
+        per-declaration resolution ran at all, it would raise a "not a file" error
+        instead of the aggregate-cap error. Getting the cap error proves resolution
+        never started.
+        """
+
+        missing_entries = [
+            hook_entry(f"project-{index}", "probe", entrypoint="missing.py")
+            for index in range(discovery_hooks.MAX_HOOKS_PER_MANIFEST)
+        ]
+        write_manifest(self.project, missing_entries)
+        write_manifest(
+            self.operator,
+            [
+                hook_entry(f"operator-{index}", "probe", entrypoint="missing.py")
+                for index in range(discovery_hooks.MAX_HOOKS_PER_MANIFEST)
+            ],
+            filename="registry.json",
+        )
+
+        with self.assertRaises(DiscoveryHookError) as caught:
+            load_hook_snapshot(self.project, environ=self._operator_env())
+
+        self.assertIn("exceeds the total cap", str(caught.exception))
+        self.assertNotIn("not a file", str(caught.exception))
+
 
 class OrderingTests(_TempRoot):
     def test_hooks_are_sorted_by_source_kind_then_id(self) -> None:

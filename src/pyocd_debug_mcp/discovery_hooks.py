@@ -88,10 +88,6 @@ class DiscoveryHookError(RuntimeError):
     """A hook manifest, hook file, or hook declaration violates the contract."""
 
 
-class HookSourceChangedError(DiscoveryHookError):
-    """A hook file's bytes changed after the refresh that admitted them."""
-
-
 def current_platform() -> str:
     """Return the one platform token used by manifests, the contract tool, and docs."""
 
@@ -619,22 +615,22 @@ def load_hook_snapshot(
 
     env = os.environ if environ is None else environ
     root = Path(hook_root)
-    specs: list[DiscoveryHookSpec] = []
     digest = hashlib.sha256()
 
     project_manifest = root / MANIFEST_FILENAME
     project_bytes = _read_manifest_bytes(project_manifest, label="project hook manifest")
+    project_declarations: tuple[DiscoveryHookDeclaration, ...] = ()
     if project_bytes is not None:
         digest.update(b"project\x00")
         digest.update(hashlib.sha256(project_bytes).digest())
-        declarations = parse_manifest_document(
+        project_declarations = parse_manifest_document(
             _decode_manifest(project_bytes, label="project hook manifest"),
             label="project hook manifest",
         )
-        for declaration in declarations:
-            specs.append(resolve_declaration(declaration, root=root, source="project"))
 
     configured = str(env.get(DISCOVERY_HOOK_REGISTRY_ENV, "")).strip()
+    operator_declarations: tuple[DiscoveryHookDeclaration, ...] = ()
+    operator_root: Path | None = None
     if configured:
         operator_manifest = Path(configured).expanduser()
         operator_bytes = _read_manifest_bytes(operator_manifest, label="operator hook registry")
@@ -644,22 +640,42 @@ def load_hook_snapshot(
             )
         digest.update(b"operator\x00")
         digest.update(hashlib.sha256(operator_bytes).digest())
-        declarations = parse_manifest_document(
+        operator_declarations = parse_manifest_document(
             _decode_manifest(operator_bytes, label="operator hook registry"),
             label="operator hook registry",
         )
         operator_root = operator_manifest.parent
-        for declaration in declarations:
-            specs.append(resolve_declaration(declaration, root=operator_root, source="operator"))
+
+    # FIX 10 (C10/D9): count before the expensive per-declaration work. Each source is
+    # already capped individually at MAX_HOOKS_PER_MANIFEST, but nothing stopped both
+    # from being maxed at once -- resolving and hashing every declaration from a
+    # maximal 32+32 pair costs up to ~64MB of file I/O and 64 symlink-safe
+    # path-containment resolutions *before* a check placed only after that work could
+    # reject it. Reject on the parsed declaration count alone, before any hook file is
+    # opened or hashed.
+    total_declared = len(project_declarations) + len(operator_declarations)
+    if total_declared > MAX_HOOKS_TOTAL:
+        raise DiscoveryHookError(
+            f"{total_declared} hooks are declared across the project manifest and the "
+            f"operator registry combined, which exceeds the total cap of {MAX_HOOKS_TOTAL}. "
+            "Remove or combine hooks so the combined total fits within the limit."
+        )
+
+    specs: list[DiscoveryHookSpec] = []
+    for declaration in project_declarations:
+        specs.append(resolve_declaration(declaration, root=root, source="project"))
+    if operator_root is not None:
+        for declaration in operator_declarations:
+            specs.append(
+                resolve_declaration(declaration, root=operator_root, source="operator")
+            )
 
     # Deterministic execution order across repeated snapshots. A project hook and an
     # operator hook may share a hook_id; source keeps them distinguishable.
     specs.sort(key=lambda spec: (spec.source, spec.kind, spec.hook_id))
+    # Kept as a second, independent guard -- it costs nothing at this point, since
+    # `specs` is already fully built and `len(specs) == total_declared` always holds.
     if len(specs) > MAX_HOOKS_TOTAL:
-        # Each source is already capped at MAX_HOOKS_PER_MANIFEST individually, but
-        # nothing stopped both from being maxed at once -- 64 hooks x 60s sequential is
-        # ~64 minutes for one refresh. Refuse before anything executes rather than let
-        # the aggregate cliff be reachable at all.
         raise DiscoveryHookError(
             f"{len(specs)} hooks are declared across the project manifest and the operator "
             f"registry combined, which exceeds the total cap of {MAX_HOOKS_TOTAL}. Remove or "
