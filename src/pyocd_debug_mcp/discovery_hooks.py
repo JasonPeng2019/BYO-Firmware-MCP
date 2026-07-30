@@ -55,6 +55,14 @@ MAX_HOOK_ROWS = 64
 MAX_FIELD_CHARS = 512
 DEFAULT_HOOK_TIMEOUT_SECONDS = 10.0
 MAX_HOOKS_PER_MANIFEST = 32
+# `MAX_HOOKS_PER_MANIFEST` bounds one source; there are two (project + operator), each
+# independently capable of declaring up to that many hooks of a single kind. Execution
+# is sequential by design (no concurrency), so wall-clock cost for one refresh scales as
+# the *sum*, not the max, of eligible timeouts -- 64 hooks x 60s is ~64 minutes. The
+# timeout budget already scales with however many hooks actually load, so it is not
+# miscalculated by a large total; this cap exists because nothing else bounds how large
+# that total can get, and the aggregate cliff should never be reachable at all.
+MAX_HOOKS_TOTAL = 48
 # A hook file is re-hashed before every execution to detect drift since the last
 # refresh. Bounding the file is what makes that re-read cheap enough to do per
 # inventory call rather than once per refresh.
@@ -71,7 +79,9 @@ DISCOVERY_HOOK_REGISTRY_ENV = "BYO_MCP_DISCOVERY_HOOK_REGISTRY"
 HookKind = Literal["probe", "uart"]
 HookRunner = Literal["server-python", "executable"]
 HookSource = Literal["project", "operator"]
-HookOutcome = Literal["exited", "timeout", "cleanup_failed", "parse_failed", "source_changed"]
+HookOutcome = Literal[
+    "exited", "timeout", "cleanup_failed", "parse_failed", "source_changed", "launch_failed"
+]
 
 
 class DiscoveryHookError(RuntimeError):
@@ -645,6 +655,16 @@ def load_hook_snapshot(
     # Deterministic execution order across repeated snapshots. A project hook and an
     # operator hook may share a hook_id; source keeps them distinguishable.
     specs.sort(key=lambda spec: (spec.source, spec.kind, spec.hook_id))
+    if len(specs) > MAX_HOOKS_TOTAL:
+        # Each source is already capped at MAX_HOOKS_PER_MANIFEST individually, but
+        # nothing stopped both from being maxed at once -- 64 hooks x 60s sequential is
+        # ~64 minutes for one refresh. Refuse before anything executes rather than let
+        # the aggregate cliff be reachable at all.
+        raise DiscoveryHookError(
+            f"{len(specs)} hooks are declared across the project manifest and the operator "
+            f"registry combined, which exceeds the total cap of {MAX_HOOKS_TOTAL}. Remove or "
+            "combine hooks so the combined total fits within the limit."
+        )
     return DiscoveryHookSnapshot(
         manifest_sha256=digest.hexdigest() if specs or project_bytes is not None else "",
         hooks=tuple(specs),
@@ -943,7 +963,18 @@ def execute_hook(
             "hook file changed since the last refresh_discovery_hooks; refresh again",
         )
 
-    raw = _execute(spec, spec.command(), marker_store=marker_store)
+    try:
+        raw = _execute(spec, spec.command(), marker_store=marker_store)
+    except Exception as exc:  # noqa: BLE001 - popen_owned's Popen() call is unguarded
+        # `popen_owned`'s `subprocess.Popen(...)` call is the one statement in
+        # `_execute` that precedes its own try block, so it is not guarded there. An
+        # operator `runner: "executable"` hook that lost its execute bit *after* the
+        # refresh that admitted it hashes identically -- the SHA-256 above covers file
+        # content, not permission bits -- so this is the only thing standing between
+        # that case (PermissionError on POSIX) and an unhandled exception out of
+        # `refresh_discovery_hooks`, the one always-reachable fallback tool. Route it
+        # through the typed path instead of adding a separate portable exec-bit check.
+        return _refusal(spec, "launch_failed", f"hook process could not be started: {exc}")
     stdout_excerpt = _bounded_text(raw.stdout)
     if raw.outcome != "exited" or raw.exit_code != 0:
         detail = raw.detail or f"hook exited with code {raw.exit_code}"

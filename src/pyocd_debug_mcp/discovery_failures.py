@@ -126,12 +126,17 @@ class DiscoveryFailure:
 
 def no_native_probe_failure(
     *,
-    hooks_available: bool,
     native_diagnostics: Mapping[str, object] | None = None,
     hook_diagnostics: Sequence[Mapping[str, object]] = (),
     retry_id: str | None = None,
 ) -> DiscoveryFailure:
-    """Native probe discovery came back empty."""
+    """Native probe discovery came back empty.
+
+    Always offers the hook contract call: that is how an agent writes its *first*
+    hook, so there is no state in which withholding it would be correct. (A former
+    `hooks_available` parameter modeled this as conditional; every call site always
+    passed `True`, so it was removed rather than wired to anything.)
+    """
 
     message = (
         "No debug probe is visible to the server. Tell the user to attach the intended "
@@ -146,7 +151,7 @@ def no_native_probe_failure(
         code=DISCOVERY_NO_NATIVE_PROBE,
         message=message,
         kind="probe",
-        hook_contract_call=contract_call("probe", retry_id=retry_id) if hooks_available else None,
+        hook_contract_call=contract_call("probe", retry_id=retry_id),
         hook_diagnostics=tuple(hook_diagnostics),
         native_diagnostics=native_diagnostics,
         remedies=(LOCKED_ENVIRONMENT_PROBE_DIAGNOSTIC,),
@@ -155,11 +160,13 @@ def no_native_probe_failure(
 
 def no_native_uart_failure(
     *,
-    hooks_available: bool,
     hook_diagnostics: Sequence[Mapping[str, object]] = (),
     retry_id: str | None = None,
 ) -> DiscoveryFailure:
-    """Native UART discovery came back empty *and* this board's workflow needs UART."""
+    """Native UART discovery came back empty *and* this board's workflow needs UART.
+
+    Always offers the hook contract call; see `no_native_probe_failure` above.
+    """
 
     message = (
         "This board's workflow uses UART, but no serial port is visible to the server. "
@@ -173,7 +180,7 @@ def no_native_uart_failure(
         code=DISCOVERY_NO_NATIVE_UART,
         message=message,
         kind="uart",
-        hook_contract_call=contract_call("uart", retry_id=retry_id) if hooks_available else None,
+        hook_contract_call=contract_call("uart", retry_id=retry_id),
         hook_diagnostics=tuple(hook_diagnostics),
         remedies=(LOCKED_ENVIRONMENT_UART_DIAGNOSTIC,),
     )

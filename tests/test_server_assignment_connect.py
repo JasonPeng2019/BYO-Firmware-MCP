@@ -559,5 +559,48 @@ class AssignmentAwareConnectTests(unittest.TestCase):
         self.assertEqual(after - before, set())
 
 
+class ActiveConnectionRowsToctouTests(unittest.TestCase):
+    """FIX 3c (C3/K1): a board disconnecting mid-scan must not raise.
+
+    `assigned_board_ids()` snapshots the key set under lock and releases it before
+    `_active_connection_rows` re-acquires the lock per board. The pre-fix code used
+    `connection_for`, which re-raises `BoardNotConnectedError` for a board that
+    vanished in that gap; the fix uses `maybe_connection` and skips `None` instead,
+    which is correct since a board that disconnected between the two calls is, in
+    fact, no longer an active connection to report.
+    """
+
+    def test_a_board_that_disappears_between_the_two_calls_is_skipped_not_raised(self) -> None:
+        board = _board("nrf-1")
+        handle = TargetSessionHandle(
+            session=None,
+            board=board,
+            probe_uid="683710208",
+            route_used="test",
+            target_override=None,
+        )
+        connection = SimpleNamespace(handle=handle, connection_id="probe:683710208")
+
+        class _RacingConnectionManager:
+            def assigned_board_ids(self) -> tuple[str, ...]:
+                # The snapshot taken under lock: both boards were assigned at that
+                # instant.
+                return ("nrf-1", "nrf-vanished")
+
+            def maybe_connection(self, board_id: str) -> SimpleNamespace | None:
+                # "nrf-vanished" disconnected in the gap between the two calls --
+                # exactly the race `connection_for` used to turn into an unhandled
+                # `BoardNotConnectedError` mid-iteration.
+                if board_id == "nrf-vanished":
+                    return None
+                return connection
+
+        with patch.object(server, "connection_manager", _RacingConnectionManager()):
+            rows = server._active_connection_rows()
+
+        self.assertEqual(len(rows), 1, "the vanished board should be skipped, not raised on")
+        self.assertEqual(rows[0].probe_uid, "683710208")
+
+
 if __name__ == "__main__":
     unittest.main()

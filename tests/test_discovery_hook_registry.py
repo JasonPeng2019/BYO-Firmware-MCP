@@ -8,6 +8,7 @@ import tempfile
 import unittest
 import unittest.mock
 from pathlib import Path
+from typing import Any
 
 from pyocd_debug_mcp import discovery_hooks
 from pyocd_debug_mcp.discovery_hooks import (
@@ -614,6 +615,73 @@ class OperatorRegistryTests(_TempRoot):
             load_hook_snapshot(self.project, environ=self._operator_env())
 
         self.assertIn("not a file", str(caught.exception))
+
+
+class AggregateHookCapTests(_TempRoot):
+    """FIX 4 (C4): each source is capped individually, but nothing capped the total.
+
+    64 hooks (two sources each maxed at `MAX_HOOKS_PER_MANIFEST`) x 60s sequential is
+    ~64 minutes for one refresh. `MAX_HOOKS_TOTAL` refuses the aggregate outright,
+    before anything executes.
+    """
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.project = self.root / "project"
+        self.operator = self.root / "operator"
+        self.project.mkdir()
+        self.operator.mkdir()
+
+    def _operator_env(self) -> dict[str, str]:
+        return {DISCOVERY_HOOK_REGISTRY_ENV: str(self.operator / "registry.json")}
+
+    @staticmethod
+    def _entries(prefix: str, count: int) -> list[dict[str, Any]]:
+        return [hook_entry(f"{prefix}-{index}", "probe") for index in range(count)]
+
+    def test_exactly_at_the_total_cap_is_accepted(self) -> None:
+        half = discovery_hooks.MAX_HOOKS_TOTAL // 2
+        write_manifest(self.project, self._entries("project", half))
+        write_manifest(
+            self.operator,
+            self._entries("operator", discovery_hooks.MAX_HOOKS_TOTAL - half),
+            filename="registry.json",
+        )
+
+        snapshot = load_hook_snapshot(self.project, environ=self._operator_env())
+
+        self.assertEqual(len(snapshot.hooks), discovery_hooks.MAX_HOOKS_TOTAL)
+
+    def test_one_over_the_total_cap_across_two_sources_is_refused(self) -> None:
+        half = discovery_hooks.MAX_HOOKS_TOTAL // 2
+        write_manifest(self.project, self._entries("project", half + 1))
+        write_manifest(
+            self.operator,
+            self._entries("operator", discovery_hooks.MAX_HOOKS_TOTAL - half),
+            filename="registry.json",
+        )
+
+        with self.assertRaises(DiscoveryHookError) as caught:
+            load_hook_snapshot(self.project, environ=self._operator_env())
+
+        self.assertIn("exceeds the total cap", str(caught.exception))
+
+    def test_two_individually_maxed_manifests_are_refused_in_aggregate(self) -> None:
+        """The realistic worst case the guide's arithmetic describes: 32 + 32 = 64."""
+
+        write_manifest(
+            self.project, self._entries("project", discovery_hooks.MAX_HOOKS_PER_MANIFEST)
+        )
+        write_manifest(
+            self.operator,
+            self._entries("operator", discovery_hooks.MAX_HOOKS_PER_MANIFEST),
+            filename="registry.json",
+        )
+
+        with self.assertRaises(DiscoveryHookError) as caught:
+            load_hook_snapshot(self.project, environ=self._operator_env())
+
+        self.assertIn(str(2 * discovery_hooks.MAX_HOOKS_PER_MANIFEST), str(caught.exception))
 
 
 class OrderingTests(_TempRoot):

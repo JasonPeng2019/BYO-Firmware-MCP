@@ -704,6 +704,93 @@ class JLinkRetryIsolationTests(unittest.TestCase):
         self.assertFalse(hasattr(swd_pyocd, "HardwareInventoryService"))
         self.assertFalse(hasattr(swd_pyocd, "_hardware_inventory"))
 
+    def test_a_hook_discovered_matching_probe_row_does_not_change_the_retry_verdict(
+        self,
+    ) -> None:
+        """FIX 5 (D4): the genuine behavioral counterpart to the static source scan above.
+
+        Constructs a scenario with a real, executed hook that reports exactly one
+        `jlink` probe -- which, if `_single_matching_probe_visible_for_board_family`
+        consulted it, would make `matching == 1` true and flip the verdict. Native
+        pyOCD/CLI discovery is held empty throughout (via the same mocking pattern
+        `test_swd_process_isolation.py` uses), so the *only* difference between the
+        two calls below is whether a hook-discovered row exists in the unified
+        inventory at all. The verdict must be identical either way.
+        """
+
+        import tempfile
+        from pathlib import Path
+        from unittest.mock import patch
+
+        from pyocd_debug_mcp.adapters import swd_pyocd
+        from pyocd_debug_mcp.board_config import BoardConfig
+        from pyocd_debug_mcp.target_errors import TargetConnectionError
+        from tests.discovery_hook_fixtures import hook_entry, snapshot_for
+
+        board = BoardConfig(
+            board_id="board",
+            display_name="Board",
+            mcu_family="family",
+            probe_family="jlink",
+            pyocd_target="part",
+            probe_type="jlink",
+            probe_hint_terms=(),
+            serial_hint_terms=(),
+            test_addr=0,
+        )
+
+        def verdicts() -> tuple[bool, bool]:
+            with (
+                patch.object(
+                    swd_pyocd.ConnectHelper,
+                    "get_all_connected_probes",
+                    side_effect=RuntimeError("no probes"),
+                ),
+                patch.object(swd_pyocd, "list_connected_probes_cli", return_value=[]),
+            ):
+                visible = swd_pyocd._single_matching_probe_visible_for_board_family(board)
+                retry = swd_pyocd._should_retry_without_uid(
+                    board, "683710208", TargetConnectionError("No emulator with serial number X")
+                )
+            return visible, retry
+
+        # Control: no hook infrastructure touched at all.
+        control_visible, control_retry = verdicts()
+
+        self.assertFalse(control_visible)
+        self.assertFalse(control_retry)
+
+        # Same board, same native mocks, but this time a real hook actually ran and
+        # discovered exactly one matching "jlink" probe through the unified service.
+        with tempfile.TemporaryDirectory() as tmp:
+            hooks = snapshot_for(
+                Path(tmp), [hook_entry("jlink-hook", "probe", argv=["probe_provider", "jlink"])]
+            )
+            service = HardwareInventoryService(
+                native_probes=lambda: EMPTY_NATIVE_PROBE_LISTING,
+                native_uarts=lambda: [],
+                hook_snapshot=lambda: hooks,
+            )
+            snapshot = service.snapshot()
+
+        # Confirm the hook genuinely ran and produced the row that -- if it were fed
+        # into the retry logic -- would flip `matching == 1` to true.
+        self.assertEqual([row.provider for row in snapshot.probes], ["jlink"])
+        self.assertTrue(snapshot.probes[0].from_hook)
+
+        with_hook_visible, with_hook_retry = verdicts()
+
+        self.assertEqual(
+            control_visible,
+            with_hook_visible,
+            "a hook-discovered probe row changed the J-Link retry visibility verdict",
+        )
+        self.assertEqual(
+            control_retry,
+            with_hook_retry,
+            "a hook-discovered probe row changed the J-Link UID-less retry decision",
+        )
+
 
 if __name__ == "__main__":  # pragma: no cover
     unittest.main()

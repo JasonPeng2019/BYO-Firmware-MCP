@@ -225,15 +225,43 @@ class HandlerRefusalTests(unittest.TestCase):
         self.assertNotIn("refresh_call", payload)
         self.assertEqual(self.launches, [], "a refused wrong-kind ticket executed a hook")
 
-    def test_a_refused_wrong_kind_ticket_runs_nothing_through_refresh_either(self) -> None:
+    def test_a_second_wrong_kind_contract_call_also_refuses_without_reloading(self) -> None:
+        """Duplicates the assertion above; also checks `replaced` stays empty.
+
+        FIX 7 (D7): this used to be named as if it called `refresh_discovery_hooks`
+        with a wrong-kind ticket. It never did -- `refresh_discovery_hooks` takes no
+        `kind` argument at all (it is kind-agnostic by design: the guide's contract is
+        `retry_id` only), so a wrong-kind *ticket* is not even a concept refresh can
+        check. Presenting the same ticket to `contract()` a second time is what this
+        actually exercises: the manifest was never reloaded (`self.replaced` stays
+        empty), on top of the "no hook launched" assertion the test above already
+        covers.
+        """
+
         ticket = self.store.issue("probe")
-        # The ticket is valid for refresh (which is kind-agnostic), so prove the
-        # contract-level refusal is what stops execution, not luck.
+        # The ticket is valid for refresh (which is kind-agnostic), so this is a second
+        # contract-level refusal, not evidence about refresh's kind checking.
         payload = self.contract("uart", ticket.retry_id)
 
         self.assertEqual(payload["status"], "discovery_contract_rejected")
         self.assertEqual(self.launches, [])
         self.assertEqual(self.replaced, [], "a refused request reloaded the manifest")
+
+    def test_refresh_is_kind_agnostic_by_design_and_accepts_any_valid_ticket(self) -> None:
+        """The behavior D7 flagged as untested: refresh does not check ticket kind.
+
+        `refresh_discovery_hooks` takes no `kind` argument -- the guide's tool
+        contract is `retry_id` only -- so a ticket issued for one kind is valid for
+        refresh regardless of which kind's contract it was issued from. Kind
+        filtering happens once, at `get_discovery_hook_contract`, not again here.
+        """
+
+        ticket = self.store.issue("probe")
+
+        payload = self.refresh(ticket.retry_id)
+
+        self.assertEqual(payload["status"], "discovery_hooks_refreshed")
+        self.assertIn("probe", self.launches)
 
     def test_an_expired_ticket_is_refused_without_executing_a_hook(self) -> None:
         ticket = self.store.issue("probe")
@@ -351,6 +379,57 @@ class HandlerRefusalTests(unittest.TestCase):
         self.assertEqual(payload["status"], "discovery_hooks_absent")
         self.assertEqual(payload["hooks"], [])
         self.assertEqual(self.launches, [])
+
+
+class RefreshUnhandledExceptionGuardTests(unittest.TestCase):
+    """FIX 3b (C3): `refresh_discovery_hooks` must never surface a raw exception.
+
+    This is THE always-reachable fallback tool -- an agent reaches it precisely
+    because native discovery, the locked-environment check, and everything else has
+    already failed. `execute_hook` itself now catches the OSError/PermissionError
+    class directly at its own boundary (FIX 3a), but this guards the tool's own
+    boundary against anything else the injected `run_hooks` can raise -- a test
+    double, or a future refactor -- so the contract this tool promises never breaks
+    regardless of the cause.
+    """
+
+    def setUp(self) -> None:
+        self._directory = tempfile.TemporaryDirectory()
+        self.addCleanup(self._directory.cleanup)
+        self.root = Path(self._directory.name)
+        write_manifest(self.root, [hook_entry("probe-hook", "probe", argv=["probe"])])
+        self.store = DiscoveryRetryStore("run-1")
+
+    def _handlers(
+        self, run_hooks: Any
+    ) -> dict[str, Any]:
+        return build_discovery_handlers(
+            DiscoveryToolServices(
+                hook_root=lambda: self.root,
+                load_snapshot=lambda: load_hook_snapshot(self.root, environ={}),
+                current_snapshot=lambda: discovery_hooks.EMPTY_SNAPSHOT,
+                replace_snapshot=lambda snapshot: snapshot,
+                retry_store=self.store,
+                registered_providers=lambda: ("cmsisdap",),
+                run_hooks=run_hooks,
+            )
+        )
+
+    def test_an_exception_from_run_hooks_becomes_a_typed_payload_not_a_raise(self) -> None:
+        def broken_run_hooks(
+            snapshot: DiscoveryHookSnapshot, kind: str
+        ) -> Sequence[HookExecution]:
+            raise RuntimeError("boom: simulated hook-runner failure")
+
+        handlers = self._handlers(broken_run_hooks)
+
+        payload = json.loads(handlers[REFRESH_TOOL](None))
+
+        self.assertEqual(payload["status"], "discovery_refresh_rejected")
+        self.assertEqual(payload["code"], "discovery/hook-failed")
+        self.assertEqual(payload["hook_kind"], "probe")
+        self.assertIn("boom", payload["agent_prompt"])
+        self.assertIn(REFRESH_TOOL, payload["agent_prompt"])
 
 
 if __name__ == "__main__":  # pragma: no cover

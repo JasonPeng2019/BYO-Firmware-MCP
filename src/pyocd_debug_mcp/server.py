@@ -1057,7 +1057,10 @@ def _resolved_probe_uid_for_connection(connection_id: str) -> str:
     hardware has gone is refused rather than passed to pyOCD as a stale UID.
     """
 
-    snapshot = _hardware_inventory.snapshot()
+    try:
+        snapshot = _hardware_inventory.snapshot()
+    except Exception as exc:  # noqa: BLE001 - resolution must fail typed, never raw
+        raise TargetControlError(f"connection inventory could not be resolved: {exc}") from exc
     try:
         selection = _probe_selection_store.resolve(connection_id, snapshot)
     except SelectionDisappeared as exc:
@@ -1623,12 +1626,18 @@ def _resolve_serial_port_for_session(
     `COM3` / `/dev/tty*` string -- the path is re-derived from a stable identity every
     time, because a port path is not an identity.
 
-    Under the §0 gating rule a UART hook runs only when pyserial reports nothing, so a
-    machine with a working native port pays no subprocess cost here at all.
+    Takes `_hardware_inventory.uart_snapshot()`, not `.snapshot()` -- the full snapshot
+    also runs `native_probes()` (a real `pyocd list --probes` subprocess), which would
+    put a probe-enumeration call on every UART action regardless of hooks. Under the §0
+    gating rule a UART hook runs only when pyserial reports nothing, so a machine with a
+    working native port pays no subprocess cost here at all, for probes or for hooks.
     """
 
     board = _require_loaded_board(handle)
-    snapshot = _hardware_inventory.snapshot()
+    try:
+        snapshot = _hardware_inventory.uart_snapshot()
+    except Exception as exc:  # noqa: BLE001 - UART resolution must fail typed, never raw
+        raise RuntimeError(f"UART inventory could not be resolved: {exc}") from exc
     if not snapshot.native_uart_available and not snapshot.uarts:
         raise RuntimeError("pyserial is not installed")
 
@@ -2664,11 +2673,20 @@ def _active_connection_rows() -> tuple[ActiveConnectionRow, ...]:
     Validation must still be able to select and stamp the server-owned active
     connection. A hardware UID remains the stable inventory key; a UID-less
     provider is represented only by its exact live, session-local connection ID.
+
+    `assigned_board_ids()` snapshots the key set under lock and releases it before
+    this loop re-acquires the lock per board via `connection_for`. A board that
+    disconnects in the gap would make `connection_for` raise `BoardNotConnectedError`
+    mid-iteration; `maybe_connection` and skipping `None` closes that TOCTOU -- a
+    board that vanished between the two calls simply isn't reported as active,
+    which is correct, since it no longer is.
     """
 
     rows: list[ActiveConnectionRow] = []
     for board_id in connection_manager.assigned_board_ids():
-        connection = connection_manager.connection_for(board_id)
+        connection = connection_manager.maybe_connection(board_id)
+        if connection is None:
+            continue
         handle = connection.handle
         metadata = session_metadata(handle)
         probe_uid = (metadata.probe_uid or "").strip()
@@ -4529,7 +4547,6 @@ def _get_setup_status(board_id: str) -> Mapping[str, object]:
                 # hook is the remaining option. Ambiguity is deliberately *not* a hook
                 # case, so the >1 branch below keeps the friendly-selection flow.
                 failure = no_native_uart_failure(
-                    hooks_available=True,
                     hook_diagnostics=tuple(status_snapshot.hook_diagnostic_rows()),
                 )
                 uart_reason = "No UART port is currently visible"
@@ -4809,7 +4826,6 @@ def _no_native_probe_overview(
         )
     else:
         failure = no_native_probe_failure(
-            hooks_available=True,
             native_diagnostics=snapshot.native_probe_diagnostics.diagnostic_row(),
             hook_diagnostics=tuple(hook_rows),
             retry_id=_issue_overview_retry("probe", board_names),

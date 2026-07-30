@@ -143,6 +143,15 @@ class SchemaDriftTests(unittest.TestCase):
         self.assertEqual(limits["max_field_characters"], discovery_hooks.MAX_FIELD_CHARS)
         self.assertEqual(limits["max_stdout_bytes"], discovery_hooks.MAX_HOOK_STDOUT_BYTES)
         self.assertEqual(limits["max_hooks"], discovery_hooks.MAX_HOOKS_PER_MANIFEST)
+        # FIX 4 (C4): the aggregate cap across both sources must be advertised too,
+        # not just the per-manifest one -- an agent writing an operator registry has
+        # no other way to learn the combined ceiling exists.
+        self.assertEqual(limits["max_hooks_total"], discovery_hooks.MAX_HOOKS_TOTAL)
+        self.assertGreater(
+            2 * discovery_hooks.MAX_HOOKS_PER_MANIFEST,
+            discovery_hooks.MAX_HOOKS_TOTAL,
+            "the total cap should be reachable by two individually-legal manifests",
+        )
 
     def test_declared_timeout_ceiling_is_actually_rejected_one_above(self) -> None:
         ceiling = self.contract("probe")["limits"]["max_timeout_seconds"]

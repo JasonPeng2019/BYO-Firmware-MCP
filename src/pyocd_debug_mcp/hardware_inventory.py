@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import secrets
 import threading
+from collections import OrderedDict
 from dataclasses import dataclass, field
 from typing import Callable, Literal, Sequence
 
@@ -237,18 +238,17 @@ class HardwareInventoryService:
         native_listing = self.native_probes()
         probe_rows = self._native_probe_rows(native_listing, counter)
 
-        native_ports = self.native_uarts()
-        native_uart_available = native_ports is not None
-        uart_rows = self._native_uart_rows(native_ports or (), counter)
-
-        hooks = self.hook_snapshot()
+        uart_rows, native_uart_available, hooks, uart_diagnostics = self._collect_uart_rows(
+            counter
+        )
         diagnostics: list[HookExecution] = []
 
         # ---- The gating rule, in exactly one place -------------------------------
         # Evaluated fresh per snapshot, independently per kind. A combined flag would
-        # pass the both-empty case and silently break the mixed one.
+        # pass the both-empty case and silently break the mixed one. (The UART half
+        # of the decision is made inside `_collect_uart_rows`, shared with
+        # `uart_snapshot()` below, so both entry points gate identically.)
         run_probe_hooks = bool(probe_rows) is False and hooks.has_hooks_for("probe")
-        run_uart_hooks = bool(uart_rows) is False and hooks.has_hooks_for("uart")
 
         if run_probe_hooks:
             executions = tuple(self.run_hooks(hooks, "probe"))
@@ -256,6 +256,71 @@ class HardwareInventoryService:
             probe_rows = self._merge_probe_rows(
                 probe_rows, self._hook_probe_rows(executions, counter)
             )
+
+        diagnostics.extend(uart_diagnostics)
+
+        return InventorySnapshot(
+            snapshot_id=snapshot_id,
+            probes=tuple(probe_rows),
+            uarts=tuple(uart_rows),
+            native_probe_diagnostics=native_listing,
+            native_uart_available=native_uart_available,
+            hook_diagnostics=tuple(diagnostics),
+            hook_manifest_sha256=hooks.manifest_sha256,
+        )
+
+    def uart_snapshot(self) -> InventorySnapshot:
+        """A UART-only view that never calls `native_probes()`.
+
+        `_resolve_serial_port_for_session` runs before every UART action
+        (`read_serial`, `write_serial`, `serial_exchange`, the `on_exit` finalizer), so
+        routing it through the full `snapshot()` would spawn a probe-listing
+        subprocess -- `native_probes()` is `list_connected_probes_detailed`, a real
+        `pyocd list --probes` call -- on every one of those, even with no discovery
+        manifest present. That broke invariant 2 (byte-identical behavior with no
+        manifest) and contradicted this function's own former docstring.
+
+        This is safe because the UART hook gate is `not native_uart_rows`: it never
+        depends on probe rows (see `_collect_uart_rows` below), so omitting probe
+        collection cannot change which UART hooks run or what they run against. The
+        returned snapshot's `probes` tuple is always empty and
+        `native_probe_diagnostics` is the empty sentinel -- callers that need probe
+        rows (e.g. `_resolved_probe_uid_for_connection`) must use `snapshot()`.
+        """
+
+        snapshot_id = secrets.token_urlsafe(12)
+        counter = _RowIds(snapshot_id)
+        uart_rows, native_uart_available, hooks, diagnostics = self._collect_uart_rows(counter)
+        return InventorySnapshot(
+            snapshot_id=snapshot_id,
+            probes=(),
+            uarts=tuple(uart_rows),
+            native_probe_diagnostics=EMPTY_NATIVE_PROBE_LISTING,
+            native_uart_available=native_uart_available,
+            hook_diagnostics=tuple(diagnostics),
+            hook_manifest_sha256=hooks.manifest_sha256,
+        )
+
+    def _collect_uart_rows(
+        self, counter: _RowIds
+    ) -> tuple[list[UartRow], bool, DiscoveryHookSnapshot, list[HookExecution]]:
+        """Native UART rows, vendor rows, and (gated) UART hook rows.
+
+        Shared by `snapshot()` and `uart_snapshot()` so the two entry points can never
+        gate UART hooks differently. The hook-run decision is evaluated against the
+        *native* rows only, before vendor rows are merged in -- matching the guide's
+        gating rule, which is about native discovery, not the vendor-helper layer that
+        sits behind it.
+        """
+
+        native_ports = self.native_uarts()
+        native_uart_available = native_ports is not None
+        uart_rows = self._native_uart_rows(native_ports or (), counter)
+
+        hooks = self.hook_snapshot()
+        diagnostics: list[HookExecution] = []
+
+        run_uart_hooks = bool(uart_rows) is False and hooks.has_hooks_for("uart")
 
         if not uart_rows:
             # Legacy vendor helpers are a third provenance source behind this layer,
@@ -270,15 +335,7 @@ class HardwareInventoryService:
                 uart_rows, self._hook_uart_rows(executions, counter)
             )
 
-        return InventorySnapshot(
-            snapshot_id=snapshot_id,
-            probes=tuple(probe_rows),
-            uarts=tuple(uart_rows),
-            native_probe_diagnostics=native_listing,
-            native_uart_available=native_uart_available,
-            hook_diagnostics=tuple(diagnostics),
-            hook_manifest_sha256=hooks.manifest_sha256,
-        )
+        return uart_rows, native_uart_available, hooks, diagnostics
 
     # -- native collection -------------------------------------------------------
 
@@ -526,19 +583,30 @@ class ProbeSelection:
         )
 
 
+MAX_PROBE_SELECTIONS = 256
+
+
 class ProbeSelectionStore:
     """Run-scoped, memory-only map from opaque connection ID to what it selected.
 
     Not authority: it records what an identifier already meant, and grants nothing. A
     selection is only ever *re-derived* against a fresh snapshot, never trusted as a
     standing claim that the hardware is still there.
+
+    Bounded the same way `DiscoveryRetryStore` is bounded, and for the same reason: a
+    UID-less provider mints `connection_id` as `session:<uuid4>`, freshly random on
+    every connect, so repeated connect/disconnect cycles would otherwise accumulate
+    entries forever. `refresh_discovery_hooks` still clears this store on a successful
+    refresh, but a healthy server -- native discovery working, no hook ever needed --
+    may never call it in its entire process lifetime, so eviction cannot rely on that
+    alone.
     """
 
     __slots__ = ("_guard", "_selections")
 
     def __init__(self) -> None:
         self._guard = threading.RLock()
-        self._selections: dict[str, ProbeSelection] = {}
+        self._selections: "OrderedDict[str, ProbeSelection]" = OrderedDict()
 
     @staticmethod
     def _key(connection_id: str) -> str:
@@ -546,7 +614,14 @@ class ProbeSelectionStore:
 
     def record(self, selection: ProbeSelection) -> None:
         with self._guard:
-            self._selections[self._key(selection.connection_id)] = selection
+            key = self._key(selection.connection_id)
+            # Re-recording an existing connection_id refreshes its recency rather than
+            # duplicating it, so a connection_id that is actually still in active use
+            # is never the one evicted just because it was recorded first.
+            self._selections.pop(key, None)
+            self._selections[key] = selection
+            while len(self._selections) > MAX_PROBE_SELECTIONS:
+                self._selections.popitem(last=False)
 
     def recorded(self, connection_id: str) -> ProbeSelection | None:
         with self._guard:
@@ -559,6 +634,10 @@ class ProbeSelectionStore:
     def clear(self) -> None:
         with self._guard:
             self._selections.clear()
+
+    def count(self) -> int:
+        with self._guard:
+            return len(self._selections)
 
     def resolve(self, connection_id: str, snapshot: InventorySnapshot) -> ProbeSelection:
         """Re-derive a recorded selection against a fresh snapshot.

@@ -12,6 +12,7 @@ from typing import Any, cast
 
 from pyocd_debug_mcp.discovery_hooks import EMPTY_SNAPSHOT
 from pyocd_debug_mcp.hardware_inventory import (
+    MAX_PROBE_SELECTIONS,
     InventorySnapshot,
     ProbeRow,
     ProbeSelection,
@@ -210,6 +211,74 @@ class ResolutionTests(unittest.TestCase):
         self.assertIsNone(self.store.recorded("probe:a"))
 
 
+class BoundedStoreTests(unittest.TestCase):
+    """FIX 2 regression (C2): `ProbeSelectionStore` must not grow without bound.
+
+    A UID-less provider mints `connection_id` as `session:<uuid4>`, freshly random on
+    every connect, and the only thing that ever clears this store is a hook refresh --
+    which a server whose native discovery works normally may never call. Bounded the
+    same way `DiscoveryRetryStore` is: an `OrderedDict`, a cap, oldest-evicted-on-insert.
+    """
+
+    def setUp(self) -> None:
+        self.store = ProbeSelectionStore()
+
+    def test_the_cap_holds(self) -> None:
+        for index in range(MAX_PROBE_SELECTIONS + 25):
+            row = _probe_row("jlink", str(index))
+            self.store.record(ProbeSelection.from_row(f"probe:{index}", row))
+
+        self.assertEqual(self.store.count(), MAX_PROBE_SELECTIONS)
+
+    def test_eviction_is_oldest_first(self) -> None:
+        overflow = 3
+        for index in range(MAX_PROBE_SELECTIONS + overflow):
+            row = _probe_row("jlink", str(index))
+            self.store.record(ProbeSelection.from_row(f"probe:{index}", row))
+
+        for index in range(overflow):
+            self.assertIsNone(
+                self.store.recorded(f"probe:{index}"), f"probe:{index} should have been evicted"
+            )
+        for index in range(overflow, MAX_PROBE_SELECTIONS + overflow):
+            self.assertIsNotNone(
+                self.store.recorded(f"probe:{index}"), f"probe:{index} should have survived"
+            )
+
+    def test_re_recording_refreshes_position_instead_of_duplicating(self) -> None:
+        self.store.record(ProbeSelection.from_row("probe:same", _probe_row("jlink", "same")))
+        for index in range(MAX_PROBE_SELECTIONS - 1):
+            self.store.record(
+                ProbeSelection.from_row(f"probe:{index}", _probe_row("jlink", str(index)))
+            )
+        # The store is exactly at its cap. "probe:same" is the oldest entry; refresh it.
+        self.store.record(ProbeSelection.from_row("probe:same", _probe_row("jlink", "same-2")))
+        # One more insert would evict the oldest entry -- "probe:same" must not be it,
+        # since re-recording just moved it to the back of the eviction order.
+        self.store.record(ProbeSelection.from_row("probe:new", _probe_row("jlink", "new")))
+
+        self.assertEqual(self.store.count(), MAX_PROBE_SELECTIONS)
+        recorded = self.store.recorded("probe:same")
+        self.assertIsNotNone(recorded, "re-recording must not make an entry evictable early")
+        assert recorded is not None
+        self.assertEqual(recorded.unique_id, "same-2", "the refreshed value must be kept")
+        self.assertIsNone(self.store.recorded("probe:0"), "the actual oldest entry should evict")
+
+    def test_a_stable_selection_still_resolves_normally_once_bounded(self) -> None:
+        row = _probe_row("jlink", "683710208")
+        token = probe_connection_id("683710208")
+        self.store.record(ProbeSelection.from_row(token, row))
+        for index in range(10):
+            self.store.record(
+                ProbeSelection.from_row(f"probe:{index}", _probe_row("jlink", str(index)))
+            )
+
+        selection = self.store.resolve(token, _snapshot(row))
+
+        self.assertEqual(selection.unique_id, "683710208")
+        self.assertTrue(selection.durable)
+
+
 class SessionScopeTests(unittest.TestCase):
     def setUp(self) -> None:
         self.store = ProbeSelectionStore()
@@ -387,6 +456,36 @@ class HookRefreshInvalidationTests(unittest.TestCase):
 
         self.assertIsNone(server._probe_selection_store.recorded("probe:111"))
         self.assertIsNone(server._session_uart_selections.recorded("board-1"))
+
+
+class ResolvedProbeUidDegradationTests(unittest.TestCase):
+    """FIX 3c (C3): an unexpected inventory-scan exception must become a typed failure.
+
+    `_resolved_probe_uid_for_connection` is one of the two new `.snapshot()` call
+    sites the TOCTOU fix (K1) closes at its root by making `_active_connection_rows`
+    skip a vanished board instead of raising. This guards the boundary itself: whatever
+    `_hardware_inventory.snapshot()` raises -- that race or anything else -- must
+    surface as a typed `TargetControlError`, matching how `_setup_overview` and
+    `_get_setup_status` already degrade to a diagnostic rather than propagating raw.
+    """
+
+    def test_a_snapshot_exception_becomes_a_typed_target_control_error(self) -> None:
+        from types import SimpleNamespace
+        from unittest.mock import patch
+
+        from pyocd_debug_mcp import server
+        from pyocd_debug_mcp.target_errors import TargetControlError
+
+        def broken_snapshot() -> InventorySnapshot:
+            raise RuntimeError("boom: simulated inventory failure")
+
+        with patch.object(
+            server, "_hardware_inventory", SimpleNamespace(snapshot=broken_snapshot)
+        ):
+            with self.assertRaises(TargetControlError) as caught:
+                server._resolved_probe_uid_for_connection("probe:683710208")
+
+        self.assertIn("boom", str(caught.exception))
 
 
 if __name__ == "__main__":  # pragma: no cover

@@ -12,8 +12,11 @@ import unittest
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, Mapping, Sequence, cast
+from unittest.mock import patch
 
-from pyocd_debug_mcp import discovery_hooks
+from pyocd_debug_mcp import discovery_hooks, server
+from pyocd_debug_mcp.adapters.swd_interface import TargetSessionHandle
+from pyocd_debug_mcp.board_config import BoardConfig
 from pyocd_debug_mcp.discovery_hooks import (
     DiscoveryHookSnapshot,
     HookExecution,
@@ -240,6 +243,127 @@ class GatingTests(unittest.TestCase):
         self.assertEqual(snapshot.native_probe_diagnostics.exit_code, 127)
         self.assertFalse(snapshot.native_probe_diagnostics.available)
         self.assertIn("not found", snapshot.native_probe_diagnostics.stderr_summary)
+
+
+class UartHotPathNeverListsProbesTests(unittest.TestCase):
+    """FIX 1 regression (C1/D1): the UART hot path must never spawn `native_probes()`.
+
+    `_resolve_serial_port_for_session` runs before every UART action and in the
+    `on_exit` finalizer. Before this fix it called `_hardware_inventory.snapshot()`,
+    which unconditionally runs `native_probes()` -- a real `pyocd list --probes`
+    subprocess -- even with zero hooks configured. `uart_snapshot()` must never do
+    that. These patch `server._hardware_inventory` with a real service (not just
+    `server._validation_inventory`), per the house rule about the real debug hardware
+    attached to this machine: a test that patched only the legacy shape would still
+    take a live snapshot through the unpatched service.
+    """
+
+    def setUp(self) -> None:
+        self._directory = tempfile.TemporaryDirectory()
+        self.addCleanup(self._directory.cleanup)
+        self.root = Path(self._directory.name)
+
+    @staticmethod
+    def _handle(board_id: str) -> TargetSessionHandle:
+        board = BoardConfig(
+            board_id=board_id,
+            display_name="Test board",
+            mcu_family="nrf52",
+            probe_family="jlink",
+            pyocd_target="nrf52840",
+            probe_type="jlink",
+            probe_hint_terms=(),
+            serial_hint_terms=(),
+            test_addr=0x20000000,
+        )
+        return TargetSessionHandle(
+            session=None, board=board, probe_uid=None, route_used="test", target_override=None
+        )
+
+    def test_no_manifest_at_all_lists_zero_probes(self) -> None:
+        probe_calls: list[str] = []
+
+        def native_probes() -> NativeProbeListing:
+            probe_calls.append("listed")
+            return EMPTY_NATIVE_PROBE_LISTING
+
+        service = HardwareInventoryService(
+            native_probes=native_probes,
+            native_uarts=lambda: [],
+            hook_snapshot=lambda: discovery_hooks.EMPTY_SNAPSHOT,
+        )
+        handle = self._handle("uart-hot-path-no-manifest")
+
+        with patch.object(server, "_hardware_inventory", service):
+            with self.assertRaises(RuntimeError):
+                server._resolve_serial_port_for_session(handle, override=None)
+
+        self.assertEqual(probe_calls, [], "the UART hot path listed probes with no manifest")
+
+    def test_a_manifest_with_hooks_still_lists_zero_probes(self) -> None:
+        probe_calls: list[str] = []
+        launched: list[str] = []
+
+        def native_probes() -> NativeProbeListing:
+            probe_calls.append("listed")
+            return EMPTY_NATIVE_PROBE_LISTING
+
+        def run_hooks(
+            hook_snapshot: DiscoveryHookSnapshot, kind: str
+        ) -> tuple[HookExecution, ...]:
+            launched.append(kind)
+            return execute_eligible_hooks(hook_snapshot, kind, platform="linux")
+
+        hooks = snapshot_for(
+            self.root,
+            [
+                hook_entry("probe-hook", "probe", argv=["probe"]),
+                hook_entry("uart-hook", "uart", argv=["uart"]),
+            ],
+        )
+        service = HardwareInventoryService(
+            native_probes=native_probes,
+            native_uarts=lambda: [],
+            hook_snapshot=lambda: hooks,
+            run_hooks=run_hooks,
+        )
+        handle = self._handle("uart-hot-path-with-manifest")
+
+        with patch.object(server, "_hardware_inventory", service):
+            try:
+                server._resolve_serial_port_for_session(handle, override=None)
+            except RuntimeError:
+                # Whether the fallback scorer resolved a single port is not this
+                # test's concern; only the probe-listing call graph is.
+                pass
+
+        self.assertEqual(probe_calls, [], "the UART hot path listed probes with hooks loaded")
+        # A real uart hook did run (proving this exercised the hook path genuinely,
+        # not a manifest that happened to be empty), and the probe hook -- eligible
+        # per the manifest, but never reachable from the UART-only snapshot -- did not.
+        self.assertEqual(launched, ["uart"])
+
+    def test_an_unexpected_snapshot_exception_becomes_a_typed_runtime_error(self) -> None:
+        """FIX 3c (C3): `uart_snapshot()` raising must not escape this hot path raw.
+
+        `_resolve_serial_port_for_session` is one of the two new `.snapshot()`-family
+        call sites the TOCTOU fix (K1) closes at its root. This guards the boundary
+        itself: whatever `uart_snapshot()` raises must surface as a typed
+        `RuntimeError`, matching how `_setup_overview` and `_get_setup_status` already
+        degrade to a diagnostic rather than propagating.
+        """
+
+        def broken_uart_snapshot() -> None:
+            raise ValueError("boom: simulated inventory failure")
+
+        service = SimpleNamespace(uart_snapshot=broken_uart_snapshot)
+        handle = self._handle("uart-hot-path-broken-snapshot")
+
+        with patch.object(server, "_hardware_inventory", service):
+            with self.assertRaises(RuntimeError) as caught:
+                server._resolve_serial_port_for_session(handle, override=None)
+
+        self.assertIn("boom", str(caught.exception))
 
 
 class BudgetTests(unittest.TestCase):

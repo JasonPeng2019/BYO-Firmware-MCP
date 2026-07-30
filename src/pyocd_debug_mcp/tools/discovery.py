@@ -269,6 +269,7 @@ def build_discovery_handlers(
                 "max_rows": discovery_hooks.MAX_HOOK_ROWS,
                 "max_field_characters": discovery_hooks.MAX_FIELD_CHARS,
                 "max_hooks": discovery_hooks.MAX_HOOKS_PER_MANIFEST,
+                "max_hooks_total": discovery_hooks.MAX_HOOKS_TOTAL,
             },
             "platform_guidance": discovery_hooks.PLATFORM_GUIDANCE[platform],
             "constraints": list(_CONTRACT_CONSTRAINTS),
@@ -358,8 +359,30 @@ def build_discovery_handlers(
 
         executions: list[HookExecution] = []
         for hook_kind in sorted(discovery_hooks.SUPPORTED_KINDS):
-            if snapshot.has_hooks_for(hook_kind):
+            if not snapshot.has_hooks_for(hook_kind):
+                continue
+            try:
                 executions.extend(services.run_hooks(snapshot, hook_kind))
+            except Exception as exc:  # noqa: BLE001 - this is THE always-reachable
+                # fallback tool; it must never surface a raw exception. `execute_hook`
+                # itself now catches the OSError/PermissionError class directly, but
+                # this is the backstop for anything else the injected `run_hooks`
+                # (a test double, or a future refactor) can raise, so the contract
+                # this tool promises -- a typed failure naming the hook, never an
+                # unhandled exception -- holds regardless of the cause.
+                return _json(
+                    {
+                        "status": "discovery_refresh_rejected",
+                        "code": "discovery/hook-failed",
+                        "agent_prompt": (
+                            f"Running the '{hook_kind}' discovery hook(s) failed "
+                            f"unexpectedly: {exc} Repair the hook or its manifest under "
+                            f"hook_root, then call {REFRESH_TOOL} again."
+                        ),
+                        "hook_root": str(services.hook_root()),
+                        "hook_kind": hook_kind,
+                    }
+                )
 
         probe_rows, uart_rows = _friendly_rows(executions)
         succeeded = [execution for execution in executions if execution.ok]

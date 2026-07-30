@@ -250,8 +250,8 @@ class OpenFailureBoundaryTests(unittest.TestCase):
     def test_discovery_failures_that_should_offer_a_contract_do(self) -> None:
         """The negative assertions above are only meaningful if the positive holds."""
 
-        probe = no_native_probe_failure(hooks_available=True).to_payload()
-        uart = no_native_uart_failure(hooks_available=True).to_payload()
+        probe = no_native_probe_failure().to_payload()
+        uart = no_native_uart_failure().to_payload()
 
         self.assertTrue(carries_hook_contract(probe))
         self.assertTrue(carries_hook_contract(uart))
@@ -272,7 +272,7 @@ class OpenFailureBoundaryTests(unittest.TestCase):
     def test_the_locked_environment_diagnostic_precedes_the_hook_suggestion(self) -> None:
         """A driver problem is likelier than an unenumerable device, and no hook fixes it."""
 
-        prompt = no_native_probe_failure(hooks_available=True).message
+        prompt = no_native_probe_failure().message
 
         self.assertLess(
             prompt.index("uv run --locked"),
@@ -282,15 +282,15 @@ class OpenFailureBoundaryTests(unittest.TestCase):
     def test_no_native_probe_prompt_denies_it_is_a_naming_ambiguity(self) -> None:
         self.assertIn(
             "not a board-naming ambiguity",
-            no_native_probe_failure(hooks_available=True).message,
+            no_native_probe_failure().message,
         )
 
 
 class GateAndAuthorityTests(unittest.TestCase):
     def test_no_failure_payload_in_the_family_stamps_or_mentions_a_gate_grant(self) -> None:
         payloads = [
-            no_native_probe_failure(hooks_available=True).to_payload(),
-            no_native_uart_failure(hooks_available=True).to_payload(),
+            no_native_probe_failure().to_payload(),
+            no_native_uart_failure().to_payload(),
             hook_failure(
                 discovery_failures.DISCOVERY_HOOK_FAILED, "probe", hook_diagnostics=()
             ).to_payload(),

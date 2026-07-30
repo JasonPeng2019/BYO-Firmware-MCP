@@ -438,6 +438,44 @@ class CleanupFailureTests(_HookProcessCase):
         )
 
 
+class LaunchFailureTests(_HookProcessCase):
+    """FIX 3a (C3/C5): a launch-time OSError must become a typed failure, not raise.
+
+    `test_executable_runner_without_the_execute_bit_fails_cleanly` above exercises the
+    real POSIX chmod scenario but is skipped on Windows. This drives the same code path
+    -- `popen_owned` raising before `_execute`'s own try block starts -- on every
+    platform, by making `popen_owned` itself raise.
+    """
+
+    def test_popen_owned_raising_becomes_a_typed_launch_failed_execution(self) -> None:
+        spec = self.spec("probe")
+
+        with patch.object(
+            discovery_hooks, "popen_owned", side_effect=PermissionError("permission denied")
+        ):
+            execution = execute_hook(spec, marker_store=self.marker_store)
+
+        self.assertFalse(execution.ok)
+        self.assertEqual(execution.outcome, "launch_failed")
+        self.assertIsNone(execution.exit_code)
+        self.assertEqual(execution.failure_code, "discovery/hook-failed")
+        self.assertIn("permission denied", execution.failure_detail)
+        self.assertIsNone(execution.output)
+
+    def test_a_file_not_found_at_launch_is_also_a_typed_failure(self) -> None:
+        spec = self.spec("probe")
+
+        with patch.object(
+            discovery_hooks,
+            "popen_owned",
+            side_effect=FileNotFoundError("no such file or directory"),
+        ):
+            execution = execute_hook(spec, marker_store=self.marker_store)
+
+        self.assertFalse(execution.ok)
+        self.assertEqual(execution.outcome, "launch_failed")
+
+
 class DescriptorLeakTests(_HookProcessCase):
     def test_repeated_execution_does_not_leak_descriptors(self) -> None:
         """`communicate()` closed the pipes for us; the hand-rolled reader must too.
@@ -586,6 +624,16 @@ class PlatformSpecificTests(_HookProcessCase):
 
     @unittest.skipIf(os.name == "nt", "POSIX executable-permission semantics")
     def test_executable_runner_without_the_execute_bit_fails_cleanly(self) -> None:
+        """FIX 3a (C3/C5): losing the execute bit must not escape as a raw exception.
+
+        The SHA-256 drift guard covers file *content*, not permission bits, so an
+        operator hook that loses its execute bit after the refresh that admitted it
+        hashes identically and reaches `popen_owned`, whose `subprocess.Popen(...)`
+        call raises `PermissionError` on POSIX. `execute_hook` must catch that and
+        report a typed failure -- not let it propagate out of the one always-reachable
+        fallback tool (`refresh_discovery_hooks`).
+        """
+
         tool = self.root / "vendor_tool.sh"
         tool.write_text("#!/bin/sh\necho '{}'\n", encoding="utf-8")
         tool.chmod(0o644)
@@ -605,8 +653,13 @@ class PlatformSpecificTests(_HookProcessCase):
             },
         )
 
-        with self.assertRaises(PermissionError):
-            execute_hook(snapshot.hooks[0], marker_store=self.marker_store)
+        execution = execute_hook(snapshot.hooks[0], marker_store=self.marker_store)
+
+        self.assertFalse(execution.ok)
+        self.assertEqual(execution.outcome, "launch_failed")
+        self.assertIsNone(execution.exit_code)
+        self.assertEqual(execution.failure_code, "discovery/hook-failed")
+        self.assertIn("could not be started", execution.failure_detail)
 
     @unittest.skipIf(os.name == "nt", "POSIX executable-permission semantics")
     def test_executable_runner_with_the_execute_bit_runs(self) -> None:
