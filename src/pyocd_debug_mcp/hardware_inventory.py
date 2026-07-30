@@ -40,6 +40,7 @@ from pyocd_debug_mcp.probe_inventory import (
     NativeProbeListing,
 )
 from pyocd_debug_mcp.serial_resolver import SerialPortInfo, normalize_port_name
+from pyocd_debug_mcp.services.connections import parse_probe_connection_id
 from pyocd_debug_mcp.setup_flow.validate import (
     ValidationInventory,
     ValidationProbe,
@@ -764,25 +765,59 @@ def derive_selection_from_token(
 ) -> ProbeSelection | None:
     """Recover a selection from a bare connection token, matching the legacy rule.
 
-    Reproduces exactly what `_connection_matches_probe` did: strip a `probe:` prefix,
-    then compare the remainder against each row's `probe_id` and stable identity under
-    `stable_identity_equal`. Needed because an assignment can predate any recorded
-    selection, and refusing those outright would strand a valid binding.
+    FIX 8 (C8): a canonical (provider-qualified) token resolves to exactly the named
+    provider's row -- no guessing, and no cross-provider collision, matching what
+    `find_selected_row` (the *recorded*-selection path) already enforced.
+
+    A legacy `probe:{uid}` token (or a bare uid) has no provider to key on. If it
+    matches rows from more than one DISTINCT provider, that is genuine ambiguity --
+    the exact physical-collision case the provider-qualified format exists to prevent
+    -- and this returns `None` rather than silently picking the first match, so the
+    caller (`ProbeSelectionStore.resolve`) raises the typed `SelectionDisappeared`
+    refusal instead of possibly resolving to the wrong physical device. Needed at all
+    because an assignment can predate any recorded selection, and refusing those
+    outright would strand a valid binding.
     """
 
     candidate = connection_id.strip()
-    if candidate.casefold().startswith("probe:"):
-        candidate = candidate.split(":", 1)[1]
-    for row in snapshot.probes:
-        if stable_identity_equal(candidate, row.probe_id) or stable_identity_equal(
-            candidate, row.stable_identity
-        ):
-            return ProbeSelection.from_row(connection_id, row)
-    # A session token is compared whole, since it carries its own `session:` prefix.
-    for row in snapshot.probes:
-        if row.probe_id.casefold() == connection_id.strip().casefold():
-            return ProbeSelection.from_row(connection_id, row)
-    return None
+    parsed = (
+        parse_probe_connection_id(candidate)
+        if candidate.casefold().startswith("probe:")
+        else None
+    )
+    if parsed is not None:
+        provider, uid = parsed
+        for row in snapshot.probes:
+            if row.provider.casefold() != provider.casefold():
+                continue
+            if stable_identity_equal(uid, row.probe_id) or stable_identity_equal(
+                uid, row.stable_identity
+            ):
+                return ProbeSelection.from_row(connection_id, row)
+        return None
+
+    # Legacy / provider-less form: strip a bare "probe:" prefix if present, then match
+    # on UID text alone across ALL providers -- but refuse if more than one distinct
+    # provider's row matches, rather than silently returning the first.
+    uid_candidate = candidate
+    if uid_candidate.casefold().startswith("probe:"):
+        uid_candidate = uid_candidate.split(":", 1)[1]
+    matches = [
+        row
+        for row in snapshot.probes
+        if stable_identity_equal(uid_candidate, row.probe_id)
+        or stable_identity_equal(uid_candidate, row.stable_identity)
+    ]
+    if not matches:
+        # A session token is compared whole, since it carries its own `session:`
+        # prefix and is never provider-qualified.
+        matches = [
+            row for row in snapshot.probes if row.probe_id.casefold() == candidate.casefold()
+        ]
+    distinct_providers = {row.provider.casefold() for row in matches}
+    if len(distinct_providers) != 1:
+        return None
+    return ProbeSelection.from_row(connection_id, matches[0])
 
 
 def find_selected_row(selection: ProbeSelection, snapshot: InventorySnapshot) -> ProbeRow | None:

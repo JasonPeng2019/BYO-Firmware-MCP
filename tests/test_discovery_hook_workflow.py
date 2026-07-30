@@ -146,7 +146,7 @@ class _Workflow:
 
         row = snapshot.probes[0]
         token = (
-            probe_connection_id(row.stable_identity)
+            probe_connection_id(row.provider, row.stable_identity)
             if row.stable_identity
             else row.probe_id
         )
@@ -518,7 +518,11 @@ class MultiBoardWorkflowTests(_WorkflowCase):
         self.assertEqual(len(snapshot.probes), 2)
         tokens = {}
         for row in snapshot.probes:
-            token = probe_connection_id(row.stable_identity or row.probe_id)
+            token = (
+                probe_connection_id(row.provider, row.stable_identity)
+                if row.stable_identity
+                else row.probe_id
+            )
             self.flow.selections.record(ProbeSelection.from_row(token, row))
             tokens[token] = row.unique_id
 

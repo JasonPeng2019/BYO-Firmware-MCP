@@ -260,6 +260,7 @@ from pyocd_debug_mcp.services.connections import (
     ConnectionAssignmentError,
     ConnectionManager,
     ManagedConnection,
+    parse_probe_connection_id,
     probe_connection_id,
     stable_connection_identity,
 )
@@ -3460,6 +3461,62 @@ def _load_validation_safety_map(profile) -> SafetyMapSnapshot:
     return SafetyMapSnapshot(True, True, map_digest, "Profile and current safety map agree.")
 
 
+def _known_provider_for_board(board_id: str) -> str | None:
+    """Best-available provider for a board, for rebuilding a provisional connection_id.
+
+    M3 (FIX 8 addendum): `_stamp_validation_session` and `_record_validation_mismatch`
+    used to mint `f"probe:{probe_uid}"` directly -- a third and fourth construction
+    site step 0b's "one canonical mint" criterion never actually reached, and two of
+    them were not even casefolded. Both feed `assignment_store.run_if_current`, which
+    does exact string-key comparison (not the fuzzy `_same_setup_connection`), so the
+    provisional key rebuilt here must reproduce `_setup_overview`'s stored canonical
+    key byte-for-byte or the match silently (and correctly) reports the assignment as
+    changed. Prefers the live connection's own session metadata (freshest, and always
+    correct when present); falls back to the board's configured profile probe_family
+    when the connection has already gone (a rare race between a live validation read
+    and the stamp/mismatch bookkeeping that follows it). Returns `None` only when
+    neither source is available, in which case the caller must not guess.
+    """
+
+    connection = connection_manager.maybe_connection(board_id)
+    if connection is not None:
+        provider = str(session_metadata(connection.handle).probe_family or "").strip()
+        if provider:
+            return provider
+    try:
+        profile = _profile_repository.load(board_id)
+    except ProfileError:
+        return None
+    provider = str(getattr(profile.board, "probe_family", "") or "").strip()
+    return provider or None
+
+
+def _provisional_setup_connection_id(
+    board_id: str, probe_id: str, probe_uid: str | None
+) -> str:
+    """Rebuild the exact connection_id `_setup_overview` would have minted for this probe.
+
+    Used only to re-verify a `run_if_current` assignment match, so it must reproduce
+    the stored key byte-for-byte or the check safely (and correctly) reports the
+    assignment as changed. A UID-less live session's `probe_id` already IS its exact
+    connection_id (a `session:...` token), so it passes through unchanged rather than
+    being provider-qualified -- session tokens are never provider-qualified.
+    """
+
+    if probe_uid is None:
+        return probe_id
+    provider = _known_provider_for_board(board_id)
+    if provider is None:
+        # Neither a live connection nor the board's profile can name a provider (a
+        # race this rare -- the connection vanished between the live read and this
+        # call, and the profile is unreadable too). Fall back to the legacy,
+        # provider-less form: it cannot match a canonical stored key, so
+        # `run_if_current` safely reports "assignment changed" rather than guessing a
+        # provider that might be wrong.
+        return f"probe:{probe_uid.strip().casefold()}"
+    return probe_connection_id(provider, probe_uid)
+
+
 def _stamp_validation_session(
     board_id: str,
     validation_run: str,
@@ -3477,7 +3534,7 @@ def _stamp_validation_session(
         return False
     if connected_probe_uid is None and connection.connection_id != stable_probe:
         return False
-    provisional_connection_id = f"probe:{probe_uid}" if probe_uid is not None else probe_id
+    provisional_connection_id = _provisional_setup_connection_id(board_id, probe_id, probe_uid)
     try:
         profile = _profile_repository.load(board_id)
         capability = "exact"
@@ -3530,7 +3587,7 @@ def _record_validation_mismatch(
         connection_id = (
             connection.connection_id
             if connection is not None
-            else f"probe:{stable_probe.casefold()}"
+            else _provisional_setup_connection_id(board_id, probe_id, probe_uid)
         )
         gate_manager.record_mismatch(
             board_id=board_id,
@@ -3541,7 +3598,7 @@ def _record_validation_mismatch(
             validation_run=validation_run,
         )
 
-    provisional_connection_id = f"probe:{probe_uid}" if probe_uid is not None else probe_id
+    provisional_connection_id = _provisional_setup_connection_id(board_id, probe_id, probe_uid)
     try:
         assignment_store.run_if_current(
             provisional_connection_id,
@@ -3609,8 +3666,25 @@ def _connection_matches_probe(
     connection_id: str,
     probe: ProbeCandidate | ValidationProbe,
 ) -> bool:
+    """FIX 8 (C7/D8): a canonical token must match this probe's provider, not just its UID.
+
+    Without the provider check, a `connection_id` minted for one provider's row would
+    also match a different provider's row reporting the same UID text -- silently
+    selecting the wrong physical device. A legacy two-part token has no provider to
+    check, so it falls back to the pre-provider-qualification behavior (UID text
+    only), same tolerance every other comparison helper in this module gives it.
+    """
+
     candidate = connection_id.strip()
     if candidate.casefold().startswith("probe:"):
+        parsed = parse_probe_connection_id(candidate)
+        if parsed is not None:
+            provider, uid = parsed
+            if provider.casefold() != probe.probe_family.strip().casefold():
+                return False
+            return _stable_identity_equal(uid, probe.probe_id) or _stable_identity_equal(
+                uid, probe.usb_serial
+            )
         candidate = candidate.split(":", 1)[1]
     return _stable_identity_equal(candidate, probe.probe_id) or _stable_identity_equal(
         candidate, probe.usb_serial
@@ -4745,25 +4819,67 @@ def _replace_setup_assignments(
 
 
 def _same_setup_connection(left: str, right: str) -> bool:
-    """Compare server-issued setup connection IDs without broad target inference."""
+    """Compare server-issued setup connection IDs without broad target inference.
+
+    FIX 8 (C7/D8): a canonical (provider-qualified) token on both sides must match on
+    BOTH provider and UID, or two different providers reporting identical UID text
+    would compare equal again -- exactly the collision this format exists to prevent.
+    A legacy two-part `probe:{uid}` token has no provider to check, so it is tolerated
+    on read and compared on UID text alone against either side -- deliberately
+    provider-blind for a legacy input, since equality against an already-minted token
+    is a narrower, lower-risk operation than *selecting* a row from a snapshot (see
+    `hardware_inventory.derive_selection_from_token`, which refuses an ambiguous
+    legacy token instead of guessing).
+    """
 
     if left.casefold() == right.casefold():
         return True
-    if left.casefold().startswith("probe:") and right.casefold().startswith("probe:"):
-        return _stable_identity_equal(left.split(":", 1)[1], right.split(":", 1)[1])
-    return False
+    if not (left.casefold().startswith("probe:") and right.casefold().startswith("probe:")):
+        return False
+    left_parsed = parse_probe_connection_id(left)
+    right_parsed = parse_probe_connection_id(right)
+    if left_parsed is not None and right_parsed is not None:
+        left_provider, left_uid = left_parsed
+        right_provider, right_uid = right_parsed
+        return left_provider.casefold() == right_provider.casefold() and _stable_identity_equal(
+            left_uid, right_uid
+        )
+    # At least one side is a legacy two-part token (or malformed): compare UID text
+    # only, matching the tolerance this helper has always had for that shape.
+    left_uid = left_parsed[1] if left_parsed is not None else left.split(":", 1)[1]
+    right_uid = right_parsed[1] if right_parsed is not None else right.split(":", 1)[1]
+    return _stable_identity_equal(left_uid, right_uid)
 
 
 def _setup_connection_key(connection_id: str) -> str:
-    """Canonical key for one server-issued setup connection identity."""
+    """Canonical dedup key for one server-issued setup connection identity.
+
+    FIX 8 (C7/D8): provider-qualified. Normalizes only the UID portion (decimal
+    leading zeros), and never collapses two different providers into one key --
+    `_setup_overview`'s dedup loop is exactly what silently dropped a real, distinct
+    probe when two providers reported the same UID text.
+    """
 
     normalized = connection_id.strip().casefold()
     if not normalized.startswith("probe:"):
         return normalized
-    probe_identity = normalized.split(":", 1)[1]
-    if probe_identity.isdecimal():
-        probe_identity = probe_identity.lstrip("0") or "0"
-    return f"probe:{probe_identity}"
+    parsed = parse_probe_connection_id(connection_id)
+    if parsed is None:
+        # Legacy two-part token (or malformed input): no provider to key on. Scope the
+        # existing decimal-leading-zero rule to the uid text alone, same as before --
+        # this never conflates two DIFFERENT canonical keys, but two distinct
+        # providers hidden behind the same legacy token remain genuinely ambiguous by
+        # construction (see `derive_selection_from_token`, which refuses rather than
+        # guesses in that case).
+        probe_identity = normalized.split(":", 1)[1]
+        if probe_identity.isdecimal():
+            probe_identity = probe_identity.lstrip("0") or "0"
+        return f"probe:{probe_identity}"
+    provider, uid = parsed
+    uid = uid.casefold()
+    if uid.isdecimal():
+        uid = uid.lstrip("0") or "0"
+    return f"probe:{provider.casefold()}:{uid}"
 
 
 def _selected_setup_connection_matches(
@@ -4775,9 +4891,12 @@ def _selected_setup_connection_matches(
     if _same_setup_connection(selected_connection, connection.connection_id):
         return True
     probe_uid = (session_metadata(connection.handle).probe_uid or "").strip()
-    return bool(probe_uid) and _same_setup_connection(
+    if not probe_uid:
+        return False
+    provider = str(session_metadata(connection.handle).probe_family or "unknown")
+    return _same_setup_connection(
         selected_connection,
-        probe_connection_id(probe_uid),
+        probe_connection_id(provider, probe_uid),
     )
 
 
@@ -4916,7 +5035,7 @@ def _setup_overview(
         connection_rows_by_identity: dict[str, dict[str, object]] = {}
         for probe in inventory.probes:
             connection_id = (
-                probe_connection_id(probe.usb_serial)
+                probe_connection_id(probe.probe_family, probe.usb_serial)
                 if probe.usb_serial is not None
                 else probe.probe_id
             )

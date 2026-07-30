@@ -16,7 +16,8 @@ from pyocd_debug_mcp.adapters.swd_interface import (
 )
 from pyocd_debug_mcp.board_config import BoardConfig
 from pyocd_debug_mcp.firmstore.profiles import ProfileError
-from pyocd_debug_mcp.services.connections import ConnectionManager
+from pyocd_debug_mcp.services.connections import ConnectionManager, probe_connection_id
+from pyocd_debug_mcp.setup_flow.setup import RunAssignmentStore
 from pyocd_debug_mcp.setup_flow.validate import ValidationInventory, ValidationProbe
 from pyocd_debug_mcp.target_errors import TargetConnectionError
 
@@ -427,6 +428,110 @@ class AssignmentAwareConnectTests(unittest.TestCase):
             gate.stamp_validation.call_args.kwargs["probe_identity"],
             assignment.connection_id,
         )
+
+    def test_a_validation_mismatch_clears_the_assignment_and_records_the_gate_mismatch(
+        self,
+    ) -> None:
+        """M3 (FIX 8 addendum): the raw `f"probe:{probe_uid}"` mint site is gone.
+
+        `_record_validation_mismatch`'s `provisional_connection_id` must reproduce the
+        exact canonical (provider-qualified) key `_setup_overview` would have stored,
+        or `assignment_store.run_if_current`'s exact-string match would report every
+        real mismatch as "assignment changed" and silently drop both the assignment
+        clear and the gate mismatch record. Uses the real `RunAssignmentStore`, not a
+        stub, so this actually exercises that exact-match boundary end to end.
+        """
+
+        manager = ConnectionManager()
+        handle = TargetSessionHandle(
+            session=None,
+            board=_board("board-1"),
+            probe_uid=FIRST_PROBE,
+            route_used="worker",
+            target_override=None,
+            metadata=TargetSessionMetadata(
+                board_name="Test board",
+                probe_description="J-Link probe",
+                probe_family="jlink",
+                probe_uid=FIRST_PROBE,
+                live_part_number=None,
+                route_used="worker",
+                target_override=None,
+                runtime_token="runtime-1",
+            ),
+        )
+        connection = manager.assign("board-1", handle, Mock(name="runtime"))
+        # The assignment store is seeded exactly the way `_setup_overview` would seed
+        # it: a provider-qualified canonical key, which happens to be the same key
+        # `ConnectionManager.assign` above derived for the live connection.
+        canonical_connection_id = probe_connection_id("jlink", FIRST_PROBE)
+        self.assertEqual(connection.connection_id, canonical_connection_id)
+        real_store = RunAssignmentStore({})
+        real_store.assign(canonical_connection_id, "board-1")
+        gate = SimpleNamespace(record_mismatch=Mock())
+
+        with (
+            patch.object(server, "connection_manager", manager),
+            patch.object(server, "assignment_store", real_store),
+            patch.object(server, "gate_manager", gate),
+        ):
+            recorded = server._record_validation_mismatch(
+                "board-1",
+                "validation-run",
+                FIRST_PROBE,
+                FIRST_PROBE,
+                "nRF52840",
+                "unexpected 0xDEAD",
+            )
+
+        self.assertTrue(recorded, "the mismatch must be recorded, not silently dropped")
+        self.assertIsNone(
+            real_store.connection_for("board-1"), "the assignment must be cleared"
+        )
+        gate.record_mismatch.assert_called_once()
+        recorded_kwargs = gate.record_mismatch.call_args.kwargs
+        self.assertEqual(recorded_kwargs["board_id"], "board-1")
+        self.assertEqual(recorded_kwargs["connection_id"], canonical_connection_id)
+        self.assertEqual(recorded_kwargs["expected_mcu"], "nRF52840")
+        self.assertEqual(recorded_kwargs["observed_mcu"], "unexpected 0xDEAD")
+
+    def test_a_mismatch_after_the_connection_already_vanished_still_matches_via_the_profile(
+        self,
+    ) -> None:
+        """`_known_provider_for_board`'s second source: the board's own profile.
+
+        The live connection is already gone by the time the provisional key is
+        rebuilt (a real, if rare, race between the live read and this bookkeeping).
+        The board's profile still names the same provider, so the match should still
+        succeed via that fallback rather than conservatively reporting "assignment
+        changed" when the provider is, in fact, still knowable.
+        """
+
+        canonical_connection_id = probe_connection_id("jlink", FIRST_PROBE)
+        real_store = RunAssignmentStore({})
+        real_store.assign(canonical_connection_id, "board-1")
+        gate = SimpleNamespace(record_mismatch=Mock())
+        manager = ConnectionManager()  # no live connection: it already vanished
+        profile = SimpleNamespace(board=_board("board-1"))
+
+        with (
+            patch.object(server, "connection_manager", manager),
+            patch.object(server, "assignment_store", real_store),
+            patch.object(server, "gate_manager", gate),
+            patch.object(server._profile_repository, "load", return_value=profile),
+        ):
+            recorded = server._record_validation_mismatch(
+                "board-1",
+                "validation-run",
+                FIRST_PROBE,
+                FIRST_PROBE,
+                "nRF52840",
+                "unexpected 0xDEAD",
+            )
+
+        self.assertTrue(recorded)
+        self.assertIsNone(real_store.connection_for("board-1"))
+        gate.record_mismatch.assert_called_once()
 
     def test_cli_command_uses_null_stdin_and_preserves_owned_runner_contract(self) -> None:
         completed = SimpleNamespace(returncode=7, stdout=b"listed", stderr=b"diagnostic")

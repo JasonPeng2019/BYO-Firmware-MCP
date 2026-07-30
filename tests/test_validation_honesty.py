@@ -30,6 +30,29 @@ from pyocd_debug_mcp.tools.setup import _load_guidance, build_setup_handlers
 
 class ValidationHonestyTests(unittest.TestCase):
     @staticmethod
+    def _jlink_board(board_id: str = "board-1") -> BoardConfig:
+        """A board whose probe_family matches the "jlink" ValidationProbe fixtures below.
+
+        FIX 8 (C7/D8): `_connection_matches_probe` now checks provider as well as UID,
+        so a handle built with `board=None` (which defaults `probe_family` to
+        "unknown") no longer matches a `ValidationProbe(..., "jlink", ...)` -- this
+        gives the transport-loss tests a handle whose provider is consistent with the
+        probe they compare it against, without changing what any of them assert.
+        """
+
+        return BoardConfig(
+            board_id=board_id,
+            display_name="Board 1",
+            mcu_family="family",
+            probe_family="jlink",
+            pyocd_target="part",
+            probe_type="jlink",
+            probe_hint_terms=(),
+            serial_hint_terms=(),
+            test_addr=0,
+        )
+
+    @staticmethod
     def _managed_operation(board_id: str) -> ManagedOperation:
         return ManagedOperation(
             operation_id="operation-test",
@@ -459,7 +482,7 @@ class ValidationHonestyTests(unittest.TestCase):
         from pyocd_debug_mcp import server
 
         manager = ConnectionManager()
-        first_handle = TargetSessionHandle(None, None, "probe-1", "worker-1", None)
+        first_handle = TargetSessionHandle(None, self._jlink_board(), "probe-1", "worker-1", None)
         second_handle = TargetSessionHandle(None, None, "probe-2", "worker-2", None)
         first_runtime = Mock(name="first_runtime")
         second_runtime = Mock(name="second_runtime")
@@ -495,7 +518,7 @@ class ValidationHonestyTests(unittest.TestCase):
         from pyocd_debug_mcp import server
 
         manager = ConnectionManager()
-        stale_handle = TargetSessionHandle(None, None, "probe-1", "worker-1", None)
+        stale_handle = TargetSessionHandle(None, self._jlink_board(), "probe-1", "worker-1", None)
         replacement_handle = TargetSessionHandle(None, None, "probe-2", "worker-2", None)
         stale_runtime = Mock(name="stale_runtime")
         replacement_runtime = Mock(name="replacement_runtime")
@@ -531,7 +554,7 @@ class ValidationHonestyTests(unittest.TestCase):
         from pyocd_debug_mcp import server
 
         manager = ConnectionManager()
-        handle = TargetSessionHandle(None, None, "probe-1", "worker-1", None)
+        handle = TargetSessionHandle(None, self._jlink_board(), "probe-1", "worker-1", None)
         runtime = Mock(name="runtime")
         assignment = manager.assign("board-1", handle, runtime)
         profile = SimpleNamespace(board_id="board-1")

@@ -29,6 +29,7 @@ from pyocd_debug_mcp.pack_provision import (
     sha256_bytes,
 )
 from pyocd_debug_mcp.services import symbols
+from pyocd_debug_mcp.services.connections import probe_connection_id
 from pyocd_debug_mcp.services.session_runtime import ActionContext, PolicyRefusal
 from pyocd_debug_mcp.services.symbols import ResolvedSymbol
 from pyocd_debug_mcp.services.uart_exchange_schema import validate_serial_exchange_parameters
@@ -234,7 +235,10 @@ class RoundThreeRegressionTests(unittest.TestCase):
             for index in range(len(names))
         ]
         inventory = SimpleNamespace(probes=probes, serial_ports=())
-        assignments = {name: f"probe:usb-{index}" for index, name in enumerate(names)}
+        assignments = {
+            name: probe_connection_id("cmsis-dap", f"usb-{index}")
+            for index, name in enumerate(names)
+        }
         with (
             patch.object(server, "_profile_repository", SimpleNamespace(load_all=lambda: ())),
             patch.object(server, "_validation_inventory", return_value=inventory),

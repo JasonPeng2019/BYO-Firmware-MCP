@@ -87,7 +87,7 @@ class ResolutionTests(unittest.TestCase):
 
     def test_connection_id_resolves_to_provider_and_unique_id(self) -> None:
         row = _probe_row("jlink", "683710208")
-        token = probe_connection_id("683710208")
+        token = probe_connection_id("jlink", "683710208")
         self.store.record(ProbeSelection.from_row(token, row))
 
         selection = self.store.resolve(token, _snapshot(row))
@@ -266,7 +266,7 @@ class BoundedStoreTests(unittest.TestCase):
 
     def test_a_stable_selection_still_resolves_normally_once_bounded(self) -> None:
         row = _probe_row("jlink", "683710208")
-        token = probe_connection_id("683710208")
+        token = probe_connection_id("jlink", "683710208")
         self.store.record(ProbeSelection.from_row(token, row))
         for index in range(10):
             self.store.record(

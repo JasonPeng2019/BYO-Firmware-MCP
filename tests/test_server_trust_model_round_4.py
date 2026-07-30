@@ -33,6 +33,7 @@ from pyocd_debug_mcp.pack_provision import (
     VerifiedPack,
     sha256_bytes,
 )
+from pyocd_debug_mcp.services.connections import probe_connection_id
 from pyocd_debug_mcp.services.symbols import ResolvedSymbol, find_symbols
 from pyocd_debug_mcp.services.session_runtime import ActionContext
 from pyocd_debug_mcp.services.uart_exchange_schema import validate_serial_exchange_parameters
@@ -262,7 +263,10 @@ class RoundFourRegressionTests(unittest.TestCase):
             )
             for index in range(9)
         )
-        assignments = {name: f"probe:serial-{index}" for index, name in enumerate(names)}
+        assignments = {
+            name: probe_connection_id("jlink", f"serial-{index}")
+            for index, name in enumerate(names)
+        }
         inventory = SimpleNamespace(probes=probes, serial_ports=())
         with (
             patch.object(server._profile_repository, "load_all", return_value=[]),

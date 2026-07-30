@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import threading
 from dataclasses import dataclass
+from urllib.parse import quote, unquote
 
 from pyocd_debug_mcp.adapters.swd_interface import TargetSessionHandle, session_metadata
 from pyocd_debug_mcp.services.session_runtime import SessionRecord
@@ -17,24 +18,69 @@ class BoardNotConnectedError(RuntimeError):
     """Raised when an operation names a board without an active connection."""
 
 
-def probe_connection_id(probe_uid: str) -> str:
-    """Return the single canonical setup/connection identity for a probe UID."""
+PROBE_CONNECTION_PREFIX = "probe:"
 
-    return f"probe:{probe_uid.strip().casefold()}"
+
+def probe_connection_id(provider: str, probe_uid: str) -> str:
+    """Return the single canonical setup/connection identity for one probe.
+
+    FIX 8 (C7/D8): provider-qualified. Two different providers can report identical
+    UID text -- `HardwareInventoryService` correctly keeps such rows distinct (the
+    guide's own mandated merge rule: "never merge across providers, even on identical
+    UID text"), but a `connection_id` minted from UID text alone throws that away, so
+    `_setup_overview` would silently drop one of two real, simultaneously-attached
+    debuggers. Both fields are percent-encoded before joining, so a literal `:` inside
+    either a provider name or a UID string can never be mistaken for the delimiter --
+    the *new* format's own round trip is unambiguous regardless of content.
+
+    (Real pyOCD/hook UIDs are alphanumeric in every provider this server has ever
+    seen; a *legacy* two-part `probe:{uid}` token whose raw uid happens to contain a
+    colon is a separate, pre-existing, and vanishingly unlikely edge case -- see
+    `parse_probe_connection_id`.)
+    """
+
+    encoded_provider = quote(provider.strip().casefold(), safe="")
+    encoded_uid = quote(probe_uid.strip().casefold(), safe="")
+    return f"{PROBE_CONNECTION_PREFIX}{encoded_provider}:{encoded_uid}"
+
+
+def parse_probe_connection_id(connection_id: str) -> tuple[str, str] | None:
+    """Split a canonical provider-qualified token back into `(provider, uid)`.
+
+    Returns `None` for a legacy two-part `probe:{uid}` token (exactly one colon after
+    the prefix, so nothing to split), for a non-probe token (`session:...` or
+    anything else), or for malformed input. Callers must handle the legacy shape
+    themselves -- see the module-level comparison helpers and
+    `hardware_inventory.derive_selection_from_token`, all of which tolerate it on
+    read but never guess a provider for it.
+    """
+
+    if not connection_id.casefold().startswith(PROBE_CONNECTION_PREFIX):
+        return None
+    rest = connection_id[len(PROBE_CONNECTION_PREFIX) :]
+    provider_part, separator, uid_part = rest.partition(":")
+    if not separator:
+        return None
+    try:
+        return unquote(provider_part), unquote(uid_part)
+    except ValueError:
+        return None
 
 
 def stable_connection_identity(handle: TargetSessionHandle) -> str:
     """Return an immutable identity for a live connection.
 
-    A probe UID is the preferred physical identity. When a provider exposes no
-    UID, the frozen runtime token identifies only this live worker/session and
-    is deliberately not stable across reconnects.
+    A probe UID is the preferred physical identity, qualified by the connection's own
+    provider so two different providers reporting the same UID text never collide.
+    When a provider exposes no UID, the frozen runtime token identifies only this live
+    worker/session and is deliberately not stable across reconnects -- and is never
+    provider-qualified, since it already names exactly one live session.
     """
 
     metadata = session_metadata(handle)
     probe_uid = (metadata.probe_uid or "").strip()
     if probe_uid:
-        return probe_connection_id(probe_uid)
+        return probe_connection_id(str(metadata.probe_family or "unknown"), probe_uid)
     return f"session:{metadata.runtime_token}"
 
 
