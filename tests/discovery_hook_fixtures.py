@@ -8,13 +8,38 @@ execution path under test.
 
 from __future__ import annotations
 
+import ast
 import json
 import os
 import shutil
 from pathlib import Path
+from types import ModuleType
 from typing import Any, Iterable, Sequence
 
 from pyocd_debug_mcp import discovery_hooks
+
+
+def source_without_docstrings(module: ModuleType) -> str:
+    """Return a module's code with every docstring removed.
+
+    Needed because these modules *explain* the things they must not do -- "run_owned
+    cannot be used", "this deliberately does not live on ServerRun". A raw text scan
+    would flag the explanation as the violation.
+    """
+
+    tree = ast.parse(Path(str(module.__file__)).read_text(encoding="utf-8"))
+    for node in ast.walk(tree):
+        body = getattr(node, "body", None)
+        if not isinstance(body, list) or not body:
+            continue
+        first = body[0]
+        if (
+            isinstance(first, ast.Expr)
+            and isinstance(first.value, ast.Constant)
+            and isinstance(first.value.value, str)
+        ):
+            body.pop(0)
+    return ast.unparse(tree)
 
 FAKE_HOOK = Path(__file__).resolve().parent / "fake_discovery_hook.py"
 ALL_PLATFORMS = ["windows", "macos", "linux"]
