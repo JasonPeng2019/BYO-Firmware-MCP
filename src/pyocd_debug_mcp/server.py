@@ -69,8 +69,18 @@ from pyocd_debug_mcp.pack_provision import (
     sha256_bytes,
     verified_pack_for_target,
 )
+from pyocd_debug_mcp.discovery_hooks import (
+    DiscoveryHookSnapshot,
+    HookSnapshotStore,
+    load_hook_snapshot,
+)
+from pyocd_debug_mcp.hardware_inventory import (
+    ActiveConnectionRow,
+    HardwareInventoryService,
+    stable_identity_equal,
+)
 from pyocd_debug_mcp.probe_inventory import (
-    list_connected_probes_cli,
+    list_connected_probes_detailed,
     resolve_probe_for_board_cli,
 )
 from pyocd_debug_mcp.serial_resolver import (
@@ -2431,55 +2441,43 @@ def _target_names() -> tuple[str, ...]:
     return tuple(sorted(names))
 
 
-def _validation_inventory() -> ValidationInventory:
-    probes_by_id = {
-        probe.uid: ValidationProbe(
-            probe.uid,
-            probe.description or probe.raw,
-            probe.family,
-            probe.uid or None,
-        )
-        for probe in list_connected_probes_cli(_run_cmd)
-    }
-    # pyOCD inventory intentionally omits probes already opened by this process.
-    # Validation must still be able to select and stamp the server-owned active
-    # connection. A hardware UID remains the stable inventory key; a UID-less
-    # provider is represented only by its exact live, session-local connection ID.
+def _active_connection_rows() -> tuple[ActiveConnectionRow, ...]:
+    """Describe every probe this process already has open.
+
+    pyOCD inventory intentionally omits probes already opened by this process.
+    Validation must still be able to select and stamp the server-owned active
+    connection. A hardware UID remains the stable inventory key; a UID-less
+    provider is represented only by its exact live, session-local connection ID.
+    """
+
+    rows: list[ActiveConnectionRow] = []
     for board_id in connection_manager.assigned_board_ids():
         connection = connection_manager.connection_for(board_id)
         handle = connection.handle
         metadata = session_metadata(handle)
         probe_uid = (metadata.probe_uid or "").strip()
         probe_id = probe_uid or connection.connection_id
-        if probe_id in probes_by_id:
-            continue
         board = handle.board
         description = str(metadata.probe_description or "").strip()
         if not description:
             description = (
                 board.display_name if board is not None else f"Active connection {probe_id}"
             )
-        probe_family = str(metadata.probe_family or "unknown")
-        probes_by_id[probe_id] = ValidationProbe(
-            probe_id,
-            description,
-            probe_family,
-            probe_uid or None,
+        rows.append(
+            ActiveConnectionRow(
+                probe_id=probe_id,
+                probe_uid=probe_uid or None,
+                description=description,
+                probe_family=str(metadata.probe_family or "unknown"),
+            )
         )
-    probes = tuple(probes_by_id[key] for key in sorted(probes_by_id))
-    serial_ports = list_serial_ports() or []
-    serial = tuple(
-        ValidationSerial(
-            port.serial_number or port.device,
-            port.device,
-            port.description or port.product or "Serial connection",
-            port.serial_number or None,
-            port.vid,
-            port.pid,
-        )
-        for port in serial_ports
-    )
-    return ValidationInventory(probes, serial)
+    return tuple(rows)
+
+
+def _validation_inventory() -> ValidationInventory:
+    """Legacy inventory shape, now served by the one unified inventory service."""
+
+    return _hardware_inventory.validation_inventory()
 
 
 def _validation_target_supported(target: str) -> bool | None:
@@ -2718,6 +2716,33 @@ _attachment_cache = AttachmentCache(_firm_store)
 _report_writer = ReportWriter(_firm_store)
 _safety_repository = SafetyMapRepository(_firm_store)
 _safety_builder = SafetyMapBuilder(_safety_repository)
+
+# Hook configuration is not authority, so it lives beside the stores rather than on
+# ServerRun, whose clear_authority() would wipe it. Empty until a refresh loads a
+# manifest, which is what keeps the no-manifest path identical to before.
+_hook_snapshot_store = HookSnapshotStore()
+
+
+def _discovery_hook_root() -> Path:
+    """The one directory the server designates for project hooks."""
+
+    return _firm_store.layout.discovery_hooks
+
+
+def _load_discovery_hook_snapshot() -> DiscoveryHookSnapshot:
+    """Read the manifests fresh. Only `refresh_discovery_hooks` calls this."""
+
+    return load_hook_snapshot(_discovery_hook_root())
+
+
+# The single inventory service. Every discovery call site funnels here, so the hook
+# gating decision in `snapshot()` cannot be bypassed by adding a new caller.
+_hardware_inventory = HardwareInventoryService(
+    native_probes=lambda: list_connected_probes_detailed(_run_cmd),
+    native_uarts=list_serial_ports,
+    active_connections=_active_connection_rows,
+    hook_snapshot=_hook_snapshot_store.current,
+)
 
 
 def _safety_continuation(prefix: str) -> str:
@@ -3280,17 +3305,13 @@ def _normalized_target_identity(value: str) -> str:
 
 
 def _stable_identity_equal(left: str | None, right: str | None) -> bool:
-    """Compare stable USB identifiers without conflating mutable display labels."""
+    """Compare stable USB identifiers without conflating mutable display labels.
 
-    if not left or not right:
-        return False
-    left_normalized = left.strip().casefold()
-    right_normalized = right.strip().casefold()
-    if left_normalized == right_normalized:
-        return True
-    if left_normalized.isdecimal() and right_normalized.isdecimal():
-        return (left_normalized.lstrip("0") or "0") == (right_normalized.lstrip("0") or "0")
-    return False
+    The policy now lives in `hardware_inventory` so the inventory merge rules and these
+    setup comparison helpers cannot drift apart. Re-exported here unchanged.
+    """
+
+    return stable_identity_equal(left, right)
 
 
 def _connection_matches_probe(

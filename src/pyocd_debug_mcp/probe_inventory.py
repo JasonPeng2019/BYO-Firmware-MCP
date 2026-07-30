@@ -183,17 +183,96 @@ def parse_pyocd_probe_listing(output: str) -> list[ProbeInfo]:
     return probes
 
 
+MAX_PROBE_SUMMARY_CHARS = 1000
+# `_run_cmd` maps a deadline overrun to this exit code; a pyOCD traceback is not a
+# payload, so both streams are summarized rather than forwarded.
+PROBE_CLI_TIMEOUT_EXIT_CODE = 124
+
+
+def _summarize(text: str) -> str:
+    collapsed = text.strip()
+    if len(collapsed) <= MAX_PROBE_SUMMARY_CHARS:
+        return collapsed
+    return collapsed[:MAX_PROBE_SUMMARY_CHARS] + "...[truncated]"
+
+
+@dataclass(frozen=True, slots=True)
+class NativeProbeListing:
+    """What native probe discovery found, and what happened when it did not.
+
+    `list_connected_probes_cli` returns `[]` for every failure mode -- no exit code,
+    no stderr -- which is exactly the information an agent needs to tell "the tool is
+    missing" apart from "the tool works and there is no hardware".
+    """
+
+    probes: tuple[ProbeInfo, ...]
+    command: tuple[str, ...]
+    exit_code: int | None
+    timed_out: bool
+    stdout_summary: str
+    stderr_summary: str
+
+    @property
+    def available(self) -> bool:
+        """True when the CLI ran to completion, whether or not it saw hardware."""
+
+        return self.exit_code == 0
+
+    def diagnostic_row(self) -> dict[str, object]:
+        return {
+            "command": list(self.command),
+            "exit_code": self.exit_code,
+            "timed_out": self.timed_out,
+            "stdout_summary": self.stdout_summary,
+            "stderr_summary": self.stderr_summary,
+            "probe_count": len(self.probes),
+        }
+
+
+EMPTY_NATIVE_PROBE_LISTING = NativeProbeListing(
+    probes=(),
+    command=(),
+    exit_code=None,
+    timed_out=False,
+    stdout_summary="",
+    stderr_summary="",
+)
+
+
+def list_connected_probes_detailed(run_cmd: RunCommand) -> NativeProbeListing:
+    """Return native probe rows together with the diagnostics of the attempt.
+
+    Command selection is unchanged: each configured command runs in turn until one
+    parses into at least one row. The reported diagnostics belong to the attempt that
+    produced rows, or -- when none did -- to the first (canonical) attempt, whose
+    failure is the one worth showing an agent.
+    """
+
+    attempts: list[NativeProbeListing] = []
+    for command in configured_probe_cli_commands():
+        exit_code, out, err = run_cmd(list(command))
+        text = out if out.strip() else err
+        probes = tuple(parse_pyocd_probe_listing(text)) if text.strip() else ()
+        attempt = NativeProbeListing(
+            probes=probes,
+            command=tuple(command),
+            exit_code=exit_code,
+            timed_out=exit_code == PROBE_CLI_TIMEOUT_EXIT_CODE,
+            stdout_summary=_summarize(out),
+            stderr_summary=_summarize(err),
+        )
+        if probes:
+            return attempt
+        attempts.append(attempt)
+    if attempts:
+        return attempts[0]
+    return EMPTY_NATIVE_PROBE_LISTING
+
+
 def list_connected_probes_cli(run_cmd: RunCommand) -> list[ProbeInfo]:
     """Return probes reported by bounded, server-owned CLI child processes."""
 
-    for command in configured_probe_cli_commands():
-        _rc, out, err = run_cmd(list(command))
-        text = out if out.strip() else err
-        if text.strip():
-            probes = parse_pyocd_probe_listing(text)
-            if probes:
-                return probes
-    return []
+    return list(list_connected_probes_detailed(run_cmd).probes)
 
 
 def _score_terms(text: str, terms: tuple[str, ...]) -> int:

@@ -181,6 +181,42 @@ class DiscoveryHookSnapshot:
 EMPTY_SNAPSHOT = DiscoveryHookSnapshot(manifest_sha256="", hooks=(), loaded_at="")
 
 
+class HookSnapshotStore:
+    """Run-scoped, memory-only holder for the snapshot the last refresh admitted.
+
+    Hook configuration is not authority, so this deliberately does not live on
+    `ServerRun`: `clear_authority()` would wipe it, and sitting beside real gate, plan,
+    and permission state would send exactly the wrong signal about what it is.
+
+    Starts empty, which is what makes the no-manifest path cost nothing and the
+    operation-timeout provider safe to call during startup.
+    """
+
+    __slots__ = ("_guard", "_snapshot")
+
+    def __init__(self, snapshot: DiscoveryHookSnapshot | None = None) -> None:
+        self._guard = threading.RLock()
+        self._snapshot = snapshot or EMPTY_SNAPSHOT
+
+    def current(self) -> DiscoveryHookSnapshot:
+        with self._guard:
+            return self._snapshot
+
+    def replace(self, snapshot: DiscoveryHookSnapshot) -> DiscoveryHookSnapshot:
+        with self._guard:
+            self._snapshot = snapshot
+            return self._snapshot
+
+    def clear(self) -> None:
+        with self._guard:
+            self._snapshot = EMPTY_SNAPSHOT
+
+    def eligible_counts(self) -> dict[str, int]:
+        """Per-kind counts for the operation timeout budget. Zero before any refresh."""
+
+        return self.current().eligible_counts()
+
+
 @dataclass(frozen=True, slots=True)
 class HookProbeRow:
     provider: str
