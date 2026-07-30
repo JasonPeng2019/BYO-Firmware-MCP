@@ -537,6 +537,77 @@ class BudgetTests(unittest.TestCase):
         """The whole point of the new group: these were never covered."""
 
         self.assertTrue(ops._UART_ACTION_TOOLS.isdisjoint(ops._PROBE_INVENTORY_TOOLS))
+
+    # -- vendor UART CLI budget (M6) ---------------------------------------------
+    #
+    # `vendor_uart_rows` shells out to one external command per configured
+    # `SERIAL_FALLBACKS` spec (see hardware_inventory.py). It is reached from
+    # `HardwareInventoryService._collect_uart_rows`, which both `snapshot()` (used by
+    # every `_PROBE_INVENTORY_TOOLS` tool) and `uart_snapshot()` (used by
+    # `_resolve_serial_port_for_session`, which runs before every `_UART_ACTION_TOOLS`
+    # tool) call. `refresh_discovery_hooks` never takes an inventory snapshot -- it only
+    # runs hooks directly -- so it never reaches `vendor_uart_rows` and must not gain
+    # budget from vendor specs.
+
+    ONE_VENDOR_SPEC = (
+        ops.DEFAULT_EXTERNAL_COMMAND_TIMEOUT_SECONDS + ops.MAX_OWNED_PROCESS_CLEANUP_SECONDS
+    )
+
+    def test_serial_fallbacks_defaults_to_empty(self) -> None:
+        """Sanity check: the env var is unset in the test environment, matching prod
+        default, so the other tests here are measuring a real delta, not a fixed one."""
+
+        self.assertEqual(ops.SERIAL_FALLBACKS, ())
+
+    def test_probe_inventory_budget_unchanged_when_no_vendor_specs_configured(self) -> None:
+        before = ops.operation_timeout_seconds("setup_overview", {})
+
+        with patch.object(ops, "SERIAL_FALLBACKS", ()):
+            after = ops.operation_timeout_seconds("setup_overview", {})
+
+        self.assertEqual(after, before)
+
+    def test_probe_inventory_budget_grows_with_configured_vendor_specs(self) -> None:
+        before = ops.operation_timeout_seconds("setup_overview", {})
+
+        with patch.object(ops, "SERIAL_FALLBACKS", ("nrfjprog_spec", "stlink_spec")):
+            after = ops.operation_timeout_seconds("setup_overview", {})
+
+        self.assertAlmostEqual(after - before, 2 * self.ONE_VENDOR_SPEC, places=6)
+
+    def test_uart_action_budgets_unchanged_when_no_vendor_specs_configured(self) -> None:
+        for tool, arguments in self.UART_CALLS:
+            with self.subTest(tool=tool):
+                before = ops.operation_timeout_seconds(tool, arguments)
+                with patch.object(ops, "SERIAL_FALLBACKS", ()):
+                    after = ops.operation_timeout_seconds(tool, arguments)
+                self.assertEqual(after, before)
+
+    def test_every_uart_action_gains_budget_from_configured_vendor_specs(self) -> None:
+        for tool, arguments in self.UART_CALLS:
+            with self.subTest(tool=tool):
+                before = ops.operation_timeout_seconds(tool, arguments)
+                with patch.object(ops, "SERIAL_FALLBACKS", ("nrfjprog_spec",)):
+                    after = ops.operation_timeout_seconds(tool, arguments)
+                self.assertAlmostEqual(after - before, self.ONE_VENDOR_SPEC, places=6)
+
+    def test_refresh_discovery_hooks_budget_unaffected_by_vendor_specs(self) -> None:
+        """It never takes an inventory snapshot, so it can never run a vendor CLI."""
+
+        before = ops.operation_timeout_seconds("refresh_discovery_hooks", {})
+
+        with patch.object(ops, "SERIAL_FALLBACKS", ("nrfjprog_spec", "stlink_spec")):
+            after = ops.operation_timeout_seconds("refresh_discovery_hooks", {})
+
+        self.assertEqual(after, before)
+
+    def test_get_discovery_hook_contract_budget_unaffected_by_vendor_specs(self) -> None:
+        before = ops.operation_timeout_seconds("get_discovery_hook_contract", {"kind": "probe"})
+
+        with patch.object(ops, "SERIAL_FALLBACKS", ("nrfjprog_spec",)):
+            after = ops.operation_timeout_seconds("get_discovery_hook_contract", {"kind": "probe"})
+
+        self.assertEqual(after, before)
         self.assertEqual(
             ops._UART_ACTION_TOOLS, {"read_serial", "write_serial", "serial_exchange"}
         )

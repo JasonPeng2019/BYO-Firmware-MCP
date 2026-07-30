@@ -95,6 +95,35 @@ Every phase's *work* is complete and the tree is green. What is missing is the
 clearance condition itself, which cannot be manufactured by declaring it. Two
 conditions are unmet, both concerning review coverage rather than known defects.
 
-There are no known unfixed defects at HEAD.
+**Correction (post-`f54640f`):** an earlier revision of this file stated there were
+no known unfixed defects at HEAD. That is no longer true. Reassessing the round,
+the coordinator found **M6** — the D15 fix added one vendor-CLI subprocess per
+`SERIAL_FALLBACKS` spec inside `snapshot()`, each carrying `_run_cmd`'s 30s
+default, but the `_PROBE_INVENTORY_TOOLS` operation timeout budget
+(`kernel/operations.py:603-613`) accounts only for probe CLI commands and hooks.
+With vendor specs configured and a hung vendor tool, a snapshot can consume time
+the budget does not know about and be cancelled mid-discovery by the very timeout
+meant to prevent that. Gated (opt-in via `PYOCD_SERIAL_FALLBACK_REGISTRY`, and
+only when native UART enumeration is empty), so not critical — but real, and
+found only because blocker 2 prompted a direct re-read of the unreviewed fix.
+
+M6 is the **third** instance of this task's signature pattern: C12 was introduced
+by the fix for C7, D16 by the fix for C15, and M6 by the fix for D15. Each was
+caught by the pass that followed it. M6 was caught with no pass following it,
+which is precisely what blocker 2 predicts and why it is not a formality.
+
+**M6 is now fixed**, and the coordinator's own analysis of it was incomplete. The
+brief named only `_PROBE_INVENTORY_TOOLS`; the implementer traced further and
+found `_UART_ACTION_TOOLS` reaches the identical `_collect_uart_rows()` path via
+`uart_snapshot()`, and that `read_serial`, `write_serial` and `serial_exchange`
+each take an argument-driven early-return branch that discards `resolved_timeout`
+entirely — so adding the term to the generic block alone had **no effect** for
+those tools' typical call shape, proven by a test that first failed with a 0.0s
+delta. The vendor term now appears at all five sites plus the helper.
+`_DISCOVERY_HOOK_TOOLS` was traced and correctly excluded: `refresh_discovery_hooks`
+calls `services.load_snapshot()`/`run_hooks()` directly and never reaches
+`HardwareInventoryService`, with a regression test asserting its budget stays flat.
+Suite 664 passed / 7 skipped; ruff, pyright clean — all verified by the
+coordinator at HEAD, not from the report.
 
 STATUS: ❌ RED
