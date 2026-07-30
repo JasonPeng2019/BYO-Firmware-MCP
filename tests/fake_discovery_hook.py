@@ -50,7 +50,15 @@ def _counter_value(path: Path) -> int:
     for _attempt in range(200):
         try:
             handle = os.open(str(path) + ".lock", os.O_CREAT | os.O_EXCL | os.O_WRONLY)
-        except FileExistsError:
+        except (FileExistsError, PermissionError):
+            # C14/D13: on Windows, the same "someone else already holds this lock"
+            # race can surface as `PermissionError` (WinError 5) instead of
+            # `FileExistsError` when this process's O_CREAT|O_EXCL lands while another
+            # process is mid-way through creating or deleting the identical lock file
+            # -- an NTFS quirk absent on POSIX, where the analogous race reliably
+            # raises `FileExistsError`. Treat both as "retry," matching how this
+            # repo's own process-management code (`kernel/processes.py`) already
+            # treats Windows OS-error variance as expected rather than exceptional.
             time.sleep(0.005)
             continue
         try:

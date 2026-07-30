@@ -533,6 +533,75 @@ class AssignmentAwareConnectTests(unittest.TestCase):
         self.assertIsNone(real_store.connection_for("board-1"))
         gate.record_mismatch.assert_called_once()
 
+    def test_a_stale_divergent_profile_provider_fails_closed_not_wrong(self) -> None:
+        """C13/D12: the profile fallback and the stored assignment are independent.
+
+        The sibling test above cannot distinguish safe from unsafe because both sides
+        of its comparison come from the same `_board()` fixture. This constructs a
+        genuine divergence: the assignment was minted for one provider ("cmsisdap" --
+        what was actually connected/assigned), but the board's profile independently
+        declares a DIFFERENT provider ("jlink"), built from its own standalone
+        `BoardConfig`, not derived from the stored key at all.
+
+        Answer, confirmed empirically by this test rather than assumed: it fails
+        closed. `_known_provider_for_board`'s profile fallback mints
+        `probe_connection_id("jlink", ...)`, which is simply not the stored key
+        (`probe_connection_id("cmsisdap", ...)`) for this board_id --
+        `run_if_current`'s two-way exact-match dictionary lookup requires the minted
+        key to equal the value stored for *this exact board_id*, so a wrong provider
+        can only ever produce "no match" (`SetupWorkflowError` -> `False`, nothing
+        recorded, assignment untouched), never a match against a stored key that names
+        a different real probe. Wrong attribution would require the assignment store
+        to already hold the diverged key under this same board_id, which only
+        `_setup_overview` -- itself always minting from the real discovered row's
+        actual provider, never from a profile declaration -- ever writes.
+        """
+
+        real_provider = "cmsisdap"
+        stale_profile_provider = "jlink"
+        canonical_connection_id = probe_connection_id(real_provider, FIRST_PROBE)
+        real_store = RunAssignmentStore({})
+        real_store.assign(canonical_connection_id, "board-1")
+        gate = SimpleNamespace(record_mismatch=Mock())
+        manager = ConnectionManager()  # no live connection: it already vanished
+        # A standalone BoardConfig, independent of the stored key's provider -- not
+        # the same fixture the sibling test above shares between both sides.
+        diverged_board = BoardConfig(
+            board_id="board-1",
+            display_name="Diverged board",
+            mcu_family="nrf52",
+            probe_family=stale_profile_provider,
+            pyocd_target="nrf52840",
+            probe_type=stale_profile_provider,
+            probe_hint_terms=(),
+            serial_hint_terms=(),
+            test_addr=0x20000000,
+        )
+        profile = SimpleNamespace(board=diverged_board)
+
+        with (
+            patch.object(server, "connection_manager", manager),
+            patch.object(server, "assignment_store", real_store),
+            patch.object(server, "gate_manager", gate),
+            patch.object(server._profile_repository, "load", return_value=profile),
+        ):
+            recorded = server._record_validation_mismatch(
+                "board-1",
+                "validation-run",
+                FIRST_PROBE,
+                FIRST_PROBE,
+                "nRF52840",
+                "unexpected 0xDEAD",
+            )
+
+        self.assertFalse(
+            recorded, "a diverged profile provider must fail closed, not silently succeed"
+        )
+        gate.record_mismatch.assert_not_called()
+        # The assignment must be left exactly as it was -- not cleared, not
+        # reattributed to the wrong provider.
+        self.assertEqual(real_store.connection_for("board-1"), canonical_connection_id)
+
     def test_cli_command_uses_null_stdin_and_preserves_owned_runner_contract(self) -> None:
         completed = SimpleNamespace(returncode=7, stdout=b"listed", stderr=b"diagnostic")
         with patch.object(server, "run_owned", return_value=completed) as run_owned:
