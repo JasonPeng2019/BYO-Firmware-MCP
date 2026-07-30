@@ -13,6 +13,7 @@ and every hook file, and runs each eligible hook once.
 
 from __future__ import annotations
 
+import copy
 import json
 import threading
 import time
@@ -68,7 +69,12 @@ class RetryContext:
     def retry_call(self) -> dict[str, object] | None:
         if self.retry_tool is None:
             return None
-        return {"tool": self.retry_tool, "arguments": dict(self.retry_arguments or {})}
+        # Deep, not shallow: the ticket records the *exact* original call, so a nested
+        # list or mapping must not stay aliased to whatever the caller still holds.
+        return {
+            "tool": self.retry_tool,
+            "arguments": copy.deepcopy(dict(self.retry_arguments or {})),
+        }
 
 
 class WrongKindRetry(RuntimeError):
@@ -120,7 +126,7 @@ class DiscoveryRetryStore:
             kind=kind,
             created_at=self._clock(),
             retry_tool=retry_tool,
-            retry_arguments=dict(retry_arguments or {}),
+            retry_arguments=copy.deepcopy(dict(retry_arguments or {})),
             board_id=board_id,
         )
         with self._guard:
