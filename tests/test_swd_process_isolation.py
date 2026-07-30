@@ -293,25 +293,24 @@ print(json.dumps(payload, separators=(",", ":")))
     def test_startup_and_first_call_share_one_absolute_deadline(self) -> None:
         from pyocd_debug_mcp.target_errors import TargetConnectionError
 
-        # C15: widened from the original 0.5s/0.7s, which conflated a real
-        # subprocess launch (fake_provider_worker.py's process spawn plus its
-        # deliberate 100ms "ready_then_hang" delay) with the deadline actually
-        # under test. Under machine load, spawn alone could exceed 0.5s and
-        # raise during construction -- which sat outside the original
-        # assertRaises, surfacing as a test ERROR unrelated to deadline
-        # sharing (reproduced: ~1-in-5 runs under load). Not derived from
-        # DEFAULT_EXTERNAL_COMMAND_TIMEOUT_SECONDS (30s) -- that would make
-        # this otherwise-fast contract test take tens of seconds; 2.0s/2.5s
-        # gives ample margin over realistic process-spawn variance while
-        # staying fast. Construction is now inside the same assertRaises as
-        # the call: the invariant under test is "the shared deadline is
-        # honored," not "specifically the call, and never startup, is where
-        # it's honored."
+        # D16: restores construction to outside assertRaises (it was moved in
+        # Iteration 4, but that broke coverage). The invariant under test is
+        # "call() honors the caller's deadline," and we must prove .call()
+        # actually ran. Construction succeeds with an ample budget (0.27s
+        # typical + variance). Call is then invoked with the same deadline,
+        # which will expire while the worker hangs. Entry into .call() is
+        # proven by the assertion below; respect for the deadline by the
+        # escalation of TimeoutError to TargetConnectionError.
         started = time.monotonic()
         deadline = started + 2.0
-        with self.assertRaises(TargetConnectionError):
-            client = self._client("ready_then_hang", deadline=deadline)
-            client.call("get_state", {}, deadline=deadline)
+        client = self._client("ready_then_hang", deadline=deadline)
+        try:
+            with self.assertRaises(TargetConnectionError):
+                client.call("get_state", {}, deadline=deadline)
+            # Prove .call() was entered by asserting request_id incremented.
+            self.assertEqual(client._request_id, 1)
+        finally:
+            client.close()
         self.assertLess(time.monotonic() - started, 2.5)
 
     def test_ready_hang_is_bounded(self) -> None:

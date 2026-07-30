@@ -99,6 +99,7 @@ from pyocd_debug_mcp.hardware_inventory import (
     snapshot_from_validation_inventory,
     stable_identity_equal,
     validation_inventory_from,
+    vendor_uart_rows,
 )
 from pyocd_debug_mcp.probe_inventory import (
     list_connected_probes_detailed,
@@ -3012,6 +3013,7 @@ _hardware_inventory = HardwareInventoryService(
     native_uarts=list_serial_ports,
     active_connections=_active_connection_rows,
     hook_snapshot=_hook_snapshot_store.current,
+    vendor_uarts=lambda: vendor_uart_rows(_run_cmd),
 )
 
 # Run-scoped, memory-only. A retry ticket is not authority, so it is not on ServerRun.

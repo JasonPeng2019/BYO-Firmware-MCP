@@ -39,7 +39,16 @@ from pyocd_debug_mcp.probe_inventory import (
     EMPTY_NATIVE_PROBE_LISTING,
     NativeProbeListing,
 )
-from pyocd_debug_mcp.serial_resolver import SerialPortInfo, normalize_port_name
+from pyocd_debug_mcp.serial_resolver import (
+    SERIAL_FALLBACKS,
+    RunCommand,
+    SerialFallbackSpec,
+    SerialPortInfo,
+    normalize_port_name,
+    parse_nrfjprog_com_output,
+    parse_stm32_programmer_list_output,
+    resolve_command_path,
+)
 from pyocd_debug_mcp.services.connections import (
     LEGACY_PROBE_CONNECTION_PREFIX,
     parse_probe_connection_id,
@@ -171,6 +180,83 @@ class VendorUartRow:
     @property
     def provenance(self) -> str:
         return f"vendor:{self.provider_id}"
+
+
+# --------------------------------------------------------------------------------------
+# Vendor helper adapter (SERIAL_FALLBACKS -> VendorUartRow)
+# --------------------------------------------------------------------------------------
+
+
+def _nrfjprog_vendor_rows(spec: SerialFallbackSpec, output: str) -> list[VendorUartRow]:
+    return [
+        VendorUartRow(
+            provider_id=spec.provider_id,
+            port_path=entry.port,
+            description=f"Nordic {entry.label} (probe SN {entry.probe_serial})",
+        )
+        for entry in parse_nrfjprog_com_output(output)
+    ]
+
+
+def _stlink_vendor_rows(spec: SerialFallbackSpec, output: str) -> list[VendorUartRow]:
+    return [
+        VendorUartRow(
+            provider_id=spec.provider_id,
+            port_path=entry.port,
+            description=entry.description or f"ST-LINK UART (probe SN {entry.probe_serial})",
+        )
+        for entry in parse_stm32_programmer_list_output(output)
+    ]
+
+
+# Dispatches on `SerialFallbackSpec.parser`, which `_load_serial_fallbacks` already
+# restricts to `_SUPPORTED_FALLBACK_PARSERS` -- so this never needs a third branch for
+# an unrecognized value, only a safe no-op fallback below for defense in depth.
+_VENDOR_FALLBACK_ADAPTERS: dict[str, Callable[[SerialFallbackSpec, str], list[VendorUartRow]]] = {
+    "nrfjprog_com": _nrfjprog_vendor_rows,
+    "stm32_programmer_list": _stlink_vendor_rows,
+}
+
+
+def vendor_uart_rows(run_cmd: RunCommand) -> list[VendorUartRow]:
+    """Ask each configured legacy vendor helper what serial ports it can see.
+
+    The third provenance source `_collect_uart_rows` merges in, and -- like the other
+    two -- it is only ever consulted when native pyserial enumeration returned nothing.
+    Deliberately does NOT route through `resolve_serial_port`'s `_resolve_nordic_serial`
+    / `_resolve_stlink_serial`: those disambiguate among ports pyserial already
+    returned (`_find_port_by_name` only ever matches an already-visible port) and can
+    never discover one pyserial missed. This function exists for exactly that missed
+    case: when pyserial sees nothing, ask `nrfjprog --com` / `STM32_Programmer_CLI`
+    directly what COM ports exist.
+
+    Each `SERIAL_FALLBACKS` entry keeps its own parser untouched, per the guide; this
+    only resolves the executable -- preserving the `PYOCD_SERIAL_FALLBACK_REGISTRY`
+    override via `resolve_command_path` -- runs it, and adapts the parsed entries into
+    rows. Identity fields (`usb_serial`/`vid`/`pid`) are left `None`: neither parser
+    yields them, and fabricating one would wrongly mark a row `stable` in `_uart_scope`.
+
+    A helper that is absent, fails, times out, or emits output its parser cannot read
+    contributes no rows for that spec. Both parsers are raise-proof on arbitrary text.
+    `run_cmd` itself maps a missing executable and a timeout to nonzero exit codes
+    (127 / 124), caught by the exit-code guard below -- the same exposure
+    `native_probes=lambda: list_connected_probes_detailed(_run_cmd)` already has, and
+    not something this function adds to or hardens beyond.
+    """
+
+    rows: list[VendorUartRow] = []
+    for spec in SERIAL_FALLBACKS:
+        adapt = _VENDOR_FALLBACK_ADAPTERS.get(spec.parser)
+        if adapt is None:
+            continue
+        executable_path = resolve_command_path(spec.executable, spec.executable_env)
+        if executable_path is None:
+            continue
+        exit_code, out, _ = run_cmd([executable_path, *spec.argv])
+        if exit_code != 0:
+            continue
+        rows.extend(adapt(spec, out))
+    return rows
 
 
 @dataclass(frozen=True, slots=True)
