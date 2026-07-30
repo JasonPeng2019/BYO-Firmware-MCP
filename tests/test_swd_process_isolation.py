@@ -14,6 +14,8 @@ from types import SimpleNamespace
 from typing import Any, cast
 from unittest.mock import Mock, patch
 
+from pyocd_debug_mcp.timeouts import DEFAULT_EXTERNAL_COMMAND_TIMEOUT_SECONDS
+
 
 class ProcessIsolationContractTests(unittest.TestCase):
     def test_worker_bootstrap_isolates_import_and_between_request_stdout(self) -> None:
@@ -68,7 +70,7 @@ provider_worker.main()
             input=requests,
             capture_output=True,
             text=True,
-            timeout=10,
+            timeout=DEFAULT_EXTERNAL_COMMAND_TIMEOUT_SECONDS,
             check=False,
         )
 
@@ -107,7 +109,7 @@ with _backend_stdout_to_stderr():
             [sys.executable, "-c", script],
             capture_output=True,
             text=True,
-            timeout=10,
+            timeout=DEFAULT_EXTERNAL_COMMAND_TIMEOUT_SECONDS,
             check=False,
         )
 
@@ -166,7 +168,7 @@ print(json.dumps(payload, separators=(",", ":")))
             [sys.executable, "-c", script],
             capture_output=True,
             text=True,
-            timeout=10,
+            timeout=DEFAULT_EXTERNAL_COMMAND_TIMEOUT_SECONDS,
             check=False,
         )
 
@@ -291,12 +293,26 @@ print(json.dumps(payload, separators=(",", ":")))
     def test_startup_and_first_call_share_one_absolute_deadline(self) -> None:
         from pyocd_debug_mcp.target_errors import TargetConnectionError
 
+        # C15: widened from the original 0.5s/0.7s, which conflated a real
+        # subprocess launch (fake_provider_worker.py's process spawn plus its
+        # deliberate 100ms "ready_then_hang" delay) with the deadline actually
+        # under test. Under machine load, spawn alone could exceed 0.5s and
+        # raise during construction -- which sat outside the original
+        # assertRaises, surfacing as a test ERROR unrelated to deadline
+        # sharing (reproduced: ~1-in-5 runs under load). Not derived from
+        # DEFAULT_EXTERNAL_COMMAND_TIMEOUT_SECONDS (30s) -- that would make
+        # this otherwise-fast contract test take tens of seconds; 2.0s/2.5s
+        # gives ample margin over realistic process-spawn variance while
+        # staying fast. Construction is now inside the same assertRaises as
+        # the call: the invariant under test is "the shared deadline is
+        # honored," not "specifically the call, and never startup, is where
+        # it's honored."
         started = time.monotonic()
-        deadline = started + 0.5
-        client = self._client("ready_then_hang", deadline=deadline)
+        deadline = started + 2.0
         with self.assertRaises(TargetConnectionError):
+            client = self._client("ready_then_hang", deadline=deadline)
             client.call("get_state", {}, deadline=deadline)
-        self.assertLess(time.monotonic() - started, 0.7)
+        self.assertLess(time.monotonic() - started, 2.5)
 
     def test_ready_hang_is_bounded(self) -> None:
         from pyocd_debug_mcp.target_errors import TargetConnectionError
