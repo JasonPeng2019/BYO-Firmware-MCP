@@ -72,15 +72,19 @@ from pyocd_debug_mcp.pack_provision import (
 from pyocd_debug_mcp.discovery_hooks import (
     DiscoveryHookSnapshot,
     HookSnapshotStore,
+    execute_eligible_hooks,
     load_hook_snapshot,
 )
 from pyocd_debug_mcp.hardware_inventory import (
     ActiveConnectionRow,
     HardwareInventoryService,
+    ProbeSelectionStore,
+    SessionUartSelectionStore,
     stable_identity_equal,
 )
 from pyocd_debug_mcp.probe_inventory import (
     list_connected_probes_detailed,
+    registered_provider_ids,
     resolve_probe_for_board_cli,
 )
 from pyocd_debug_mcp.serial_resolver import (
@@ -277,6 +281,11 @@ from pyocd_debug_mcp.tools.setup import (
     SetupToolLoadState,
     SetupToolServices,
     build_setup_handlers,
+)
+from pyocd_debug_mcp.tools.discovery import (
+    DiscoveryRetryStore,
+    DiscoveryToolServices,
+    build_discovery_handlers,
 )
 from pyocd_debug_mcp.tools.unlock import (
     UnlockCoordinator,
@@ -2743,6 +2752,24 @@ _hardware_inventory = HardwareInventoryService(
     active_connections=_active_connection_rows,
     hook_snapshot=_hook_snapshot_store.current,
 )
+
+# Run-scoped, memory-only. A retry ticket is not authority, so it is not on ServerRun.
+_discovery_retry_store = DiscoveryRetryStore(server_run.run_id)
+_probe_selection_store = ProbeSelectionStore()
+_session_uart_selections = SessionUartSelectionStore()
+
+
+def _on_discovery_hooks_refreshed(snapshot: DiscoveryHookSnapshot) -> None:
+    """React to a refresh that replaced the admitted hook set.
+
+    Selections recorded against the previous hook set are dropped rather than re-derived:
+    a refresh can change which hook found a device, or remove the hook entirely, and
+    silently keeping a selection would let a stale row survive its source.
+    """
+
+    del snapshot
+    _probe_selection_store.clear()
+    _session_uart_selections.clear()
 
 
 def _safety_continuation(prefix: str) -> str:
@@ -5537,6 +5564,31 @@ for _setup_name, _setup_handler in setup_tool_handlers.items():
     )
     if _setup_name.endswith("-plan"):
         forbid_unknown_tool_arguments(mcp, _setup_name)
+
+discovery_tool_handlers = build_discovery_handlers(
+    DiscoveryToolServices(
+        hook_root=_discovery_hook_root,
+        load_snapshot=_load_discovery_hook_snapshot,
+        current_snapshot=_hook_snapshot_store.current,
+        replace_snapshot=_hook_snapshot_store.replace,
+        retry_store=_discovery_retry_store,
+        registered_providers=registered_provider_ids,
+        run_hooks=lambda snapshot, kind: execute_eligible_hooks(snapshot, kind),
+        on_refresh=_on_discovery_hooks_refreshed,
+    )
+)
+# Deliberately no `tool_registry.configure(...)`: ToolRegistry.register defaults to
+# hidden=False, locked=False, which is exactly the always-visible, non-authorizing
+# requirement. An agent that has just been told discovery found nothing must be able to
+# reach these without unlocking anything first.
+#
+# Deliberately no `mcp.configure_layer2(...)`: these are not hardware actions, and a
+# hook failure must not be reported through the Layer-2 hardware-failure envelope.
+for _name, _handler in discovery_tool_handlers.items():
+    mcp.add_tool(_handler, name=_name, description=_handler.__doc__, structured_output=False)
+    # FastMCP silently drops unknown fields by default; a client passing a bogus
+    # `executable` field must fail closed rather than have it quietly ignored.
+    forbid_unknown_tool_arguments(mcp, _name)
 
 for _setup_action in SETUP_GUARDED_ACTIONS:
     tool_registry.configure(

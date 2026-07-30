@@ -594,6 +594,71 @@ class ProbeSelectionStore:
         return ProbeSelection.from_row(connection_id, row)
 
 
+@dataclass(frozen=True, slots=True)
+class SessionUartSelection:
+    """A UART endpoint that has no stable identity, chosen for this run only."""
+
+    board_id: str
+    port_path: str
+    description: str
+    provenance: tuple[str, ...]
+
+    @property
+    def normalized_port(self) -> str:
+        return normalize_port_name(self.port_path)
+
+
+class SessionUartSelectionStore:
+    """Run-scoped board -> session-local UART map.
+
+    Session-local endpoints must never reach `AttachmentCache`: `_validated_identity`
+    raises for them, and that refusal is a routing decision, not an error to swallow.
+    This store is the deliberate alternative -- cleared on disconnect, on hook refresh,
+    and whenever the endpoint stops appearing.
+    """
+
+    __slots__ = ("_guard", "_selections")
+
+    def __init__(self) -> None:
+        self._guard = threading.RLock()
+        self._selections: dict[str, SessionUartSelection] = {}
+
+    def record(self, selection: SessionUartSelection) -> None:
+        with self._guard:
+            self._selections[selection.board_id] = selection
+
+    def recorded(self, board_id: str) -> SessionUartSelection | None:
+        with self._guard:
+            return self._selections.get(board_id)
+
+    def clear_board(self, board_id: str) -> None:
+        with self._guard:
+            self._selections.pop(board_id, None)
+
+    def clear(self) -> None:
+        with self._guard:
+            self._selections.clear()
+
+    def resolve(self, board_id: str, snapshot: InventorySnapshot) -> UartRow | None:
+        """Re-derive a session selection against a fresh snapshot, or forget it."""
+
+        recorded = self.recorded(board_id)
+        if recorded is None:
+            return None
+        matches = [
+            row
+            for row in snapshot.uarts
+            if row.identity_scope == "session"
+            and normalize_port_name(row.port_path) == recorded.normalized_port
+        ]
+        if len(matches) != 1:
+            # Gone, or newly ambiguous. Either way this run's choice is no longer a
+            # single unambiguous endpoint, so drop it and route back through setup.
+            self.clear_board(board_id)
+            return None
+        return matches[0]
+
+
 def find_selected_row(selection: ProbeSelection, snapshot: InventorySnapshot) -> ProbeRow | None:
     """Locate the row a recorded selection still refers to, within its provider."""
 

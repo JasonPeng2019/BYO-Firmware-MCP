@@ -54,6 +54,17 @@ def _append_unique_text(parts: list[str], value: object) -> None:
         parts.append(text)
 
 
+def registered_provider_ids() -> tuple[str, ...]:
+    """Return pyOCD's registered provider keys, the source of truth for hook support.
+
+    `probe_families.json` is friendly labels plus legacy CLI text matching and must
+    never gate which providers a hook may name: a registered plug-in provider is
+    openable whether or not the JSON has heard of it.
+    """
+
+    return tuple(sorted(str(key).casefold() for key in PROBE_CLASSES))
+
+
 def probe_family_from_pyocd_probe(probe: Any) -> str:
     """Return pyOCD's registered provider key for a live probe object."""
 
