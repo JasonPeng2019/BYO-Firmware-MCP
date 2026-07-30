@@ -6,6 +6,7 @@ import json
 import os
 import re
 import shutil
+import sys
 from dataclasses import dataclass
 from importlib import resources
 from pathlib import Path
@@ -158,11 +159,22 @@ def provider_qualified_family(unique_id: str) -> str | None:
 
 
 def configured_probe_cli_commands() -> tuple[tuple[str, ...], ...]:
-    """Resolve the configured CLI fallback into validated argv, never a shell string."""
+    """Resolve the probe inventory command into validated argv, never a shell string.
+
+    The packaged pyOCD command runs through this server's interpreter so discovery
+    uses the same locked environment as the MCP server. ``PYOCD_CLI`` remains an
+    explicit operator override for a different executable.
+    """
 
     spec = PROBE_FAMILY_REGISTRY.cli_fallback
     override = os.environ.get(spec.executable_env, "").strip()
-    executable = override or shutil.which(spec.executable) or spec.executable
+    if override:
+        if "\x00" in override:
+            raise ProbeFamilyRegistryError("Configured probe CLI executable is invalid")
+        return tuple((override, *suffix) for suffix in spec.inventory_argv)
+    if spec.executable == "pyocd":
+        return tuple((sys.executable, "-m", "pyocd", *suffix) for suffix in spec.inventory_argv)
+    executable = shutil.which(spec.executable) or spec.executable
     if not executable or "\x00" in executable:
         raise ProbeFamilyRegistryError("Configured probe CLI executable is invalid")
     return tuple((executable, *suffix) for suffix in spec.inventory_argv)
