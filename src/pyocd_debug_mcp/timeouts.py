@@ -7,6 +7,12 @@ from dataclasses import dataclass
 # PROJECT-DEFINED (runtime command ceiling for probe/vendor enumeration helpers).
 DEFAULT_EXTERNAL_COMMAND_TIMEOUT_SECONDS = 30.0
 
+# PROJECT-DEFINED (hard per-hook ceiling for one agent-authored discovery hook).
+# Lives here, not in `discovery_hooks`, because `kernel/operations.py` needs it to size
+# the operation budget and `kernel/__init__` imports operations -- so importing
+# `discovery_hooks` from operations would be a cycle. `discovery_hooks` re-exports it.
+MAX_HOOK_TIMEOUT_SECONDS = 60.0
+
 # PROJECT-DEFINED (long setup command ceiling; allows uv sync without unbounded waits).
 SETUP_COMMAND_TIMEOUT_SECONDS = 900.0
 

@@ -254,6 +254,8 @@ def build_setup_handlers(services: SetupToolServices) -> dict[str, Callable[...,
         Call setup_overview first so the server, rather than the user, supplies the profile route,
         board_id, and friendly physical choices. Then load exactly the setup tool named by that
         route before calling it. Never ask the user for board_id, connection IDs, or JSON.
+        Pass connection identifiers back exactly as the server issued them; they are opaque
+        tokens, not probe serial numbers, and must not be edited or shortened.
         """
 
         if tool_name == "board_setup-plan" and services.setup_plan_eligible is not None:
@@ -313,7 +315,10 @@ def build_setup_handlers(services: SetupToolServices) -> dict[str, Callable[...,
         A complete matching profile routes to validation, an incomplete same-identity profile to
         repair, and a stable-map problem to safety refresh. Unknown names receive a
         server-generated board_id plus setup questions. Follow only the exact route returned here.
-        Relay only agent_prompt and friendly choices, never raw identifiers or this JSON.
+        If no debug probe is visible this returns a missing-probe status, not a naming problem;
+        follow its hook_contract_call only after the locked-environment check it names also
+        reports nothing. Relay only agent_prompt and friendly choices, never raw identifiers or
+        this JSON.
         """
 
         if services.setup_overview is None:
@@ -346,6 +351,9 @@ def build_setup_handlers(services: SetupToolServices) -> dict[str, Callable[...,
         board's familiar name and exact board/MCU identity, route an existing matching YAML profile
         to board_validate, and load the hidden setup workflow only when the profile is absent or
         validation fails. Do not populate a setup plan for a healthy profile that validates.
+        If setup is blocked because no probe or no serial port is visible, that block names the
+        discovery-hook contract call to make; a hook is only appropriate after the
+        locked-environment check it names also reports nothing.
         """
 
         fields: dict[str, object] = {
@@ -531,6 +539,8 @@ def build_setup_handlers(services: SetupToolServices) -> dict[str, Callable[...,
         healthy profile. A passing validation stamps only the current board/connection gate. If it
         fails because setup or safety evidence is incomplete, follow its exact setup or safety
         remedy; never treat the profile's presence alone as permission to access hardware.
+        Pass probe_id exactly as setup_overview issued it: it is an opaque connection token that
+        the server re-resolves to live hardware, not a probe serial number.
         """
 
         if not services.loader.is_loaded(board_id, "board_validate"):

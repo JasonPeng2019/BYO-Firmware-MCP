@@ -38,12 +38,17 @@ from pyocd_debug_mcp.kernel.processes import (
     popen_owned,
     terminate_process_group,
 )
+from pyocd_debug_mcp.timeouts import (
+    MAX_HOOK_TIMEOUT_SECONDS as _MAX_HOOK_TIMEOUT_SECONDS,
+)
 
 HOOK_SCHEMA_VERSION = 1
 SUPPORTED_RUNNERS = frozenset({"server-python", "executable"})
 SUPPORTED_PLATFORMS = frozenset({"windows", "macos", "linux"})
 SUPPORTED_KINDS = frozenset({"probe", "uart"})
-MAX_HOOK_TIMEOUT_SECONDS = 60.0
+# Re-exported from `timeouts` so `kernel/operations.py` can size the operation budget
+# without importing this module, which would be an import cycle.
+MAX_HOOK_TIMEOUT_SECONDS = _MAX_HOOK_TIMEOUT_SECONDS
 MAX_HOOK_STDOUT_BYTES = 256 * 1024
 MAX_HOOK_STDERR_BYTES = 64 * 1024
 MAX_HOOK_ROWS = 64

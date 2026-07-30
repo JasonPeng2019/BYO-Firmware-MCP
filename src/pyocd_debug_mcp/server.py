@@ -57,6 +57,7 @@ from pyocd_debug_mcp.kernel.operations import (
     cancellation_checkpoint,
     current_operation,
     run_if_not_cancelled,
+    set_eligible_hook_count_provider,
 )
 from pyocd_debug_mcp.kernel.finalizers import build_finalizer
 from pyocd_debug_mcp.kernel.hygiene import require_clean_startup
@@ -2996,6 +2997,12 @@ _hardware_inventory = HardwareInventoryService(
 _discovery_retry_store = DiscoveryRetryStore(server_run.run_id)
 _probe_selection_store = ProbeSelectionStore()
 _session_uart_selections = SessionUartSelectionStore()
+
+# Point the operation timeout budget at the live hook snapshot store. A provider
+# callable, not an import: operations.py is imported by registry.py which is imported
+# here, so any reverse import would be a cycle. Counts are zero until a refresh loads a
+# manifest, which is what makes the resolver safe to call during startup.
+set_eligible_hook_count_provider(_hook_snapshot_store.eligible_counts)
 
 
 def _on_discovery_hooks_refreshed(snapshot: DiscoveryHookSnapshot) -> None:
