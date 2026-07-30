@@ -17,6 +17,12 @@ class BoardNotConnectedError(RuntimeError):
     """Raised when an operation names a board without an active connection."""
 
 
+def probe_connection_id(probe_uid: str) -> str:
+    """Return the single canonical setup/connection identity for a probe UID."""
+
+    return f"probe:{probe_uid.strip().casefold()}"
+
+
 def stable_connection_identity(handle: TargetSessionHandle) -> str:
     """Return an immutable identity for a live connection.
 
@@ -28,7 +34,7 @@ def stable_connection_identity(handle: TargetSessionHandle) -> str:
     metadata = session_metadata(handle)
     probe_uid = (metadata.probe_uid or "").strip()
     if probe_uid:
-        return f"probe:{probe_uid.casefold()}"
+        return probe_connection_id(probe_uid)
     return f"session:{metadata.runtime_token}"
 
 

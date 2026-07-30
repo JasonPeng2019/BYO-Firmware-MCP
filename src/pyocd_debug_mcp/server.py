@@ -227,6 +227,7 @@ from pyocd_debug_mcp.services.connections import (
     ConnectionAssignmentError,
     ConnectionManager,
     ManagedConnection,
+    probe_connection_id,
     stable_connection_identity,
 )
 from pyocd_debug_mcp.tools.handshake import register_initialization_handshake
@@ -4447,7 +4448,7 @@ def _selected_setup_connection_matches(
     probe_uid = (session_metadata(connection.handle).probe_uid or "").strip()
     return bool(probe_uid) and _same_setup_connection(
         selected_connection,
-        f"probe:{probe_uid}",
+        probe_connection_id(probe_uid),
     )
 
 
@@ -4520,7 +4521,9 @@ def _setup_overview(
         connection_rows_by_identity: dict[str, dict[str, object]] = {}
         for probe in inventory.probes:
             connection_id = (
-                f"probe:{probe.usb_serial}" if probe.usb_serial is not None else probe.probe_id
+                probe_connection_id(probe.usb_serial)
+                if probe.usb_serial is not None
+                else probe.probe_id
             )
             connection_rows_by_identity.setdefault(
                 _setup_connection_key(connection_id),
@@ -4586,6 +4589,21 @@ def _setup_overview(
             or not set(assignments.values()).issubset(available_connections)
         ):
             raise ValueError("connection assignments must be unique current server connection IDs")
+        if not connection_rows:
+            _replace_setup_assignments({}, "setup overview found no debug connection")
+            return {
+                "status": "setup_no_probe",
+                "agent_prompt": (
+                    "No debug probe is visible to the server. Tell the user to attach the "
+                    "intended board's debugger and retry. Do not ask which board is which; "
+                    "this is not a naming ambiguity. Do not expose this payload or internal IDs."
+                ),
+                "profiles": profile_rows,
+                "connections": connection_rows,
+                "serial_choices": serial_rows,
+                "inventory_error": inventory_error,
+                "routes": [],
+            }
         if len(validated_names) > len(connection_rows):
             _replace_setup_assignments({}, "setup overview requires assignment clarification")
             return {
@@ -4654,9 +4672,7 @@ def _setup_overview(
                 accepted_response: dict[str, object] = {
                     "copy_into": "plan_action_parameters_template"
                 }
-                if len(connection_rows) == 0:
-                    required_user_facts.append("attach and identify one compatible debug probe")
-                elif len(connection_rows) > 1:
+                if len(connection_rows) > 1:
                     required_user_facts.append(
                         "which friendly debug-probe choice belongs to this board"
                     )
