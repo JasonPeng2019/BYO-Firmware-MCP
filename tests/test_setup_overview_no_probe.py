@@ -9,7 +9,12 @@ from unittest.mock import Mock, patch
 
 from pyocd_debug_mcp import server
 from pyocd_debug_mcp.hardware_inventory import snapshot_from_validation_inventory
-from pyocd_debug_mcp.services.connections import probe_connection_id
+from pyocd_debug_mcp.services.connections import (
+    LEGACY_PROBE_CONNECTION_PREFIX,
+    PROBE_CONNECTION_PREFIX,
+    parse_probe_connection_id,
+    probe_connection_id,
+)
 
 
 def _rows(overview: Mapping[str, object], key: str) -> list[dict[str, Any]]:
@@ -226,8 +231,8 @@ class ProbeConnectionIdTests(unittest.TestCase):
     )
 
     def test_mint_is_provider_qualified_stripped_and_casefolded(self) -> None:
-        self.assertEqual(probe_connection_id("JLink", "  AbC  "), "probe:jlink:abc")
-        self.assertEqual(probe_connection_id("jlink", "ABC"), "probe:jlink:abc")
+        self.assertEqual(probe_connection_id("JLink", "  AbC  "), "probeid:jlink:abc")
+        self.assertEqual(probe_connection_id("jlink", "ABC"), "probeid:jlink:abc")
 
     def test_stable_connection_identity_routes_through_the_shared_mint(self) -> None:
         for uid in self.CASES:
@@ -357,6 +362,49 @@ class ProbeConnectionIdTests(unittest.TestCase):
                 "session:token-1", probe_connection_id("jlink", "token-1")
             )
         )
+
+
+class StructuralLegacyDiscriminationTests(unittest.TestCase):
+    """C12/D11: canonical-vs-legacy is a prefix, never a colon-count heuristic.
+
+    `parse_probe_connection_id` used to decide "canonical" by asking whether the text
+    after `probe:` contained a second colon. A legacy (pre-FIX-8, unencoded) token
+    whose UID itself contains a colon -- realistic for hook-reported values; the
+    guide's own cross-platform hook guidance points authors at USB topology values
+    like Linux's `3-1.4:1.0` -- defeated that heuristic and could misparse into a
+    fabricated provider, in the worst case resolving a token to a different, real
+    probe (see `tests/test_probe_selection_records.py::TokenDerivationTests` for the
+    end-to-end reproductions). The fix gives the canonical format a dedicated prefix
+    (`probeid:`) that no legacy token can ever produce, regardless of UID content.
+    """
+
+    def test_the_two_prefixes_are_structurally_distinct(self) -> None:
+        self.assertNotEqual(PROBE_CONNECTION_PREFIX, LEGACY_PROBE_CONNECTION_PREFIX)
+        self.assertFalse(PROBE_CONNECTION_PREFIX.startswith(LEGACY_PROBE_CONNECTION_PREFIX))
+
+    def test_a_legacy_token_with_a_colon_in_the_uid_is_never_parsed_as_canonical(
+        self,
+    ) -> None:
+        for uid_with_colon in ("3-1.4:1.0", "jlink:001", "a:b:c:d"):
+            with self.subTest(uid=uid_with_colon):
+                legacy_token = f"{LEGACY_PROBE_CONNECTION_PREFIX}{uid_with_colon}"
+                self.assertIsNone(parse_probe_connection_id(legacy_token))
+
+    def test_a_canonical_token_still_parses_correctly_regardless_of_uid_content(
+        self,
+    ) -> None:
+        for uid_with_colon in ("3-1.4:1.0", "jlink:001", "a:b:c:d"):
+            with self.subTest(uid=uid_with_colon):
+                minted = probe_connection_id("cmsisdap", uid_with_colon)
+                self.assertTrue(minted.startswith(PROBE_CONNECTION_PREFIX))
+                parsed = parse_probe_connection_id(minted)
+                self.assertEqual(parsed, ("cmsisdap", uid_with_colon.casefold()))
+
+    def test_a_provider_containing_a_colon_still_round_trips(self) -> None:
+        """The guide asks for robustness even though no real provider name has one."""
+
+        minted = probe_connection_id("weird:vendor", "12345")
+        self.assertEqual(parse_probe_connection_id(minted), ("weird:vendor", "12345"))
 
 
 class CrossProviderCollisionTests(unittest.TestCase):

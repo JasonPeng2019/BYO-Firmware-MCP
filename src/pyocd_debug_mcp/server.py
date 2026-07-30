@@ -256,6 +256,8 @@ from pyocd_debug_mcp.timeouts import (
     subprocess_timeout_stream_text,
 )
 from pyocd_debug_mcp.services.connections import (
+    LEGACY_PROBE_CONNECTION_PREFIX,
+    PROBE_CONNECTION_PREFIX,
     BoardNotConnectedError,
     ConnectionAssignmentError,
     ConnectionManager,
@@ -3510,10 +3512,12 @@ def _provisional_setup_connection_id(
         # Neither a live connection nor the board's profile can name a provider (a
         # race this rare -- the connection vanished between the live read and this
         # call, and the profile is unreadable too). Fall back to the legacy,
-        # provider-less form: it cannot match a canonical stored key, so
+        # provider-less form: since C12/D11 it carries a structurally distinct prefix
+        # (`LEGACY_PROBE_CONNECTION_PREFIX`, never `PROBE_CONNECTION_PREFIX`), so it
+        # cannot match a canonical stored key even in principle, and
         # `run_if_current` safely reports "assignment changed" rather than guessing a
         # provider that might be wrong.
-        return f"probe:{probe_uid.strip().casefold()}"
+        return f"{LEGACY_PROBE_CONNECTION_PREFIX}{probe_uid.strip().casefold()}"
     return probe_connection_id(provider, probe_uid)
 
 
@@ -3676,15 +3680,15 @@ def _connection_matches_probe(
     """
 
     candidate = connection_id.strip()
-    if candidate.casefold().startswith("probe:"):
-        parsed = parse_probe_connection_id(candidate)
-        if parsed is not None:
-            provider, uid = parsed
-            if provider.casefold() != probe.probe_family.strip().casefold():
-                return False
-            return _stable_identity_equal(uid, probe.probe_id) or _stable_identity_equal(
-                uid, probe.usb_serial
-            )
+    parsed = parse_probe_connection_id(candidate)
+    if parsed is not None:
+        provider, uid = parsed
+        if provider.casefold() != probe.probe_family.strip().casefold():
+            return False
+        return _stable_identity_equal(uid, probe.probe_id) or _stable_identity_equal(
+            uid, probe.usb_serial
+        )
+    if candidate.casefold().startswith(LEGACY_PROBE_CONNECTION_PREFIX):
         candidate = candidate.split(":", 1)[1]
     return _stable_identity_equal(candidate, probe.probe_id) or _stable_identity_equal(
         candidate, probe.usb_serial
@@ -4834,8 +4838,6 @@ def _same_setup_connection(left: str, right: str) -> bool:
 
     if left.casefold() == right.casefold():
         return True
-    if not (left.casefold().startswith("probe:") and right.casefold().startswith("probe:")):
-        return False
     left_parsed = parse_probe_connection_id(left)
     right_parsed = parse_probe_connection_id(right)
     if left_parsed is not None and right_parsed is not None:
@@ -4844,6 +4846,18 @@ def _same_setup_connection(left: str, right: str) -> bool:
         return left_provider.casefold() == right_provider.casefold() and _stable_identity_equal(
             left_uid, right_uid
         )
+    # C12/D11: canonical-vs-legacy is now a prefix, not a colon count, so "both sides
+    # are some kind of probe token" has to be checked explicitly here -- a canonical
+    # token no longer shares a prefix with a legacy one, so neither
+    # `left.startswith(...)` alone would catch both shapes.
+    left_is_probe_token = left_parsed is not None or left.casefold().startswith(
+        LEGACY_PROBE_CONNECTION_PREFIX
+    )
+    right_is_probe_token = right_parsed is not None or right.casefold().startswith(
+        LEGACY_PROBE_CONNECTION_PREFIX
+    )
+    if not (left_is_probe_token and right_is_probe_token):
+        return False
     # At least one side is a legacy two-part token (or malformed): compare UID text
     # only, matching the tolerance this helper has always had for that shape.
     left_uid = left_parsed[1] if left_parsed is not None else left.split(":", 1)[1]
@@ -4861,25 +4875,25 @@ def _setup_connection_key(connection_id: str) -> str:
     """
 
     normalized = connection_id.strip().casefold()
-    if not normalized.startswith("probe:"):
-        return normalized
     parsed = parse_probe_connection_id(connection_id)
-    if parsed is None:
-        # Legacy two-part token (or malformed input): no provider to key on. Scope the
-        # existing decimal-leading-zero rule to the uid text alone, same as before --
-        # this never conflates two DIFFERENT canonical keys, but two distinct
-        # providers hidden behind the same legacy token remain genuinely ambiguous by
-        # construction (see `derive_selection_from_token`, which refuses rather than
-        # guesses in that case).
-        probe_identity = normalized.split(":", 1)[1]
-        if probe_identity.isdecimal():
-            probe_identity = probe_identity.lstrip("0") or "0"
-        return f"probe:{probe_identity}"
-    provider, uid = parsed
-    uid = uid.casefold()
-    if uid.isdecimal():
-        uid = uid.lstrip("0") or "0"
-    return f"probe:{provider.casefold()}:{uid}"
+    if parsed is not None:
+        provider, uid = parsed
+        uid = uid.casefold()
+        if uid.isdecimal():
+            uid = uid.lstrip("0") or "0"
+        return f"{PROBE_CONNECTION_PREFIX}{provider.casefold()}:{uid}"
+    if not normalized.startswith(LEGACY_PROBE_CONNECTION_PREFIX):
+        return normalized
+    # Legacy two-part token (or malformed input): no provider to key on. Scope the
+    # existing decimal-leading-zero rule to the uid text alone, same as before -- this
+    # never conflates two DIFFERENT canonical keys (they carry the distinct
+    # `PROBE_CONNECTION_PREFIX` above), but two distinct providers hidden behind the
+    # same legacy token remain genuinely ambiguous by construction (see
+    # `derive_selection_from_token`, which refuses rather than guesses in that case).
+    probe_identity = normalized.split(":", 1)[1]
+    if probe_identity.isdecimal():
+        probe_identity = probe_identity.lstrip("0") or "0"
+    return f"{LEGACY_PROBE_CONNECTION_PREFIX}{probe_identity}"
 
 
 def _selected_setup_connection_matches(

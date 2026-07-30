@@ -406,6 +406,70 @@ class TokenDerivationTests(unittest.TestCase):
             derive_selection_from_token("probe:999", _snapshot(_probe_row("jlink", "111")))
         )
 
+    def test_a_legacy_uid_containing_a_colon_still_resolves_to_its_own_probe(self) -> None:
+        """C12/D11 reproduction 1: a colon in the UID must not read as gone.
+
+        A legacy (pre-FIX-8) token never percent-encodes its UID. A hook-reported
+        `unique_id` has no charset restriction beyond NUL-freedom and length (the
+        guide's own platform guidance points hook authors at USB topology values like
+        Linux's `3-1.4:1.0`, which contains a colon). Before the structural prefix fix,
+        `parse_probe_connection_id` mistook the colon for the canonical delimiter,
+        split the UID's own text into a fabricated provider, found no matching row for
+        that fabricated provider, and returned None -- reporting a probe that was
+        genuinely still attached as gone.
+        """
+
+        uid_with_colon = "3-1.4:1.0"
+        row = _probe_row("cmsisdap", uid_with_colon)
+        legacy_token = f"probe:{uid_with_colon}"
+
+        selection = derive_selection_from_token(legacy_token, _snapshot(row))
+
+        self.assertIsNotNone(selection, "a present probe was reported as gone")
+        assert selection is not None
+        self.assertEqual(selection.unique_id, uid_with_colon)
+        self.assertEqual(selection.provider, "cmsisdap")
+
+    def test_a_legacy_uid_containing_a_colon_never_resolves_to_a_different_probe(
+        self,
+    ) -> None:
+        """C12/D11 reproduction 2 (the severe one): must never select the WRONG hardware.
+
+        The legacy token's UID text (`"jlink:001"`) happens to look like
+        `provider="jlink", uid="001"` under the old colon-counting heuristic. A second,
+        unrelated, real jlink probe with unique_id `"001"` is present in the same
+        snapshot. Before the structural prefix fix, `parse_probe_connection_id` would
+        confidently split `"probe:jlink:001"` into a fabricated `provider="jlink"`,
+        `uid="001"` and resolve this token to that unrelated jlink probe instead of the
+        cmsisdap probe it actually names -- a silent selection of different, real
+        hardware, which is exactly the class of defect FIX 8 exists to prevent, now
+        reachable through the compatibility path FIX 8 itself added.
+
+        With the structural prefix fix, `"probe:jlink:001"` does not start with the
+        canonical `probeid:` prefix at all, so `parse_probe_connection_id` never even
+        attempts a split; the legacy path strips only the literal `probe:` prefix,
+        leaving the whole `"jlink:001"` as one UID candidate -- which matches exactly
+        one row (the intended one) and no others, so the resolution is unambiguous
+        AND correct, not merely "not wrong."
+        """
+
+        intended_uid = "jlink:001"
+        intended_row = _probe_row("cmsisdap", intended_uid)
+        unrelated_row = _probe_row("jlink", "001")
+        snapshot = _snapshot(intended_row, unrelated_row)
+        legacy_token = f"probe:{intended_uid}"
+
+        selection = derive_selection_from_token(legacy_token, snapshot)
+
+        self.assertIsNotNone(selection)
+        assert selection is not None
+        self.assertEqual(
+            selection.provider,
+            "cmsisdap",
+            "resolved to a different, real probe instead of the one this token names",
+        )
+        self.assertEqual(selection.unique_id, intended_uid)
+
 
 class SessionUartSelectionTests(unittest.TestCase):
     def setUp(self) -> None:

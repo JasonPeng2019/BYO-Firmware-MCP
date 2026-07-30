@@ -18,7 +18,16 @@ class BoardNotConnectedError(RuntimeError):
     """Raised when an operation names a board without an active connection."""
 
 
-PROBE_CONNECTION_PREFIX = "probe:"
+PROBE_CONNECTION_PREFIX = "probeid:"
+"""The canonical, provider-qualified `connection_id` prefix. See C12/D11 below for
+why this is a prefix distinct from `LEGACY_PROBE_CONNECTION_PREFIX`, not a marker
+placed after it."""
+
+LEGACY_PROBE_CONNECTION_PREFIX = "probe:"
+"""The pre-FIX-8 two-part `probe:{uid}` shape. Still tolerated on read, equality-only,
+UID-text-only -- never provider-qualified, because a legacy token has no provider to
+recover. Never minted by this version of the code; only ever encountered when an agent
+holding a token from before this upgrade replays it in the same running server."""
 
 
 def probe_connection_id(provider: str, probe_uid: str) -> str:
@@ -30,13 +39,9 @@ def probe_connection_id(provider: str, probe_uid: str) -> str:
     UID text"), but a `connection_id` minted from UID text alone throws that away, so
     `_setup_overview` would silently drop one of two real, simultaneously-attached
     debuggers. Both fields are percent-encoded before joining, so a literal `:` inside
-    either a provider name or a UID string can never be mistaken for the delimiter --
-    the *new* format's own round trip is unambiguous regardless of content.
-
-    (Real pyOCD/hook UIDs are alphanumeric in every provider this server has ever
-    seen; a *legacy* two-part `probe:{uid}` token whose raw uid happens to contain a
-    colon is a separate, pre-existing, and vanishingly unlikely edge case -- see
-    `parse_probe_connection_id`.)
+    either a provider name or a UID string can never be mistaken for the delimiter
+    *within* this format -- see `parse_probe_connection_id` for the separate,
+    structural reason the prefix itself also has to be distinct from the legacy one.
     """
 
     encoded_provider = quote(provider.strip().casefold(), safe="")
@@ -47,12 +52,32 @@ def probe_connection_id(provider: str, probe_uid: str) -> str:
 def parse_probe_connection_id(connection_id: str) -> tuple[str, str] | None:
     """Split a canonical provider-qualified token back into `(provider, uid)`.
 
-    Returns `None` for a legacy two-part `probe:{uid}` token (exactly one colon after
-    the prefix, so nothing to split), for a non-probe token (`session:...` or
-    anything else), or for malformed input. Callers must handle the legacy shape
-    themselves -- see the module-level comparison helpers and
-    `hardware_inventory.derive_selection_from_token`, all of which tolerate it on
-    read but never guess a provider for it.
+    C12/D11: discrimination between "canonical" and "legacy" is STRUCTURAL -- a
+    dedicated prefix (`probeid:`) -- not content-based. An earlier version of this
+    function instead asked "does the text after `probe:` contain a second colon,"
+    which is not a safe test: the hook output contract places no charset constraint on
+    `unique_id` (only NUL-byte and length limits, in `discovery_hooks._row_text`), and
+    the guide's own cross-platform hook guidance points authors at USB topology values
+    (e.g. Linux's `3-1.4:1.0`) that legitimately contain a colon. A legacy
+    `probe:{uid}` token for such a device was indistinguishable from a genuine
+    canonical one under that heuristic, and the earlier code picked the canonical
+    interpretation -- silently splitting the UID's own text into a fabricated
+    "provider" and a truncated "uid." That could resolve a legacy token to a
+    *different, real* probe (or report a present one as gone), through the exact
+    compatibility path this function exists to keep safe. The alphanumeric-UID
+    assumption that used to justify calling this "vanishingly unlikely" holds only for
+    native pyOCD providers; it says nothing about hook-reported UIDs, which is the
+    path this whole feature exists to support. A dedicated prefix removes the
+    ambiguity structurally: no legacy token, regardless of what its UID text contains,
+    can ever start with `probeid:` (a legacy token is always exactly
+    `LEGACY_PROBE_CONNECTION_PREFIX` followed by UID text, so its fifth character is
+    always `:`, never `i`) -- no colon-counting or content inspection is involved.
+
+    Returns `None` for a legacy `probe:{uid}` token, a session token, or anything else
+    that isn't a canonical token. Callers must handle the legacy shape themselves --
+    see the module-level comparison helpers and
+    `hardware_inventory.derive_selection_from_token`, all of which tolerate it on read
+    but never guess a provider for it.
     """
 
     if not connection_id.casefold().startswith(PROBE_CONNECTION_PREFIX):

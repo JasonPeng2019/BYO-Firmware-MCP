@@ -40,7 +40,10 @@ from pyocd_debug_mcp.probe_inventory import (
     NativeProbeListing,
 )
 from pyocd_debug_mcp.serial_resolver import SerialPortInfo, normalize_port_name
-from pyocd_debug_mcp.services.connections import parse_probe_connection_id
+from pyocd_debug_mcp.services.connections import (
+    LEGACY_PROBE_CONNECTION_PREFIX,
+    parse_probe_connection_id,
+)
 from pyocd_debug_mcp.setup_flow.validate import (
     ValidationInventory,
     ValidationProbe,
@@ -780,11 +783,11 @@ def derive_selection_from_token(
     """
 
     candidate = connection_id.strip()
-    parsed = (
-        parse_probe_connection_id(candidate)
-        if candidate.casefold().startswith("probe:")
-        else None
-    )
+    # `parse_probe_connection_id` itself gates on the canonical prefix (C12/D11), so
+    # no pre-check is needed here: it returns `None` for anything that isn't
+    # structurally canonical, including every legacy token, regardless of what its
+    # UID text contains.
+    parsed = parse_probe_connection_id(candidate)
     if parsed is not None:
         provider, uid = parsed
         for row in snapshot.probes:
@@ -800,7 +803,7 @@ def derive_selection_from_token(
     # on UID text alone across ALL providers -- but refuse if more than one distinct
     # provider's row matches, rather than silently returning the first.
     uid_candidate = candidate
-    if uid_candidate.casefold().startswith("probe:"):
+    if uid_candidate.casefold().startswith(LEGACY_PROBE_CONNECTION_PREFIX):
         uid_candidate = uid_candidate.split(":", 1)[1]
     matches = [
         row
