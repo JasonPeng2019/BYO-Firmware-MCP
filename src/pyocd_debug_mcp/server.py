@@ -18,7 +18,9 @@ import os
 import hashlib
 import re
 import secrets
+import signal
 import subprocess
+import threading
 import time
 import unicodedata
 from collections.abc import Callable, Mapping
@@ -209,13 +211,10 @@ from pyocd_debug_mcp.safety.regions import (
     SourceAuthority,
 )
 from pyocd_debug_mcp.target_errors import (
-    LockedTargetError,
-    ProbeNotFoundError,
     ReferenceArtifactError,
     SymbolLookupError,
     TargetConnectionError,
     TargetControlError,
-    UnsupportedArtifactError,
 )
 from pyocd_debug_mcp.timeouts import (
     DEFAULT_EXTERNAL_COMMAND_TIMEOUT_SECONDS,
@@ -223,11 +222,21 @@ from pyocd_debug_mcp.timeouts import (
     subprocess_timeout_stream_text,
 )
 from pyocd_debug_mcp.services.connections import (
-    BoardNotConnectedError,
     ConnectionAssignmentError,
     ConnectionManager,
     ManagedConnection,
     stable_connection_identity,
+)
+from pyocd_debug_mcp.monitor import (
+    IssueMonitor,
+    MonitorContext,
+    NullMonitor,
+    build_monitor_tools,
+)
+from pyocd_debug_mcp.monitor.classify import error_code as _classify_error_code
+from pyocd_debug_mcp.monitor.counters import (
+    resolve_checkin_cadence,
+    resolve_snapshot_cadence,
 )
 from pyocd_debug_mcp.tools.handshake import register_initialization_handshake
 from pyocd_debug_mcp.tools.artifacts import build_artifact_handlers
@@ -287,6 +296,42 @@ tool_registry = mcp.registry
 server_run = create_server_run()
 assignment_store = RunAssignmentStore(server_run.assignments)
 
+
+def _server_version() -> str:
+    try:
+        from importlib.metadata import version
+
+        return version("pyocd-debug-mcp")
+    except Exception:  # noqa: BLE001 - version is decoration, never a hard dependency
+        return "unknown"
+
+
+_monitor_context = MonitorContext(
+    run_id=server_run.run_id,
+    run_started_at=server_run.started_at,
+    server_version=_server_version(),
+    advertised_tools=lambda: tool_registry.advertised(),
+    list_revision=lambda: tool_registry.list_revision,
+    active_plan=lambda tool, board: plan_engine.active_plan(tool, board),
+    active_grant=lambda tool, board: permission_store.active_grant(tool, board),
+    gate_snapshot=lambda board: gate_manager.snapshot(board),
+    live_identity=lambda board: gate_manager.live_identity(board),
+    connection_id=lambda board: _connection(board).connection_id,
+)
+
+try:
+    _monitor: IssueMonitor | NullMonitor = IssueMonitor(
+        _monitor_context,
+        usage_snapshot_every=resolve_snapshot_cadence(),
+        checkin_every=resolve_checkin_cadence(),
+    )
+except BaseException as _monitor_error:  # noqa: BLE001 - monitoring never fails closed
+    # Constructed at import time, so a raise here would stop the server from
+    # starting at all. Monitoring being absent is survivable; the server refusing
+    # to start because monitoring could not initialize is not.
+    _monitor = NullMonitor(f"{type(_monitor_error).__name__}: {_monitor_error}")
+mcp.configure_monitor(_monitor)
+
 connection_manager = ConnectionManager()
 gate_manager = GateManager(server_run.gates)
 permission_store = PermissionStore(server_run)
@@ -325,21 +370,14 @@ def _jsonable_args(values: Mapping[str, object]) -> dict[str, object]:
 
 
 def _error_code(exc: Exception) -> str:
-    if isinstance(exc, ProbeNotFoundError):
-        return "probe/not-found"
-    if isinstance(exc, LockedTargetError):
-        return "target/locked"
-    if isinstance(exc, TargetConnectionError):
-        return "target/connection-failure"
-    if isinstance(exc, UnsupportedArtifactError):
-        return "flash/unsupported-artifact"
-    if isinstance(exc, ReferenceArtifactError):
-        return "flash/reference-artifact"
-    if isinstance(exc, SymbolLookupError):
-        return "symbols/lookup-failure"
-    if isinstance(exc, BoardNotConnectedError):
-        return "server/not-connected"
-    return f"runtime/{type(exc).__name__}"
+    """Return the stable event-log error code for a failure.
+
+    The mapping lives in the monitor's classifier so the taxonomy has one home;
+    the returned strings are unchanged, because they are written into durable
+    evidence.
+    """
+
+    return _classify_error_code(exc)
 
 
 def _connection(board_id: str) -> ManagedConnection:
@@ -649,6 +687,11 @@ def _enforce_guarded_invocation(
     board_id: str,
     arguments: Mapping[str, object],
 ) -> None:
+    # The one place monitoring holds authority: once remote logging has gone
+    # unconfirmed past the threshold, further unauditable hardware work is
+    # refused. It gates at this dispatch boundary and so never interrupts an
+    # in-flight flash or an operation already holding the board.
+    _monitor.check_block()
     parameters = {name: value for name, value in arguments.items() if name != "board_id"}
 
     def validate_layer0_and_action() -> None:
@@ -5726,15 +5769,59 @@ def _resolve_operation_finalizer(
 
 mcp.configure_finalizers(_resolve_operation_finalizer)
 
-initialization_handshake = register_initialization_handshake(mcp, tool_registry, server_run)
+initialization_handshake = register_initialization_handshake(
+    mcp,
+    tool_registry,
+    server_run,
+    on_workspace=_monitor.bind_workspace,
+)
+
+# The three monitoring actions. Registered plainly: never configured as layer-2,
+# never given guarded dispatch, never hidden or locked, and carrying no board_id --
+# which is what keeps them off per-board serialization. Registering here, before a
+# client connects, also means their visibility never churns the advertised list.
+for _monitor_name, _monitor_handler in build_monitor_tools(_monitor).items():
+    mcp.add_tool(
+        _monitor_handler,
+        name=_monitor_name,
+        description=_monitor_handler.__doc__,
+        structured_output=False,
+    )
 
 
 def main() -> None:
     """Console entry point. Runs the server over stdio transport by default."""
     require_clean_startup()
+    _monitor.boot()
+    shutdown = threading.Event()
+
+    def _shutdown_handler(signum: int, frame: object) -> None:
+        # Minimum possible work in the handler: flag it and unblock the loop. The
+        # ordered drain happens in the finally below, on the main thread. Doing
+        # real work here risks deadlocking against whatever the signal
+        # interrupted, which would burn the client's kill grace and get the
+        # process killed with nothing saved.
+        del signum, frame
+        shutdown.set()
+        raise KeyboardInterrupt
+
+    for _sig in (signal.SIGINT, signal.SIGTERM):
+        try:
+            signal.signal(_sig, _shutdown_handler)
+        except (AttributeError, OSError, ValueError):
+            # Not the main thread, or the platform does not deliver this signal.
+            # Closeout is best-effort by design; the append plus bootup recovery
+            # is the real safety net.
+            pass
     try:
         mcp.run()
+    except KeyboardInterrupt:
+        pass
     finally:
+        # Order is the requirement: release the hardware and terminate owned
+        # children first, so a slow or hung send can never strand a board. The
+        # close record is written inside closeout before any delivery is
+        # attempted, so a failed send cannot cost the record.
         for _board_id in connection_manager.assigned_board_ids():
             try:
                 disconnect(_board_id)
@@ -5742,6 +5829,7 @@ def main() -> None:
                 pass
         plan_engine.close_run()
         tool_registry.reset()
+        _monitor.closeout("signal" if shutdown.is_set() else "eof")
 
 
 if __name__ == "__main__":

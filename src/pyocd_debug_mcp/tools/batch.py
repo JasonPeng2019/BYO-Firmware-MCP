@@ -9,6 +9,7 @@ from typing import Any
 from pydantic import BaseModel, ConfigDict, Field, JsonValue
 
 from pyocd_debug_mcp.kernel.operations import SAFE_EXIT_REMINDER
+from pyocd_debug_mcp.monitor.tools import MONITOR_TOOL_NAMES
 
 class BatchChild(BaseModel):
     """One JSON-only MCP child call with no extra or authority-bearing fields."""
@@ -46,6 +47,13 @@ def _validate_children(
         if name.casefold() == "action_batch":
             raise BatchValidationError(
                 f"actions[{index}] is a nested action_batch; nested batches are forbidden"
+            )
+        if name in MONITOR_TOOL_NAMES:
+            # Monitoring actions are not board work and must stay off the path that
+            # exists to sequence board work.
+            raise BatchValidationError(
+                f"actions[{index}] names monitoring tool '{name}'; monitoring tools "
+                "are not batchable and must be called directly"
             )
         if name != child.tool_name:
             raise BatchValidationError(

@@ -2,11 +2,15 @@
 
 from __future__ import annotations
 
+import io
+import os
+import sys
 from collections.abc import Callable, Mapping
+from contextvars import ContextVar
 from dataclasses import dataclass, replace
 from functools import partial
 from threading import RLock
-from typing import Any, ContextManager
+from typing import Any, ContextManager, Protocol
 
 import anyio
 from mcp.server.fastmcp import FastMCP
@@ -212,6 +216,29 @@ class GuardedDispatchPolicy:
     lock_for_board: ExecutionLockResolver
 
 
+class DispatchObservation(Protocol):
+    """One in-flight observation. Records on the way past; changes nothing."""
+
+    def completed(self, result: object) -> None: ...
+
+    def failed(self, exc: BaseException) -> None: ...
+
+
+class DispatchMonitor(Protocol):
+    """Passive observer of managed dispatch. Never alters what dispatch does."""
+
+    def begin(
+        self, tool: str, arguments: Mapping[str, Any], board: str | None
+    ) -> DispatchObservation | None: ...
+
+    def consume_checkin_prompt(self) -> str | None: ...
+
+
+# Nested action_batch children re-enter call_tool, so they are observed and counted
+# individually. The depth marks them as nested rather than top-level.
+_dispatch_depth: ContextVar[int] = ContextVar("monitor_dispatch_depth", default=0)
+
+
 class RegistryFastMCP(FastMCP):
     """FastMCP adapter with dynamic discovery, locks, and bounded dispatch."""
 
@@ -229,7 +256,13 @@ class RegistryFastMCP(FastMCP):
         self._layer2_tools: set[str] = set()
         self._operation_resource_binder: OperationResourceBinder | None = None
         self._finalizer_resolver: OperationFinalizerResolver | None = None
+        self._monitor: DispatchMonitor | None = None
         super().__init__(name=name, **settings)
+
+    def configure_monitor(self, monitor: DispatchMonitor | None) -> None:
+        """Attach the passive dispatch observer."""
+
+        self._monitor = monitor
 
     def configure_operation_resources(self, binder: OperationResourceBinder) -> None:
         """Bind persistent board resources into each managed hardware invocation."""
@@ -292,8 +325,67 @@ class RegistryFastMCP(FastMCP):
         return [tool for tool in tools if tool.name in advertised]
 
     async def call_tool(self, name: str, arguments: dict[str, Any]):  # type: ignore[no-untyped-def]
+        """Observe one managed dispatch, then delegate to the unchanged path.
+
+        The observation wraps the call rather than living inside it: the inner
+        method returns from within its own ``try``, so a ``try/except/else`` here
+        would never reach an ``else`` clause and completions would go unrecorded.
+        """
+
         board_value = arguments.get("board_id")
         board_id = board_value if isinstance(board_value, str) and board_value else None
+        observation = None
+        monitor = self._monitor
+        if monitor is not None:
+            try:
+                observation = monitor.begin(name, arguments, board_id)
+            except BaseException:  # noqa: BLE001 - monitoring never alters dispatch
+                observation = None
+        depth_token = _dispatch_depth.set(_dispatch_depth.get() + 1)
+        try:
+            result = await self._call_tool_inner(name, arguments, board_id)
+        except BaseException as exc:
+            if observation is not None:
+                observation.failed(exc)
+            raise
+        finally:
+            _dispatch_depth.reset(depth_token)
+        if observation is not None:
+            observation.completed(result)
+        return self._maybe_append_checkin_prompt(result)
+
+    def _maybe_append_checkin_prompt(self, result: Any) -> Any:
+        """Append a due check-in request to the server's own response.
+
+        This is the one place monitoring writes into a tool response instead of
+        observing passively. It is a bounded annotation: it does not alter the
+        tool's result, its ordering, its timing, any lock, or any authority, it
+        reads nothing from the conversation, and the agent's compliance is
+        behavioural rather than gate-enforced.
+        """
+
+        monitor = self._monitor
+        if monitor is None or _dispatch_depth.get() > 0:
+            return result
+        try:
+            prompt = monitor.consume_checkin_prompt()
+        except BaseException:  # noqa: BLE001
+            return result
+        if not prompt:
+            return result
+        try:
+            for block in result if isinstance(result, list) else ():
+                text = getattr(block, "text", None)
+                if isinstance(text, str):
+                    block.text = text + prompt
+                    break
+        except BaseException:  # noqa: BLE001 - never damage a real response
+            return result
+        return result
+
+    async def _call_tool_inner(  # type: ignore[no-untyped-def]
+        self, name: str, arguments: dict[str, Any], board_id: str | None
+    ):
         try:
             self.registry.require_unlocked(name, board_id)
         except ToolError as exc:
@@ -404,10 +496,34 @@ class RegistryFastMCP(FastMCP):
         await session.send_tool_list_changed()
 
     async def run_stdio_async(self) -> None:
-        """Run stdio while advertising dynamic tool-list notifications."""
+        """Run stdio while advertising dynamic tool-list notifications.
 
+        Stdout is the protocol wire, so before serving we take a private duplicate
+        of it and point file descriptor 1 at stderr. After that, nothing writing to
+        fd 1 can corrupt MCP framing -- not a stray print, not a logging handler,
+        not a third-party SDK's worker thread, and critically not an owned child
+        process that inherits the descriptor. No amount of handler configuration
+        can achieve that last one.
+        """
+
+        protocol = None
         try:
-            async with stdio_server() as (read_stream, write_stream):
+            sys.stdout.flush()
+            protocol_fd = os.dup(sys.stdout.fileno())
+            os.dup2(sys.stderr.fileno(), sys.stdout.fileno())
+            protocol = anyio.wrap_file(
+                io.TextIOWrapper(
+                    io.FileIO(protocol_fd, "w", closefd=True),
+                    encoding="utf-8",
+                )
+            )
+        except (AttributeError, OSError, ValueError):
+            # Non-file stdio (pythonw, an embedded host, an odd launcher). Fall
+            # back to the framework's own stdout rather than failing to start:
+            # a startup crash here is invisible to every diagnostic we have.
+            protocol = None
+        try:
+            async with stdio_server(stdout=protocol) as (read_stream, write_stream):
                 await self._mcp_server.run(
                     read_stream,
                     write_stream,

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping
+from pathlib import Path
 
 from mcp.server.fastmcp import FastMCP
 
@@ -122,21 +123,59 @@ change.
 If no board is connected, do not begin setup, validation, or hardware actions."""
 
 
+def _validated_workspace(value: str | None) -> Path | None:
+    """Accept a workspace path only if it is absolute, present, and a directory."""
+
+    if value is None:
+        return None
+    text = value.strip()
+    if not text:
+        return None
+    try:
+        candidate = Path(text)
+        if not candidate.is_absolute() or not candidate.is_dir():
+            return None
+        return candidate
+    except OSError:
+        return None
+
+
 def register_initialization_handshake(
     mcp: FastMCP,
     registry: ToolRegistry,
     server_run: ServerRun | None = None,
-) -> Callable[[], str]:
-    """Register and return the no-argument handshake handler."""
+    on_workspace: Callable[[Path | None], None] | None = None,
+) -> Callable[..., str]:
+    """Register and return the handshake handler."""
 
-    def initialization_handshake() -> str:
-        """Return current operating guidance; call this first in each Server Run."""
+    def initialization_handshake(workspace_path: str | None = None) -> str:
+        """Return current operating guidance; call this first in each Server Run.
 
+        Optionally pass workspace_path: the absolute path of the project directory
+        you are working in. It is used only to label this project's activity
+        records, never as a place to write and never to relocate any safety
+        evidence. An unusable path is ignored rather than refused, because this
+        call must always return the operating guidance.
+        """
+
+        resolved = _validated_workspace(workspace_path)
+        if on_workspace is not None:
+            try:
+                on_workspace(resolved)
+            except Exception:  # noqa: BLE001 - binding never blocks the handshake
+                pass
         descriptions = {
             tool.name: tool.description or "Visible MCP tool."
             for tool in mcp._tool_manager.list_tools()  # type: ignore[reportPrivateUsage]
         }
-        return build_initialization_guidance(registry, descriptions, server_run)
+        guidance = build_initialization_guidance(registry, descriptions, server_run)
+        if workspace_path is not None and resolved is None:
+            guidance = (
+                f"{guidance}\n\nNote: the supplied workspace_path was not an existing "
+                "absolute directory, so this session's activity records are labelled "
+                "unbound. Re-call with a valid absolute path to label them."
+            )
+        return guidance
 
     mcp.add_tool(
         initialization_handshake,
