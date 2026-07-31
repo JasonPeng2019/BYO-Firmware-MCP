@@ -8,7 +8,9 @@ from typing import Any, Mapping, cast
 from unittest.mock import Mock, patch
 
 from pyocd_debug_mcp import server
-from pyocd_debug_mcp.hardware_inventory import snapshot_from_validation_inventory
+from pyocd_debug_mcp.discovery_hooks import HookExecution
+from pyocd_debug_mcp.hardware_inventory import InventorySnapshot, snapshot_from_validation_inventory
+from pyocd_debug_mcp.probe_inventory import EMPTY_NATIVE_PROBE_LISTING
 from pyocd_debug_mcp.services.connections import (
     LEGACY_PROBE_CONNECTION_PREFIX,
     PROBE_CONNECTION_PREFIX,
@@ -199,6 +201,123 @@ class SetupOverviewNoProbeTests(unittest.TestCase):
         self.assertEqual(overview["status"], "setup_routes_ready")
         facts = _rows(overview, "routes")[0]["required_user_facts"]
         self.assertIn("if UART is used, attach and identify the board's UART connection", facts)
+
+
+def _failed_hook(kind: str, hook_id: str, *, timed_out: bool = False) -> HookExecution:
+    """A failed hook execution, for D28's kind-filtering tests.
+
+    `timed_out` gives a different `failure_code` ("discovery/hook-timeout" instead of
+    "discovery/hook-failed") than the default nonzero-exit outcome, so a test mixing
+    one of each kind can tell which execution was actually picked as the reported one,
+    not just that *some* failure was picked.
+    """
+
+    return HookExecution(
+        hook_id=hook_id,
+        kind=cast(Any, kind),
+        source="project",
+        outcome=cast(Any, "timeout" if timed_out else "exited"),
+        exit_code=None if timed_out else 3,
+        timeout_seconds=5.0,
+        output=None,
+        stdout_excerpt="",
+        stderr_excerpt="",
+        failure_detail=f"{hook_id} failed",
+        stdout_truncated=False,
+        file_sha256="deadbeef",
+    )
+
+
+def _run_overview_with_snapshot(
+    snapshot: InventorySnapshot, names: list[str] | None
+) -> Mapping[str, object]:
+    """Drive `_setup_overview` with a hand-built snapshot that carries hook diagnostics.
+
+    `_OverviewHarness` builds its snapshot via `snapshot_from_validation_inventory`,
+    which always produces an empty `hook_diagnostics` (the legacy shape cannot carry
+    hook data) -- unusable for D28, which is entirely about how `hook_diagnostics` is
+    read. This harness supplies the snapshot directly instead.
+    """
+
+    service = SimpleNamespace(
+        snapshot=lambda: snapshot,
+        validation_inventory=lambda: SimpleNamespace(probes=(), serial_ports=()),
+    )
+    with (
+        patch.object(server, "_profile_repository", SimpleNamespace(load_all=lambda: ())),
+        patch.object(server, "_hardware_inventory", service),
+        patch.object(
+            server,
+            "_validation_inventory",
+            return_value=SimpleNamespace(probes=(), serial_ports=()),
+        ),
+        patch.object(server, "_replace_setup_assignments", Mock()),
+    ):
+        return server._setup_overview(names, None)
+
+
+class NoNativeProbeOverviewHookKindTests(unittest.TestCase):
+    """D28: `_no_native_probe_overview` must report on the *probe* side of a failed
+    hook set, never relabel a UART hook's failure as a probe failure just because it
+    happened to be first in `hook_failures`, which is not filtered by kind.
+    """
+
+    @staticmethod
+    def _snapshot(*executions: HookExecution) -> InventorySnapshot:
+        return InventorySnapshot(
+            snapshot_id="snap-d28",
+            probes=(),
+            uarts=(),
+            native_probe_diagnostics=EMPTY_NATIVE_PROBE_LISTING,
+            native_uart_available=True,
+            hook_diagnostics=tuple(executions),
+        )
+
+    def test_a_uart_only_failure_is_not_reported_as_a_probe_failure(self) -> None:
+        """No probe hook is configured at all; only a UART hook failed.
+
+        Decision: zero probe-kind failures is treated the same as "no hook has been
+        written yet" on the probe side -- the standard no-native-probe guidance is
+        reported, not the UART hook's failure relabeled as a probe one.
+        """
+
+        snapshot = self._snapshot(_failed_hook("uart", "uart-hook"))
+
+        overview = _run_overview_with_snapshot(snapshot, ["Nucleo"])
+
+        self.assertEqual(overview["status"], "setup_no_probe")
+        self.assertEqual(overview["code"], "discovery/no-native-probe")
+        prompt = str(overview["agent_prompt"])
+        self.assertIn("No debug probe is visible to the server", prompt)
+        self.assertNotIn("repair the hook file", prompt)
+        # The UART failure is not lost -- it stays in the raw diagnostics, just not
+        # promoted to the top-level code/agent_prompt.
+        diagnostic_ids = {row["hook_id"] for row in _rows(overview, "hook_diagnostics")}
+        self.assertEqual(diagnostic_ids, {"uart-hook"})
+
+    def test_when_both_kinds_failed_the_probe_failure_is_reported(self) -> None:
+        """A probe hook and a UART hook both failed in the same snapshot.
+
+        Decision: the probe failure is reported, because this payload exists to
+        explain why zero probes are visible; the UART failure is real but is a
+        separate problem, and stays present verbatim in hook_diagnostics.
+        """
+
+        # Different failure shapes (and the uart one listed first) so the assertion
+        # below can tell which execution was actually selected, not just that one was.
+        snapshot = self._snapshot(
+            _failed_hook("uart", "uart-hook", timed_out=True),
+            _failed_hook("probe", "probe-hook"),
+        )
+
+        overview = _run_overview_with_snapshot(snapshot, ["Nucleo"])
+
+        self.assertEqual(overview["status"], "setup_no_probe")
+        self.assertEqual(overview["code"], "discovery/hook-failed")
+        contract_call = cast("dict[str, Any]", overview["hook_contract_call"])
+        self.assertEqual(contract_call["arguments"]["kind"], "probe")
+        diagnostic_ids = {row["hook_id"] for row in _rows(overview, "hook_diagnostics")}
+        self.assertEqual(diagnostic_ids, {"uart-hook", "probe-hook"})
 
 
 class ProbeConnectionIdTests(unittest.TestCase):

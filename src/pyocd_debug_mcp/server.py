@@ -1026,7 +1026,9 @@ def _assigned_probe_uid_for_connect(board_id: str) -> str | None:
         failure = unsupported_provider_failure(
             exc.provider, registered_providers=exc.registered_providers
         )
-        raise RuntimeError(f"{failure.code}: {failure.message}") from exc
+        raise RuntimeError(
+            f"{failure.code}: {failure.message} {' '.join(failure.remedies)}"
+        ) from exc
     # The legacy inventory shape cannot carry hook provenance, so drift for a
     # hook-discovered selection is checked against the admitted hook set instead.
     _require_unchanged_hook_source(board_id, selection)
@@ -1082,7 +1084,9 @@ def _resolved_probe_uid_for_connection(connection_id: str) -> str:
         failure = unsupported_provider_failure(
             exc.provider, registered_providers=exc.registered_providers
         )
-        raise TargetControlError(f"{failure.code}: {failure.message}") from exc
+        raise TargetControlError(
+            f"{failure.code}: {failure.message} {' '.join(failure.remedies)}"
+        ) from exc
     return selection.unique_id or selection.connection_id
 
 
@@ -4960,11 +4964,22 @@ def _no_native_probe_overview(
 
     _replace_setup_assignments({}, "setup overview found no debug connection")
     hook_rows = snapshot.hook_diagnostic_rows()
-    failures = snapshot.hook_failures
-    if failures:
-        # A hook was configured and did not work. That is a different problem from
-        # "no hook exists yet", and the remedy is repair-and-refresh, not write-a-hook.
-        first = failures[0]
+    # `hook_failures` is not filtered by kind, and this overview's business is only the
+    # *probe* side: it fires because zero probes are visible, not because of anything a
+    # UART hook did. A UART-only failure (no probe hook configured or failed at all) is
+    # not evidence about probes, so it must not be reported as one -- that would send
+    # the agent to get_discovery_hook_contract(kind="probe") to fix a hook that isn't
+    # even the one that failed. When failures of both kinds exist in the same snapshot,
+    # the probe failure is the one this payload is about; the UART failure is not lost,
+    # it stays present verbatim in hook_diagnostics below for a careful reader.
+    probe_failures = tuple(
+        execution for execution in snapshot.hook_failures if execution.kind == "probe"
+    )
+    if probe_failures:
+        # A probe hook was configured and did not work. That is a different problem
+        # from "no hook exists yet", and the remedy is repair-and-refresh, not
+        # write-a-hook.
+        first = probe_failures[0]
         failure = hook_failure(
             first.failure_code or DISCOVERY_HOOK_FAILED,
             "probe",
@@ -4972,6 +4987,10 @@ def _no_native_probe_overview(
             retry_id=_issue_overview_retry("probe", board_names),
         )
     else:
+        # No probe-kind hook failed -- whether none is configured, or a UART-only hook
+        # is what failed instead. Both are indistinguishable from "no hook has been
+        # written yet" on the probe side, so the standard no-native-probe guidance
+        # (which still offers the probe hook contract) is correct here.
         failure = no_native_probe_failure(
             native_diagnostics=snapshot.native_probe_diagnostics.diagnostic_row(),
             hook_diagnostics=tuple(hook_rows),

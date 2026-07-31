@@ -192,6 +192,48 @@ class AssignmentAwareConnectTests(unittest.TestCase):
         open_session.assert_not_called()
         generic_resolution.assert_not_called()
 
+    def test_normal_connect_reports_an_unsupported_provider_through_the_real_handler(
+        self,
+    ) -> None:
+        """Proves the `except UnsupportedProvider` branch in
+        `_assigned_probe_uid_for_connect` is actually wired, not just unit-tested in
+        isolation. `ProbeSelectionStore.resolve()` raising `UnsupportedProvider` is
+        covered separately (test_discovery_hook_workflow.py), and
+        `unsupported_provider_failure()`'s payload shape is covered separately too;
+        deleting this handler and falling through to a bare `str(exc)` would not fail
+        either of those tests, only this one, which drives the real `connect()` path.
+        """
+
+        open_session = Mock()
+        generic_resolution = Mock()
+        assignment_store = SimpleNamespace(
+            connection_for=Mock(return_value=f"probe:{FIRST_PROBE}")
+        )
+        inventory = ValidationInventory(
+            probes=(
+                ValidationProbe(FIRST_PROBE, "Odd probe", "nosuchprovider", FIRST_PROBE),
+            )
+        )
+
+        with (
+            patch.object(server, "assignment_store", assignment_store),
+            patch.object(server, "connection_manager", _ConnectionManager()),
+            patch.object(server, "_validation_inventory", return_value=inventory),
+            patch.object(server, "resolve_board_config", return_value=_board("lora_tester_2")),
+            patch.object(server, "resolve_probe_for_board_cli", generic_resolution),
+            patch.object(server.target_control, "open_session", open_session),
+            patch.object(server, "_record_event", Mock()),
+        ):
+            with self.assertRaises(RuntimeError) as ctx:
+                server._connect_impl("lora_tester_2", allow_environment_overrides=False)
+
+        message = str(ctx.exception)
+        self.assertIn("discovery/unsupported-provider", message)
+        self.assertIn("nosuchprovider", message)
+        self.assertIn("install or enable a pyOCD probe plug-in", message)
+        open_session.assert_not_called()
+        generic_resolution.assert_not_called()
+
     def test_unassigned_profile_retains_generic_probe_discovery(self) -> None:
         result, open_session, generic_resolution = self._connect_with(
             board_id="unassigned_board",
