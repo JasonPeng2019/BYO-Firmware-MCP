@@ -7,10 +7,11 @@ import math
 import time
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, NoReturn, cast
 
 from pyocd_debug_mcp.adapters.swd_interface import session_metadata
-from pyocd_debug_mcp.kernel.operations import wrap_layer2_response
+from pyocd_debug_mcp.discovery_failures import UART_OPEN_FAILED, open_failure_payload
+from pyocd_debug_mcp.kernel.operations import OperationCancelledError, wrap_layer2_response
 from pyocd_debug_mcp.kernel.finalizers import OnExitFinalizer
 from pyocd_debug_mcp.services.session_runtime import (
     PolicyRefusal,
@@ -35,6 +36,39 @@ def _encode_uart_text(text: str, line_ending: str) -> bytes:
     except KeyError as exc:
         raise ValueError("line_ending must be one of: none, lf, cr, crlf") from exc
     return f"{text}{suffix}".encode("utf-8")
+
+
+def _is_cancellation(exc: BaseException) -> bool:
+    """True when `exc` is, or wraps, cooperative cancellation.
+
+    `capture_uart_output`/`write_uart_output`/`exchange_uart_output`
+    (`services/uart_capture.py`) wrap *every* exception raised inside their bounded
+    I/O section -- including `OperationCancelledError` from their own internal
+    `cancellation_checkpoint()` calls -- in a plain `RuntimeError`. The original type
+    survives only as `__cause__`. Reclassifying a cancelled operation as
+    `uart/open-failed` would hide it from the operation timeout machinery, which
+    catches `OperationCancelledError` by type further up the call stack, so that is
+    what must be checked here rather than the outer `RuntimeError`'s own type.
+    """
+
+    return isinstance(exc, OperationCancelledError) or isinstance(
+        exc.__cause__, OperationCancelledError
+    )
+
+
+def _raise_uart_open_failure(port: str, exc: RuntimeError) -> NoReturn:
+    """Convert a genuine port I/O failure into the `uart/open-failed` payload.
+
+    Callers must check `_is_cancellation(exc)` first and re-raise unchanged when it
+    is true; this function does not repeat that check, so it must never be reached
+    for a cancelled operation.
+    """
+
+    failure = open_failure_payload(UART_OPEN_FAILED, detail=str(exc), identity=port)
+    remedies = cast("list[str]", failure["remedies"])
+    raise RuntimeError(
+        f"{failure['code']}: {failure['agent_prompt']} {' '.join(remedies)}"
+    ) from exc
 
 
 @dataclass(frozen=True, slots=True)
@@ -149,13 +183,18 @@ def read_serial(
 
         on_port_open = reset_on_open_callback
 
-    capture = services.capture_uart(
-        resolved_port.device,
-        resolved_baudrate,
-        read_seconds,
-        expected_text,
-        on_port_open=on_port_open,
-    )
+    try:
+        capture = services.capture_uart(
+            resolved_port.device,
+            resolved_baudrate,
+            read_seconds,
+            expected_text,
+            on_port_open=on_port_open,
+        )
+    except RuntimeError as exc:
+        if _is_cancellation(exc):
+            raise
+        _raise_uart_open_failure(resolved_port.device, exc)
     expectation_label = (
         f"expected='{expected_text}'" if expected_text is not None else "expected=(none)"
     )
@@ -252,12 +291,17 @@ def write_serial(
         "append_newline": append_newline,
         "timeout_seconds": timeout_seconds,
     }
-    write_result = services.write_uart(
-        resolved_port.device,
-        resolved_baudrate,
-        payload,
-        timeout_seconds=timeout_seconds,
-    )
+    try:
+        write_result = services.write_uart(
+            resolved_port.device,
+            resolved_baudrate,
+            payload,
+            timeout_seconds=timeout_seconds,
+        )
+    except RuntimeError as exc:
+        if _is_cancellation(exc):
+            raise
+        _raise_uart_open_failure(resolved_port.device, exc)
     result = (
         f"UART wrote {write_result.bytes_written} byte(s) on {resolved_port.device} "
         f"at {resolved_baudrate} baud via {session_metadata(handle).route_used}; "
@@ -340,23 +384,28 @@ def serial_exchange(
     resolved_port = services.resolve_port(handle, override=port)
     resolved_baudrate = baudrate or handle.board.default_baudrate
     first_payload, first_expected = validated_steps[0]
-    exchange = services.exchange_uart(
-        resolved_port.device,
-        resolved_baudrate,
-        first_payload,
-        first_expected,
-        read_seconds,
-        ready_text=ready_text,
-        ready_seconds=ready_seconds,
-        ready_probe=(
-            _encode_uart_text(ready_probe_text, ready_probe_line_ending)
-            if ready_probe_text is not None
-            else None
-        ),
-        ready_probe_delay_seconds=ready_probe_delay_seconds,
-        followup_steps=tuple(validated_steps[1:]),
-        clear_input=clear_input,
-    )
+    try:
+        exchange = services.exchange_uart(
+            resolved_port.device,
+            resolved_baudrate,
+            first_payload,
+            first_expected,
+            read_seconds,
+            ready_text=ready_text,
+            ready_seconds=ready_seconds,
+            ready_probe=(
+                _encode_uart_text(ready_probe_text, ready_probe_line_ending)
+                if ready_probe_text is not None
+                else None
+            ),
+            ready_probe_delay_seconds=ready_probe_delay_seconds,
+            followup_steps=tuple(validated_steps[1:]),
+            clear_input=clear_input,
+        )
+    except RuntimeError as exc:
+        if _is_cancellation(exc):
+            raise
+        _raise_uart_open_failure(resolved_port.device, exc)
     step_summary = "; ".join(
         f"{index}:{step.expected_text}={'matched' if step.matched else 'did not match'}"
         for index, step in enumerate(exchange.steps, start=1)
