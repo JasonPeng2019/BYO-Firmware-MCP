@@ -12,8 +12,8 @@ Read this, then `reviews/REVIEW_POLICY.md`, then `.codex/design_charter.md`.
 | --- | --- |
 | Repo | `BYO-Firmware-MCP` — **its own git repo**, nested inside `FirmCLI-WIP`, not a submodule |
 | Remote | `github.com/JasonPeng2019/BYO-Firmware-MCP` |
-| Branch | `Proto-1-WIP` |
-| HEAD | `0168f2a`, working tree clean |
+| Branch | **`Proto-1-WIP-working`** — not `Proto-1-WIP`, which is stranded at `8a51138` and is 10 commits behind. Everything from iteration 6 onward is on `-working`. Check you are on it before anything else. |
+| HEAD | `e7f4409` (this handoff), working tree clean |
 | Base | `6f3da0a` (feature diff is `git diff 6f3da0a..HEAD`) |
 | Suite | **677 passed / 7 skipped** |
 | Lint | `ruff check src/ tests/` clean |
