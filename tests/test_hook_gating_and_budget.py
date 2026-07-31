@@ -416,12 +416,35 @@ class BudgetTests(unittest.TestCase):
                     "one hook could exceed the whole operation budget",
                 )
 
+    def test_the_read_serial_finalizer_fixture_parses_as_a_well_formed_uart_write(
+        self,
+    ) -> None:
+        """D23: this exact `on_exit` shape is reused by the two tests below and by the
+        vendor-budget regression test. Both a well-formed `UARTWriteFinalizer` and a
+        malformed dict that falls through the defensive except-branch in
+        `operation_timeout_seconds` land on the same `finalizer_timeout` /
+        `finalizer_reaches_uart` values, so those tests would pass either way and
+        cannot be trusted to prove which branch ran. Demonstrate it directly instead:
+        the fixture must parse without error into a `UARTWriteFinalizer`, not merely
+        produce the same numbers by falling back."""
+
+        from pyocd_debug_mcp.kernel.finalizers import UARTWriteFinalizer, parse_finalizer
+
+        finalizer = parse_finalizer(
+            "read_serial", {"action": "uart_write", "text": "q", "timeout_seconds": 2}
+        )
+
+        self.assertIsInstance(finalizer, UARTWriteFinalizer)
+        assert isinstance(finalizer, UARTWriteFinalizer)  # narrow for the type checker
+        self.assertEqual(finalizer.text, "q")
+        self.assertEqual(finalizer.timeout_seconds, 2.0)
+
     def test_read_serial_with_a_uart_finalizer_reserves_both_hook_budgets(self) -> None:
         """The action and the on_exit finalizer can each execute a hook."""
 
         arguments = {
             "read_seconds": 3,
-            "on_exit": {"action": "uart_write", "data": "q", "timeout_seconds": 2},
+            "on_exit": {"action": "uart_write", "text": "q", "timeout_seconds": 2},
         }
         before = ops.operation_timeout_seconds("read_serial", arguments)
         ops.set_eligible_hook_count_provider(self._counts(uart=1))
@@ -431,8 +454,14 @@ class BudgetTests(unittest.TestCase):
         self.assertAlmostEqual(after - before, 2 * self.ONE_HOOK, places=6)
 
     def test_a_uart_finalizer_on_a_non_serial_tool_still_reserves_budget(self) -> None:
+        """`reset_and_run` is not in ELIGIBLE_FINALIZER_TOOLS, so `parse_finalizer`
+        always raises here regardless of field shape -- this deliberately exercises
+        the defensive fallback for an ineligible tool, not the well-formed branch (see
+        D23; `text` is used anyway for fixture hygiene, but it cannot change which
+        branch this test takes)."""
+
         arguments = {
-            "on_exit": {"action": "uart_write", "data": "q", "timeout_seconds": 2},
+            "on_exit": {"action": "uart_write", "text": "q", "timeout_seconds": 2},
         }
         before = ops.operation_timeout_seconds("reset_and_run", arguments)
         ops.set_eligible_hook_count_provider(self._counts(uart=1))
@@ -622,7 +651,7 @@ class BudgetTests(unittest.TestCase):
 
         finalizer_arguments = {
             "read_seconds": 3,
-            "on_exit": {"action": "uart_write", "data": "q", "timeout_seconds": 2},
+            "on_exit": {"action": "uart_write", "text": "q", "timeout_seconds": 2},
         }
         plain_arguments = {"read_seconds": 3}
 
