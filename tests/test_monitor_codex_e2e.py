@@ -8,9 +8,16 @@ secondary -- the durable record is the product.
 from __future__ import annotations
 
 import json
+import tempfile
 import unittest
+from pathlib import Path
+from unittest import mock
 
-from tests.codex_harness import REQUIRED_MODEL, CodexAgentTestCase
+from tests.codex_harness import (
+    REQUIRED_MODEL,
+    CodexAgentTestCase,
+    _known_model_migration,
+)
 from tests.store_cleanup import restore as store_restore, snapshot as store_snapshot
 
 
@@ -344,6 +351,45 @@ class StdoutStaysClean(CodexAgentTestCase):
         self.assertNotIn("failed to parse", result.combined.lower())
         # Three tool calls all completed, which they could not if framing broke.
         self.assertGreaterEqual(len(result.tool_calls), 3, result.tool_calls)
+
+
+class ModelMigrationLookupIsHermetic(unittest.TestCase):
+    """`_known_model_migration` reads codex's own `[notice.model_migrations]`
+    table rather than a hard-coded replacement name that would itself go
+    stale at the next server-side rename. These never spawn codex, so they
+    run unconditionally, independent of whether codex is installed here.
+    """
+
+    def _with_fake_home(self, config_text: str | None):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        home = Path(tmp.name)
+        if config_text is not None:
+            codex_dir = home / ".codex"
+            codex_dir.mkdir(parents=True)
+            (codex_dir / "config.toml").write_text(config_text, encoding="utf-8")
+        return mock.patch("tests.codex_harness.Path.home", return_value=home)
+
+    def test_a_migrated_model_resolves_to_its_replacement(self) -> None:
+        config = (
+            "[notice.model_migrations]\n"
+            f'"{REQUIRED_MODEL}" = "some-future-model"\n'
+        )
+        with self._with_fake_home(config):
+            self.assertEqual(_known_model_migration(REQUIRED_MODEL), "some-future-model")
+
+    def test_no_config_file_resolves_to_no_known_migration(self) -> None:
+        with self._with_fake_home(None):
+            self.assertIsNone(_known_model_migration(REQUIRED_MODEL))
+
+    def test_config_without_the_section_resolves_to_no_known_migration(self) -> None:
+        with self._with_fake_home('model = "something-else"\n'):
+            self.assertIsNone(_known_model_migration(REQUIRED_MODEL))
+
+    def test_a_different_models_migration_does_not_leak_in(self) -> None:
+        config = "[notice.model_migrations]\n\"some-other-model\" = \"some-future-model\"\n"
+        with self._with_fake_home(config):
+            self.assertIsNone(_known_model_migration(REQUIRED_MODEL))
 
 
 class ModelPinningIsEnforced(CodexAgentTestCase):

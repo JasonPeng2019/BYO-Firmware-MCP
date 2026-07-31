@@ -42,6 +42,9 @@ _IDENTIFIER_KEYS = frozenset(
         "mcu_part_number",
         "target",
         "connection_id",
+        "host",
+        "port",
+        "selector",
     }
 )
 

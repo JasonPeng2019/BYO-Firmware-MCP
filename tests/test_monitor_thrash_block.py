@@ -67,6 +67,43 @@ class Thrashing(unittest.TestCase):
                 ]
                 self.assertFalse(any(results))
 
+    def test_discovery_and_remote_probe_polling_loops_never_fire(self) -> None:
+        """refresh_discovery_hooks / register_remote_probe repeat while the agent
+        iterates externally -- repairing a hook file, or waiting for a `pyocd
+        server` process to come up on another machine -- so a same-arguments
+        repeat of either must never read as a loop, exactly like the other
+        polling tools above.
+        """
+
+        for tool in ("refresh_discovery_hooks", "register_remote_probe"):
+            with self.subTest(tool=tool):
+                detector = ThrashDetector()
+                results = [
+                    detector.observe(
+                        board="b", tool=tool, args_fp="retry_id=None",
+                        outcome="success", error_class=None, guard_fp="g",
+                    )
+                    for _ in range(12)
+                ]
+                self.assertFalse(any(results))
+
+    def test_a_genuinely_thrashing_tool_still_fires(self) -> None:
+        """The exclusion list must stay narrow: a real board tool looping on an
+        identical outcome with no state transition must still trip the detector,
+        confirming this change did not disable thrash detection wholesale.
+        """
+
+        detector = ThrashDetector()
+        results = [
+            detector.observe(
+                board="b", tool="connect", args_fp="fp-1",
+                outcome="policy_refusal", error_class="plan/gate-closed",
+                guard_fp="guard-1",
+            )
+            for _ in range(8)
+        ]
+        self.assertEqual(results.count(True), 1)
+
     def test_all_null_then_populated_plan_never_fires(self) -> None:
         detector = ThrashDetector()
         results = [

@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import subprocess
 import tempfile
@@ -44,6 +45,39 @@ E2E_SNAPSHOT_CADENCE = 2
 E2E_CHECKIN_CADENCE = 4
 
 
+def _known_model_migration(model: str) -> str | None:
+    """Return the name codex will actually report for `model` on this machine.
+
+    codex tracks server-side model renames in `[notice.model_migrations]`
+    under the user's own ``~/.codex/config.toml``: a session pinned to a
+    retired name reports under its replacement instead, with a notice, not
+    the name that was requested. Resolving that here -- rather than
+    hard-coding a replacement name that would itself go stale at the next
+    rename -- keeps the model-pinning assertion honest about what a real
+    session on this machine will actually print. A missing file, missing
+    section, or any parsing surprise just means no known migration; the
+    caller falls back to the pinned name unchanged, which is the prior
+    (pre-migration-aware) behaviour.
+    """
+
+    config_path = Path.home() / ".codex" / "config.toml"
+    try:
+        text = config_path.read_text(encoding="utf-8")
+    except OSError:
+        return None
+    marker = "[notice.model_migrations]"
+    start = text.find(marker)
+    if start == -1:
+        return None
+    section = text[start + len(marker) :]
+    next_section = section.find("\n[")
+    if next_section != -1:
+        section = section[:next_section]
+    pattern = re.compile(r'^\s*"' + re.escape(model) + r'"\s*=\s*"([^"]+)"', re.MULTILINE)
+    match = pattern.search(section)
+    return match.group(1) if match else None
+
+
 def codex_executable() -> str | None:
     return shutil.which("codex")
 
@@ -59,6 +93,8 @@ def codex_available() -> tuple[bool, str]:
             [executable, "login", "status"],
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             timeout=60,
             stdin=subprocess.DEVNULL,
         )
@@ -218,6 +254,8 @@ class CodexAgentTestCase(unittest.TestCase):
             command,
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             timeout=timeout,
             cwd=str(self.project),
             stdin=subprocess.DEVNULL,
@@ -246,12 +284,23 @@ class CodexAgentTestCase(unittest.TestCase):
         return result
 
     def _assert_model_was_honoured(self, result: CodexResult) -> None:
-        """Fail loudly rather than silently testing a different model."""
+        """Fail loudly rather than silently testing a different model.
 
-        self.assertIn(
-            f"model: {REQUIRED_MODEL}",
-            result.combined,
-            "codex did not report the pinned model; refusing to accept the run",
+        Accepts either the pinned name itself, or the name codex's own
+        `[notice.model_migrations]` table says that pinned name now resolves
+        to -- see `_known_model_migration`. A session that reports neither is
+        still rejected: this must not become a rubber stamp for an arbitrary
+        model change.
+        """
+
+        expected = [REQUIRED_MODEL]
+        migrated = _known_model_migration(REQUIRED_MODEL)
+        if migrated:
+            expected.append(migrated)
+        self.assertTrue(
+            any(f"model: {name}" in result.combined for name in expected),
+            "codex did not report the pinned model "
+            f"({' or its known migration '.join(expected)}); refusing to accept the run",
         )
 
     # -- reading what the monitor recorded --------------------------------

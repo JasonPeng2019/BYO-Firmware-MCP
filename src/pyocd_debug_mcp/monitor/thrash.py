@@ -23,6 +23,18 @@ WINDOW_SECONDS = 60.0
 # monitoring actions are here too: they touch no hardware, so calling them
 # repeatedly is never a hardware loop, and reporting it would be noise about the
 # reporter itself.
+#
+# refresh_discovery_hooks and register_remote_probe join this list for the same
+# reason: each documents its own repeat-with-identical-arguments loop while the
+# agent iterates on something outside the server's control -- repairing a hook
+# file on disk, or waiting for a `pyocd server` process to come up on another
+# machine. Neither takes a value that changes between retries (refresh takes no
+# required argument at all; register is idempotent on the same host:port), so
+# without this exclusion the identical-fingerprint repetition that workflow
+# requires would eventually read as a loop. get_discovery_hook_contract and
+# unregister_remote_probe do not document a same-arguments retry workflow (the
+# former is fetched once per kind before handoff to refresh_discovery_hooks; the
+# latter is a one-shot removal), so they are deliberately not included here.
 _POLLING_TOOLS = frozenset(
     {
         "get_state",
@@ -34,6 +46,8 @@ _POLLING_TOOLS = frozenset(
         "report_agent_issue",
         "submit_routine_checkin",
         "initialization_handshake",
+        "refresh_discovery_hooks",
+        "register_remote_probe",
     }
 )
 

@@ -262,7 +262,6 @@ from pyocd_debug_mcp.timeouts import (
 from pyocd_debug_mcp.services.connections import (
     LEGACY_PROBE_CONNECTION_PREFIX,
     PROBE_CONNECTION_PREFIX,
-    BoardNotConnectedError,
     ConnectionAssignmentError,
     ConnectionManager,
     ManagedConnection,
