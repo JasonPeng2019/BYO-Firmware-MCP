@@ -1,0 +1,58 @@
+﻿uv : ....................................................C:\Users\Jason\Documents\Jason\FirmCLI_Sentry\MCP_Server\BYO-F
+irmware-MCP\tests\monitor_support.py:81: ResourceWarning: unclosed file <_io.TextIOWrapper name='C:\\Users\\Jason\\AppD
+ata\\Local\\Temp\\byo-monitor-test-14iqznf4\\server_data\\unbound\\run-test-0001.0003.jsonl' mode='a' encoding='utf-8'>
+At line:19 char:96
++ ... ery.log') { uv run --project 'C:/Users/Jason/Documents/Jason/FirmCLI_ ...
++                 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: (..................coding='utf-8'>:String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+ 
+  self._monitors: list[IssueMonitor] = []
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+.......................................................................................................................
+.....C:\Users\Jason\AppData\Roaming\uv\python\cpython-3.12-windows-x86_64-none\Lib\unittest\case.py:589: 
+ResourceWarning: unclosed file <_io.TextIOWrapper 
+name='C:\\Users\\Jason\\AppData\\Local\\Temp\\byo-monitor-test-8wsu_de4\\server_data\\ws-b\\run-2.0001.jsonl' mode='a' 
+encoding='utf-8'>
+  if method() is not None:
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+...........................................................................................C:\Users\Jason\AppData\Roami
+ng\uv\python\cpython-3.12-windows-x86_64-none\Lib\unittest\case.py:589: ResourceWarning: unclosed file 
+<_io.TextIOWrapper name=3 encoding='utf-8'>
+  if method() is not None:
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+C:\Users\Jason\AppData\Roaming\uv\python\cpython-3.12-windows-x86_64-none\Lib\unittest\case.py:589: ResourceWarning: 
+unclosed file <_io.TextIOWrapper name=4 encoding='utf-8'>
+  if method() is not None:
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+C:\Users\Jason\AppData\Roaming\uv\python\cpython-3.12-windows-x86_64-none\Lib\unittest\case.py:589: ResourceWarning: 
+unclosed file <_io.TextIOWrapper name=5 encoding='utf-8'>
+  if method() is not None:
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+C:\Users\Jason\AppData\Roaming\uv\python\cpython-3.12-windows-x86_64-none\Lib\unittest\case.py:589: ResourceWarning: 
+unclosed file <_io.TextIOWrapper name=7 encoding='utf-8'>
+  if method() is not None:
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+C:\Users\Jason\AppData\Roaming\uv\python\cpython-3.12-windows-x86_64-none\Lib\unittest\case.py:589: ResourceWarning: 
+unclosed file <_io.TextIOWrapper name=8 encoding='utf-8'>
+  if method() is not None:
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+......C:\Users\Jason\AppData\Roaming\uv\python\cpython-3.12-windows-x86_64-none\Lib\unittest\case.py:669: 
+ResourceWarning: unclosed file <_io.TextIOWrapper name=3 encoding='utf-8'>
+  function, args, kwargs = self._cleanups.pop()
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+C:\Users\Jason\AppData\Roaming\uv\python\cpython-3.12-windows-x86_64-none\Lib\unittest\case.py:669: ResourceWarning: 
+unclosed file <_io.TextIOWrapper name=4 encoding='utf-8'>
+  function, args, kwargs = self._cleanups.pop()
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+C:\Users\Jason\AppData\Roaming\uv\python\cpython-3.12-windows-x86_64-none\Lib\unittest\case.py:669: ResourceWarning: 
+unclosed file <_io.TextIOWrapper name=5 encoding='utf-8'>
+  function, args, kwargs = self._cleanups.pop()
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+................................................................................................s......s...............
+............................................................s........................
+----------------------------------------------------------------------
+Ran 477 tests in 613.031s
+
+OK (skipped=3)
+

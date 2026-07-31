@@ -46,6 +46,8 @@ repository.
 - [Architecture](docs/architecture.md): runtime and state ownership.
 - [Client contract](docs/client-contract.md): MCP behavior and response contract.
 - [Plan-tool contract](docs/plan-tool-contract.md): guarded-operation plan fields.
+- [Sentry evidence](sentry-evidence/README.md): final passing test suite,
+  specifications, plans, and recorded results for the Sentry monitor/logger work.
 
 ## Included command-line utilities
 
