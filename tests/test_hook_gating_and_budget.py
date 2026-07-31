@@ -611,6 +611,38 @@ class BudgetTests(unittest.TestCase):
                     after = ops.operation_timeout_seconds(tool, arguments)
                 self.assertAlmostEqual(after - before, self.ONE_VENDOR_SPEC, places=6)
 
+    def test_read_serial_with_a_uart_finalizer_reserves_vendor_budget_twice(self) -> None:
+        """Regression guard for D17/D20: mirrors
+        `test_read_serial_with_a_uart_finalizer_reserves_both_hook_budgets` for the
+        vendor term. `_finalizer_uart_write` calls `_resolve_serial_port_for_session`
+        after the main action, an independent resolution that can shell out to a
+        vendor helper a second time -- so a configured spec must be charged once for
+        the main action's own resolution and once more for the finalizer's. Without a
+        finalizer, only the main action's resolution can reach it."""
+
+        finalizer_arguments = {
+            "read_seconds": 3,
+            "on_exit": {"action": "uart_write", "data": "q", "timeout_seconds": 2},
+        }
+        plain_arguments = {"read_seconds": 3}
+
+        with patch.object(ops, "SERIAL_FALLBACKS", ()):
+            before_with_finalizer = ops.operation_timeout_seconds(
+                "read_serial", finalizer_arguments
+            )
+            before_plain = ops.operation_timeout_seconds("read_serial", plain_arguments)
+
+        with patch.object(ops, "SERIAL_FALLBACKS", ("nrfjprog_spec",)):
+            after_with_finalizer = ops.operation_timeout_seconds(
+                "read_serial", finalizer_arguments
+            )
+            after_plain = ops.operation_timeout_seconds("read_serial", plain_arguments)
+
+        self.assertAlmostEqual(
+            after_with_finalizer - before_with_finalizer, 2 * self.ONE_VENDOR_SPEC, places=6
+        )
+        self.assertAlmostEqual(after_plain - before_plain, self.ONE_VENDOR_SPEC, places=6)
+
     def test_refresh_discovery_hooks_budget_unaffected_by_vendor_specs(self) -> None:
         """It never takes an inventory snapshot, so it can never run a vendor CLI."""
 
