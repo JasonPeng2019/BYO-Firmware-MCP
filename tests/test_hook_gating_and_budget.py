@@ -559,13 +559,28 @@ class BudgetTests(unittest.TestCase):
 
         self.assertEqual(ops.SERIAL_FALLBACKS, ())
 
-    def test_probe_inventory_budget_unchanged_when_no_vendor_specs_configured(self) -> None:
-        before = ops.operation_timeout_seconds("setup_overview", {})
+    def test_probe_inventory_budget_excludes_vendor_term_when_no_specs_configured(self) -> None:
+        """Pins an absolute, independently-derived expected value under a controlled,
+        non-default probe-CLI count -- not a before/after comparison of the same (empty)
+        input against itself, which cannot fail regardless of whether the vendor term is
+        wired correctly. Catches e.g. a vendor term added unconditionally instead of
+        scaled by `len(SERIAL_FALLBACKS)`, which a same-input comparison would miss."""
 
-        with patch.object(ops, "SERIAL_FALLBACKS", ()):
-            after = ops.operation_timeout_seconds("setup_overview", {})
+        expected = (
+            ops.DEFAULT_OPERATION_TIMEOUT_SECONDS
+            + 3
+            * (ops.DEFAULT_EXTERNAL_COMMAND_TIMEOUT_SECONDS + ops.MAX_OWNED_PROCESS_CLEANUP_SECONDS)
+            + ops.CANCELLATION_CLEANUP_GRACE_SECONDS
+            # + 0 for the vendor term: SERIAL_FALLBACKS is patched empty below.
+            # + 0 for hooks: BudgetTests.setUp resets the eligible-hook provider.
+        )
 
-        self.assertEqual(after, before)
+        with patch.object(
+            ops, "configured_probe_cli_commands", return_value=("pyocd", "pyocd", "pyocd")
+        ), patch.object(ops, "SERIAL_FALLBACKS", ()):
+            actual = ops.operation_timeout_seconds("setup_overview", {})
+
+        self.assertAlmostEqual(actual, expected, places=6)
 
     def test_probe_inventory_budget_grows_with_configured_vendor_specs(self) -> None:
         before = ops.operation_timeout_seconds("setup_overview", {})
@@ -575,13 +590,18 @@ class BudgetTests(unittest.TestCase):
 
         self.assertAlmostEqual(after - before, 2 * self.ONE_VENDOR_SPEC, places=6)
 
-    def test_uart_action_budgets_unchanged_when_no_vendor_specs_configured(self) -> None:
+    def test_uart_action_budgets_exclude_vendor_term_when_no_specs_configured(self) -> None:
+        """Pins the absolute default budget, not a before/after comparison against the
+        same (empty) input -- see the probe-inventory sibling test above for why that
+        shape cannot fail. A vendor term wrongly added even for an empty registry (e.g.
+        `len(SERIAL_FALLBACKS) + 1`) pushes the result above `DEFAULT_OPERATION_TIMEOUT_SECONDS`
+        and this catches it."""
+
         for tool, arguments in self.UART_CALLS:
             with self.subTest(tool=tool):
-                before = ops.operation_timeout_seconds(tool, arguments)
                 with patch.object(ops, "SERIAL_FALLBACKS", ()):
-                    after = ops.operation_timeout_seconds(tool, arguments)
-                self.assertEqual(after, before)
+                    actual = ops.operation_timeout_seconds(tool, arguments)
+                self.assertEqual(actual, ops.DEFAULT_OPERATION_TIMEOUT_SECONDS)
 
     def test_every_uart_action_gains_budget_from_configured_vendor_specs(self) -> None:
         for tool, arguments in self.UART_CALLS:

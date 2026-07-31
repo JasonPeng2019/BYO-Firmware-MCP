@@ -483,7 +483,7 @@ class VendorUartRowsTests(unittest.TestCase):
         self.assertEqual(run_cmd_called, [])
 
     def test_nonzero_exit_code_124_timeout_skips_spec(self) -> None:
-        """Exit code 124 (timeout) results in no rows and continues."""
+        """Exit code 124 (timeout) results in no rows despite parseable stdout."""
         from pyocd_debug_mcp import hardware_inventory
         from pyocd_debug_mcp.serial_resolver import SerialFallbackSpec
         from unittest.mock import patch
@@ -497,8 +497,11 @@ class VendorUartRowsTests(unittest.TestCase):
             parser="nrfjprog_com",
         )
 
+        # Realistic scenario: vendor CLI prints some ports before hanging and being killed
+        nrfjprog_output = "680123456 COM5 VCOM0\n"
+
         def fake_run_cmd(argv):
-            return (124, "", "")  # 124 = timeout
+            return (124, nrfjprog_output, "")  # 124 = timeout with partial output
 
         with patch.object(hardware_inventory, "SERIAL_FALLBACKS", (spec,)):
             with patch.object(
@@ -509,7 +512,7 @@ class VendorUartRowsTests(unittest.TestCase):
         self.assertEqual(result, [])
 
     def test_nonzero_exit_code_127_not_found_skips_spec(self) -> None:
-        """Exit code 127 (not found) results in no rows and continues."""
+        """Exit code 127 (not found) results in no rows despite parseable stdout."""
         from pyocd_debug_mcp import hardware_inventory
         from pyocd_debug_mcp.serial_resolver import SerialFallbackSpec
         from unittest.mock import patch
@@ -523,8 +526,11 @@ class VendorUartRowsTests(unittest.TestCase):
             parser="nrfjprog_com",
         )
 
+        # Realistic scenario: wrapper script prints ports before exec fails
+        nrfjprog_output = "680123457 COM6 VCOM0\n"
+
         def fake_run_cmd(argv):
-            return (127, "", "")  # 127 = not found
+            return (127, nrfjprog_output, "")  # 127 = not found with partial output
 
         with patch.object(hardware_inventory, "SERIAL_FALLBACKS", (spec,)):
             with patch.object(

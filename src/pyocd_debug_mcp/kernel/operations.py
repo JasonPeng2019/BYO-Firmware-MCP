@@ -570,9 +570,13 @@ def operation_timeout_seconds(
             return timeout
         total = timeout + finalizer_timeout + ARGUMENT_TIMEOUT_GRACE_SECONDS
         if finalizer_reaches_uart:
-            # `_finalizer_uart_write` calls `_resolve_serial_port_for_session`, so the
-            # finalizer itself can execute a UART hook after the main action finished.
-            total += _hook_budget("uart")
+            # `_finalizer_uart_write` calls `_resolve_serial_port_for_session`, which
+            # calls `uart_snapshot()`, so the finalizer performs its own independent
+            # resolution after the main action finished -- it can execute a UART hook
+            # and, when native enumeration comes back empty, a legacy vendor UART
+            # helper (SERIAL_FALLBACKS) a second time, separate from any the main
+            # action's own resolution already reserved for.
+            total += _vendor_uart_budget() + _hook_budget("uart")
         return total
 
     if tool_name == "action_batch":

@@ -126,4 +126,52 @@ calls `services.load_snapshot()`/`run_hooks()` directly and never reaches
 Suite 664 passed / 7 skipped; ruff, pyright clean — all verified by the
 coordinator at HEAD, not from the report.
 
+## Post-Phase-3 scoped review (not a sixth iteration)
+
+The safety cap forbids another full loop pass. It does not forbid reviewing a
+small body of production code no adversary had ever seen, so D15 and M6 were
+reviewed under a scope restricted to `git diff 418b17d..459524b -- src/` and its
+tests. That pass found three more, all VALID, all proven by breaking the guarded
+behavior rather than by argument:
+
+- **D17 (MEDIUM, production)** — the M6 fix covered five budget sites and missed a
+  sixth. `include_finalizer` reserves `_hook_budget("uart")` for the finalizer's
+  second independent port resolution but never added `_vendor_uart_budget()`;
+  measured at 31.5s reserved where 63.0s is required. Fixed.
+- **D18 (MEDIUM, tests)** — the two `vendor_uart_rows` "nonzero exit code" tests
+  were vacuous. Deleting the exit-code guard outright left all 8 tests passing,
+  because both fixtures paired the nonzero exit with *empty* stdout. Fixed with
+  realistic parseable output — which is also the case that actually occurs, since
+  `_run_cmd` returns exit 124 with whatever partial stdout the child produced
+  before being killed.
+- **D19 (LOW, tests)** — two budget tests patched `SERIAL_FALLBACKS` to `()`, its
+  ambient default, and so could not fail. Rewritten as absolute-value assertions.
+
+Substantive negative results from the same pass, recorded because they are
+results: `vendor_uart_rows` is correct; the D15 design decision was verified
+right; the `PermissionError` scope ruling holds (all four `server.py` call sites
+have a broad `except Exception`); the `_DISCOVERY_HOOK_TOOLS` exclusion is
+correct; the D16 fix works under adversarial stress.
+
+**D17 is the fourth consecutive instance of a fix introducing the next defect:
+C7→C12, C15→D16, D15→M6, M6→D17.** That chain is the most reliable finding this
+task produced. The D17/D18/D19 fixes are themselves unreviewed, so blocker 2 is
+reduced but not closed — it has moved one level down, which is the honest
+description rather than saying it is resolved.
+
+## Known, deliberately unfixed
+
+`continue_setup` (`server.py` `_setup_continue`) calls
+`_resolved_probe_uid_for_connection` → `_hardware_inventory.snapshot()` but is not
+a member of `_PROBE_INVENTORY_TOOLS`, so it receives only the flat default
+operation timeout with **no** reservation for probe CLI, vendor CLI, or hooks.
+Found independently by both the reviewer and the implementer, converging from
+opposite directions. It predates this entire feature and is not a missing vendor
+term on a covered site — it is a tool with no inventory budget at all. Fixing it
+requires a categorization decision outside this feature's scope. Flagged for
+separate triage rather than folded in silently.
+
+Suite at final state: **664 passed / 7 skipped**, ruff clean, pyright clean on
+`src/` — verified by the coordinator at HEAD.
+
 STATUS: ❌ RED
