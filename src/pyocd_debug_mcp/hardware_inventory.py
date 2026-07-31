@@ -40,6 +40,7 @@ from pyocd_debug_mcp.probe_inventory import (
     NativeProbeListing,
     registered_provider_ids,
 )
+from pyocd_debug_mcp.remote_probes import RemoteProbeEntry
 from pyocd_debug_mcp.serial_resolver import (
     SERIAL_FALLBACKS,
     RunCommand,
@@ -319,6 +320,9 @@ class HardwareInventoryService:
     hook_snapshot: Callable[[], DiscoveryHookSnapshot] = lambda: EMPTY_SNAPSHOT
     vendor_uarts: Callable[[], Sequence[VendorUartRow]] = lambda: ()
     run_hooks: HookRunner = field(default=lambda snapshot, kind: execute_eligible_hooks(snapshot, kind))
+    # The default is what preserves every existing test: no registry configured means
+    # no remote rows and no behavior change whatsoever.
+    remote_probes: Callable[[], Sequence[RemoteProbeEntry]] = lambda: ()
 
     def snapshot(self) -> InventorySnapshot:
         """Take one atomic inventory view, running hooks only where needed."""
@@ -347,6 +351,13 @@ class HardwareInventoryService:
             probe_rows = self._merge_probe_rows(
                 probe_rows, self._hook_probe_rows(executions, counter)
             )
+
+        # Deliberately NOT gated behind "native discovery came back empty" -- unlike
+        # hook rows, a registered remote endpoint is an explicit registration, costs
+        # one file read, and must stay visible even alongside a working local probe.
+        # Reading an empty/absent registry contributes no rows, so this is a no-op on
+        # every machine that has never called register_remote_probe.
+        probe_rows = self._merge_probe_rows(probe_rows, self._remote_probe_rows(counter))
 
         diagnostics.extend(uart_diagnostics)
 
@@ -572,6 +583,34 @@ class HardwareInventoryService:
                         hook_source_sha256=execution.file_sha256,
                     )
                 )
+        return rows
+
+    def _remote_probe_rows(self, counter: _RowIds) -> list[ProbeRow]:
+        """Registered `remote:host:port` endpoints, one row each.
+
+        No reachability check runs here: a snapshot must stay cheap and must never make
+        a network call on the discovery path. `unique_id` carries the full selector,
+        prefix included -- `TCPClientProbe.get_probe_with_id` returns `None` unless
+        `is_explicit`, which pyOCD only sets when the `remote:` prefix is present, so
+        stripping it here would silently stop the feature from working.
+        """
+
+        rows: list[ProbeRow] = []
+        for entry in self.remote_probes():
+            rows.append(
+                ProbeRow(
+                    provider="remote",
+                    probe_id=entry.selector,
+                    unique_id=entry.selector,
+                    row_id=counter.next(),
+                    description=entry.description,
+                    stable_identity=entry.selector,
+                    provenance=(f"remote:{entry.host}:{entry.port}",),
+                    hook_source_sha256=None,
+                    identity_scope="stable",
+                    snapshot_id=counter.snapshot_id,
+                )
+            )
         return rows
 
     # -- merge -------------------------------------------------------------------

@@ -1,9 +1,16 @@
 # Task status - debugger UART discovery hook implementation
 
 Branch `Proto-1-WIP-working`. Working tree clean.
-Suite: **687 ran / 680 passed / 7 skipped**. `ruff check src/ tests/` clean. `pyright src/` clean.
+Suite at this task's completion: **687 ran / 680 passed / 7 skipped**.
+`ruff check src/ tests/` clean. `pyright src/` clean.
 All three verified by running them at HEAD, not taken from an agent report -- a
 distinction that mattered repeatedly on this task (see *Operating record*).
+
+> **Follow-on work has landed since.** The remote-probe endpoint feature
+> (`register_remote_probe` / `unregister_remote_probe`) was added afterwards, taking
+> the suite to **730 ran / 723 passed / 7 skipped**. See `REMOTE_PROBE_PLAN.md` and
+> `reviews/remote-probe-review.md`. The numbers in this file describe the discovery-hook
+> task's own completion state and are not the current suite total.
 
 **STATUS: GREEN, with one condition recorded as stopped rather than met.** Read
 "Phase 1" before treating that as a formality; it is stated plainly rather than

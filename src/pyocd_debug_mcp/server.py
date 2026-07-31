@@ -76,6 +76,7 @@ from pyocd_debug_mcp.discovery_hooks import (
     execute_eligible_hooks,
     load_hook_snapshot,
 )
+from pyocd_debug_mcp.remote_probes import load_remote_probes
 from pyocd_debug_mcp.discovery_failures import (
     DISCOVERY_HOOK_FAILED,
     PROBE_OPEN_FAILED,
@@ -312,6 +313,10 @@ from pyocd_debug_mcp.tools.discovery import (
     DiscoveryRetryStore,
     DiscoveryToolServices,
     build_discovery_handlers,
+)
+from pyocd_debug_mcp.tools.remote_probes import (
+    RemoteProbeToolServices,
+    build_remote_probe_handlers,
 )
 from pyocd_debug_mcp.tools.unlock import (
     UnlockCoordinator,
@@ -3034,6 +3039,12 @@ def _load_discovery_hook_snapshot() -> DiscoveryHookSnapshot:
     return load_hook_snapshot(_discovery_hook_root())
 
 
+def _remote_probes_registry_path() -> Path:
+    """The one file the server designates for registered remote-probe endpoints."""
+
+    return _firm_store.layout.remote_probes
+
+
 # The single inventory service. Every discovery call site funnels here, so the hook
 # gating decision in `snapshot()` cannot be bypassed by adding a new caller.
 _hardware_inventory = HardwareInventoryService(
@@ -3042,6 +3053,7 @@ _hardware_inventory = HardwareInventoryService(
     active_connections=_active_connection_rows,
     hook_snapshot=_hook_snapshot_store.current,
     vendor_uarts=lambda: vendor_uart_rows(_run_cmd),
+    remote_probes=lambda: load_remote_probes(_remote_probes_registry_path()),
 )
 
 # Run-scoped, memory-only. A retry ticket is not authority, so it is not on ServerRun.
@@ -6118,6 +6130,26 @@ for _name, _handler in discovery_tool_handlers.items():
     # FastMCP silently drops unknown fields by default; a client passing a bogus
     # `executable` field must fail closed rather than have it quietly ignored.
     forbid_unknown_tool_arguments(mcp, _name)
+
+remote_probe_tool_handlers = build_remote_probe_handlers(
+    RemoteProbeToolServices(registry_path=_remote_probes_registry_path)
+)
+# Same treatment as the discovery-hook tools directly above, and for the same reasons:
+#
+# Deliberately no `tool_registry.configure(...)`: always visible, never locked. An
+# agent told that native discovery found no probe over local USB must reach the one
+# route that survives that (register_remote_probe) without unlocking anything first.
+#
+# Deliberately no `mcp.configure_layer2(...)`: registration is configuration, not a
+# hardware action, and must not report through the Layer-2 hardware-failure envelope.
+for _remote_probe_name, _remote_probe_handler in remote_probe_tool_handlers.items():
+    mcp.add_tool(
+        _remote_probe_handler,
+        name=_remote_probe_name,
+        description=_remote_probe_handler.__doc__,
+        structured_output=False,
+    )
+    forbid_unknown_tool_arguments(mcp, _remote_probe_name)
 
 for _setup_action in SETUP_GUARDED_ACTIONS:
     tool_registry.configure(

@@ -472,7 +472,9 @@ _UNIQUE_ID_GUIDANCE = {
         "of local USB. It is the one route that still works when the host's USB stack cannot "
         "show the probe to pyOCD at all, and it *requires* the prefix -- without it pyOCD "
         "never constructs a remote probe. Reach for it when the device is visible to a vendor "
-        "tool on another machine, or to a daemon this pyOCD cannot see through."
+        "tool on another machine, or to a daemon this pyOCD cannot see through. Prefer calling "
+        "register_remote_probe(host, port) directly for this case -- it persists the same "
+        "selector without writing a discovery hook at all."
     ),
     "colon_caveat": (
         "pyOCD splits unique_id at the first ':' and treats the left side as a provider name. "
