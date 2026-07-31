@@ -20,7 +20,6 @@ from __future__ import annotations
 
 import json
 import os
-import re
 import shutil
 import subprocess
 import tempfile
@@ -45,37 +44,30 @@ E2E_SNAPSHOT_CADENCE = 2
 E2E_CHECKIN_CADENCE = 4
 
 
-def _known_model_migration(model: str) -> str | None:
-    """Return the name codex will actually report for `model` on this machine.
+# Model renames that codex's own `[notice.model_migrations]` mechanism is
+# known to apply: a session pinned to a retired name reports under its
+# replacement instead, with a notice, not the name that was requested.
+#
+# This is deliberately a checked-in mapping, not a live read of the user's own
+# `~/.codex/config.toml`. REQUIRED_MODEL exists specifically as a hard pin --
+# "fail loudly rather than silently testing a different model" -- and reading
+# the accepted-name set from a file that lives outside the repo, is not
+# version-controlled, and can differ machine to machine would let the same
+# commit's test outcome vary or drift over time, undermining that exact
+# guarantee. When codex renames a pinned model, update this mapping in the
+# same commit that notices it, reviewed like any other test expectation.
+_KNOWN_MODEL_MIGRATIONS: dict[str, str] = {
+    "gpt-5.4-mini": "gpt-5.6-luna",
+}
 
-    codex tracks server-side model renames in `[notice.model_migrations]`
-    under the user's own ``~/.codex/config.toml``: a session pinned to a
-    retired name reports under its replacement instead, with a notice, not
-    the name that was requested. Resolving that here -- rather than
-    hard-coding a replacement name that would itself go stale at the next
-    rename -- keeps the model-pinning assertion honest about what a real
-    session on this machine will actually print. A missing file, missing
-    section, or any parsing surprise just means no known migration; the
-    caller falls back to the pinned name unchanged, which is the prior
-    (pre-migration-aware) behaviour.
+
+def _known_model_migration(model: str) -> str | None:
+    """Return the name codex is known to report for `model` after its own
+    server-side rename, per `_KNOWN_MODEL_MIGRATIONS` above. `None` means no
+    known migration; the caller falls back to the pinned name unchanged.
     """
 
-    config_path = Path.home() / ".codex" / "config.toml"
-    try:
-        text = config_path.read_text(encoding="utf-8")
-    except OSError:
-        return None
-    marker = "[notice.model_migrations]"
-    start = text.find(marker)
-    if start == -1:
-        return None
-    section = text[start + len(marker) :]
-    next_section = section.find("\n[")
-    if next_section != -1:
-        section = section[:next_section]
-    pattern = re.compile(r'^\s*"' + re.escape(model) + r'"\s*=\s*"([^"]+)"', re.MULTILINE)
-    match = pattern.search(section)
-    return match.group(1) if match else None
+    return _KNOWN_MODEL_MIGRATIONS.get(model)
 
 
 def codex_executable() -> str | None:

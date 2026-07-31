@@ -8,10 +8,7 @@ secondary -- the durable record is the product.
 from __future__ import annotations
 
 import json
-import tempfile
 import unittest
-from pathlib import Path
-from unittest import mock
 
 from tests.codex_harness import (
     REQUIRED_MODEL,
@@ -354,42 +351,29 @@ class StdoutStaysClean(CodexAgentTestCase):
 
 
 class ModelMigrationLookupIsHermetic(unittest.TestCase):
-    """`_known_model_migration` reads codex's own `[notice.model_migrations]`
-    table rather than a hard-coded replacement name that would itself go
-    stale at the next server-side rename. These never spawn codex, so they
+    """`_known_model_migration` resolves against `_KNOWN_MODEL_MIGRATIONS`, a
+    mapping checked into `codex_harness.py` itself -- not a live read of the
+    user's own ``~/.codex/config.toml``, which lives outside the repo, is not
+    version-controlled, and could make the same commit's test outcome vary by
+    machine or drift over time. No filesystem access is involved, so these
     run unconditionally, independent of whether codex is installed here.
     """
 
-    def _with_fake_home(self, config_text: str | None):
-        tmp = tempfile.TemporaryDirectory()
-        self.addCleanup(tmp.cleanup)
-        home = Path(tmp.name)
-        if config_text is not None:
-            codex_dir = home / ".codex"
-            codex_dir.mkdir(parents=True)
-            (codex_dir / "config.toml").write_text(config_text, encoding="utf-8")
-        return mock.patch("tests.codex_harness.Path.home", return_value=home)
+    def test_the_pinned_models_known_migration_resolves(self) -> None:
+        self.assertEqual(_known_model_migration(REQUIRED_MODEL), "gpt-5.6-luna")
 
-    def test_a_migrated_model_resolves_to_its_replacement(self) -> None:
-        config = (
-            "[notice.model_migrations]\n"
-            f'"{REQUIRED_MODEL}" = "some-future-model"\n'
-        )
-        with self._with_fake_home(config):
-            self.assertEqual(_known_model_migration(REQUIRED_MODEL), "some-future-model")
+    def test_a_model_with_no_recorded_migration_resolves_to_none(self) -> None:
+        self.assertIsNone(_known_model_migration("some-model-nobody-pinned"))
 
-    def test_no_config_file_resolves_to_no_known_migration(self) -> None:
-        with self._with_fake_home(None):
-            self.assertIsNone(_known_model_migration(REQUIRED_MODEL))
+    def test_the_mapping_is_exactly_whats_checked_in(self) -> None:
+        """Guards against silent expansion of the accepted-name set: only the
+        pinned model's own recorded migration should ever resolve, nothing
+        broader.
+        """
 
-    def test_config_without_the_section_resolves_to_no_known_migration(self) -> None:
-        with self._with_fake_home('model = "something-else"\n'):
-            self.assertIsNone(_known_model_migration(REQUIRED_MODEL))
+        from tests.codex_harness import _KNOWN_MODEL_MIGRATIONS
 
-    def test_a_different_models_migration_does_not_leak_in(self) -> None:
-        config = "[notice.model_migrations]\n\"some-other-model\" = \"some-future-model\"\n"
-        with self._with_fake_home(config):
-            self.assertIsNone(_known_model_migration(REQUIRED_MODEL))
+        self.assertEqual(_KNOWN_MODEL_MIGRATIONS, {REQUIRED_MODEL: "gpt-5.6-luna"})
 
 
 class ModelPinningIsEnforced(CodexAgentTestCase):
