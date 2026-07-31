@@ -98,6 +98,23 @@ def main() -> int:
         row["provider"] = argument
         emit(probe_document([row]))
         return 0
+    if mode == "probe_remote":
+        # The provider-qualified selector the contract's unique_id_guidance describes:
+        # a remote pyOCD probe server, addressed as remote:<host>:<port>. Two colons and
+        # a non-USB provider, so it exercises the parts of the pipe most likely to
+        # mangle it.
+        emit(
+            probe_document(
+                [
+                    {
+                        "provider": "remote",
+                        "unique_id": f"remote:{argument or 'localhost:5555'}",
+                        "description": "Probe server on the bench machine",
+                    }
+                ]
+            )
+        )
+        return 0
     if mode == "uart_port":
         row = dict(UART_ROW)
         row["port_path"] = argument

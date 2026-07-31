@@ -4,6 +4,7 @@ import json
 import unittest
 from types import SimpleNamespace
 from typing import Any
+from unittest.mock import patch
 
 from pyocd_debug_mcp.adapters.uart_interface import UARTInterface, UARTPortHandle
 from pyocd_debug_mcp.discovery_failures import UART_OPEN_FAILED
@@ -12,7 +13,9 @@ from pyocd_debug_mcp.services.uart_capture import (
     UARTCaptureResult,
     UARTExchangeResult,
     UARTExchangeStepResult,
+    capture_uart_output,
     exchange_uart_output,
+    write_uart_output,
 )
 from pyocd_debug_mcp.tools.serial import (
     SerialToolServices,
@@ -236,12 +239,12 @@ class UartOpenFailureTests(unittest.TestCase):
     def test_a_cancelled_write_is_never_relabeled_as_an_open_failure(self) -> None:
         """Cooperative cancellation must keep its identity, not become open-failed.
 
-        `write_uart_output` wraps `OperationCancelledError` from its own internal
-        `cancellation_checkpoint()` in a plain `RuntimeError` before it ever reaches
-        `write_serial` -- this fixture reproduces exactly that shape (a RuntimeError
-        whose `__cause__` is the original `OperationCancelledError`) rather than
-        raising `OperationCancelledError` directly, because that is the real shape
-        `write_serial` receives.
+        This fixture raises a `RuntimeError` whose `__cause__` is an
+        `OperationCancelledError`. Since the M9 fix that is no longer the shape
+        `uart_capture` produces -- it re-raises the cancellation unchanged, which is
+        what `UartCapturePreservesCancellationTests` covers. This test remains as the
+        defence for any *other* layer that wraps a cancellation on its way here: the
+        `uart/open-failed` relabel must not fire on a wrapped cancellation either.
         """
 
         def _write_uart(*_args: Any, **_kwargs: Any) -> Any:
@@ -263,9 +266,10 @@ class UartOpenFailureTests(unittest.TestCase):
         self.assertIsInstance(ctx.exception.__cause__, OperationCancelledError)
 
     def test_a_cancellation_raised_directly_is_never_relabeled_either(self) -> None:
-        """Belt-and-suspenders: even an unwrapped OperationCancelledError, should one
-        ever reach this layer directly, must not be caught by the RuntimeError guard
-        at all (it is not a RuntimeError-wrapping-a-cause; it *is* the cancellation).
+        """The shape that actually occurs since M9: an unwrapped
+        `OperationCancelledError` arriving from `uart_capture` must not be caught by
+        the `RuntimeError` guard at all (it is not a RuntimeError-wrapping-a-cause;
+        it *is* the cancellation).
         """
 
         def _write_uart(*_args: Any, **_kwargs: Any) -> Any:
@@ -275,6 +279,72 @@ class UartOpenFailureTests(unittest.TestCase):
 
         with self.assertRaises(OperationCancelledError):
             write_serial(services, "board", "hello")
+
+
+class UartCapturePreservesCancellationTests(unittest.TestCase):
+    """M9: cancellation must survive `uart_capture`'s error normalization.
+
+    All three entry points wrap their port-I/O section in
+    `except Exception as exc: raise RuntimeError(...) from exc`.
+    `OperationCancelledError` is a `RuntimeError` subclass, so without an explicit
+    re-raise ahead of that wrap it loses the type identity `operations.py`
+    dispatches on -- and `except OperationCancelledError` there can never match,
+    recording a cancelled UART operation as **FAILED instead of CANCELLED**.
+
+    Each test asserts the cancellation arrives *unchanged*, not merely that
+    something was raised: a plain `RuntimeError` carrying it as `__cause__` is
+    precisely the defect, and `assertRaises(OperationCancelledError)` would be
+    satisfied by neither.
+    """
+
+    def test_capture_lets_a_cancellation_through_unchanged(self) -> None:
+        # capture_uart_output's first checkpoint is *outside* the try block, so a
+        # stub that raises immediately would propagate even with the bug present.
+        # Arm it from on_port_open, which fires inside the try, so the raise lands
+        # on the in-loop checkpoint that the wrap actually covers.
+        armed = False
+
+        def _checkpoint() -> None:
+            if armed:
+                raise OperationCancelledError("operation cancelled")
+
+        def _arm() -> None:
+            nonlocal armed
+            armed = True
+
+        with patch("pyocd_debug_mcp.services.uart_capture.cancellation_checkpoint", _checkpoint):
+            with self.assertRaises(OperationCancelledError):
+                capture_uart_output(
+                    "COM_TEST",
+                    115200,
+                    5.0,
+                    None,
+                    on_port_open=_arm,
+                    adapter=_BufferedUART(b""),
+                )
+
+    def test_write_lets_a_cancellation_through_unchanged(self) -> None:
+        def _checkpoint() -> None:
+            raise OperationCancelledError("operation cancelled")
+
+        with patch("pyocd_debug_mcp.services.uart_capture.cancellation_checkpoint", _checkpoint):
+            with self.assertRaises(OperationCancelledError):
+                write_uart_output("COM_TEST", 115200, b"hello", adapter=_BufferedUART(b""))
+
+    def test_exchange_lets_a_cancellation_through_unchanged(self) -> None:
+        def _checkpoint() -> None:
+            raise OperationCancelledError("operation cancelled")
+
+        with patch("pyocd_debug_mcp.services.uart_capture.cancellation_checkpoint", _checkpoint):
+            with self.assertRaises(OperationCancelledError):
+                exchange_uart_output(
+                    "COM_TEST",
+                    115200,
+                    b"ping\n",
+                    "pong",
+                    1.0,
+                    adapter=_BufferedUART(b""),
+                )
 
 
 if __name__ == "__main__":

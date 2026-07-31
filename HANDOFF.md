@@ -1,10 +1,10 @@
 # Handoff — debugger UART discovery hook feature
 
-**Your job is to close this out, not to review it further.** The adversarial loop
-was stopped deliberately at iteration 9. Read "Why the loop stopped" before you
-consider running another pass — the reasoning matters more than the result.
+**The close-out is done. This feature is finished and green.** The adversarial
+loop was stopped deliberately at iteration 9; read "Why the loop stopped" before
+you consider running another pass — the reasoning matters more than the result.
 
-Read this, then `reviews/REVIEW_POLICY.md`, then `.codex/design_charter.md`.
+Read this, then `TASK_STATUS.md`, then `.codex/design_charter.md`.
 
 ## Verified state
 
@@ -12,21 +12,17 @@ Read this, then `reviews/REVIEW_POLICY.md`, then `.codex/design_charter.md`.
 | --- | --- |
 | Repo | `BYO-Firmware-MCP` — **its own git repo**, nested inside `FirmCLI-WIP`, not a submodule |
 | Remote | `github.com/JasonPeng2019/BYO-Firmware-MCP` |
-| Branch | **`Proto-1-WIP-working`** — not `Proto-1-WIP`, which is stranded at `8a51138` and is 10 commits behind. Everything from iteration 6 onward is on `-working`. Check you are on it before anything else. |
-| HEAD | `e7f4409` (this handoff), working tree clean |
+| Branch | **`Proto-1-WIP-working`** — not `Proto-1-WIP`, which is stranded at `8a51138` and is far behind. Everything from iteration 6 onward is on `-working`. Check you are on it before anything else. |
 | Base | `6f3da0a` (feature diff is `git diff 6f3da0a..HEAD`) |
-| Suite | **677 passed / 7 skipped** |
+| Suite | **687 ran / 680 passed / 7 skipped** |
 | Lint | `ruff check src/ tests/` clean |
-| Types | `pyright src/` clean |
+| Types | `pyright src/` clean (19 pre-existing errors in `tests/`, deliberately untouched) |
 
 Measured at HEAD by running them, not taken from an agent report. That
 distinction is load-bearing — see "Operating lessons."
 
 Run the suite with `python -m unittest discover -s tests`. **stdlib `unittest`
 only — never pytest.** ruff line-length 100, target py310.
-
-`TASK_STATUS.md` is **stale** (cites HEAD `8ec6b02`, 657 tests, cap 5). Rewriting
-it is close-out step 3.
 
 ## Why the loop stopped at 9
 
@@ -68,19 +64,23 @@ one choke point both real production call sites already share," which is **false
 do not inherit that claim. And I approved it without enumerating the sites, which is
 how D30 came to exist at all.
 
-## Close-out steps
+## Close-out — done
 
-1. **Record D30 in `reviews/ledger.md`** as raised, verified correct, and ruled
-   out of scope with the reasoning above. Do not mark it INVALID — it is a true
-   finding that is not worth fixing, which is a different verdict. Ledger rows are
-   5 columns / 6 pipes; check table well-formedness before committing (line 34 is
-   a pre-existing 7-pipe row — leave it).
-2. **Add an iteration-9 close-out note** to the ledger stating the loop was stopped
-   by decision at 9, with the rounds-1–5 vs 6–9 contrast as the justification.
-3. **Rewrite `TASK_STATUS.md`** against the verified numbers above. Phase 1's
-   checklist row becomes "stopped by decision, not cleared," not ✅ and not a bare
-   ❌ — state the reasoning. Phases 0, 2, 3 are genuinely complete.
-4. Commit. Stage explicitly by path.
+All four steps are complete, so do not redo them:
+
+1. **D30 is recorded in `reviews/ledger.md`** as raised, verified correct, and ruled
+   out of scope — *not* INVALID, since a true finding that is not worth fixing is a
+   different verdict. Site counts were re-verified by hand before being written down.
+2. **The iteration-9 close-out note** is in the ledger, with the rounds-1–5 vs 6–9
+   contrast as its justification.
+3. **`TASK_STATUS.md` is rewritten** against re-measured numbers. Phase 1's row reads
+   "stopped by decision, not cleared," with reasoning.
+4. **The two carried triage items are fixed** — M9 and the `continue_setup` budget
+   gap — and the hook contract now documents provider-qualified selectors. See
+   "What was done at close-out" below.
+
+Ledger housekeeping if you ever add a row: rows are 5 columns / 6 pipes (line 34 is
+a pre-existing 7-pipe row — leave it). Stage explicitly by path; never `git add -A`.
 
 ## What is actually built (verified by tracing the code, not the artifacts)
 
@@ -114,67 +114,71 @@ serial action).
 pyOCD at all, no server code fixes that. That limit is real and is exactly what
 the fallback pipe exists to route around — see the next section.
 
-## Recommended next work item
+## What was done at close-out
 
-### Teach the hook contract about provider-qualified selectors
+Three items, chosen because each is a real product gap rather than a message
+upgrade. Each new test was proven by breaking the behavior it guards.
 
-This is the highest-value remaining change, it adds no guards, and it is squarely
-the charter's dynamism goal (*"expose a tool for the agent to supply the missing
-piece"*).
+### Provider-qualified selectors are now in the hook contract
 
-**The finding.** `DebugProbeAggregator.get_all_connected_probes(unique_id=X)` tries
-`get_probe_with_id(X, is_explicit)` **first** and returns immediately on a hit,
-skipping enumeration entirely. A `provider:uid` prefix in that string makes
-`_get_probe_classes` set `is_explicit=True` and restrict the search to one provider
-class. Checking each provider's direct lookup in the installed pyOCD:
+This was the outstanding gap in the second pipe. `get_all_connected_probes(unique_id=X)`
+tries `get_probe_with_id(X, is_explicit)` **first** and returns immediately on a hit,
+skipping enumeration; a `provider:uid` prefix makes `_get_probe_classes` set
+`is_explicit=True` and restrict the search to one class. For the hard case — pyOCD
+genuinely blind to the local device — **`remote:host:port` is the only route that
+survives**, and it requires the prefix, because `TCPClientProbe.get_probe_with_id`
+returns `None` unless `is_explicit`. The contract never said any of this existed.
 
-```text
-cmsisdap   DAPAccess.get_device()       targeted open, no bus enumeration
-jlink      SEGGER DLL emulator list     own driver, not pyocd's libusb path
-remote     TCPClientProbe(uid)          zero USB — pure constructor
-stlink     get_all_connected_devices()  enumerates
-picoprobe  enumerates
-```
+Added as `unique_id_guidance` on the probe contract (`tools/discovery.py`):
+pass-through semantics, the `provider:` prefix, the `remote:` route, and the caveat
+that pyOCD splits at the *first* colon and rejects the whole selector when the text
+before it is not a registered provider.
 
-So for the hard case — pyOCD genuinely blind to the local device — **`remote:host:port`
-is the only route that survives**, and it requires the explicit prefix, because
-`TCPClientProbe.get_probe_with_id` returns `None` unless `is_explicit` is set.
+**Documentation, not machinery** — no provider-prefix composer, no `remote:`
+validator, no URL parser. The agent writes the selector; the server passes it
+through. **Keep it that way.** Composing `provider:uid` server-side is tempting since
+the server holds both fields, but it would change what every existing hook does: a
+row whose `provider` is a good guess rather than a fact currently still resolves by
+falling through to another class, and composing would turn that into a hard failure.
 
-**The gap.** The server passes the hook's bare `unique_id` straight through and never
-composes `provider:uid`. `grep -n "remote\|provider:" src/pyocd_debug_mcp/tools/discovery.py`
-returns **nothing** — the contract never tells the agent this route exists. A bare UID
-still reaches `cmsisdap`/`jlink` direct lookups (all classes get tried), so the common
-cases work by luck; `remote:` cannot be reached at all.
+Two things stop the text going stale. `UniqueIdGuidanceDriftTests` re-derives every
+claim from the installed pyOCD rather than restating it, so a pyOCD that changes its
+selector parsing fails the suite instead of silently leaving agents with instructions
+that no longer work — nothing in production consumes this text, and D21 already showed
+what unverified documentation does in this repo. And
+`test_a_provider_qualified_remote_selector_survives_the_whole_pipe` drives a real
+`remote:bench.local:5555` row through hook → snapshot → token → `resolve()`, proving
+the two-colon form is not mangled (C12 was a colon misparse) and clears D25's check.
 
-**The change is documentation and contract text, not new machinery.** In
-`get_discovery_hook_contract`, state that `unique_id` may carry a `provider:` prefix
-to force one provider and take pyOCD's explicit path, and that `remote:host:port` is
-available when the local USB stack cannot see the probe. Verify a `remote:`-form
-selector survives the token layer (colon-bearing UIDs are already covered — that was
-the C12 fix) and passes D25's `PROBE_CLASSES` check (`remote` is registered).
+### M9 — fixed
 
-**Resist scope creep here.** Do not build a provider-prefix composer, a `remote:`
-validator, or a URL parser. The agent writes the selector; the server passes it
-through. That is the whole change.
+`except OperationCancelledError: raise` now precedes the generic wrap at all three
+`services/uart_capture.py` sites, so a cancelled UART operation reaches
+[`kernel/operations.py:835`](src/pyocd_debug_mcp/kernel/operations.py#L835) with its
+type intact and records CANCELLED rather than FAILED.
 
-### Two ordinary triage items
+One trap worth knowing if you touch these tests: `capture_uart_output`'s **first**
+`cancellation_checkpoint()` is *outside* its try block, so a stub that raises
+immediately propagates cleanly even with the bug present. The test arms its stub from
+`on_port_open`, which fires inside the try, to land on the checkpoint the wrap
+actually covers. `tools/serial.py`'s `_is_cancellation` `__cause__` branch was left in
+place — belt-and-braces for this path now, still live for any other layer that wraps.
 
-- **M9 — cancelled UART operations record FAILED instead of CANCELLED.**
-  `services/uart_capture.py` lines 161–162, 209–210, 310–312 each wrap in
-  `except Exception as exc: raise RuntimeError(...) from exc`, destroying
-  `OperationCancelledError`'s type identity, so the `except OperationCancelledError`
-  handler at [`kernel/operations.py:835`](src/pyocd_debug_mcp/kernel/operations.py#L835)
-  can never match for UART ops. Real misreporting — the charter's *"no silent failure
-  and no fabrication."* Roughly a 3-line fix. Recommended first.
-- **`continue_setup` has no inventory budget.** `_setup_continue` →
-  `_resolved_probe_uid_for_connection` → `_hardware_inventory.snapshot()`, but
-  `continue_setup` is not in `_PROBE_INVENTORY_TOOLS`, so it gets the flat default
-  timeout with zero reservation for probe CLI, vendor CLI, or hooks. **Predates this
-  feature.** Needs a categorization decision (should it always pay the larger budget,
-  even on branches that never snapshot?).
+### The `continue_setup` budget gap — fixed
 
-Also outstanding: **19 pre-existing `pyright` errors in `tests/`** (trust-model rounds
-1/3/4, change-loop). Predate this task, deliberately untouched.
+`continue_setup` joins `_PROBE_INVENTORY_TOOLS`. The categorization question the old
+note left open — "should it always pay the larger budget, even on branches that never
+snapshot?" — mis-frames the cost. That block resolves with `max(...)`, not `+=`, so
+membership raises a *ceiling*, not a duration: a branch that never snapshots finishes
+exactly as fast, it just stops being cancelled mid-discovery on the branch that does.
+Measured 0.0s reserved against 123.0s required with one hook of each kind.
+
+### Deliberately not done
+
+**19 pre-existing `pyright` errors in `tests/`** (trust-model rounds 1/3/4,
+change-loop). They predate this task and touching them is churn against the charter's
+*"You should not edit parts that are not broken."* Verified still exactly 19 at
+close-out — the new tests added none.
 
 ## Key documents
 

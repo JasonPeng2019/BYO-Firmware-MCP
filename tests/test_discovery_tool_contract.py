@@ -238,6 +238,75 @@ class LiveServerContractTests(unittest.TestCase):
         self.assertEqual(root.parent.name, ".firm")
 
 
+class UniqueIdGuidanceDriftTests(unittest.TestCase):
+    """The unique_id guidance must stay true of the pyOCD that is actually installed.
+
+    This is documentation, so nothing in production consumes it and nothing else in
+    the suite would notice it going stale -- exactly the shape that produced D21
+    (documentation contradicting the source it claimed to describe). Each assertion
+    below re-derives its claim from `DebugProbeAggregator` rather than restating it,
+    so a pyOCD that changes its selector parsing fails this file instead of silently
+    leaving the agent with instructions that no longer work.
+    """
+
+    def setUp(self) -> None:
+        self.payload = _call(CONTRACT_TOOL, {"kind": "probe"})
+        self.guidance = self.payload["unique_id_guidance"]
+
+    def test_guidance_is_probe_only(self) -> None:
+        """A UART hook emits port_path, not unique_id -- the field does not exist there."""
+
+        self.assertNotIn("unique_id_guidance", _call(CONTRACT_TOOL, {"kind": "uart"}))
+
+    def test_every_provider_the_guidance_names_is_actually_registered(self) -> None:
+        """The guidance singles out `remote:`; if pyOCD ever drops it, say so here."""
+
+        self.assertIn("remote", self.payload["pyocd_providers"])
+
+    def test_a_provider_prefix_really_does_restrict_and_go_explicit(self) -> None:
+        """Backs the provider_prefix and remote_probes claims."""
+
+        from pyocd.probe.aggregator import DebugProbeAggregator
+        from pyocd.probe.tcp_client_probe import TCPClientProbe
+
+        klasses, uid, is_explicit = DebugProbeAggregator._get_probe_classes(
+            "remote:localhost:5555"
+        )
+
+        self.assertEqual(list(klasses), [TCPClientProbe])
+        self.assertTrue(is_explicit, "remote probes are only constructed when explicit")
+        # Split at the *first* colon only, so host:port survives into the id.
+        self.assertEqual(uid, "localhost:5555")
+        self.assertIsNotNone(TCPClientProbe.get_probe_with_id(str(uid), True))
+        self.assertIsNone(
+            TCPClientProbe.get_probe_with_id(str(uid), False),
+            "without the prefix pyOCD never constructs a remote probe -- the whole "
+            "reason the guidance says the prefix is required",
+        )
+
+    def test_a_bare_id_still_reaches_every_provider(self) -> None:
+        """Backs the 'a bare id is also fine' half of the provider_prefix claim."""
+
+        from pyocd.probe.aggregator import PROBE_CLASSES, DebugProbeAggregator
+
+        klasses, uid, is_explicit = DebugProbeAggregator._get_probe_classes("066EFF5050577178")
+
+        self.assertEqual(set(klasses), set(PROBE_CLASSES.values()))
+        self.assertEqual(uid, "066EFF5050577178")
+        self.assertFalse(is_explicit)
+
+    def test_an_unregistered_prefix_really_is_rejected_outright(self) -> None:
+        """Backs the colon_caveat. This is why the caveat is in the contract at all."""
+
+        from pyocd.probe.aggregator import DebugProbeAggregator
+
+        with self.assertRaises(Exception) as ctx:
+            DebugProbeAggregator._get_probe_classes("ACME:12345")
+
+        self.assertIn("unknown debug probe type", str(ctx.exception))
+        self.assertIn("unknown debug probe type", self.guidance["colon_caveat"])
+
+
 class RegistrationPolicyTests(unittest.TestCase):
     """Any one of these being wrong makes the fallback unreachable from a client."""
 

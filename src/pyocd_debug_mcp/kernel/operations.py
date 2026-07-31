@@ -62,6 +62,13 @@ _PROBE_INVENTORY_TOOLS = frozenset(
         "board_validate",
         "board_setup",
         "board_fix_setup",
+        # Reaches `_resolved_probe_uid_for_connection` -> `snapshot()` on its
+        # connect-bearing branches (server.py 5854, 5894) and not on the others.
+        # It joins anyway: the block below takes a `max`, so this raises a *ceiling*
+        # rather than lengthening any run. A branch that never snapshots finishes
+        # exactly as fast; it just stops being cancelled mid-discovery on the branch
+        # that does.
+        "continue_setup",
     }
 )
 _INTENTIONAL_HALT_TOOLS = frozenset(
@@ -629,9 +636,11 @@ def operation_timeout_seconds(
             + len(configured_probe_cli_commands())
             * (DEFAULT_EXTERNAL_COMMAND_TIMEOUT_SECONDS + MAX_OWNED_PROCESS_CLEANUP_SECONDS)
             + CANCELLATION_CLEANUP_GRACE_SECONDS
-            # Every one of these tools takes an inventory snapshot, which can run the
+            # Each of these tools can take an inventory snapshot, which can run the
             # probe CLI fallback above, a legacy vendor UART helper (SERIAL_FALLBACKS,
-            # via _vendor_uart_budget), and hooks of either kind.
+            # via _vendor_uart_budget), and hooks of either kind. `max`, not `+=`, so
+            # membership only lifts a ceiling -- a tool that snapshots on some branches
+            # (continue_setup) costs nothing on the branches that do not.
             + _vendor_uart_budget()
             + _hook_budget("probe", "uart")
         )

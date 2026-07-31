@@ -208,6 +208,36 @@ class ProbeDiscoveryWorkflowTests(_WorkflowCase):
         self.assertEqual(selection.unique_id, "066EFF505057717867163251")
         self.assertFalse(self.flow.retry_store.known(ticket.retry_id))
 
+    def test_a_provider_qualified_remote_selector_survives_the_whole_pipe(self) -> None:
+        """The route that still works when the local USB stack is blind to the probe.
+
+        `remote:<host>:<port>` is the one selector form that can succeed when pyOCD
+        cannot enumerate the device locally at all, and the contract's
+        `unique_id_guidance` now tells agents to write it. That guidance is only
+        honest if the selector survives ingestion, tokenizing, and re-derivation
+        byte-for-byte -- two colons and a non-USB provider are exactly what a token
+        layer is most likely to mangle (C12 was a colon misparse that resolved to a
+        *different real probe*), and `remote` must clear D25's provider check.
+        """
+
+        self.flow.native_ports = [_port("COM3")]
+        self.flow.install(
+            [hook_entry("probe-hook", "probe", argv=["probe_remote", "bench.local:5555"])]
+        )
+        self.flow.refresh()
+
+        snapshot = self.flow.snapshot()
+        self.assertEqual(snapshot.probes[0].provider, "remote")
+
+        token = self.flow.select(snapshot)
+        selection = self.flow.selections.resolve(token, self.flow.snapshot())
+
+        # Verbatim: the host:port half must not be eaten by the provider split, and
+        # resolve() must not have raised UnsupportedProvider on a registered provider.
+        self.assertEqual(selection.unique_id, "remote:bench.local:5555")
+        self.assertEqual(selection.provider, "remote")
+        self.assertIn("remote", registered_provider_ids())
+
     def test_a_hook_discovered_probe_survives_reselection_across_snapshots(self) -> None:
         self.flow.native_ports = [_port("COM3")]
         self.flow.install([hook_entry("probe-hook", "probe", argv=["probe"])])

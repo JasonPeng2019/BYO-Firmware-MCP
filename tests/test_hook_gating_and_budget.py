@@ -486,6 +486,23 @@ class BudgetTests(unittest.TestCase):
 
         self.assertAlmostEqual(after - before, 2 * self.ONE_HOOK, places=6)
 
+    def test_continue_setup_reserves_the_inventory_budget_it_can_spend(self) -> None:
+        """It reaches `_resolved_probe_uid_for_connection` -> `snapshot()`, so it must
+        reserve for probe CLI, vendor UART, and hooks like every other tool that can.
+
+        Pre-existing gap (predates the discovery-hook feature): `continue_setup` took
+        the flat default with zero reservation, so a snapshot that legitimately ran a
+        hook was cancelled by the very timeout meant to bound it.
+        """
+
+        before = ops.operation_timeout_seconds("continue_setup", {})
+        ops.set_eligible_hook_count_provider(self._counts(probe=1, uart=1))
+
+        after = ops.operation_timeout_seconds("continue_setup", {})
+
+        self.assertAlmostEqual(after - before, 2 * self.ONE_HOOK, places=6)
+        self.assertGreater(before, ops.DEFAULT_OPERATION_TIMEOUT_SECONDS)
+
     def test_refresh_discovery_hooks_reserves_both_kinds(self) -> None:
         before = ops.operation_timeout_seconds("refresh_discovery_hooks", {})
         ops.set_eligible_hook_count_provider(self._counts(probe=2, uart=1))

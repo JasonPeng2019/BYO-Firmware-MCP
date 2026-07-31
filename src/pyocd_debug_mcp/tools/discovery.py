@@ -278,6 +278,7 @@ def build_discovery_handlers(
             # PROBE_CLASSES is the registered-provider source of truth; probe_families.json
             # is friendly labels plus legacy CLI text matching and must not gate support.
             document["pyocd_providers"] = sorted(services.registered_providers())
+            document["unique_id_guidance"] = dict(_UNIQUE_ID_GUIDANCE)
 
         if ticket is not None:
             document["executable"] = True
@@ -450,6 +451,36 @@ _CONTRACT_CONSTRAINTS = (
     "The hook directory is inside the project's gitignored `.firm/`, so hooks are "
     "untracked by default. Tell the user if they want it committed.",
 )
+
+# Probe-kind only. The server passes a hook's `unique_id` to pyOCD verbatim and composes
+# nothing, so the selector *is* the agent's interface to pyOCD's own probe lookup -- and
+# nothing else in the contract said so. Verified against the installed pyOCD
+# (`DebugProbeAggregator._get_probe_classes` / `get_all_connected_probes`), not assumed.
+_UNIQUE_ID_GUIDANCE = {
+    "passed_through_verbatim": (
+        "The server never rewrites unique_id. Whatever the hook prints is handed to pyOCD "
+        "exactly as written, so this field is your direct interface to pyOCD's probe lookup."
+    ),
+    "provider_prefix": (
+        "unique_id may be written as '<provider>:<id>' using any name in pyocd_providers. "
+        "That makes pyOCD search only that provider and take its direct-lookup path, which "
+        "skips bus enumeration entirely. A bare id is also fine: pyOCD tries every provider's "
+        "direct lookup before enumerating, so the common cases work without a prefix."
+    ),
+    "remote_probes": (
+        "'remote:<host>:<port>' addresses a pyOCD debug probe server ('pyocd server') instead "
+        "of local USB. It is the one route that still works when the host's USB stack cannot "
+        "show the probe to pyOCD at all, and it *requires* the prefix -- without it pyOCD "
+        "never constructs a remote probe. Reach for it when the device is visible to a vendor "
+        "tool on another machine, or to a daemon this pyOCD cannot see through."
+    ),
+    "colon_caveat": (
+        "pyOCD splits unique_id at the first ':' and treats the left side as a provider name. "
+        "If that text is not a registered provider, pyOCD rejects the whole selector with "
+        "\"unknown debug probe type\". Only emit an id containing a ':' when the text before "
+        "it really is one of pyocd_providers."
+    ),
+}
 
 
 def _contract_prompt(kind: str, platform: str) -> str:
