@@ -84,6 +84,7 @@ from pyocd_debug_mcp.discovery_failures import (
     no_native_probe_failure,
     no_native_uart_failure,
     open_failure_payload,
+    selection_disappeared_failure,
     unsupported_provider_failure,
 )
 from pyocd_debug_mcp.hardware_inventory import (
@@ -1018,9 +1019,16 @@ def _assigned_probe_uid_for_connect(board_id: str) -> str | None:
         # pyOCD selector for a UID-less provider is not recoverable from the string.
         selection = _probe_selection_store.resolve(assigned, snapshot)
     except SelectionDisappeared as exc:
+        # Preserve the site-specific sentence (it names the board, which the typed
+        # exception's own `.reason` cannot) alongside `.reason` itself, so nothing
+        # the plain-text version said is lost by routing through the structured
+        # payload.
+        failure = selection_disappeared_failure(
+            f"The assigned probe for {board_id} is no longer present; rerun setup "
+            f"routing to choose the current physical connection. ({exc.reason})"
+        )
         raise RuntimeError(
-            f"The assigned probe for {board_id} is no longer present; rerun setup routing "
-            f"to choose the current physical connection. ({exc.code}: {exc.reason})"
+            f"{failure.code}: {failure.message} {' '.join(failure.remedies)}"
         ) from exc
     except UnsupportedProvider as exc:
         failure = unsupported_provider_failure(
@@ -1077,8 +1085,12 @@ def _resolved_probe_uid_for_connection(connection_id: str) -> str:
     try:
         selection = _probe_selection_store.resolve(connection_id, snapshot)
     except SelectionDisappeared as exc:
+        # `exc.reason` is this site's entire original message -- there was no extra
+        # site-specific prose beyond it, so it is what "preserve the existing text"
+        # means here.
+        failure = selection_disappeared_failure(exc.reason)
         raise TargetControlError(
-            f"{exc.code}: {exc.reason}",
+            f"{failure.code}: {failure.message} {' '.join(failure.remedies)}"
         ) from exc
     except UnsupportedProvider as exc:
         failure = unsupported_provider_failure(

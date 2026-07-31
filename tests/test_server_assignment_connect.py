@@ -192,6 +192,43 @@ class AssignmentAwareConnectTests(unittest.TestCase):
         open_session.assert_not_called()
         generic_resolution.assert_not_called()
 
+    def test_normal_connect_reports_a_disappeared_probe_as_the_structured_payload(
+        self,
+    ) -> None:
+        """D26: `_assigned_probe_uid_for_connect`'s `except SelectionDisappeared`
+        handler must convert to the typed `discovery/selection-disappeared` payload
+        (code + remedies), not just plain text -- proven through the same real
+        `connect()` path as the sibling regex test above, which only checks prose and
+        would not notice a missing `code`/`remedies` field.
+        """
+
+        open_session = Mock()
+        generic_resolution = Mock()
+        assignment_store = SimpleNamespace(
+            connection_for=Mock(return_value=f"probe:{SECOND_PROBE}")
+        )
+
+        with (
+            patch.object(server, "assignment_store", assignment_store),
+            patch.object(server, "connection_manager", _ConnectionManager()),
+            patch.object(server, "_validation_inventory", return_value=_inventory(FIRST_PROBE)),
+            patch.object(server, "resolve_board_config", return_value=_board("lora_tester_2")),
+            patch.object(server, "resolve_probe_for_board_cli", generic_resolution),
+            patch.object(server.target_control, "open_session", open_session),
+            patch.object(server, "_record_event", Mock()),
+        ):
+            with self.assertRaises(RuntimeError) as ctx:
+                server._connect_impl("lora_tester_2", allow_environment_overrides=False)
+
+        message = str(ctx.exception)
+        self.assertIn("discovery/selection-disappeared", message)
+        self.assertIn("rerun setup_overview and reselect the connection", message)
+        # The site-specific, board-naming sentence is not discarded by the
+        # structured conversion.
+        self.assertIn("lora_tester_2", message)
+        open_session.assert_not_called()
+        generic_resolution.assert_not_called()
+
     def test_normal_connect_reports_an_unsupported_provider_through_the_real_handler(
         self,
     ) -> None:

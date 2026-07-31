@@ -595,6 +595,35 @@ class ResolvedProbeUidDegradationTests(unittest.TestCase):
 
         self.assertIn("boom", str(caught.exception))
 
+    def test_a_disappeared_selection_surfaces_the_structured_payload(self) -> None:
+        """D26: `SelectionDisappeared` must reach the caller as the typed
+        `discovery/selection-disappeared` payload, not a bare, code-free message.
+
+        Drives the real path: `_hardware_inventory.snapshot()` returns a snapshot
+        with no matching row, so `ProbeSelectionStore.resolve()` raises
+        `SelectionNotRecorded` (a `SelectionDisappeared`), and
+        `_resolved_probe_uid_for_connection`'s own `except SelectionDisappeared`
+        handler is what must convert it -- not the payload constructor called
+        directly, which would prove the shape but not that this site uses it.
+        """
+
+        from types import SimpleNamespace
+        from unittest.mock import patch
+
+        from pyocd_debug_mcp import server
+        from pyocd_debug_mcp.target_errors import TargetControlError
+
+        empty = _snapshot()
+
+        with patch.object(server, "_hardware_inventory", SimpleNamespace(snapshot=lambda: empty)):
+            with self.assertRaises(TargetControlError) as caught:
+                server._resolved_probe_uid_for_connection("probe:no-such-uid-anywhere")
+
+        message = str(caught.exception)
+        self.assertIn("discovery/selection-disappeared", message)
+        self.assertIn("rerun setup_overview and reselect the connection", message)
+        self.assertIn("no longer present", message)
+
 
 if __name__ == "__main__":  # pragma: no cover
     unittest.main()
