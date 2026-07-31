@@ -18,11 +18,13 @@ from typing import Any, Sequence, cast
 from pyocd_debug_mcp import discovery_hooks
 from pyocd_debug_mcp.discovery_failures import (
     CONTRACT_TOOL,
+    DISCOVERY_UNSUPPORTED_PROVIDER,
     PROBE_OPEN_FAILED,
     REFRESH_TOOL,
     UART_OPEN_FAILED,
     carries_hook_contract,
     open_failure_payload,
+    unsupported_provider_failure,
 )
 from pyocd_debug_mcp.discovery_hooks import (
     DiscoveryHookSnapshot,
@@ -39,6 +41,7 @@ from pyocd_debug_mcp.hardware_inventory import (
     SelectionDisappeared,
     SessionUartSelection,
     SessionUartSelectionStore,
+    UnsupportedProvider,
 )
 from pyocd_debug_mcp.probe_inventory import (
     EMPTY_NATIVE_PROBE_LISTING,
@@ -408,8 +411,32 @@ class ProbeFailureBranchTests(_WorkflowCase):
 
         snapshot = self.flow.snapshot()
 
+        # Diagnostic only: the row itself stays visible. A hook found real hardware,
+        # and hiding the row from an agent would throw away the one thing the hook
+        # exists to report.
         self.assertEqual(snapshot.probes[0].provider, "nosuchprovider")
         self.assertNotIn("nosuchprovider", registered_provider_ids())
+
+        # But resolving the selection for actual use is refused -- it must never fall
+        # through to pyOCD's own open attempt, which would raise a generic
+        # ProbeNotFoundError that reads as a cabling problem instead of a missing
+        # pyOCD plug-in.
+        token = self.flow.select(snapshot)
+        with self.assertRaises(UnsupportedProvider) as ctx:
+            self.flow.selections.resolve(token, self.flow.snapshot())
+
+        exc = ctx.exception
+        self.assertEqual(exc.provider, "nosuchprovider")
+        payload = unsupported_provider_failure(
+            exc.provider, registered_providers=exc.registered_providers
+        ).to_payload()
+        self.assertEqual(payload["code"], DISCOVERY_UNSUPPORTED_PROVIDER)
+        self.assertNotIn("hook_contract_call", payload, "a hook cannot fix this")
+        self.assertIn("nosuchprovider", str(payload["agent_prompt"]))
+        self.assertIn(
+            "install or enable a pyOCD probe plug-in",
+            " ".join(cast("list[str]", payload["remedies"])),
+        )
 
 
 class UartDiscoveryWorkflowTests(_WorkflowCase):

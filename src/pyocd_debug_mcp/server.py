@@ -84,6 +84,7 @@ from pyocd_debug_mcp.discovery_failures import (
     no_native_probe_failure,
     no_native_uart_failure,
     open_failure_payload,
+    unsupported_provider_failure,
 )
 from pyocd_debug_mcp.hardware_inventory import (
     EMPTY_INVENTORY_SNAPSHOT,
@@ -96,6 +97,7 @@ from pyocd_debug_mcp.hardware_inventory import (
     SessionUartSelection,
     SessionUartSelectionStore,
     UartRow,
+    UnsupportedProvider,
     snapshot_from_validation_inventory,
     stable_identity_equal,
     validation_inventory_from,
@@ -1020,6 +1022,11 @@ def _assigned_probe_uid_for_connect(board_id: str) -> str | None:
             f"The assigned probe for {board_id} is no longer present; rerun setup routing "
             f"to choose the current physical connection. ({exc.code}: {exc.reason})"
         ) from exc
+    except UnsupportedProvider as exc:
+        failure = unsupported_provider_failure(
+            exc.provider, registered_providers=exc.registered_providers
+        )
+        raise RuntimeError(f"{failure.code}: {failure.message}") from exc
     # The legacy inventory shape cannot carry hook provenance, so drift for a
     # hook-discovered selection is checked against the admitted hook set instead.
     _require_unchanged_hook_source(board_id, selection)
@@ -1071,6 +1078,11 @@ def _resolved_probe_uid_for_connection(connection_id: str) -> str:
         raise TargetControlError(
             f"{exc.code}: {exc.reason}",
         ) from exc
+    except UnsupportedProvider as exc:
+        failure = unsupported_provider_failure(
+            exc.provider, registered_providers=exc.registered_providers
+        )
+        raise TargetControlError(f"{failure.code}: {failure.message}") from exc
     return selection.unique_id or selection.connection_id
 
 

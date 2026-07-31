@@ -38,6 +38,7 @@ from pyocd_debug_mcp.discovery_hooks import (
 from pyocd_debug_mcp.probe_inventory import (
     EMPTY_NATIVE_PROBE_LISTING,
     NativeProbeListing,
+    registered_provider_ids,
 )
 from pyocd_debug_mcp.serial_resolver import (
     SERIAL_FALLBACKS,
@@ -642,6 +643,28 @@ class SelectionNotRecorded(SelectionDisappeared):
     """No selection was ever recorded for this connection ID in this run."""
 
 
+class UnsupportedProvider(RuntimeError):
+    """A resolved selection's provider is not registered by this pyOCD installation.
+
+    Discovery already worked -- a hook named a real device -- so this is raised from
+    `ProbeSelectionStore.resolve()`, the one choke point every real connect path
+    (`_assigned_probe_uid_for_connect`, `_resolved_probe_uid_for_connection`) shares
+    before a UID ever reaches pyOCD. Left unchecked, pyOCD's own failure for a provider
+    it has never heard of is `ProbeNotFoundError`, whose text reads as a cabling
+    problem rather than a missing plug-in. The row itself is untouched by this check
+    and stays visible in an inventory snapshot -- only *resolving it for use* refuses.
+    """
+
+    code = "discovery/unsupported-provider"
+
+    def __init__(self, provider: str, registered_providers: tuple[str, ...]) -> None:
+        self.provider = provider
+        self.registered_providers = registered_providers
+        super().__init__(
+            f"provider '{provider}' is not registered by this pyOCD installation"
+        )
+
+
 @dataclass(frozen=True, slots=True)
 class ProbeSelection:
     """What an opaque `connection_id` handed to an agent actually refers to."""
@@ -729,11 +752,26 @@ class ProbeSelectionStore:
         with self._guard:
             return len(self._selections)
 
+    @staticmethod
+    def _require_registered_provider(selection: ProbeSelection) -> None:
+        """Refuse a selection whose provider this pyOCD installation cannot open.
+
+        The row that produced `selection` stayed visible in every inventory snapshot
+        that reported it -- discovery already succeeded. This check exists only to stop
+        the UID from reaching pyOCD, which has no registered class for the provider and
+        would otherwise raise its own generic, misleading not-found error.
+        """
+
+        registered = registered_provider_ids()
+        if selection.provider.casefold() not in registered:
+            raise UnsupportedProvider(selection.provider, registered)
+
     def resolve(self, connection_id: str, snapshot: InventorySnapshot) -> ProbeSelection:
         """Re-derive a recorded selection against a fresh snapshot.
 
-        Raises `SelectionDisappeared` when the row is absent or its hook source changed.
-        Never falls back to a similarly described probe.
+        Raises `SelectionDisappeared` when the row is absent or its hook source changed,
+        and `UnsupportedProvider` when the row's provider is not one this pyOCD
+        installation registers. Never falls back to a similarly described probe.
         """
 
         recorded = self.recorded(connection_id)
@@ -749,6 +787,7 @@ class ProbeSelectionStore:
                     "the assigned probe is no longer present; rerun setup routing to "
                     "choose the current physical connection",
                 )
+            self._require_registered_provider(derived)
             self.record(derived)
             return derived
         row = find_selected_row(recorded, snapshot)
@@ -772,6 +811,7 @@ class ProbeSelectionStore:
                 "call refresh_discovery_hooks and rerun setup routing",
             )
         selection = ProbeSelection.from_row(connection_id, row)
+        self._require_registered_provider(selection)
         # FIX 9 (C9): a successful resolution against an already-recorded entry is the
         # common case -- every connect, board_validate, and status check for an
         # already-set-up board -- so it must touch recency the same way an explicit
