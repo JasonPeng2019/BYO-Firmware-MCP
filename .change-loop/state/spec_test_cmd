@@ -1,1 +1,0 @@
-PYTHONPATH=src .venv/Scripts/python.exe -m unittest discover -s tests -p 'test_change_loop_stale_setup_allowance.py'
