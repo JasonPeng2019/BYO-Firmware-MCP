@@ -85,6 +85,8 @@ class FirmLayout:
     safety: Path
     validation: Path
     cache: Path
+    discovery_hooks: Path
+    remote_probes: Path
 
     @classmethod
     def for_project(cls, project_root: Path) -> FirmLayout:
@@ -99,6 +101,11 @@ class FirmLayout:
             safety=root / "safety",
             validation=root / "validation",
             cache=root / "cache",
+            discovery_hooks=root / "discovery_hooks",
+            # Not under discovery_hooks/: this is a plain registry file, not a hook. It
+            # is never executed and is not subject to hook source hashing or the
+            # per-kind gate that discovery_hooks/ contents are.
+            remote_probes=root / "remote_probes.json",
         )
 
     def board_profile(self, board_id: str, *, suffix: str = ".yaml") -> Path:
@@ -164,6 +171,10 @@ class FirmStore:
             self.layout.safety,
             self.layout.validation,
             self.layout.cache,
+            # FirmStore only names and creates this directory. Hook manifests and
+            # hook programs are agent-authored; FirmStore never writes them, so no
+            # write_hook() helper exists here by design.
+            self.layout.discovery_hooks,
         ):
             directory.mkdir(parents=True, exist_ok=True)
         return self.layout

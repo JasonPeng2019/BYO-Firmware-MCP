@@ -59,6 +59,7 @@ from pyocd_debug_mcp.kernel.operations import (
     cancellation_checkpoint,
     current_operation,
     run_if_not_cancelled,
+    set_eligible_hook_count_provider,
 )
 from pyocd_debug_mcp.kernel.finalizers import build_finalizer
 from pyocd_debug_mcp.kernel.hygiene import require_clean_startup
@@ -71,8 +72,44 @@ from pyocd_debug_mcp.pack_provision import (
     sha256_bytes,
     verified_pack_for_target,
 )
+from pyocd_debug_mcp.discovery_hooks import (
+    DiscoveryHookSnapshot,
+    HookSnapshotStore,
+    execute_eligible_hooks,
+    load_hook_snapshot,
+)
+from pyocd_debug_mcp.remote_probes import load_remote_probes
+from pyocd_debug_mcp.discovery_failures import (
+    DISCOVERY_HOOK_FAILED,
+    PROBE_OPEN_FAILED,
+    contract_call,
+    hook_failure,
+    no_native_probe_failure,
+    no_native_uart_failure,
+    open_failure_payload,
+    selection_disappeared_failure,
+    unsupported_provider_failure,
+)
+from pyocd_debug_mcp.hardware_inventory import (
+    EMPTY_INVENTORY_SNAPSHOT,
+    ActiveConnectionRow,
+    HardwareInventoryService,
+    InventorySnapshot,
+    ProbeSelection,
+    ProbeSelectionStore,
+    SelectionDisappeared,
+    SessionUartSelection,
+    SessionUartSelectionStore,
+    UartRow,
+    UnsupportedProvider,
+    snapshot_from_validation_inventory,
+    stable_identity_equal,
+    validation_inventory_from,
+    vendor_uart_rows,
+)
 from pyocd_debug_mcp.probe_inventory import (
-    list_connected_probes_cli,
+    list_connected_probes_detailed,
+    registered_provider_ids,
     resolve_probe_for_board_cli,
 )
 from pyocd_debug_mcp.serial_resolver import (
@@ -80,6 +117,7 @@ from pyocd_debug_mcp.serial_resolver import (
     ProbeLike,
     SerialPortInfo,
     list_serial_ports,
+    normalize_port_name,
     resolve_serial_port,
 )
 from pyocd_debug_mcp.services.session_runtime import (
@@ -222,9 +260,14 @@ from pyocd_debug_mcp.timeouts import (
     subprocess_timeout_stream_text,
 )
 from pyocd_debug_mcp.services.connections import (
+    LEGACY_PROBE_CONNECTION_PREFIX,
+    PROBE_CONNECTION_PREFIX,
+    BoardNotConnectedError,
     ConnectionAssignmentError,
     ConnectionManager,
     ManagedConnection,
+    parse_probe_connection_id,
+    probe_connection_id,
     stable_connection_identity,
 )
 from pyocd_debug_mcp.monitor import (
@@ -275,6 +318,15 @@ from pyocd_debug_mcp.tools.setup import (
     SetupToolLoadState,
     SetupToolServices,
     build_setup_handlers,
+)
+from pyocd_debug_mcp.tools.discovery import (
+    DiscoveryRetryStore,
+    DiscoveryToolServices,
+    build_discovery_handlers,
+)
+from pyocd_debug_mcp.tools.remote_probes import (
+    RemoteProbeToolServices,
+    build_remote_probe_handlers,
 )
 from pyocd_debug_mcp.tools.unlock import (
     UnlockCoordinator,
@@ -1008,14 +1060,95 @@ def _assigned_probe_uid_for_connect(board_id: str) -> str | None:
     assigned = assignment_store.connection_for(board_id)
     if assigned is None:
         return None
-    candidate = assigned.split(":", 1)[1] if assigned.casefold().startswith("probe:") else assigned
-    inventory = _validation_inventory()
-    if not any(_connection_matches_probe(candidate, probe) for probe in inventory.probes):
-        raise RuntimeError(
-            f"The assigned probe for {board_id} is no longer present; rerun setup routing "
-            "to choose the current physical connection."
+    # Site 4 stays on `_validation_inventory()` per the guide, so it inherits hooks
+    # through the unified service without taking a second, independent scan.
+    snapshot = snapshot_from_validation_inventory(_validation_inventory())
+    try:
+        # Re-derive the recorded selection rather than parsing the token: the exact
+        # pyOCD selector for a UID-less provider is not recoverable from the string.
+        selection = _probe_selection_store.resolve(assigned, snapshot)
+    except SelectionDisappeared as exc:
+        # Preserve the site-specific sentence (it names the board, which the typed
+        # exception's own `.reason` cannot) alongside `.reason` itself, so nothing
+        # the plain-text version said is lost by routing through the structured
+        # payload.
+        failure = selection_disappeared_failure(
+            f"The assigned probe for {board_id} is no longer present; rerun setup "
+            f"routing to choose the current physical connection. ({exc.reason})"
         )
-    return candidate
+        raise RuntimeError(
+            f"{failure.code}: {failure.message} {' '.join(failure.remedies)}"
+        ) from exc
+    except UnsupportedProvider as exc:
+        failure = unsupported_provider_failure(
+            exc.provider, registered_providers=exc.registered_providers
+        )
+        raise RuntimeError(
+            f"{failure.code}: {failure.message} {' '.join(failure.remedies)}"
+        ) from exc
+    # The legacy inventory shape cannot carry hook provenance, so drift for a
+    # hook-discovered selection is checked against the admitted hook set instead.
+    _require_unchanged_hook_source(board_id, selection)
+    if selection.unique_id is not None:
+        return selection.unique_id
+    # A UID-less live session is identified only by its exact session token, which is
+    # what the downstream provider already expects for this run.
+    return selection.connection_id
+
+
+def _require_unchanged_hook_source(board_id: str, selection: ProbeSelection) -> None:
+    """Refuse a hook-discovered selection whose hook has changed or gone away."""
+
+    if selection.hook_source_sha256 is None:
+        return
+    hook_ids = {
+        token.split(":", 1)[1]
+        for token in selection.provenance
+        if token.startswith("hook:")
+    }
+    current = {
+        hook.hook_id: hook.file_sha256 for hook in _hook_snapshot_store.current().hooks
+    }
+    for hook_id in hook_ids:
+        if current.get(hook_id) != selection.hook_source_sha256:
+            raise RuntimeError(
+                f"The assigned probe for {board_id} is no longer present; the hook that "
+                "discovered it changed or was removed. Call refresh_discovery_hooks and "
+                "rerun setup routing to choose the current physical connection. "
+                "(discovery/hook-source-changed)"
+            )
+
+
+def _resolved_probe_uid_for_connection(connection_id: str) -> str:
+    """Turn an opaque server-issued connection token into an exact pyOCD selector.
+
+    Replaces treating everything after `probe:` as a `unique_id`, which is wrong for a
+    session-scoped selection. Resolution is against a fresh snapshot, so a token whose
+    hardware has gone is refused rather than passed to pyOCD as a stale UID.
+    """
+
+    try:
+        snapshot = _hardware_inventory.snapshot()
+    except Exception as exc:  # noqa: BLE001 - resolution must fail typed, never raw
+        raise TargetControlError(f"connection inventory could not be resolved: {exc}") from exc
+    try:
+        selection = _probe_selection_store.resolve(connection_id, snapshot)
+    except SelectionDisappeared as exc:
+        # `exc.reason` is this site's entire original message -- there was no extra
+        # site-specific prose beyond it, so it is what "preserve the existing text"
+        # means here.
+        failure = selection_disappeared_failure(exc.reason)
+        raise TargetControlError(
+            f"{failure.code}: {failure.message} {' '.join(failure.remedies)}"
+        ) from exc
+    except UnsupportedProvider as exc:
+        failure = unsupported_provider_failure(
+            exc.provider, registered_providers=exc.registered_providers
+        )
+        raise TargetControlError(
+            f"{failure.code}: {failure.message} {' '.join(failure.remedies)}"
+        ) from exc
+    return selection.unique_id or selection.connection_id
 
 
 def _handle(board_id: str) -> TargetSessionHandle:
@@ -1197,13 +1330,30 @@ def _connect_impl(
                 pdsc_device=selected_pdsc_device,
             )
         except Exception as exc:  # noqa: BLE001 - preserve the original connect error
+            # Discovery already succeeded: the probe was found and named. This is an
+            # action failure, so the recorded diagnostic carries driver/contention/
+            # firmware/physical checks and deliberately no hook contract call -- looping
+            # back to discovery would send the agent to rewrite a working hook.
+            open_failure = (
+                open_failure_payload(
+                    PROBE_OPEN_FAILED,
+                    detail=str(exc),
+                    identity=uid,
+                )
+                if isinstance(exc, TargetConnectionError)
+                else None
+            )
             _record_event(
                 "connect",
                 normalized_args,
                 outcome_kind=ToolOutcome.FAILED,
                 error_code=_error_code(exc),
                 duration_ms=_duration_ms(started),
-                details={"message": str(exc)},
+                details=(
+                    {"message": str(exc), "open_failure": open_failure}
+                    if open_failure is not None
+                    else {"message": str(exc)}
+                ),
                 board_id=board_id,
                 probe_uid=uid,
                 route_used=None,
@@ -1528,19 +1678,70 @@ def _require_loaded_board(handle: TargetSessionHandle) -> BoardConfig:
     return handle.board
 
 
+def _uart_row_as_port(row: UartRow) -> SerialPortInfo:
+    """Present one inventory row in the shape every serial caller already consumes."""
+
+    return SerialPortInfo(
+        device=row.port_path,
+        description=row.description,
+        manufacturer="",
+        product="",
+        interface="",
+        hwid="",
+        serial_number=row.usb_serial or "",
+        location="",
+        vid=row.vid,
+        pid=row.pid,
+    )
+
+
 def _resolve_serial_port_for_session(
     handle: TargetSessionHandle,
     *,
     override: str | None,
 ) -> SerialPortInfo:
+    """Resolve this board's serial endpoint immediately before a UART action.
+
+    This is the hot path: it runs before `read_serial`, `write_serial`,
+    `serial_exchange`, and the `on_exit` finalizer. It never persists or blindly reuses a
+    `COM3` / `/dev/tty*` string -- the path is re-derived from a stable identity every
+    time, because a port path is not an identity.
+
+    Takes `_hardware_inventory.uart_snapshot()`, not `.snapshot()` -- the full snapshot
+    also runs `native_probes()` (a real `pyocd list --probes` subprocess), which would
+    put a probe-enumeration call on every UART action regardless of hooks. Under the §0
+    gating rule a UART hook runs only when pyserial reports nothing, so a machine with a
+    working native port pays no subprocess cost here at all, for probes or for hooks.
+    """
+
     board = _require_loaded_board(handle)
-    ports = list_serial_ports()
-    if ports is None:
+    try:
+        snapshot = _hardware_inventory.uart_snapshot()
+    except Exception as exc:  # noqa: BLE001 - UART resolution must fail typed, never raw
+        raise RuntimeError(f"UART inventory could not be resolved: {exc}") from exc
+    if not snapshot.native_uart_available and not snapshot.uarts:
         raise RuntimeError("pyserial is not installed")
+
+    board_id = getattr(board, "board_id", "") or ""
+    metadata = session_metadata(handle)
+    probe_uid = metadata.probe_uid
+
+    # 1. An explicit override still wins, and is still scored, never trusted blindly.
+    if override is None:
+        # 2. A recorded selection is re-resolved to its *current* path.
+        resolved = _resolve_recorded_uart(
+            board_id,
+            ProbeIdentity(str(metadata.probe_family or "unknown"), probe_uid or None),
+            snapshot,
+        )
+        if resolved is not None:
+            return resolved
+
+    ports = [_uart_row_as_port(row) for row in snapshot.uarts]
     if not ports:
         raise RuntimeError("No serial ports detected")
 
-    probe_uid = session_metadata(handle).probe_uid
+    # 3. Fall back to the existing scoring only when there is no recorded selection.
     probe = _ProbeHint(probe_uid) if probe_uid else None
     resolution = resolve_serial_port(
         board=cast(BoardLike, board),
@@ -1553,7 +1754,80 @@ def _resolve_serial_port_for_session(
     )
     if resolution.port is None:
         raise RuntimeError(f"Serial port resolution failed: {resolution.note}")
+    _record_uart_selection(board_id, resolution.port, snapshot)
     return resolution.port
+
+
+def _resolve_recorded_uart(
+    board_id: str,
+    probe: ProbeIdentity,
+    snapshot: InventorySnapshot,
+) -> SerialPortInfo | None:
+    """Re-derive this board's recorded endpoint against a fresh snapshot.
+
+    Returns None to mean "nothing recorded; fall through to scoring". Raises only when a
+    recorded selection has become genuinely ambiguous, which is a routing decision the
+    caller must not paper over by picking one.
+    """
+
+    if not board_id:
+        return None
+    rows_by_path = {normalize_port_name(row.port_path): row for row in snapshot.uarts}
+    # Stable endpoints live in AttachmentCache, keyed on (usb_serial, vid, pid); it only
+    # ever *reports* port_path, so a path change between runs is handled for free.
+    endpoints = [
+        SerialEndpoint(row.port_path, row.usb_serial, row.vid, row.pid)
+        for row in snapshot.uarts
+        if row.identity_scope == "stable"
+    ]
+    if endpoints and probe.is_stable:
+        cached = _attachment_cache.resolve(board_id, probe, endpoints)
+        if cached.reused and cached.port_path:
+            row = rows_by_path.get(normalize_port_name(cached.port_path))
+            if row is not None:
+                return _uart_row_as_port(row)
+        elif cached.reason == "multiple_matches":
+            # Already modelled by CacheResolution; reuse the reason rather than guessing.
+            raise RuntimeError(
+                "uart/multiple-matches: more than one serial endpoint satisfies this "
+                "board's confirmed attachment; rerun setup_overview to reselect it"
+            )
+    # Session-local endpoints must never reach AttachmentCache -- `_validated_identity`
+    # raises for them, and that refusal is the boundary. They use the run-scoped map.
+    session_row = _session_uart_selections.resolve(board_id, snapshot)
+    if session_row is not None:
+        return _uart_row_as_port(session_row)
+    return None
+
+
+def _record_uart_selection(
+    board_id: str,
+    port: SerialPortInfo,
+    snapshot: InventorySnapshot,
+) -> None:
+    """Remember a session-local choice so the next action re-resolves the same endpoint."""
+
+    if not board_id:
+        return
+    row = next(
+        (
+            item
+            for item in snapshot.uarts
+            if normalize_port_name(item.port_path) == normalize_port_name(port.device)
+        ),
+        None,
+    )
+    if row is None or row.identity_scope != "session":
+        # A stable endpoint is the AttachmentCache's business, not this map's.
+        return
+    _session_uart_selections.record(
+        SessionUartSelection(
+            board_id=board_id,
+            port_path=row.port_path,
+            description=row.description,
+            provenance=row.provenance,
+        )
+    )
 
 
 def _run_logged_tool(
@@ -2473,55 +2747,85 @@ def _target_names() -> tuple[str, ...]:
     return tuple(sorted(names))
 
 
-def _validation_inventory() -> ValidationInventory:
-    probes_by_id = {
-        probe.uid: ValidationProbe(
-            probe.uid,
-            probe.description or probe.raw,
-            probe.family,
-            probe.uid or None,
-        )
-        for probe in list_connected_probes_cli(_run_cmd)
-    }
-    # pyOCD inventory intentionally omits probes already opened by this process.
-    # Validation must still be able to select and stamp the server-owned active
-    # connection. A hardware UID remains the stable inventory key; a UID-less
-    # provider is represented only by its exact live, session-local connection ID.
+def _active_connection_rows() -> tuple[ActiveConnectionRow, ...]:
+    """Describe every probe this process already has open.
+
+    pyOCD inventory intentionally omits probes already opened by this process.
+    Validation must still be able to select and stamp the server-owned active
+    connection. A hardware UID remains the stable inventory key; a UID-less
+    provider is represented only by its exact live, session-local connection ID.
+
+    `assigned_board_ids()` snapshots the key set under lock and releases it before
+    this loop re-acquires the lock per board via `connection_for`. A board that
+    disconnects in the gap would make `connection_for` raise `BoardNotConnectedError`
+    mid-iteration; `maybe_connection` and skipping `None` closes that TOCTOU -- a
+    board that vanished between the two calls simply isn't reported as active,
+    which is correct, since it no longer is.
+    """
+
+    rows: list[ActiveConnectionRow] = []
     for board_id in connection_manager.assigned_board_ids():
-        connection = connection_manager.connection_for(board_id)
+        connection = connection_manager.maybe_connection(board_id)
+        if connection is None:
+            continue
         handle = connection.handle
         metadata = session_metadata(handle)
         probe_uid = (metadata.probe_uid or "").strip()
         probe_id = probe_uid or connection.connection_id
-        if probe_id in probes_by_id:
-            continue
         board = handle.board
         description = str(metadata.probe_description or "").strip()
         if not description:
             description = (
                 board.display_name if board is not None else f"Active connection {probe_id}"
             )
-        probe_family = str(metadata.probe_family or "unknown")
-        probes_by_id[probe_id] = ValidationProbe(
-            probe_id,
-            description,
-            probe_family,
-            probe_uid or None,
+        rows.append(
+            ActiveConnectionRow(
+                probe_id=probe_id,
+                probe_uid=probe_uid or None,
+                description=description,
+                probe_family=str(metadata.probe_family or "unknown"),
+            )
         )
-    probes = tuple(probes_by_id[key] for key in sorted(probes_by_id))
-    serial_ports = list_serial_ports() or []
-    serial = tuple(
-        ValidationSerial(
-            port.serial_number or port.device,
-            port.device,
-            port.description or port.product or "Serial connection",
-            port.serial_number or None,
-            port.vid,
-            port.pid,
-        )
-        for port in serial_ports
+    return tuple(rows)
+
+
+def _validation_inventory(snapshot: InventorySnapshot | None = None) -> ValidationInventory:
+    """Legacy inventory shape, now served by the one unified inventory service.
+
+    Accepts an already-taken snapshot so an operation that also needs hook or native
+    diagnostics can satisfy "one snapshot per operation" without scanning twice. Callers
+    that pass nothing behave exactly as before.
+    """
+
+    if snapshot is not None:
+        return validation_inventory_from(snapshot)
+    return _hardware_inventory.validation_inventory()
+
+
+def _selection_for_validation_probe(
+    connection_id: str,
+    probe: ValidationProbe,
+    snapshot: InventorySnapshot,
+) -> ProbeSelection:
+    """Record what a handed-out connection token refers to.
+
+    Prefers the snapshot row, which carries provenance and hook source. Falls back to
+    the legacy inventory shape's own fields so a caller supplying only a
+    `ValidationInventory` still gets a usable, native-provenance selection.
+    """
+
+    row = next((item for item in snapshot.probes if item.probe_id == probe.probe_id), None)
+    if row is not None:
+        return ProbeSelection.from_row(connection_id, row)
+    return ProbeSelection(
+        connection_id=connection_id,
+        provider=probe.probe_family,
+        unique_id=probe.usb_serial,
+        stable_identity=probe.usb_serial,
+        provenance=("native",),
+        hook_source_sha256=None,
+        identity_scope="stable" if probe.usb_serial else "session",
     )
-    return ValidationInventory(probes, serial)
 
 
 def _validation_target_supported(target: str) -> bool | None:
@@ -2760,6 +3064,65 @@ _attachment_cache = AttachmentCache(_firm_store)
 _report_writer = ReportWriter(_firm_store)
 _safety_repository = SafetyMapRepository(_firm_store)
 _safety_builder = SafetyMapBuilder(_safety_repository)
+
+# Hook configuration is not authority, so it lives beside the stores rather than on
+# ServerRun, whose clear_authority() would wipe it. Empty until a refresh loads a
+# manifest, which is what keeps the no-manifest path identical to before.
+_hook_snapshot_store = HookSnapshotStore()
+
+
+def _discovery_hook_root() -> Path:
+    """The one directory the server designates for project hooks."""
+
+    return _firm_store.layout.discovery_hooks
+
+
+def _load_discovery_hook_snapshot() -> DiscoveryHookSnapshot:
+    """Read the manifests fresh. Only `refresh_discovery_hooks` calls this."""
+
+    return load_hook_snapshot(_discovery_hook_root())
+
+
+def _remote_probes_registry_path() -> Path:
+    """The one file the server designates for registered remote-probe endpoints."""
+
+    return _firm_store.layout.remote_probes
+
+
+# The single inventory service. Every discovery call site funnels here, so the hook
+# gating decision in `snapshot()` cannot be bypassed by adding a new caller.
+_hardware_inventory = HardwareInventoryService(
+    native_probes=lambda: list_connected_probes_detailed(_run_cmd),
+    native_uarts=list_serial_ports,
+    active_connections=_active_connection_rows,
+    hook_snapshot=_hook_snapshot_store.current,
+    vendor_uarts=lambda: vendor_uart_rows(_run_cmd),
+    remote_probes=lambda: load_remote_probes(_remote_probes_registry_path()),
+)
+
+# Run-scoped, memory-only. A retry ticket is not authority, so it is not on ServerRun.
+_discovery_retry_store = DiscoveryRetryStore(server_run.run_id)
+_probe_selection_store = ProbeSelectionStore()
+_session_uart_selections = SessionUartSelectionStore()
+
+# Point the operation timeout budget at the live hook snapshot store. A provider
+# callable, not an import: operations.py is imported by registry.py which is imported
+# here, so any reverse import would be a cycle. Counts are zero until a refresh loads a
+# manifest, which is what makes the resolver safe to call during startup.
+set_eligible_hook_count_provider(_hook_snapshot_store.eligible_counts)
+
+
+def _on_discovery_hooks_refreshed(snapshot: DiscoveryHookSnapshot) -> None:
+    """React to a refresh that replaced the admitted hook set.
+
+    Selections recorded against the previous hook set are dropped rather than re-derived:
+    a refresh can change which hook found a device, or remove the hook entirely, and
+    silently keeping a selection would let a stale row survive its source.
+    """
+
+    del snapshot
+    _probe_selection_store.clear()
+    _session_uart_selections.clear()
 
 
 def _safety_continuation(prefix: str) -> str:
@@ -3186,6 +3549,64 @@ def _load_validation_safety_map(profile) -> SafetyMapSnapshot:
     return SafetyMapSnapshot(True, True, map_digest, "Profile and current safety map agree.")
 
 
+def _known_provider_for_board(board_id: str) -> str | None:
+    """Best-available provider for a board, for rebuilding a provisional connection_id.
+
+    M3 (FIX 8 addendum): `_stamp_validation_session` and `_record_validation_mismatch`
+    used to mint `f"probe:{probe_uid}"` directly -- a third and fourth construction
+    site step 0b's "one canonical mint" criterion never actually reached, and two of
+    them were not even casefolded. Both feed `assignment_store.run_if_current`, which
+    does exact string-key comparison (not the fuzzy `_same_setup_connection`), so the
+    provisional key rebuilt here must reproduce `_setup_overview`'s stored canonical
+    key byte-for-byte or the match silently (and correctly) reports the assignment as
+    changed. Prefers the live connection's own session metadata (freshest, and always
+    correct when present); falls back to the board's configured profile probe_family
+    when the connection has already gone (a rare race between a live validation read
+    and the stamp/mismatch bookkeeping that follows it). Returns `None` only when
+    neither source is available, in which case the caller must not guess.
+    """
+
+    connection = connection_manager.maybe_connection(board_id)
+    if connection is not None:
+        provider = str(session_metadata(connection.handle).probe_family or "").strip()
+        if provider:
+            return provider
+    try:
+        profile = _profile_repository.load(board_id)
+    except ProfileError:
+        return None
+    provider = str(getattr(profile.board, "probe_family", "") or "").strip()
+    return provider or None
+
+
+def _provisional_setup_connection_id(
+    board_id: str, probe_id: str, probe_uid: str | None
+) -> str:
+    """Rebuild the exact connection_id `_setup_overview` would have minted for this probe.
+
+    Used only to re-verify a `run_if_current` assignment match, so it must reproduce
+    the stored key byte-for-byte or the check safely (and correctly) reports the
+    assignment as changed. A UID-less live session's `probe_id` already IS its exact
+    connection_id (a `session:...` token), so it passes through unchanged rather than
+    being provider-qualified -- session tokens are never provider-qualified.
+    """
+
+    if probe_uid is None:
+        return probe_id
+    provider = _known_provider_for_board(board_id)
+    if provider is None:
+        # Neither a live connection nor the board's profile can name a provider (a
+        # race this rare -- the connection vanished between the live read and this
+        # call, and the profile is unreadable too). Fall back to the legacy,
+        # provider-less form: since C12/D11 it carries a structurally distinct prefix
+        # (`LEGACY_PROBE_CONNECTION_PREFIX`, never `PROBE_CONNECTION_PREFIX`), so it
+        # cannot match a canonical stored key even in principle, and
+        # `run_if_current` safely reports "assignment changed" rather than guessing a
+        # provider that might be wrong.
+        return f"{LEGACY_PROBE_CONNECTION_PREFIX}{probe_uid.strip().casefold()}"
+    return probe_connection_id(provider, probe_uid)
+
+
 def _stamp_validation_session(
     board_id: str,
     validation_run: str,
@@ -3203,7 +3624,7 @@ def _stamp_validation_session(
         return False
     if connected_probe_uid is None and connection.connection_id != stable_probe:
         return False
-    provisional_connection_id = f"probe:{probe_uid}" if probe_uid is not None else probe_id
+    provisional_connection_id = _provisional_setup_connection_id(board_id, probe_id, probe_uid)
     try:
         profile = _profile_repository.load(board_id)
         capability = "exact"
@@ -3256,7 +3677,7 @@ def _record_validation_mismatch(
         connection_id = (
             connection.connection_id
             if connection is not None
-            else f"probe:{stable_probe.casefold()}"
+            else _provisional_setup_connection_id(board_id, probe_id, probe_uid)
         )
         gate_manager.record_mismatch(
             board_id=board_id,
@@ -3267,7 +3688,7 @@ def _record_validation_mismatch(
             validation_run=validation_run,
         )
 
-    provisional_connection_id = f"probe:{probe_uid}" if probe_uid is not None else probe_id
+    provisional_connection_id = _provisional_setup_connection_id(board_id, probe_id, probe_uid)
     try:
         assignment_store.run_if_current(
             provisional_connection_id,
@@ -3322,25 +3743,38 @@ def _normalized_target_identity(value: str) -> str:
 
 
 def _stable_identity_equal(left: str | None, right: str | None) -> bool:
-    """Compare stable USB identifiers without conflating mutable display labels."""
+    """Compare stable USB identifiers without conflating mutable display labels.
 
-    if not left or not right:
-        return False
-    left_normalized = left.strip().casefold()
-    right_normalized = right.strip().casefold()
-    if left_normalized == right_normalized:
-        return True
-    if left_normalized.isdecimal() and right_normalized.isdecimal():
-        return (left_normalized.lstrip("0") or "0") == (right_normalized.lstrip("0") or "0")
-    return False
+    The policy now lives in `hardware_inventory` so the inventory merge rules and these
+    setup comparison helpers cannot drift apart. Re-exported here unchanged.
+    """
+
+    return stable_identity_equal(left, right)
 
 
 def _connection_matches_probe(
     connection_id: str,
     probe: ProbeCandidate | ValidationProbe,
 ) -> bool:
+    """FIX 8 (C7/D8): a canonical token must match this probe's provider, not just its UID.
+
+    Without the provider check, a `connection_id` minted for one provider's row would
+    also match a different provider's row reporting the same UID text -- silently
+    selecting the wrong physical device. A legacy two-part token has no provider to
+    check, so it falls back to the pre-provider-qualification behavior (UID text
+    only), same tolerance every other comparison helper in this module gives it.
+    """
+
     candidate = connection_id.strip()
-    if candidate.casefold().startswith("probe:"):
+    parsed = parse_probe_connection_id(candidate)
+    if parsed is not None:
+        provider, uid = parsed
+        if provider.casefold() != probe.probe_family.strip().casefold():
+            return False
+        return _stable_identity_equal(uid, probe.probe_id) or _stable_identity_equal(
+            uid, probe.usb_serial
+        )
+    if candidate.casefold().startswith(LEGACY_PROBE_CONNECTION_PREFIX):
         candidate = candidate.split(":", 1)[1]
     return _stable_identity_equal(candidate, probe.probe_id) or _stable_identity_equal(
         candidate, probe.usb_serial
@@ -3590,6 +4024,9 @@ def _setup_inventory(user_input: SetupUserInput) -> PreflightInventory:
         built_in_targets=tuple(target for target in targets if target not in manifest_targets),
         manifest_targets=manifest_targets,
         exact_detected_targets=exact,
+        # PreflightEngine is pure and has no server access, so it only renders these.
+        hook_contract_call=contract_call("probe"),
+        uart_hook_contract_call=contract_call("uart"),
     )
 
 
@@ -4220,9 +4657,13 @@ def _get_setup_status(board_id: str) -> Mapping[str, object]:
     uart_reason = "UART attachment has not been resolved for this live board connection"
     resolved_uart: dict[str, object] | None = None
     resolved_probe: dict[str, object] | None = None
+    uart_hook_contract_call: Mapping[str, object] | None = None
     if profile is not None and connection is not None:
         try:
-            inventory = _validation_inventory()
+            # One snapshot for this operation, shared by the UART readiness check and the
+            # hook diagnostics below.
+            status_snapshot = _hardware_inventory.snapshot()
+            inventory = _validation_inventory(status_snapshot)
             endpoints = [
                 SerialEndpoint(item.port_path, item.usb_serial, item.vid, item.pid)
                 for item in inventory.serial_ports
@@ -4266,7 +4707,14 @@ def _get_setup_status(board_id: str) -> Mapping[str, object]:
                     "pid": selected_uart.pid,
                 }
             elif len(inventory.serial_ports) == 0:
+                # UART is required for this board, native discovery found nothing, and a
+                # hook is the remaining option. Ambiguity is deliberately *not* a hook
+                # case, so the >1 branch below keeps the friendly-selection flow.
+                failure = no_native_uart_failure(
+                    hook_diagnostics=tuple(status_snapshot.hook_diagnostic_rows()),
+                )
                 uart_reason = "No UART port is currently visible"
+                uart_hook_contract_call = failure.hook_contract_call
             elif len(inventory.serial_ports) > 1:
                 uart_reason = "UART attachment is ambiguous; confirm one friendly choice in setup"
         except Exception as exc:  # noqa: BLE001 - readiness is diagnostic, never authority
@@ -4339,7 +4787,7 @@ def _get_setup_status(board_id: str) -> Mapping[str, object]:
                 "pass the resulting exact command/environment to the generic helper."
             ),
         }
-    return {
+    status: dict[str, object] = {
         "status": "setup_ready" if live_session_ready else "setup_not_ready",
         "board_id": board_id,
         "configuration_ready": configuration_ready,
@@ -4358,6 +4806,9 @@ def _get_setup_status(board_id: str) -> Mapping[str, object]:
         "remedy": remedy,
         "build_guidance": build_guidance,
     }
+    if uart_hook_contract_call is not None:
+        status["uart_hook_contract_call"] = dict(uart_hook_contract_call)
+    return status
 
 
 def _profile_name_key(value: str) -> str:
@@ -4458,25 +4909,77 @@ def _replace_setup_assignments(
 
 
 def _same_setup_connection(left: str, right: str) -> bool:
-    """Compare server-issued setup connection IDs without broad target inference."""
+    """Compare server-issued setup connection IDs without broad target inference.
+
+    FIX 8 (C7/D8): a canonical (provider-qualified) token on both sides must match on
+    BOTH provider and UID, or two different providers reporting identical UID text
+    would compare equal again -- exactly the collision this format exists to prevent.
+    A legacy two-part `probe:{uid}` token has no provider to check, so it is tolerated
+    on read and compared on UID text alone against either side -- deliberately
+    provider-blind for a legacy input, since equality against an already-minted token
+    is a narrower, lower-risk operation than *selecting* a row from a snapshot (see
+    `hardware_inventory.derive_selection_from_token`, which refuses an ambiguous
+    legacy token instead of guessing).
+    """
 
     if left.casefold() == right.casefold():
         return True
-    if left.casefold().startswith("probe:") and right.casefold().startswith("probe:"):
-        return _stable_identity_equal(left.split(":", 1)[1], right.split(":", 1)[1])
-    return False
+    left_parsed = parse_probe_connection_id(left)
+    right_parsed = parse_probe_connection_id(right)
+    if left_parsed is not None and right_parsed is not None:
+        left_provider, left_uid = left_parsed
+        right_provider, right_uid = right_parsed
+        return left_provider.casefold() == right_provider.casefold() and _stable_identity_equal(
+            left_uid, right_uid
+        )
+    # C12/D11: canonical-vs-legacy is now a prefix, not a colon count, so "both sides
+    # are some kind of probe token" has to be checked explicitly here -- a canonical
+    # token no longer shares a prefix with a legacy one, so neither
+    # `left.startswith(...)` alone would catch both shapes.
+    left_is_probe_token = left_parsed is not None or left.casefold().startswith(
+        LEGACY_PROBE_CONNECTION_PREFIX
+    )
+    right_is_probe_token = right_parsed is not None or right.casefold().startswith(
+        LEGACY_PROBE_CONNECTION_PREFIX
+    )
+    if not (left_is_probe_token and right_is_probe_token):
+        return False
+    # At least one side is a legacy two-part token (or malformed): compare UID text
+    # only, matching the tolerance this helper has always had for that shape.
+    left_uid = left_parsed[1] if left_parsed is not None else left.split(":", 1)[1]
+    right_uid = right_parsed[1] if right_parsed is not None else right.split(":", 1)[1]
+    return _stable_identity_equal(left_uid, right_uid)
 
 
 def _setup_connection_key(connection_id: str) -> str:
-    """Canonical key for one server-issued setup connection identity."""
+    """Canonical dedup key for one server-issued setup connection identity.
+
+    FIX 8 (C7/D8): provider-qualified. Normalizes only the UID portion (decimal
+    leading zeros), and never collapses two different providers into one key --
+    `_setup_overview`'s dedup loop is exactly what silently dropped a real, distinct
+    probe when two providers reported the same UID text.
+    """
 
     normalized = connection_id.strip().casefold()
-    if not normalized.startswith("probe:"):
+    parsed = parse_probe_connection_id(connection_id)
+    if parsed is not None:
+        provider, uid = parsed
+        uid = uid.casefold()
+        if uid.isdecimal():
+            uid = uid.lstrip("0") or "0"
+        return f"{PROBE_CONNECTION_PREFIX}{provider.casefold()}:{uid}"
+    if not normalized.startswith(LEGACY_PROBE_CONNECTION_PREFIX):
         return normalized
+    # Legacy two-part token (or malformed input): no provider to key on. Scope the
+    # existing decimal-leading-zero rule to the uid text alone, same as before -- this
+    # never conflates two DIFFERENT canonical keys (they carry the distinct
+    # `PROBE_CONNECTION_PREFIX` above), but two distinct providers hidden behind the
+    # same legacy token remain genuinely ambiguous by construction (see
+    # `derive_selection_from_token`, which refuses rather than guesses in that case).
     probe_identity = normalized.split(":", 1)[1]
     if probe_identity.isdecimal():
         probe_identity = probe_identity.lstrip("0") or "0"
-    return f"probe:{probe_identity}"
+    return f"{LEGACY_PROBE_CONNECTION_PREFIX}{probe_identity}"
 
 
 def _selected_setup_connection_matches(
@@ -4488,9 +4991,12 @@ def _selected_setup_connection_matches(
     if _same_setup_connection(selected_connection, connection.connection_id):
         return True
     probe_uid = (session_metadata(connection.handle).probe_uid or "").strip()
-    return bool(probe_uid) and _same_setup_connection(
+    if not probe_uid:
+        return False
+    provider = str(session_metadata(connection.handle).probe_family or "unknown")
+    return _same_setup_connection(
         selected_connection,
-        f"probe:{probe_uid}",
+        probe_connection_id(provider, probe_uid),
     )
 
 
@@ -4506,6 +5012,83 @@ def _proposed_board_id(display_name: str, existing: set[str]) -> str:
         candidate = f"{stem[: 64 - len(suffix)]}{suffix}"
         counter += 1
     return candidate
+
+
+def _no_native_probe_overview(
+    profile_rows: list[dict[str, object]],
+    serial_rows: list[dict[str, object]],
+    inventory_error: str | None,
+    snapshot: InventorySnapshot,
+    *,
+    board_names: list[str],
+) -> Mapping[str, object]:
+    """Report a missing debugger as a missing debugger, with an exact way forward.
+
+    This is where hook guidance has to begin: with one requested board name and zero
+    visible probes, `len(validated_names) > len(connection_rows)` is true, so without an
+    explicit zero test the agent is told it has a board-naming ambiguity and no route is
+    ever built.
+    """
+
+    _replace_setup_assignments({}, "setup overview found no debug connection")
+    hook_rows = snapshot.hook_diagnostic_rows()
+    # `hook_failures` is not filtered by kind, and this overview's business is only the
+    # *probe* side: it fires because zero probes are visible, not because of anything a
+    # UART hook did. A UART-only failure (no probe hook configured or failed at all) is
+    # not evidence about probes, so it must not be reported as one -- that would send
+    # the agent to get_discovery_hook_contract(kind="probe") to fix a hook that isn't
+    # even the one that failed. When failures of both kinds exist in the same snapshot,
+    # the probe failure is the one this payload is about; the UART failure is not lost,
+    # it stays present verbatim in hook_diagnostics below for a careful reader.
+    probe_failures = tuple(
+        execution for execution in snapshot.hook_failures if execution.kind == "probe"
+    )
+    if probe_failures:
+        # A probe hook was configured and did not work. That is a different problem
+        # from "no hook exists yet", and the remedy is repair-and-refresh, not
+        # write-a-hook.
+        first = probe_failures[0]
+        failure = hook_failure(
+            first.failure_code or DISCOVERY_HOOK_FAILED,
+            "probe",
+            hook_diagnostics=tuple(hook_rows),
+            retry_id=_issue_overview_retry("probe", board_names),
+        )
+    else:
+        # No probe-kind hook failed -- whether none is configured, or a UART-only hook
+        # is what failed instead. Both are indistinguishable from "no hook has been
+        # written yet" on the probe side, so the standard no-native-probe guidance
+        # (which still offers the probe hook contract) is correct here.
+        failure = no_native_probe_failure(
+            native_diagnostics=snapshot.native_probe_diagnostics.diagnostic_row(),
+            hook_diagnostics=tuple(hook_rows),
+            retry_id=_issue_overview_retry("probe", board_names),
+        )
+    payload: dict[str, object] = {
+        "status": "setup_no_probe",
+        "code": failure.code,
+        "agent_prompt": failure.message,
+        "profiles": profile_rows,
+        "connections": [],
+        "serial_choices": serial_rows,
+        "inventory_error": inventory_error,
+        "routes": [],
+    }
+    for key, value in failure.to_payload().items():
+        if key not in {"code", "agent_prompt", "kind"}:
+            payload[key] = value
+    return payload
+
+
+def _issue_overview_retry(kind: str, board_names: list[str]) -> str:
+    """Mint the ticket that replays this exact overview once a hook is working."""
+
+    context = _discovery_retry_store.issue(
+        kind,
+        retry_tool="setup_overview",
+        retry_arguments={"board_names": list(board_names)} if board_names else {},
+    )
+    return context.retry_id
 
 
 def _setup_overview(
@@ -4558,21 +5141,32 @@ def _setup_overview(
         )
         by_name[_profile_name_key(profile.display_name)] = (profile, route_kind, reason)
 
+    # One snapshot per operation. Taken once here and threaded through, never re-taken,
+    # so probe rows and UART rows in this response always come from the same scan.
+    snapshot = EMPTY_INVENTORY_SNAPSHOT
     try:
-        inventory = _validation_inventory()
+        snapshot = _hardware_inventory.snapshot()
+        inventory = _validation_inventory(snapshot)
         connection_rows_by_identity: dict[str, dict[str, object]] = {}
         for probe in inventory.probes:
             connection_id = (
-                f"probe:{probe.usb_serial}" if probe.usb_serial is not None else probe.probe_id
+                probe_connection_id(probe.probe_family, probe.usb_serial)
+                if probe.usb_serial is not None
+                else probe.probe_id
             )
-            connection_rows_by_identity.setdefault(
-                _setup_connection_key(connection_id),
-                {
-                    "connection_id": connection_id,
-                    "friendly_name": probe.choice().label,
-                    "probe_family": probe.probe_family,
-                },
+            key = _setup_connection_key(connection_id)
+            if key in connection_rows_by_identity:
+                continue
+            # Record what this opaque token refers to before handing it to an agent, so
+            # it can later be re-derived against a fresh snapshot rather than parsed.
+            _probe_selection_store.record(
+                _selection_for_validation_probe(connection_id, probe, snapshot)
             )
+            connection_rows_by_identity[key] = {
+                "connection_id": connection_id,
+                "friendly_name": probe.choice().label,
+                "probe_family": probe.probe_family,
+            }
         connection_rows = list(connection_rows_by_identity.values())
         serial_rows = [
             {
@@ -4629,6 +5223,14 @@ def _setup_overview(
             or not set(assignments.values()).issubset(available_connections)
         ):
             raise ValueError("connection assignments must be unique current server connection IDs")
+        if not connection_rows:
+            return _no_native_probe_overview(
+                profile_rows,
+                serial_rows,
+                inventory_error,
+                snapshot,
+                board_names=[name for name, _key in validated_names],
+            )
         if len(validated_names) > len(connection_rows):
             _replace_setup_assignments({}, "setup overview requires assignment clarification")
             return {
@@ -4697,9 +5299,7 @@ def _setup_overview(
                 accepted_response: dict[str, object] = {
                     "copy_into": "plan_action_parameters_template"
                 }
-                if len(connection_rows) == 0:
-                    required_user_facts.append("attach and identify one compatible debug probe")
-                elif len(connection_rows) > 1:
+                if len(connection_rows) > 1:
                     required_user_facts.append(
                         "which friendly debug-probe choice belongs to this board"
                     )
@@ -4710,6 +5310,10 @@ def _setup_overview(
                     required_user_facts.append(
                         "if UART is used, attach and identify the board's UART connection"
                     )
+                    # Conditional by design: an empty UART inventory does not
+                    # short-circuit the way a missing probe does, because this workflow
+                    # may not use UART at all. Offer the contract, do not demand it.
+                    accepted_response["uart_hook_contract_call"] = contract_call("uart")
                 elif len(serial_rows) > 1:
                     required_user_facts.append(
                         "if UART is used, which friendly UART choice belongs to this board"
@@ -4866,7 +5470,9 @@ def _setup_overview(
                         "tool": "board_validate",
                         "arguments": {
                             "board_id": profile.board_id,
-                            "probe_id": selected_connection.removeprefix("probe:"),
+                            # An opaque server-issued token, not a UID. The server
+                            # resolves it against a fresh snapshot when validate runs.
+                            "probe_id": selected_connection,
                         },
                     },
                 }
@@ -5301,7 +5907,7 @@ def _setup_continue(
         if resolved_builtin is not None:
             try:
                 resolved_builtin, selected_policy = _live_test_builtin_setup_target(
-                    probe_uid=user_input.connection_id.removeprefix("probe:"),
+                    probe_uid=_resolved_probe_uid_for_connection(user_input.connection_id),
                     candidate=resolved_builtin,
                     requested_policy=staged_attachment,
                 )
@@ -5341,7 +5947,7 @@ def _setup_continue(
         official_sha = response.get("official_sha256")
         if official_sha is not None and not isinstance(official_sha, str):
             raise ResearchError("package/checksum-shape", "official_sha256 must be text or null")
-        probe_uid = user_input.connection_id.removeprefix("probe:")
+        probe_uid = _resolved_probe_uid_for_connection(user_input.connection_id)
         candidate = PackCandidate(
             str(response["pack_id"]),
             str(response["version"]),
@@ -5543,6 +6149,51 @@ for _setup_name, _setup_handler in setup_tool_handlers.items():
     )
     if _setup_name.endswith("-plan"):
         forbid_unknown_tool_arguments(mcp, _setup_name)
+
+discovery_tool_handlers = build_discovery_handlers(
+    DiscoveryToolServices(
+        hook_root=_discovery_hook_root,
+        load_snapshot=_load_discovery_hook_snapshot,
+        current_snapshot=_hook_snapshot_store.current,
+        replace_snapshot=_hook_snapshot_store.replace,
+        retry_store=_discovery_retry_store,
+        registered_providers=registered_provider_ids,
+        run_hooks=lambda snapshot, kind: execute_eligible_hooks(snapshot, kind),
+        on_refresh=_on_discovery_hooks_refreshed,
+    )
+)
+# Deliberately no `tool_registry.configure(...)`: ToolRegistry.register defaults to
+# hidden=False, locked=False, which is exactly the always-visible, non-authorizing
+# requirement. An agent that has just been told discovery found nothing must be able to
+# reach these without unlocking anything first.
+#
+# Deliberately no `mcp.configure_layer2(...)`: these are not hardware actions, and a
+# hook failure must not be reported through the Layer-2 hardware-failure envelope.
+for _name, _handler in discovery_tool_handlers.items():
+    mcp.add_tool(_handler, name=_name, description=_handler.__doc__, structured_output=False)
+    # FastMCP silently drops unknown fields by default; a client passing a bogus
+    # `executable` field must fail closed rather than have it quietly ignored.
+    forbid_unknown_tool_arguments(mcp, _name)
+
+remote_probe_tool_handlers = build_remote_probe_handlers(
+    RemoteProbeToolServices(registry_path=_remote_probes_registry_path)
+)
+# Same treatment as the discovery-hook tools directly above, and for the same reasons:
+#
+# Deliberately no `tool_registry.configure(...)`: always visible, never locked. An
+# agent told that native discovery found no probe over local USB must reach the one
+# route that survives that (register_remote_probe) without unlocking anything first.
+#
+# Deliberately no `mcp.configure_layer2(...)`: registration is configuration, not a
+# hardware action, and must not report through the Layer-2 hardware-failure envelope.
+for _remote_probe_name, _remote_probe_handler in remote_probe_tool_handlers.items():
+    mcp.add_tool(
+        _remote_probe_handler,
+        name=_remote_probe_name,
+        description=_remote_probe_handler.__doc__,
+        structured_output=False,
+    )
+    forbid_unknown_tool_arguments(mcp, _remote_probe_name)
 
 for _setup_action in SETUP_GUARDED_ACTIONS:
     tool_registry.configure(

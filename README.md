@@ -49,6 +49,37 @@ repository.
 - [Sentry evidence](sentry-evidence/README.md): final passing test suite,
   specifications, plans, and recorded results for the Sentry monitor/logger work.
 
+## Firmware MCP capabilities
+
+The server provides a guarded board-development surface:
+
+- **Board readiness:** discover connections, route familiar board names to validation or setup,
+  establish board profiles, validate live hardware, and report readiness. When a machine cannot
+  enumerate a debugger or serial port natively, an agent can author a local discovery hook under
+  the project's `.firm/discovery_hooks` so the server can see it; hook output names hardware and
+  grants no authority.
+- **Debug and inspection:** inspect board, CPU, execution, symbol, and bounded-memory state;
+  control breakpoints, stepping, reset/run, and other bounded diagnostic actions.
+- **Serial evidence:** capture UART output and run controlled serial exchanges for declared tests
+  or diagnosis.
+- **Firmware deployment:** bind the selected build output in a flash plan, verify it against the
+  reviewed stable map at execution time, and flash the approved application. A successful flash
+  is deployment evidence, not proof of behavior.
+
+`find_symbol`, `read_memory_symbol`, and symbol-backed `write_memory` accept the current project's
+ELF explicitly. Pass `elf_artifact` after a server restart; within one uninterrupted Server Run, a
+successful application flash also creates a temporary convenience binding. The server never swaps
+in implicit checkout firmware as another project's symbol table, and symbol addresses remain
+subject to the board's memory-map containment policy.
+- **Guarded mutation and recovery:** writes, execution changes, bootloader work, and recovery
+  require the current board gate, the exact `*-plan` action, and any required human permission.
+- **Per-board safety:** validation, plans, permissions, budgets, and results never transfer between
+  connections. Disconnects and new server runs require validation; stable-map problems use the
+  server's refresh path.
+
+Always follow live MCP guidance. Visibility is not authorization: guarded actions use an all-null
+`*-plan` guidance call, the returned populated plan submission, then the paired action.
+
 ## Included command-line utilities
 
 ```text
@@ -56,6 +87,12 @@ uv run --locked pyocd-pack-repair --help
 uv run --locked pyocd-native-build --help
 uv run --locked pyocd-collect-artifacts --help
 ```
+
+### Portable native-build artifacts
+
+The server does not require a particular IDE or build system. Build with the project's native
+tooling, then optionally normalize its explicit outputs with the small collector
+(`pyocd-collect-artifacts`, above).
 
 Historical implementation notes, progress material, test material, and generated
 runtime state are kept outside the server in `../archive/BYO-Firmware-MCP-20260731/`.

@@ -8,7 +8,7 @@ from typing import Callable
 
 from pyocd_debug_mcp.adapters.uart_interface import UARTInterface
 from pyocd_debug_mcp.adapters.uart_pyserial import PySerialUARTInterface
-from pyocd_debug_mcp.kernel.operations import cancellation_checkpoint
+from pyocd_debug_mcp.kernel.operations import OperationCancelledError, cancellation_checkpoint
 
 _BACKEND: UARTInterface = PySerialUARTInterface()
 
@@ -158,6 +158,10 @@ def capture_uart_output(
                             reopen_count=reopen_count,
                             duration_seconds=time.monotonic() - started,
                         )
+        except OperationCancelledError:
+            # A RuntimeError subclass, so it would otherwise be swallowed by the wrap
+            # below and lose the type identity operations.py dispatches CANCELLED on.
+            raise
         except Exception as exc:  # noqa: BLE001 - want the raw serial error
             raise RuntimeError(f"Unable to read {device} at {baudrate} baud: {exc}") from exc
         finally:
@@ -206,6 +210,8 @@ def write_uart_output(
         cancellation_checkpoint()
         bytes_written = backend.write(port_handle, payload)
         cancellation_checkpoint()
+    except OperationCancelledError:
+        raise
     except Exception as exc:  # noqa: BLE001 - want the raw serial error
         raise RuntimeError(f"Unable to write {device} at {baudrate} baud: {exc}") from exc
     finally:
@@ -307,6 +313,8 @@ def exchange_uart_output(
                 step_results.append(step_result)
                 if not step_result.matched:
                     break
+    except OperationCancelledError:
+        raise
     except Exception as exc:  # noqa: BLE001 - normalize backend-specific serial failures
         raise RuntimeError(
             f"Unable to exchange data on {device} at {baudrate} baud: {exc}"

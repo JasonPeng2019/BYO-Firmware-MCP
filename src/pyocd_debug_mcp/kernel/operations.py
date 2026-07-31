@@ -30,7 +30,11 @@ from pyocd_debug_mcp.kernel.processes import (
     terminate_process_group,
 )
 from pyocd_debug_mcp.probe_families import configured_probe_cli_commands
-from pyocd_debug_mcp.timeouts import DEFAULT_EXTERNAL_COMMAND_TIMEOUT_SECONDS
+from pyocd_debug_mcp.serial_resolver import SERIAL_FALLBACKS
+from pyocd_debug_mcp.timeouts import (
+    DEFAULT_EXTERNAL_COMMAND_TIMEOUT_SECONDS,
+    MAX_HOOK_TIMEOUT_SECONDS,
+)
 
 DEFAULT_OPERATION_TIMEOUT_SECONDS = 30.0
 FLASH_OPERATION_TIMEOUT_SECONDS = 120.0
@@ -58,11 +62,95 @@ _PROBE_INVENTORY_TOOLS = frozenset(
         "board_validate",
         "board_setup",
         "board_fix_setup",
+        # Reaches `_resolved_probe_uid_for_connection` -> `snapshot()` on its
+        # connect-bearing branches (server.py 5854, 5894) and not on the others.
+        # It joins anyway: the block below takes a `max`, so this raises a *ceiling*
+        # rather than lengthening any run. A branch that never snapshots finishes
+        # exactly as fast; it just stops being cancelled mid-discovery on the branch
+        # that does.
+        "continue_setup",
     }
 )
 _INTENTIONAL_HALT_TOOLS = frozenset(
     {"halt", "reset_and_halt", "connect_under_reset", "set_breakpoint"}
 )
+# The easy group to miss and the one that breaks the product. These are NOT in
+# _PROBE_INVENTORY_TOOLS and their budgets come from their own arguments, but
+# `_resolve_serial_port_for_session` runs immediately before every one of them, calling
+# `uart_snapshot()`, which can execute a UART hook and -- when native enumeration comes
+# back empty -- a legacy vendor UART helper (SERIAL_FALLBACKS) too. `read_serial` with
+# read_seconds=3 resolves to 8s, against a hook allowance of up to 60s -- without the
+# addend the read is cancelled before it starts whenever a hook actually runs.
+_UART_ACTION_TOOLS = frozenset({"read_serial", "write_serial", "serial_exchange"})
+# `refresh_discovery_hooks` executes every eligible hook of both kinds.
+# `get_discovery_hook_contract` executes nothing and keeps the default budget.
+_DISCOVERY_HOOK_TOOLS = frozenset({"refresh_discovery_hooks"})
+
+
+def _default_eligible_hook_counts() -> Mapping[str, int]:
+    return {"probe": 0, "uart": 0}
+
+
+# A provider callable, never an import of server state: operations.py is imported by
+# registry.py which is imported by server.py, so any reverse import is a cycle. The
+# eligible-hook count is also run-scoped -- it is only known after a refresh -- so it
+# cannot be an import-time constant.
+_eligible_hook_counts: Callable[[], Mapping[str, int]] = _default_eligible_hook_counts
+
+
+def set_eligible_hook_count_provider(provider: Callable[[], Mapping[str, int]]) -> None:
+    """Point the timeout budget at the live hook snapshot store."""
+
+    global _eligible_hook_counts
+    _eligible_hook_counts = provider
+
+
+def reset_eligible_hook_count_provider() -> None:
+    """Restore the zero-count default (used by tests and at shutdown)."""
+
+    global _eligible_hook_counts
+    _eligible_hook_counts = _default_eligible_hook_counts
+
+
+def _hook_budget(*kinds: str) -> float:
+    """Reserve time for hooks that *may* run during this operation.
+
+    Zero on a healthy machine: counts only go positive once a manifest is loaded, and
+    hooks only execute when native discovery for that kind comes back empty. The budget
+    must still be reserved, because whether native discovery will be empty is not known
+    when the deadline is computed.
+    """
+
+    try:
+        counts = _eligible_hook_counts()
+    except Exception:  # noqa: BLE001 - a deadline must never fail to be computed
+        return 0.0
+    total = 0
+    for kind in kinds:
+        try:
+            total += int(counts.get(kind, 0) or 0)
+        except (TypeError, ValueError):
+            continue
+    if total <= 0:
+        return 0.0
+    return total * (MAX_HOOK_TIMEOUT_SECONDS + MAX_OWNED_PROCESS_CLEANUP_SECONDS)
+
+
+def _vendor_uart_budget() -> float:
+    """Reserve time for legacy vendor UART helpers a UART snapshot may shell out to.
+
+    Mirrors the probe CLI term below: one `_run_cmd` subprocess per configured
+    `SERIAL_FALLBACKS` spec, each bounded by `DEFAULT_EXTERNAL_COMMAND_TIMEOUT_SECONDS`
+    plus its owned-process cleanup allowance. `SERIAL_FALLBACKS` is empty by default
+    (nothing configured in `PYOCD_SERIAL_FALLBACK_REGISTRY`), so this is 0.0 on a
+    healthy machine, same as `_hook_budget` -- reserved unconditionally because whether
+    native UART enumeration will come back empty (the only case that reaches these
+    helpers) is not known when the deadline is computed.
+    """
+
+    return len(SERIAL_FALLBACKS) * (
+        DEFAULT_EXTERNAL_COMMAND_TIMEOUT_SECONDS + MAX_OWNED_PROCESS_CLEANUP_SECONDS
+    )
 
 T = TypeVar("T")
 BeforeExecution = Callable[[], None]
@@ -456,6 +544,7 @@ def operation_timeout_seconds(
 
     values = arguments or {}
     finalizer_timeout: float | None = None
+    finalizer_reaches_uart = False
     if "on_exit" in values:
         from pyocd_debug_mcp.kernel.finalizers import (
             FinalizerValidationError,
@@ -477,14 +566,25 @@ def operation_timeout_seconds(
                 and "timeout_seconds" in raw_finalizer
             ):
                 finalizer_timeout = _positive_finite_number(raw_finalizer.get("timeout_seconds"))
+                finalizer_reaches_uart = True
         else:
             if isinstance(finalizer, UARTWriteFinalizer):
                 finalizer_timeout = finalizer.timeout_seconds
+                finalizer_reaches_uart = True
 
     def include_finalizer(timeout: float) -> float:
         if finalizer_timeout is None:
             return timeout
-        return timeout + finalizer_timeout + ARGUMENT_TIMEOUT_GRACE_SECONDS
+        total = timeout + finalizer_timeout + ARGUMENT_TIMEOUT_GRACE_SECONDS
+        if finalizer_reaches_uart:
+            # `_finalizer_uart_write` calls `_resolve_serial_port_for_session`, which
+            # calls `uart_snapshot()`, so the finalizer performs its own independent
+            # resolution after the main action finished -- it can execute a UART hook
+            # and, when native enumeration comes back empty, a legacy vendor UART
+            # helper (SERIAL_FALLBACKS) a second time, separate from any the main
+            # action's own resolution already reserved for.
+            total += _vendor_uart_budget() + _hook_budget("uart")
+        return total
 
     if tool_name == "action_batch":
         actions = values.get("actions")
@@ -536,8 +636,24 @@ def operation_timeout_seconds(
             + len(configured_probe_cli_commands())
             * (DEFAULT_EXTERNAL_COMMAND_TIMEOUT_SECONDS + MAX_OWNED_PROCESS_CLEANUP_SECONDS)
             + CANCELLATION_CLEANUP_GRACE_SECONDS
+            # Each of these tools can take an inventory snapshot, which can run the
+            # probe CLI fallback above, a legacy vendor UART helper (SERIAL_FALLBACKS,
+            # via _vendor_uart_budget), and hooks of either kind. `max`, not `+=`, so
+            # membership only lifts a ceiling -- a tool that snapshots on some branches
+            # (continue_setup) costs nothing on the branches that do not.
+            + _vendor_uart_budget()
+            + _hook_budget("probe", "uart")
         )
         resolved_timeout = max(resolved_timeout, inventory_timeout)
+    if tool_name in _DISCOVERY_HOOK_TOOLS:
+        resolved_timeout = max(
+            resolved_timeout,
+            DEFAULT_OPERATION_TIMEOUT_SECONDS
+            + _hook_budget("probe", "uart")
+            + CANCELLATION_CLEANUP_GRACE_SECONDS,
+        )
+    if tool_name in _UART_ACTION_TOOLS:
+        resolved_timeout += _vendor_uart_budget() + _hook_budget("uart")
     if tool_name == "read_serial":
         requested = _positive_finite_number(values.get("read_seconds"))
         if requested is not None:
@@ -546,6 +662,8 @@ def operation_timeout_seconds(
                     float(planned_timeout or DEFAULT_OPERATION_TIMEOUT_SECONDS),
                     requested + ARGUMENT_TIMEOUT_GRACE_SECONDS,
                 )
+                + _vendor_uart_budget()
+                + _hook_budget("uart")
             )
     if tool_name == "serial_exchange":
         per_step = _positive_finite_number(values.get("read_seconds"))
@@ -558,6 +676,8 @@ def operation_timeout_seconds(
                     float(planned_timeout or DEFAULT_OPERATION_TIMEOUT_SECONDS),
                     ready + step_count * per_step + ARGUMENT_TIMEOUT_GRACE_SECONDS,
                 )
+                + _vendor_uart_budget()
+                + _hook_budget("uart")
             )
     if tool_name == "write_serial":
         requested = _positive_finite_number(values.get("timeout_seconds"))
@@ -567,6 +687,8 @@ def operation_timeout_seconds(
                     float(planned_timeout or DEFAULT_OPERATION_TIMEOUT_SECONDS),
                     requested + ARGUMENT_TIMEOUT_GRACE_SECONDS,
                 )
+                + _vendor_uart_budget()
+                + _hook_budget("uart")
             )
     if tool_name == "wait":
         requested_ms = _positive_finite_number(values.get("ms"))

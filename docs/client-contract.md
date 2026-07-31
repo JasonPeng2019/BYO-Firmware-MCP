@@ -71,6 +71,12 @@ profile-only action: do not supply or infer a probe UID, pyOCD target, external
 board-config path, or launch-environment override. Unknown fields are rejected
 through direct MCP dispatch and through `action_batch`.
 
+Connection identifiers issued by `setup_overview` are opaque server tokens, not
+probe serial numbers. Pass them back exactly as received. The server re-resolves
+each token against a fresh hardware snapshot at use time, so a token whose device
+has gone is refused with `discovery/selection-disappeared` and routed back through
+setup rather than silently matching a similar device.
+
 If normal profile/probe resolution fails and a deliberate exceptional manual
 connection is appropriate, initialize `connect_override-plan`. Only its hidden
 `connect_override` action accepts run-scoped `probe_uid`, `target_override`, or
@@ -96,6 +102,24 @@ identifier. Approval is fresh, one-time, and valid only for the unchanged
 plan. A successful recovery does not open the gate.
 
 ## Setup, research, and validation
+
+If the server can see no debug probe, `setup_overview` returns a missing-probe
+status (`discovery/no-native-probe`), not a board-naming ambiguity. Its remedy names
+the locked-environment check to run first; only if that also reports nothing, and the
+user can still see the device in a vendor tool, does it offer
+`get_discovery_hook_contract`. That tool executes nothing and returns the server's own
+hook directory plus the manifest and output schemas it will validate against. The agent
+writes the hook and manifest; the server never authors them. `refresh_discovery_hooks`
+then reloads the server-designated manifest and runs each eligible hook once, taking no
+path, no argv, and no code.
+
+Both discovery tools are always visible, need no prior unlock, and grant nothing. Hook
+output is configuration only: it cannot select a target, set a connection policy,
+restore a gate, plan, or permission, or authorize any hardware action. Hooks execute
+only for a kind whose native discovery came back empty, so a machine where pyOCD and
+pyserial work never runs one. A backend-open failure (`probe/open-failed`,
+`uart/open-failed`) is an action failure, never a discovery failure, and its response
+deliberately carries no hook contract call.
 
 Call the all-NULL `board_setup-plan` first whenever hardware access is desired,
 before loading it and before any other `*-plan` tool. Ask for the familiar

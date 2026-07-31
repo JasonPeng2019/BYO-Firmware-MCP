@@ -111,6 +111,28 @@ the requested setup tool. If setup or validation returns a friendly choice,
 relay its prose and copy its exact `accepted_response`; do not scrape labels,
 invent a target, or ask the user for internal IDs.
 
+### When the server cannot see the hardware
+
+If `setup_overview` reports no debug probe, that is a missing-probe status, not a
+board-naming question. Run the locked-environment check it names first
+(`uv run --locked python -m pyocd list --probes`); a driver or permission problem is far
+likelier than a genuinely unenumerable device, and no hook can fix a driver.
+
+Only when that check also reports nothing, and the user can still see the device in a
+vendor tool, does the payload offer `get_discovery_hook_contract`. It executes nothing
+and returns the server's hook directory, the manifest and output schemas, the supported
+runners for this OS, and the exact refresh call. The agent writes the hook and manifest;
+the server never authors them. `refresh_discovery_hooks` then loads the manifest the
+server designates -- it accepts no path, no arguments, and no code -- and runs each
+eligible hook once.
+
+Hooks live under the project's `.firm/discovery_hooks`, which is gitignored, so they are
+untracked by default. Tell the user if they want the hook committed. Hook output is
+configuration only: it names hardware and nothing else. It cannot select a target,
+restore a gate, plan, or permission, or authorize any hardware action, and a hook cannot
+make an unsupported pyOCD provider openable. Hooks run only for a kind whose native
+discovery came back empty, so a working machine never pays for them.
+
 Exact schemas and status payload behavior are in
 [docs/client-contract.md](docs/client-contract.md) and the live MCP descriptions.
 

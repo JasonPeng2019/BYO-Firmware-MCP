@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import asdict, dataclass, field
+from collections.abc import Mapping
 from typing import Any, Literal
 
 from pyocd_debug_mcp.firmstore.cache import CacheResolution
@@ -147,6 +148,14 @@ class PreflightInventory:
     exact_detected_targets: tuple[str, ...] = ()
     build_configurations: tuple[BuildConfiguration, ...] = ()
     blocking_error: PreflightBlock | None = None
+    hook_contract_call: Mapping[str, Any] | None = None
+    """The call that gets a discovery-hook contract, when the server has one to offer.
+
+    Defaults to None so every existing construction site is untouched. `PreflightEngine`
+    stays pure and has no server access: it only *renders* what was populated here.
+    """
+
+    uart_hook_contract_call: Mapping[str, Any] | None = None
 
     def normalized(self) -> PreflightInventory:
         """Return a stable-order, duplicate-free inventory for reporting/routing."""
@@ -165,6 +174,8 @@ class PreflightInventory:
                 sorted(self.build_configurations, key=lambda item: item.configuration_id)
             ),
             blocking_error=self.blocking_error,
+            hook_contract_call=self.hook_contract_call,
+            uart_hook_contract_call=self.uart_hook_contract_call,
         )
 
     def to_report(self, user_input: SetupUserInput) -> dict[str, Any]:
@@ -271,14 +282,30 @@ class PreflightEngine:
 
         # 1. A missing probe is deterministic and never researchable.
         if not current.probes:
+            message = (
+                "No compatible debug probe is currently visible. Tell the user to attach "
+                "the intended board and retry. If it remains absent, from the BYO Server "
+                "checkout run `uv run --locked python -m pyocd list --probes`; this checks "
+                "whether the server's locked Python environment can enumerate the USB "
+                "debugger. Do not begin documentation research."
+            )
+            if current.hook_contract_call is not None:
+                # Appended, never substituted: the locked-environment check is still the
+                # first thing to try, because a driver problem is far likelier than a
+                # genuinely unenumerable device, and a hook cannot fix a driver.
+                message += (
+                    " If that command also reports nothing and the user can still see the "
+                    "debugger in a vendor tool, call the tool named by hook_contract_call "
+                    "to get the contract for a local discovery hook that names it."
+                )
             return PreflightDecision(
                 "setup_blocked",
                 "setup/no-probe",
-                self._prompt(
-                    "No compatible debug probe is currently visible. Tell the user to attach "
-                    "the intended board and retry; do not begin documentation research."
-                ),
-                observed=observed,
+                self._prompt(message),
+                observed=observed
+                | {"hook_contract_call": dict(current.hook_contract_call)}
+                if current.hook_contract_call is not None
+                else observed,
             )
 
         selected_probe = self._select_by_id(
@@ -307,15 +334,25 @@ class PreflightEngine:
         selected_serial: SerialCandidate | None = None
         if user_input.requires_uart:
             if not current.serial_ports:
+                uart_message = (
+                    "The intended setup requires a serial port, but none is visible. Tell "
+                    "the user to attach or enable the board UART and retry; do not research."
+                )
+                if current.uart_hook_contract_call is not None:
+                    uart_message += (
+                        " If none appears and the user can still see the port in a vendor "
+                        "tool, call the tool named by uart_hook_contract_call to get the "
+                        "contract for a local discovery hook that names it."
+                    )
                 return PreflightDecision(
                     "setup_blocked",
                     "setup/no-uart",
-                    self._prompt(
-                        "The intended setup requires a serial port, but none is visible. Tell "
-                        "the user to attach or enable the board UART and retry; do not research."
-                    ),
+                    self._prompt(uart_message),
                     selected_probe=selected_probe,
-                    observed=observed,
+                    observed=observed
+                    | {"uart_hook_contract_call": dict(current.uart_hook_contract_call)}
+                    if current.uart_hook_contract_call is not None
+                    else observed,
                 )
             selected_serial = self._select_by_id(
                 current.serial_ports, selections.serial_id, "serial_id"
