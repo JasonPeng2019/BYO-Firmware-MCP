@@ -70,6 +70,7 @@ suite as evidence a fix is safe. Every fix in this codebase deserves a pass over
 
 | Path | What it is |
 | --- | --- |
+| `reviews/REVIEW_POLICY.md` | **Binding.** Materiality rubric (MUST-FIX vs EXTRANEOUS), the raised cap, the changed clearing condition, and the targeted-test-rerun rule. Read before reviewing, adjudicating, or fixing anything. |
 | `TASK_STATUS.md` | Authoritative status, full checklist, blockers, deliberately-unfixed items |
 | `reviews/ledger.md` | **Every finding ever raised** — C1–C16, D1–D19, M1–M6 — with VALID/INVALID verdict, one-line justification, and resolution. Read before filing anything. |
 | `reviews/iter-1..5-diff.md` / `-code.md` | The ten adversary reports |
