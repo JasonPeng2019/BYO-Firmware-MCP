@@ -1,1 +1,0 @@
-Remaining ambiguity: the plan names the external-UART confirmation contract but does not specify its exact response payload; the test verifies the handler routing and allowance identity, not hardware-specific confirmation fields.

@@ -1,3 +1,0 @@
-Cleared fresh artifact root at 2026-07-23T17:49:31.2810707-07:00
-C:\Users\Jason\Documents\Jason\FirmCLI_Tester\Firmware-Test-Manual\MCP-Trial-3\BYO-Firmware-MCP\testing_folder\artifacts
-C:\Users\Jason\Documents\Jason\FirmCLI_Tester\Firmware-Test-Manual\MCP-Trial-3\BYO-Firmware-MCP\testing_folder\runs
