@@ -1,0 +1,12 @@
+{
+  "board_id": "nucleo_l476rg",
+  "closed_at": "2026-07-24T00:55:25.861911Z",
+  "connection_id": "probe:066fff514988525067233337",
+  "created_at": "2026-07-24T00:55:05.948896Z",
+  "event_count": 2,
+  "log_path": "C:\\Users\\Jason\\Documents\\Jason\\FirmCLI_Tester\\Firmware-Test-Manual\\MCP-Trial-3\\BYO-Firmware-MCP\\testing_folder\\artifacts\\.firm\\runs\\20260724T005505Z-e2020fd9\\logs\\events.jsonl",
+  "probe_uid": "066FFF514988525067233337",
+  "recover_completed": false,
+  "route_used": "pyocd-native",
+  "session_id": "20260724T005505Z-e2020fd9"
+}

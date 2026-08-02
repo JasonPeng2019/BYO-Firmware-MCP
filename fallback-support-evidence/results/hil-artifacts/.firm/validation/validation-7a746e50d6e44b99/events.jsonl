@@ -1,0 +1,7 @@
+{"name":"Load profile and safety map","outcome":"missing","recorded_at":"2026-07-24T00:54:47.806815Z","step":1}
+{"name":"Enumerate debug probes","outcome":"passed","recorded_at":"2026-07-24T00:54:47.810816Z","step":2}
+{"name":"Resolve intended stable hardware probe identity","outcome":"passed","recorded_at":"2026-07-24T00:54:47.813830Z","step":3}
+{"name":"Confirm verified target support","outcome":"passed","recorded_at":"2026-07-24T00:54:47.816816Z","step":4}
+{"name":"Connect without target mutation","outcome":"passed","recorded_at":"2026-07-24T00:54:47.819832Z","step":5}
+{"name":"Read and compare reviewed silicon identity","outcome":"passed","recorded_at":"2026-07-24T00:54:47.822819Z","step":6}
+{"name":"Associate current safety map","outcome":"incomplete","recorded_at":"2026-07-24T00:54:47.825814Z","step":7}
