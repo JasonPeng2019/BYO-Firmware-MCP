@@ -56,6 +56,7 @@ class UARTCaptureResult:
     expected_text: str | None
     reopen_count: int
     duration_seconds: float
+    raw_bytes: bytes = b""
 
     @property
     def has_output(self) -> bool:
@@ -79,6 +80,7 @@ class UARTExchangeStepResult:
     expected_text: str
     text: str
     bytes_written: int
+    raw_bytes: bytes = b""
 
     @property
     def matched(self) -> bool:
@@ -96,6 +98,7 @@ class UARTExchangeResult:
     ready_matched: bool = True
     ready_probe_bytes_written: int = 0
     steps: tuple[UARTExchangeStepResult, ...] = ()
+    raw_bytes: bytes = b""
 
     @property
     def matched(self) -> bool:
@@ -188,6 +191,7 @@ def capture_uart_output(
                             expected_text=expected_text,
                             reopen_count=reopen_count,
                             duration_seconds=time.monotonic() - started,
+                            raw_bytes=bytes(captured),
                         )
                     if max_bytes is not None and len(captured) >= max_bytes:
                         return UARTCaptureResult(
@@ -195,6 +199,7 @@ def capture_uart_output(
                             expected_text=expected_text,
                             reopen_count=reopen_count,
                             duration_seconds=time.monotonic() - started,
+                            raw_bytes=bytes(captured),
                         )
         except OperationCancelledError:
             raise
@@ -232,6 +237,7 @@ def capture_uart_output(
         expected_text=expected_text,
         reopen_count=reopen_count,
         duration_seconds=time.monotonic() - started,
+        raw_bytes=bytes(captured),
     )
 
 
@@ -371,6 +377,7 @@ def exchange_uart_output(
                     step_expected,
                     step_capture.decode("utf-8", errors="replace"),
                     step_written,
+                    bytes(step_capture),
                 )
                 step_results.append(step_result)
                 if not step_result.matched:
@@ -407,4 +414,5 @@ def exchange_uart_output(
         ready_matched,
         ready_probe_bytes_written,
         tuple(step_results),
+        bytes(captured),
     )

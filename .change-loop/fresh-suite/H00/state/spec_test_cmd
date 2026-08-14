@@ -1,1 +1,0 @@
-uv run --no-project --with pytest --with psutil pytest tests/test_h00_repository_contract.py

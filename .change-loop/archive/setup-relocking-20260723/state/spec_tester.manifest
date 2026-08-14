@@ -1,5 +1,0 @@
-tests/test_change_loop_spec.py
-tests/test_regression_change_loop.py
-tests/test_server_trust_model_round_3.py
-tests/test_server_trust_model_round_4.py
-tests/test_server_trust_model_round_5.py

@@ -9,7 +9,7 @@ from typing import Any
 from mcp.server.fastmcp.exceptions import ToolError
 from pydantic import BaseModel, ConfigDict, Field, JsonValue
 
-from pyocd_debug_mcp.kernel.operations import SAFE_EXIT_REMINDER
+from pyocd_debug_mcp.kernel.operations import SAFE_EXIT_REMINDER, ReportedOutcomeError
 
 class BatchChild(BaseModel):
     """One JSON-only MCP child call with no extra or authority-bearing fields."""
@@ -82,6 +82,57 @@ def _json_result(value: Any) -> JsonValue:
     return str(value)
 
 
+def _without_nested_safe_exit_reminder(value: Any) -> Any:
+    """Remove only FastMCP's top-level child transport footer for batch embedding."""
+
+    if isinstance(value, str):
+        return value.removesuffix(f"\n{SAFE_EXIT_REMINDER}")
+    if isinstance(value, list):
+        return [
+            content.model_copy(
+                update={"text": text.removesuffix(f"\n{SAFE_EXIT_REMINDER}")}
+            )
+            if (
+                isinstance(content, BaseModel)
+                and getattr(content, "type", None) == "text"
+                and isinstance(text := getattr(content, "text", None), str)
+            )
+            else content
+            for content in value
+        ]
+    if (
+        not isinstance(value, tuple)
+        or len(value) != 2
+        or not isinstance(value[0], list)
+        or not isinstance(value[1], dict)
+        or not isinstance(value[1].get("result"), str)
+    ):
+        return value
+
+    contents, metadata = value
+    normalized_contents: list[Any] = []
+    for content in contents:
+        text = getattr(content, "text", None)
+        if (
+            isinstance(content, BaseModel)
+            and getattr(content, "type", None) == "text"
+            and isinstance(text, str)
+        ):
+            normalized_contents.append(
+                content.model_copy(
+                    update={"text": text.removesuffix(f"\n{SAFE_EXIT_REMINDER}")}
+                )
+            )
+        else:
+            normalized_contents.append(content)
+
+    normalized_metadata = dict(metadata)
+    normalized_metadata["result"] = normalized_metadata["result"].removesuffix(
+        f"\n{SAFE_EXIT_REMINDER}"
+    )
+    return normalized_contents, normalized_metadata
+
+
 def build_batch_handlers(
     dispatch_child: ChildDispatcher,
     *,
@@ -89,13 +140,17 @@ def build_batch_handlers(
 ) -> dict[str, Callable[..., Awaitable[str]]]:
     """Build the batch tool without introducing a second authorization path."""
 
+    dispatcher_owner = getattr(dispatch_child, "__self__", None)
+    is_layer2 = getattr(dispatcher_owner, "is_layer2", lambda _name: False)
+
     async def action_batch(board_id: str, actions: list[BatchChild]) -> str:
         """Execute bounded same-board child calls through their normal dispatch path.
 
         Use an accepted *-plan's server-generated one-child fallback unchanged when a client's
         callable bindings remain static. Never invent hidden children or use a batch to bypass
         plans, permission, validation, gates, freshness, timeouts, budgets, locks, or cleanup;
-        every child independently traverses those normal checks.
+        every child independently traverses those normal checks. An authoritative child
+        outcome of failed or refused stops the sequence after preserving earlier results.
         """
 
         validated = _validate_children(board_id, actions, tool_exists=tool_exists)
@@ -106,19 +161,41 @@ def build_batch_handlers(
             arguments = dict(child.arguments)
             try:
                 result = await dispatch_child(child.tool_name, arguments)
+            except ReportedOutcomeError as exc:
+                child_result = (
+                    _without_nested_safe_exit_reminder(exc.result)
+                    if is_layer2(child.tool_name)
+                    else exc.result
+                )
+                failure = {
+                    "index": index,
+                    "tool_name": child.tool_name,
+                    "outcome_kind": exc.outcome_kind,
+                    "error_code": exc.error_code,
+                    "result": _json_result(child_result),
+                }
+                break
             except Exception as exc:  # child dispatch owns the typed authorization failure
                 failure = {
                     "index": index,
                     "tool_name": child.tool_name,
                     "error_type": type(exc).__name__,
-                    "message": str(exc),
+                    "message": (
+                        _without_nested_safe_exit_reminder(str(exc))
+                        if is_layer2(child.tool_name)
+                        else str(exc)
+                    ),
                 }
                 break
             completed.append(
                 {
                     "index": index,
                     "tool_name": child.tool_name,
-                    "result": _json_result(result),
+                    "result": _json_result(
+                        _without_nested_safe_exit_reminder(result)
+                        if is_layer2(child.tool_name)
+                        else result
+                    ),
                 }
             )
 

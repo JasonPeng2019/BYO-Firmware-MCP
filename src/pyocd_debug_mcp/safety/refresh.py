@@ -20,7 +20,7 @@ SafetyRefreshStatus = Literal["safety_refresh_completed", "safety_refresh_blocke
 MapDocument = SafetyMapDocument | GenericSafetyMapDocument
 MapDeriver = Callable[[str], MapDocument]
 LiveIdentityProvider = Callable[[str], bool]
-MapCommitHook = Callable[[str, str, bool], None]
+MapCommitHook = Callable[[str, str, bool, bool], None]
 
 
 @dataclass(frozen=True, slots=True)
@@ -83,7 +83,9 @@ class SafetyRefresher:
         self.repository = SafetyMapRepository(store)
         self.derive = derive
         self.has_live_identity = has_live_identity or (lambda _board_id: False)
-        self.on_commit = on_commit or (lambda _board_id, _digest, _identity_changed: None)
+        self.on_commit = on_commit or (
+            lambda _board_id, _digest, _identity_changed, _map_changed: None
+        )
 
     def refresh(self, request: SafetyRefreshRequest) -> SafetyRefreshResult:
         board_id = _require_board_id(request.board_id)
@@ -104,9 +106,12 @@ class SafetyRefresher:
 
         changed = _changed_groups(previous, candidate, prior_invalid=prior_invalid)
         identity_changed = previous is not None and previous.identity != candidate.identity
+        map_changed = (
+            previous is None or previous.canonical_digest != candidate.canonical_digest
+        )
         self.repository.commit(board_id, candidate)
         try:
-            self.on_commit(board_id, candidate.canonical_digest, identity_changed)
+            self.on_commit(board_id, candidate.canonical_digest, identity_changed, map_changed)
         except Exception as exc:  # noqa: BLE001 - keep the two-file repair path explicit/retryable
             return self.blocked(
                 request,

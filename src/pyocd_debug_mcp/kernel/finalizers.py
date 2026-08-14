@@ -51,15 +51,27 @@ def parse_finalizer(tool_name: str, value: object) -> OnExitFinalizer | None:
         )
     if not isinstance(value, Mapping):
         raise FinalizerValidationError(
-            "on_exit must be a structured uart_write or reset_and_run object; shell strings "
-            "and arbitrary commands are forbidden."
+            "on_exit finalizer must be null, {'action': 'reset_and_run'}, or "
+            "{'action': 'uart_write', 'text': '...', 'timeout_seconds': 1.0}; shell strings "
+            "and arbitrary commands are invalid."
         )
     try:
         return _FINALIZER_ADAPTER.validate_python(dict(value), strict=True)
     except ValueError as exc:
         raise FinalizerValidationError(
-            "Invalid on_exit finalizer; only structured uart_write and reset_and_run are allowed."
+            "Invalid on_exit finalizer; accepted canonical actions are reset_and_run and "
+            "uart_write (with non-empty text and an optional positive finite timeout_seconds)."
         ) from exc
+
+
+def validate_on_exit_finalizer(tool_name: str, parameters: Mapping[str, object]) -> str | None:
+    """Return a plan-time error when ``on_exit`` would fail action-time parsing."""
+
+    try:
+        parse_finalizer(tool_name, parameters["on_exit"])
+    except FinalizerValidationError as exc:
+        return str(exc)
+    return None
 
 
 def build_finalizer(

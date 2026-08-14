@@ -1,1 +1,0 @@
-./.h01-venv-batchstrict/Scripts/python.exe -m unittest -q tests.test_regression_s11_datasheet_lazy

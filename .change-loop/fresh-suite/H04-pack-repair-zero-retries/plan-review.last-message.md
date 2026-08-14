@@ -1,3 +1,0 @@
-Review completed; plan hash verified and all three charter checkpoints completed.
-
-I could not write or reread the required `plan-review.md`: this session’s filesystem is read-only and approvals are disabled. The attempted single-file write was rejected by the sandbox. The plan is otherwise cleared to proceed, with the recorded risks focused on cache-root placement, exact retained PIDX bytes, refresh semantics, byte-stable offline rebuilds, and public error-boundary coverage.

@@ -20,6 +20,7 @@ from pyocd_debug_mcp.kernel.operations import (
     BoardBusyError,
     ManagedOperation,
     OperationTimeoutError,
+    ReportedOutcomeError,
     dispatch,
     operation_manager,
     operation_timeout_seconds,
@@ -251,6 +252,11 @@ class RegistryFastMCP(FastMCP):
         self.registry.definition(name)
         self._layer2_tools.add(name)
 
+    def is_layer2(self, name: str) -> bool:
+        """Return whether this registered action owns the common Layer-2 footer."""
+
+        return name in self._layer2_tools
+
     def configure_guarded_dispatch(
         self,
         name: str,
@@ -304,6 +310,18 @@ class RegistryFastMCP(FastMCP):
         return [tool for tool in tools if tool.name in advertised]
 
     async def call_tool(self, name: str, arguments: dict[str, Any]):  # type: ignore[no-untyped-def]
+        """Dispatch a root call without escalating a handler-reported outcome."""
+
+        return await self._call_tool(name, arguments, escalate_reported_outcome=False)
+
+    async def call_batch_child(self, name: str, arguments: dict[str, Any]):  # type: ignore[no-untyped-def]
+        """Dispatch one batch child through the normal path with semantic escalation."""
+
+        return await self._call_tool(name, arguments, escalate_reported_outcome=True)
+
+    async def _call_tool(
+        self, name: str, arguments: dict[str, Any], *, escalate_reported_outcome: bool
+    ):  # type: ignore[no-untyped-def]
         revision_before = self._dispatch_revision.get()
         dispatch_token = None
         if revision_before is None:
@@ -370,6 +388,7 @@ class RegistryFastMCP(FastMCP):
                     if name in self._layer2_tools
                     else None,
                     finalizer=finalizer,
+                    escalate_reported_outcome=escalate_reported_outcome,
                 )
 
             def invoke_sync():  # type: ignore[no-untyped-def]
@@ -387,7 +406,10 @@ class RegistryFastMCP(FastMCP):
                 if name in self._layer2_tools
                 else None,
                 finalizer=finalizer,
+                escalate_reported_outcome=escalate_reported_outcome,
             )
+        except ReportedOutcomeError:
+            raise
         except (OperationTimeoutError, BoardBusyError) as exc:
             message = str(exc)
             if name in self._layer2_tools:

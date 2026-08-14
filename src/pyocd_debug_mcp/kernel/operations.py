@@ -91,6 +91,27 @@ class OperationCleanupError(RuntimeError):
     """A successful operation could not prove owned-process cleanup."""
 
 
+@dataclass(frozen=True, slots=True)
+class ReportedOutcome:
+    """The latest authoritative outcome reported by one managed handler."""
+
+    outcome_kind: str
+    error_code: str | None
+
+
+class ReportedOutcomeError(RuntimeError):
+    """A batch child returned after authoritatively reporting failure or refusal."""
+
+    def __init__(self, result: object, reported_outcome: ReportedOutcome) -> None:
+        self.result = result
+        self.outcome_kind = reported_outcome.outcome_kind
+        self.error_code = reported_outcome.error_code
+        super().__init__(
+            f"Handler reported {self.outcome_kind}"
+            + (f" [{self.error_code}]" if self.error_code else "")
+        )
+
+
 def _operation_cleanup_error(
     operation: ManagedOperation, original: BaseException | None = None
 ) -> OperationCleanupError:
@@ -229,6 +250,7 @@ class ManagedOperation:
     done: threading.Event = field(default_factory=threading.Event)
     result: object | None = None
     error: BaseException | None = None
+    reported_outcome: ReportedOutcome | None = None
     _guard: threading.RLock = field(default_factory=threading.RLock)
 
     def request_cancel(self, reason: str) -> None:
@@ -269,6 +291,22 @@ class ManagedOperation:
     def mark_handler_started(self) -> None:
         with self._guard:
             self.handler_started_at = time.monotonic()
+
+    def record_reported_outcome(self, outcome_kind: str, error_code: str | None) -> None:
+        """Keep the latest handler event while this operation still owns its context."""
+
+        with self._guard:
+            if self.state is OperationState.RUNNING and self.finished_at is None:
+                self.reported_outcome = ReportedOutcome(outcome_kind, error_code)
+
+    def reported_outcome_error(self) -> ReportedOutcomeError | None:
+        """Return the opt-in semantic boundary for this operation's exact result."""
+
+        with self._guard:
+            outcome = self.reported_outcome
+            if outcome is None or outcome.outcome_kind not in {"failed", "refused"}:
+                return None
+            return ReportedOutcomeError(self.result, outcome)
 
     def finish(self, state: OperationState) -> None:
         with self._guard:
@@ -621,6 +659,7 @@ async def dispatch(
     serialize_board: bool = True,
     resource_binder: ResourceBinder | None = None,
     finalizer: Finalizer | None = None,
+    escalate_reported_outcome: bool = False,
     manager: OperationManager = operation_manager,
 ) -> T:
     """Execute one request through its managed lifecycle and finite A-11 bound."""
@@ -662,6 +701,11 @@ async def dispatch(
                 async_operation = cast(Callable[[], Awaitable[T]], operation)
                 result = await async_operation()
             managed.result = result
+            managed.checkpoint()
+            if escalate_reported_outcome:
+                reported_error = managed.reported_outcome_error()
+                if reported_error is not None:
+                    raise reported_error
             managed.finish(OperationState.COMPLETED)
             return result
         except TimeoutError as exc:
@@ -718,6 +762,10 @@ async def dispatch(
                         managed.mark_handler_started()
                         managed.result = sync_operation()
                         managed.checkpoint()
+                        if escalate_reported_outcome:
+                            reported_error = managed.reported_outcome_error()
+                            if reported_error is not None:
+                                raise reported_error
                     managed.finish(OperationState.COMPLETED)
                 except OperationCancelledError as exc:
                     managed.error = exc

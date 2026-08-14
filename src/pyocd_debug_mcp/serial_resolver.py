@@ -561,10 +561,21 @@ def resolve_serial_port(
     allow_single_fallback: bool,
     run_cmd: RunCommand,
     interactive: bool,
+    proven_uart_port: str | None = None,
 ) -> SerialResolution:
     if override:
         port = _find_port_by_name(ports, override)
         if port:
+            if (
+                proven_uart_port is not None
+                and normalize_port_name(port.device) != normalize_port_name(proven_uart_port)
+            ):
+                return SerialResolution(
+                    None,
+                    f"explicit port '{override}' conflicts with board '{board.board_id}' "
+                    f"validated UART '{proven_uart_port}'; use '{proven_uart_port}' or omit "
+                    "the port override",
+                )
             return SerialResolution(port, "")
         return SerialResolution(None, f"override port '{override}' not found")
 

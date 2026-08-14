@@ -1,5 +1,0 @@
-2026-07-26T06:15:41.280577Z  WARN codex_core::shell_snapshot: Failed to create shell snapshot for powershell: Shell snapshot not supported yet for PowerShell
-2026-07-26T06:15:52.724903Z ERROR codex_core::tools::router: error=`"C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command "Get-FileHash -Algorithm SHA256 -LiteralPath '.change-loop\\fresh-suite\\H05-marker-unlink\\plan.md' | Format-List
-Get-Content -LiteralPath '.change-loop\\fresh-suite\\H05-marker-unlink\\changes.md' -Raw
-Get-Content -LiteralPath '.change-loop\\fresh-suite\\H05-marker-unlink\\plan.md' -Raw"` rejected: blocked by policy
-2026-07-26T06:15:54.918178Z ERROR codex_core::tools::router: error=`"C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command "Get-FileHash -Algorithm SHA256 -LiteralPath '.change-loop\\fresh-suite\\H05-marker-unlink\\plan.md' | Format-List"` rejected: blocked by policy

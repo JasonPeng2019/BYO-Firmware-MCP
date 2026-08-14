@@ -1,6 +1,0 @@
-test_removed_datasheet_relocks_primary_and_paired_before_setup_preconditions (tests.test_regression_h04_stale_datasheet_plan.StaleDatasheetPlanRegressionTests.test_removed_datasheet_relocks_primary_and_paired_before_setup_preconditions) ... ok
-
-----------------------------------------------------------------------
-Ran 1 test in 0.015s
-
-OK

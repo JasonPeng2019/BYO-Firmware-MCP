@@ -1,1 +1,0 @@
-./.venv/Scripts/python.exe -m unittest -q tests.test_s11_datasheet_lazy_spec

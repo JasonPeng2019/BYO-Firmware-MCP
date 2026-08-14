@@ -1,1 +1,0 @@
-./.venv/Scripts/python.exe -m pytest -q tests/test_regression_a21_write_memory_coherence.py tests/test_a20_sleeping_symbol_read_spec.py

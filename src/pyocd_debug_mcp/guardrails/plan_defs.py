@@ -6,9 +6,11 @@ import json
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from enum import Enum
+from functools import partial
 from types import MappingProxyType
 from typing import Final
 
+from pyocd_debug_mcp.kernel.finalizers import validate_on_exit_finalizer
 from pyocd_debug_mcp.services.uart_exchange_schema import (
     validate_serial_exchange_parameters,
 )
@@ -489,8 +491,12 @@ _DEFINITIONS = (
             _field("reset_on_open", FieldType.BOOLEAN, "Reset after opening the port."),
             _field(
                 "on_exit",
-                FieldType.OBJECT,
-                "Optional exact structured uart_write or reset_and_run finalizer.",
+                FieldType.JSON,
+                "Optional finalizer: null, {\"action\":\"reset_and_run\"}, or "
+                "{\"action\":\"uart_write\",\"text\":\"...\",\"timeout_seconds\":1.0}. "
+                "For uart_write, text is required; timeout_seconds is optional, positive, finite, "
+                "and defaults to 1.0. tool/arguments wrappers, shell strings, unknown keys, and "
+                "arbitrary commands are invalid; correct on_exit and resubmit the complete plan.",
                 nullable=True,
             ),
         ),
@@ -499,6 +505,7 @@ _DEFINITIONS = (
         SafetyMode.VALIDATED_READ,
         30.0,
         "A port path is runtime-only; it is never persisted as attachment identity.",
+        action_validator=partial(validate_on_exit_finalizer, "read_serial"),
     ),
     PlanDefinition(
         "serial_exchange",
@@ -585,8 +592,12 @@ _DEFINITIONS = (
             ),
             _field(
                 "on_exit",
-                FieldType.OBJECT,
-                "Optional exact structured uart_write or reset_and_run finalizer.",
+                FieldType.JSON,
+                "Optional finalizer: null, {\"action\":\"reset_and_run\"}, or "
+                "{\"action\":\"uart_write\",\"text\":\"...\",\"timeout_seconds\":1.0}. "
+                "For uart_write, text is required; timeout_seconds is optional, positive, finite, "
+                "and defaults to 1.0. tool/arguments wrappers, shell strings, unknown keys, and "
+                "arbitrary commands are invalid; correct on_exit and resubmit the complete plan.",
                 nullable=True,
             ),
         ),
@@ -595,6 +606,7 @@ _DEFINITIONS = (
         SafetyMode.FRESH_WRITE,
         30.0,
         "The text and all transport parameters are bound exactly by the plan.",
+        action_validator=partial(validate_on_exit_finalizer, "write_serial"),
     ),
 )
 
@@ -993,6 +1005,7 @@ _GUIDANCE: Final = MappingProxyType(
                 "baudrate": None,
                 "port": None,
                 "reset_on_open": False,
+                "on_exit": None,
             },
         ),
         "serial_exchange": _PromptGuidance(
@@ -1070,6 +1083,7 @@ _GUIDANCE: Final = MappingProxyType(
                 "port": None,
                 "append_newline": True,
                 "timeout_seconds": 1.0,
+                "on_exit": None,
             },
         ),
     }

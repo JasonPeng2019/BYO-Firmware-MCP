@@ -783,6 +783,9 @@ def _record_event(
         _session_store.append_global_event(event)
     else:
         _session_store.append_event(runtime, event)
+    operation = current_operation()
+    if operation is not None:
+        operation.record_reported_outcome(outcome_kind.value, error_code)
     return event
 
 
@@ -1490,6 +1493,30 @@ def _require_loaded_board(handle: TargetSessionHandle) -> BoardConfig:
     return handle.board
 
 
+def _proven_uart_port_for_session(
+    board: BoardConfig,
+    handle: TargetSessionHandle,
+    ports: list[SerialPortInfo],
+) -> str | None:
+    """Return the one current UART directly proven for this exact live session."""
+
+    connection = connection_manager.maybe_connection(board.board_id)
+    if connection is None or connection.handle is not handle:
+        return None
+    identity = gate_manager.live_identity(board.board_id)
+    if identity is None or identity.connection_id != connection.connection_id:
+        return None
+    probe_uid = session_metadata(handle).probe_uid
+    if not _stable_identity_equal(identity.probe_identity, probe_uid):
+        return None
+    matches = [
+        port
+        for port in ports
+        if port.serial_number and _stable_identity_equal(identity.probe_identity, port.serial_number)
+    ]
+    return matches[0].device if len(matches) == 1 else None
+
+
 def _resolve_serial_port_for_session(
     handle: TargetSessionHandle,
     *,
@@ -1512,6 +1539,7 @@ def _resolve_serial_port_for_session(
         allow_single_fallback=len(ports) == 1,
         run_cmd=_run_cmd,
         interactive=False,
+        proven_uart_port=_proven_uart_port_for_session(board, handle, ports),
     )
     if resolution.port is None:
         raise RuntimeError(f"Serial port resolution failed: {resolution.note}")
@@ -3101,7 +3129,17 @@ _safety_policy = SafetyPolicy(
 )
 
 
-def _restamp_after_refresh(board_id: str, map_digest: str, identity_changed: bool) -> None:
+def _restamp_after_refresh(
+    board_id: str,
+    map_digest: str,
+    identity_changed: bool,
+    map_changed: bool,
+) -> None:
+    if map_changed:
+        plan_engine.invalidate_board(
+            board_id,
+            "stable safety map changed during safety refresh; submit a fresh plan",
+        )
     expected_ref = (
         _firm_store.layout.safety_reference_prefix(board_id) / "memory_map.yaml"
     ).as_posix()
@@ -3139,9 +3177,10 @@ _safety_refresher = SafetyRefresher(
 def _run_board_safety_refresh(board_id: str) -> Mapping[str, object]:
     """Public v2 safety maintenance: deterministic rebuild with no artifact inputs."""
 
-    return _safety_refresher.refresh(
-        SafetyRefreshRequest(board_id, _safety_continuation("safety-refresh"))
-    ).to_payload()
+    with connection_manager.lock_for(board_id):
+        return _safety_refresher.refresh(
+            SafetyRefreshRequest(board_id, _safety_continuation("safety-refresh"))
+        ).to_payload()
 
 
 _REQUIRED_BASE_SAFETY_KINDS = frozenset(
@@ -5724,7 +5763,7 @@ mcp.configure_guarded_dispatch(
     lock_for_board=lambda board_id: connection_manager.lock_for(board_id),
 )
 batch_tool_handlers = build_batch_handlers(
-    mcp.call_tool,
+    mcp.call_batch_child,
     tool_exists=tool_registry.is_registered,
 )
 for _batch_name, _batch_handler in batch_tool_handlers.items():

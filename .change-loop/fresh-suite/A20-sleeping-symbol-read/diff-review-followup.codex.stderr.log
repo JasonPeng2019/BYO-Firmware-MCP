@@ -1,2 +1,0 @@
-2026-07-28T06:50:41.859976Z ERROR codex_models_manager::cache: failed to load models cache: missing field `supports_reasoning_summaries` at line 88 column 5
-2026-07-28T06:50:42.989888Z  WARN codex_core::shell_snapshot: Failed to create shell snapshot for powershell: Shell snapshot not supported yet for PowerShell

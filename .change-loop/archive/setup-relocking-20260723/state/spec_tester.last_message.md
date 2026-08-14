@@ -1,1 +1,0 @@
-Remaining ambiguity: there is no public native-build-to-flash-planning interface to assert candidate rejection directly; tests enforce that ambiguous results have no selected fields and expose all candidates.

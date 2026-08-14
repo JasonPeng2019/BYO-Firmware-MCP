@@ -1,3 +1,0 @@
-change-loop: starting iteration 1 of 8
-Reading additional input from stdin...
-change-loop: ERROR: codex start exited 255; see /mnt/c/Users/Jason/Documents/Jason/FirmCLI_Tester/Firmware-Test-Manual/MCP-Trial-3/BYO-Firmware-MCP/.change-loop/fresh-suite/A21-write-memory-coherence/logs/doer.turn-001.jsonl

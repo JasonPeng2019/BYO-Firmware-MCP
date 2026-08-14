@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import base64
+import hashlib
 import json
 import math
 import time
@@ -35,6 +37,16 @@ def _encode_uart_text(text: str, line_ending: str) -> bytes:
     except KeyError as exc:
         raise ValueError("line_ending must be one of: none, lf, cr, crlf") from exc
     return f"{text}{suffix}".encode("utf-8")
+
+
+def _raw_uart_evidence(raw_bytes: bytes) -> dict[str, str | int]:
+    """Return reversible, independently checkable metadata for observed UART bytes."""
+
+    return {
+        "captured_bytes_base64": base64.b64encode(raw_bytes).decode("ascii"),
+        "captured_byte_count": len(raw_bytes),
+        "captured_bytes_sha256": hashlib.sha256(raw_bytes).hexdigest(),
+    }
 
 
 @dataclass(frozen=True, slots=True)
@@ -161,12 +173,16 @@ def read_serial(
     )
     verdict = "matched" if capture.matched else "did not match"
     captured_text = capture.text
+    raw_evidence = _raw_uart_evidence(capture.raw_bytes)
     result = (
         f"UART {verdict} on {resolved_port.device} at {resolved_baudrate} baud via "
         f"{session_metadata(handle).route_used}; {expectation_label}; "
         f"reopen_count={capture.reopen_count}; "
         f"duration={capture.duration_seconds:.2f}s; "
-        f"captured_text={json.dumps(captured_text, ensure_ascii=True)}"
+        f"captured_text={json.dumps(captured_text, ensure_ascii=True)}; "
+        f"captured_bytes_base64={raw_evidence['captured_bytes_base64']}; "
+        f"captured_byte_count={raw_evidence['captured_byte_count']}; "
+        f"captured_bytes_sha256={raw_evidence['captured_bytes_sha256']}"
     )
     services.record_event(
         "read_serial",
@@ -179,6 +195,7 @@ def read_serial(
             "reopen_count": capture.reopen_count,
             "capture_duration_seconds": round(capture.duration_seconds, 3),
             "captured_text": captured_text,
+            **raw_evidence,
         },
         board_id=board_id,
         session=runtime,
@@ -361,6 +378,8 @@ def serial_exchange(
         f"{index}:{step.expected_text}={'matched' if step.matched else 'did not match'}"
         for index, step in enumerate(exchange.steps, start=1)
     )
+    raw_evidence = _raw_uart_evidence(exchange.raw_bytes)
+    step_raw_evidence = [_raw_uart_evidence(step.raw_bytes) for step in exchange.steps]
     result = (
         f"UART exchange {'matched' if exchange.matched else 'did not match'} on "
         f"{resolved_port.device} at {resolved_baudrate} baud; wrote "
@@ -370,7 +389,11 @@ def serial_exchange(
         f"steps={len(exchange.steps)} [{step_summary or 'none'}]; "
         f"captured_text={json.dumps(exchange.text, ensure_ascii=True)}; "
         "step_captured_texts="
-        f"{json.dumps([step.text for step in exchange.steps], ensure_ascii=True)}"
+        f"{json.dumps([step.text for step in exchange.steps], ensure_ascii=True)}; "
+        f"captured_bytes_base64={raw_evidence['captured_bytes_base64']}; "
+        f"captured_byte_count={raw_evidence['captured_byte_count']}; "
+        f"captured_bytes_sha256={raw_evidence['captured_bytes_sha256']}; "
+        f"step_captured_bytes={json.dumps(step_raw_evidence, ensure_ascii=True, separators=(',', ':'))}"
     )
     services.record_event(
         "serial_exchange",
@@ -382,6 +405,7 @@ def serial_exchange(
             "matched": exchange.matched,
             "bytes_written": exchange.bytes_written,
             "captured_text": exchange.text,
+            **raw_evidence,
             "ready_matched": exchange.ready_matched,
             "ready_probe_bytes_written": exchange.ready_probe_bytes_written,
             "steps": [
@@ -390,8 +414,9 @@ def serial_exchange(
                     "matched": step.matched,
                     "bytes_written": step.bytes_written,
                     "captured_text": step.text,
+                    **step_evidence,
                 }
-                for step in exchange.steps
+                for step, step_evidence in zip(exchange.steps, step_raw_evidence, strict=True)
             ],
         },
         board_id=board_id,
@@ -414,7 +439,13 @@ def build_serial_handlers(
         reset_on_open: bool = False,
         on_exit: OnExitFinalizer | None = None,
     ) -> str:
-        """Capture bounded UART output under an exact multi-call plan."""
+        """Capture bounded UART output under an exact multi-call plan.
+
+        When ``port`` names a connected endpoint, it is refused before UART I/O only
+        if the current validated board session proves a different UART. Use that
+        resolved UART or omit ``port`` to recover. A connected explicit port remains
+        allowed when the server cannot prove the board/UART correlation.
+        """
 
         del on_exit  # RegistryFastMCP validates and owns finalizer execution.
         return wrap_layer2_response(
@@ -438,7 +469,13 @@ def build_serial_handlers(
         timeout_seconds: float = 1.0,
         on_exit: OnExitFinalizer | None = None,
     ) -> str:
-        """Write bounded UTF-8 UART text under an exact multi-call plan."""
+        """Write bounded UTF-8 UART text under an exact multi-call plan.
+
+        When ``port`` names a connected endpoint, it is refused before UART I/O only
+        if the current validated board session proves a different UART. Use that
+        resolved UART or omit ``port`` to recover. A connected explicit port remains
+        allowed when the server cannot prove the board/UART correlation.
+        """
 
         del on_exit  # RegistryFastMCP validates and owns finalizer execution.
         return wrap_layer2_response(
@@ -466,7 +503,13 @@ def build_serial_handlers(
         ready_probe_delay_seconds: float = 0.0,
         clear_input: bool = False,
     ) -> str:
-        """Run one or more planned command/response steps through one state-preserving UART open."""
+        """Run planned command/response steps through one state-preserving UART open.
+
+        When ``port`` names a connected endpoint, it is refused before UART I/O only
+        if the current validated board session proves a different UART. Use that
+        resolved UART or omit ``port`` to recover. A connected explicit port remains
+        allowed when the server cannot prove the board/UART correlation.
+        """
 
         return wrap_layer2_response(
             serial_exchange(

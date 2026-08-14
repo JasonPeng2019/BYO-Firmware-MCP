@@ -6,6 +6,8 @@ import time
 from collections.abc import Callable
 from dataclasses import dataclass
 
+from pydantic import StrictInt
+
 from pyocd_debug_mcp.kernel.operations import (
     current_operation,
     run_if_not_cancelled,
@@ -25,7 +27,7 @@ class MiscToolServices:
 def build_misc_handlers(services: MiscToolServices) -> dict[str, Callable[..., str]]:
     """Build the bounded always-available wait action."""
 
-    def wait(board_id: str, ms: int) -> str:
+    def wait(board_id: str, ms: StrictInt) -> str:
         """Pause for a positive number of milliseconds for one logical board workflow."""
 
         started = time.monotonic()

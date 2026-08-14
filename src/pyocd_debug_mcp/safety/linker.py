@@ -546,13 +546,12 @@ def extract_build_evidence(selection: BuildArtifactSelection | None) -> BuildEvi
             "build/vector-reset-invalid",
             "Vector-table reset handler is not a Thumb address in executable ELF content",
         )
-    entry_address = entry_point & ~1
-    if (entry_point & 1) == 0 or not any(
-        executable.contains_address(entry_address) for executable in executable_ranges
+    if entry_point == 0 or not any(
+        executable.contains_address(entry_point) for executable in executable_ranges
     ):
         raise LinkerEvidenceError(
             "build/entry-invalid",
-            "ELF entry point is not a Thumb address in executable ELF content",
+            "ELF entry point is zero or outside executable ELF content",
         )
 
     if flash_partition is not None and any(

@@ -1,5 +1,0 @@
-ruff-check: exit=0 elapsed=00:00:00.2030815
-pyright: exit=1 elapsed=00:00:17.7234009
-pytest-full: exit=0 elapsed=00:17:01.6819025
-git-diff-check: exit=0
-pyright-uv-locked: exit=0

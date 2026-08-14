@@ -1,1 +1,0 @@
-./.venv/Scripts/python.exe -m unittest -q tests.test_regression_h05_uart_close

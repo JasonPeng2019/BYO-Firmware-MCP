@@ -1,7 +1,0 @@
-PLAN_REVIEW: RISKS
-
-1. **CL-001 “checkpoint and short atomic commit mechanism”** does not explicitly require the success event and returned success text to be inside the same `run_if_not_cancelled` commit. A checkpoint followed by `record_event` can still record success if cancellation wins in between. Mitigation: make the atomic action produce the existing success text and record its sole `ToolOutcome.SUCCESS`; add a deterministic cancellation-at-commit test asserting cancellation yields zero success events and no success result.
-
-2. **CL-001 completion/cancellation race** states the intended winner semantics but its listed tests only prove ordinary cancellation and ordinary success. Mitigation: add controlled tests for both orderings: cancellation before commit produces `OperationCancelledError`/no event, while cancellation after `completion_committed` preserves exactly one event and the exact existing response.
-
-3. **Public stdio regression objective** says the first request has “no tool success” but does not define raw JSON-RPC assertions for request IDs `410` and `420` or the accepted SDK-owned cancellation response. This could accidentally treat an unrelated response as success or encourage response rewriting. Mitigation: parse stdout as JSON-RPC only; assert no success `tools/call` result for `410`, permit only the pinned SDK’s cancellation response (or no response), assert the success response is specifically for `420`, and verify a subsequent request succeeds on the same still-open transport.
