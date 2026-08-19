@@ -1,0 +1,38 @@
+name: Notify installer of firmware release
+
+# PLAN.md 5d sender: when this repo publishes a `v*` tag, fire a
+# `firmware-release` repository_dispatch at BYO-Installer so it opens a
+# firmware-pin bump PR (see that repo's .github/workflows/firmware-bump.yml).
+# The installer then validates the bump with its existing quality + build-matrix
+# CI before a human merges to cut the next installer build.
+#
+# Required secret: INSTALLER_DISPATCH_TOKEN — a fine-grained PAT scoped to
+# JasonPeng2019/BYO-Installer with Contents: read/write (repository_dispatch
+# requires write on the target repository).
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  dispatch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Fire installer firmware-release dispatch
+        env:
+          GH_TOKEN: ${{ secrets.INSTALLER_DISPATCH_TOKEN }}
+        run: |
+          if [ -z "${GH_TOKEN}" ]; then
+            echo "::error::INSTALLER_DISPATCH_TOKEN is not set; cannot notify BYO-Installer"
+            exit 1
+          fi
+          echo "Dispatching firmware-release for commit ${GITHUB_SHA} (${GITHUB_REF_NAME})"
+          gh api repos/JasonPeng2019/BYO-Installer/dispatches \
+            -f "event_type=firmware-release" \
+            -f "client_payload[commit]=${GITHUB_SHA}"

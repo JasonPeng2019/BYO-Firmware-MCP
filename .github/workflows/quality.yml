@@ -50,3 +50,17 @@ jobs:
 
       - name: Tests
         run: uv run python -m unittest discover -s tests
+
+      - name: Sidecar self-test from outside the checkout
+        shell: bash
+        run: |
+          # PLAN.md 5b: run the hardware-free self-test from a working directory
+          # OUTSIDE the source tree, so any regression that reintroduces cwd /
+          # in-checkout .env / relative data-file authority fails here in CI
+          # instead of on a customer's packaged build. The interpreter and
+          # dependencies come from the project's synced venv (via --project);
+          # only the process working directory is external.
+          work="${RUNNER_TEMP}/byo-sidecar-self-test-outside"
+          mkdir -p "$work"
+          cd "$work"
+          uv run --project "$GITHUB_WORKSPACE" pyocd-debug-mcp self-test
