@@ -26,6 +26,7 @@ pyocd-native-build = "pyocd_debug_mcp.native_build:main"
 
 [dependency-groups]
 dev = [
+    "nuitka>=4.1,<5",
     "pyright>=1.1",
     "ruff>=0.6",
 ]
