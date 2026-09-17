@@ -3,9 +3,10 @@
 Two independent questions live here, and conflating them is the trap this module
 exists to prevent:
 
-* **Where do we write?** The per-user application-data directory, with the
-  operator root as a last-resort fallback and an in-memory buffer if neither is
-  writable. Logging must never silently no-op.
+* **Where do we write?** An explicit launch-time monitor root is exclusive when
+  configured. Otherwise use the per-user application-data directory, then the
+  operator root as a last-resort fallback, and finally an in-memory buffer.
+  Logging must never silently no-op or escape an explicit isolation root.
 * **Which workspace is this?** Derived from the path the agent supplies on the
   initialization handshake. That path is an *identity input only* -- monitoring
   output is never written inside the workspace project directory.
@@ -34,6 +35,7 @@ APP_DIR_NAME = "BYO"
 SERVER_DATA = "server_data"
 SIMULATED_REMOTE = "simulated_remote"
 OPERATOR_SUBDIR = ".byo-monitor"
+MONITOR_ROOT_ENV = "BYO_MCP_MONITOR_ROOT"
 SALT_FILE = "fingerprint.salt"
 TOKEN_FILE = "workspace.token"
 UNBOUND_WORKSPACE = "unbound"
@@ -46,6 +48,7 @@ class StoreState(str, Enum):
     """Where the monitoring store resolved to, reported by the health check."""
 
     APP_DATA = "app_data"
+    MONITOR_ROOT = "monitor_root"
     OPERATOR_ROOT = "operator_root"
     BUFFERING = "buffering"
 
@@ -108,6 +111,15 @@ def _operator_candidate() -> Path | None:
         return None
 
 
+def _monitor_root_candidate(configured: str) -> Path | None:
+    """Resolve an explicit isolated root without making startup depend on it."""
+
+    try:
+        return Path(configured).expanduser().resolve()
+    except (OSError, RuntimeError):
+        return None
+
+
 def resolve_store_root() -> StoreRoot:
     """Resolve the monitoring store once and cache it for the process.
 
@@ -119,10 +131,15 @@ def resolve_store_root() -> StoreRoot:
     with _guard:
         if _cached_root is not None:
             return _cached_root
+        explicit = os.environ.get(MONITOR_ROOT_ENV, "").strip()
         if _override_root is not None:
-            candidates: list[tuple[StoreState, Path]] = [
-                (StoreState.APP_DATA, _override_root)
-            ]
+            candidates: list[tuple[StoreState, Path]] = [(StoreState.APP_DATA, _override_root)]
+        elif explicit:
+            # Explicit isolation is never advisory: a bad or unwritable root
+            # buffers locally instead of leaking monitoring records to app data
+            # or the project artifact root.
+            candidate = _monitor_root_candidate(explicit)
+            candidates = [] if candidate is None else [(StoreState.MONITOR_ROOT, candidate)]
         else:
             candidates = []
             app_data = _app_data_candidate()
@@ -133,14 +150,15 @@ def resolve_store_root() -> StoreRoot:
                 candidates.append((StoreState.OPERATOR_ROOT, operator))
         resolved = StoreRoot(StoreState.BUFFERING, None)
         for state, candidate in candidates:
-            if _usable(candidate):
+            if not _usable(candidate):
+                continue
+            try:
                 for sub in (SERVER_DATA, SIMULATED_REMOTE):
-                    try:
-                        (candidate / sub).mkdir(parents=True, exist_ok=True)
-                    except OSError:
-                        continue
-                resolved = StoreRoot(state, candidate)
-                break
+                    (candidate / sub).mkdir(parents=True, exist_ok=True)
+            except OSError:
+                continue
+            resolved = StoreRoot(state, candidate)
+            break
         _cached_root = resolved
         return resolved
 
@@ -247,9 +265,9 @@ def workspace_token(store: StoreRoot, wid: str) -> str:
 def _reset_cache(override: Path | None = None) -> None:
     """Test-only hook: clear the cached store and optionally pin a root.
 
-    Tests must use this rather than an environment variable. ``resolve_store_root``
-    tries the application-data directory first, so a test that only set
-    ``BYO_MCP_ARTIFACT_ROOT`` would still write into the developer's real store.
+    Tests must use this rather than an environment variable. The override has
+    precedence over every launch-time root, so tests cannot write to a
+    developer's real store.
     """
 
     global _cached_root, _cached_salt, _override_root
@@ -261,6 +279,7 @@ def _reset_cache(override: Path | None = None) -> None:
 
 __all__ = [
     "APP_DIR_NAME",
+    "MONITOR_ROOT_ENV",
     "SERVER_DATA",
     "SIMULATED_REMOTE",
     "UNBOUND_WORKSPACE",

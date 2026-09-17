@@ -1,0 +1,66 @@
+{
+  "schema_version": 1,
+  "profile": {
+    "schema_version": 2,
+    "board_id": "legacy_full",
+    "display_name": "Legacy full board",
+    "mcu_part_number": "nRF52840",
+    "mcu_family": "nrf52",
+    "probe_family": "jlink",
+    "pyocd_target": "nrf52840",
+    "created_at": "2026-01-01T00:00:00Z",
+    "updated_at": "2026-01-01T00:00:00Z",
+    "safety_ref": ".firm/safety/legacy_full/memory_map.yaml"
+  },
+  "memory_map": {
+    "schema_version": 2,
+    "board_id": "legacy_full",
+    "identity": {
+      "mcu_part_number": "nRF52840",
+      "pyocd_target": "nrf52840",
+      "reviewed_board_type": "nrf52840-dk"
+    },
+    "source_digests": {
+      "semantic_profile": "c85b50e789963fec9e0ac3052d44fdcc16a2a0e9fdaa96e47dcb9b353f8374ee",
+      "reviewed_device_support": "1111111111111111111111111111111111111111111111111111111111111111",
+      "reviewed_official_evidence": "2222222222222222222222222222222222222222222222222222222222222222",
+      "map_generator_schema": "585f3262ec6c07939d3e620188c937f315ba5a739b8c40ca7e7854216e5191b5"
+    },
+    "geometry": {
+      "physical_flash": {"start": 0, "end": 65536},
+      "physical_ram": {"start": 536870912, "end": 536875008},
+      "erase": {"kind": "uniform", "origin": 0, "size": 4096}
+    },
+    "partitions": {"application": null, "bootloader": null},
+    "regions": [
+      {
+        "name": "physical flash",
+        "kind": "physical_flash",
+        "start": 0,
+        "end": 65536,
+        "executable": false,
+        "provenance": [
+          {
+            "authority": "official_document",
+            "source_id": "nRF52840-PS-v1.1",
+            "detail": "physical flash geometry"
+          }
+        ]
+      },
+      {
+        "name": "physical RAM",
+        "kind": "physical_ram",
+        "start": 536870912,
+        "end": 536875008,
+        "executable": false,
+        "provenance": [
+          {
+            "authority": "official_document",
+            "source_id": "nRF52840-PS-v1.1",
+            "detail": "physical RAM geometry"
+          }
+        ]
+      }
+    ]
+  }
+}

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import io
+import json
 import os
 import sys
 from collections.abc import Callable, Mapping
@@ -189,9 +190,7 @@ class ToolRegistry:
         definition = self.definition(name)
         prerequisite = definition.prerequisite or f"{name}-plan"
         board_text = f" for board '{board_id}'" if board_id else ""
-        raise ToolError(
-            f"Tool '{name}' is locked{board_text}. Call '{prerequisite}' first."
-        )
+        raise ToolError(f"Tool '{name}' is locked{board_text}. Call '{prerequisite}' first.")
 
     def _require_definition(self, name: str) -> ToolDefinition:
         try:
@@ -208,6 +207,7 @@ InvocationGuard = Callable[[str, str, Mapping[str, object]], None]
 ExecutionLockResolver = Callable[[str], ContextManager[object]]
 OperationResourceBinder = Callable[[ManagedOperation], None]
 OperationFinalizerResolver = Callable[[str, str, Mapping[str, object]], Callable[[], None] | None]
+JsonRefusalContext = Callable[[str, str], Mapping[str, object]]
 
 
 @dataclass(frozen=True, slots=True)
@@ -252,8 +252,11 @@ class RegistryFastMCP(FastMCP):
     ) -> None:
         self.registry = registry or ToolRegistry()
         self._timeout_resolver = timeout_resolver
+        self._route_guards: dict[str, InvocationGuard] = {}
         self._guarded_dispatch: dict[str, GuardedDispatchPolicy] = {}
         self._layer2_tools: set[str] = set()
+        self._json_refusal_tools: set[str] = set()
+        self._json_refusal_context: dict[str, JsonRefusalContext] = {}
         self._operation_resource_binder: OperationResourceBinder | None = None
         self._finalizer_resolver: OperationFinalizerResolver | None = None
         self._monitor: DispatchMonitor | None = None
@@ -280,6 +283,82 @@ class RegistryFastMCP(FastMCP):
         self.registry.definition(name)
         self._layer2_tools.add(name)
 
+    def configure_json_refusals(
+        self,
+        name: str,
+        *,
+        context: JsonRefusalContext | None = None,
+    ) -> None:
+        """Use the frozen versioned refusal envelope for one public tool.
+
+        These tools deliberately expose structured denials, including errors
+        discovered by the dispatcher before their handler can run (for example
+        a prohibited ``on_exit`` finalizer).  Layer-2 text wrapping would make
+        that envelope unparsable, so it is intentionally bypassed here.
+        """
+
+        self.registry.definition(name)
+        self._json_refusal_tools.add(name)
+        if context is not None:
+            self._json_refusal_context[name] = context
+
+    def _json_refusal(
+        self,
+        name: str,
+        board_id: str | None,
+        message: str,
+        *,
+        code: str = "tier/refused",
+        remedies: tuple[str, ...] = (),
+        context: Mapping[str, object] | None = None,
+    ) -> str:
+        payload: dict[str, object] = {
+            "schema_version": 1,
+            "status": "refused",
+            "code": code,
+            "operation": name,
+            "message": message,
+            "remedies": list(remedies)
+            or ["Review the tier route and retry with an allowed operation."],
+        }
+        if board_id is not None:
+            payload["board_id"] = board_id
+            provider = self._json_refusal_context.get(name)
+            # A route guard captures its exact policy snapshot in ``context``.
+            # Re-resolving through a provider here could otherwise combine a
+            # full-tier refusal with a later lite warning (or the reverse).
+            # Dispatcher-time schema/finalizer refusals have no captured tier
+            # and intentionally still use the provider.
+            has_captured_tier = context is not None and "tier" in context
+            if provider is not None and not has_captured_tier:
+                try:
+                    # Context is diagnostic only. A corrupt/unreadable policy
+                    # must still return the frozen envelope rather than leak a
+                    # second dispatcher exception.
+                    payload.update(dict(provider(name, board_id)))
+                except Exception:  # noqa: BLE001 - preserve the original refusal
+                    pass
+        if context is not None:
+            payload.update(dict(context))
+        return json.dumps(payload, sort_keys=True)
+
+    @staticmethod
+    def _exception_code(exc: BaseException) -> str:
+        code = getattr(exc, "code", None)
+        return code if isinstance(code, str) and code else "tier/refused"
+
+    @staticmethod
+    def _exception_remedies(exc: BaseException) -> tuple[str, ...]:
+        remedies = getattr(exc, "remedies", ())
+        if isinstance(remedies, tuple) and all(isinstance(item, str) for item in remedies):
+            return remedies
+        return ()
+
+    @staticmethod
+    def _exception_context(exc: BaseException) -> Mapping[str, object]:
+        context = getattr(exc, "context", {})
+        return dict(context) if isinstance(context, Mapping) else {}
+
     def configure_guarded_dispatch(
         self,
         name: str,
@@ -291,6 +370,17 @@ class RegistryFastMCP(FastMCP):
 
         self.registry.definition(name)
         self._guarded_dispatch[name] = GuardedDispatchPolicy(guard, lock_for_board)
+
+    def configure_route_guard(self, name: str, *, guard: InvocationGuard) -> None:
+        """Run a tier route check before visibility/plan-lock enforcement.
+
+        Tier-specific wrong-route refusals must be more useful than the old
+        generic locked-tool response.  The existing guarded dispatch remains
+        responsible for managed execution, serialization, and plan validation.
+        """
+
+        self.registry.definition(name)
+        self._route_guards[name] = guard
 
     def add_tool(
         self,
@@ -386,6 +476,39 @@ class RegistryFastMCP(FastMCP):
     async def _call_tool_inner(  # type: ignore[no-untyped-def]
         self, name: str, arguments: dict[str, Any], board_id: str | None
     ):
+        route_guard = self._route_guards.get(name)
+        if route_guard is not None:
+            if board_id is None:
+                if name in self._json_refusal_tools:
+                    raise ToolError(
+                        self._json_refusal(
+                            name,
+                            board_id,
+                            f"Tier-routed tool '{name}' requires a non-empty board_id.",
+                            code="tier/board-required",
+                        )
+                    )
+                raise ToolError(f"Tier-routed tool '{name}' requires a non-empty board_id.")
+            try:
+                route_guard(name, board_id, dict(arguments))
+            except ToolError:
+                raise
+            except Exception as exc:
+                if name in self._json_refusal_tools:
+                    raise ToolError(
+                        self._json_refusal(
+                            name,
+                            board_id,
+                            str(exc),
+                            code=self._exception_code(exc),
+                            remedies=self._exception_remedies(exc),
+                            context=self._exception_context(exc),
+                        )
+                    ) from exc
+                message = str(exc)
+                if name in self._layer2_tools:
+                    message = wrap_layer2_response(message)
+                raise ToolError(message) from exc
         try:
             self.registry.require_unlocked(name, board_id)
         except ToolError as exc:
@@ -414,10 +537,34 @@ class RegistryFastMCP(FastMCP):
         finalizer = None
         if arguments.get("on_exit") is not None:
             if board_id is None or self._finalizer_resolver is None:
+                if name in self._json_refusal_tools:
+                    raise ToolError(
+                        self._json_refusal(
+                            name,
+                            board_id,
+                            f"Tool '{name}' does not accept an on_exit finalizer.",
+                            code="raw/on-exit-forbidden",
+                            remedies=(
+                                "Remove on_exit; raw serial has no safe lifecycle finalizer.",
+                            ),
+                        )
+                    )
                 raise ToolError(f"Tool '{name}' cannot accept an on_exit finalizer.")
             try:
                 finalizer = self._finalizer_resolver(name, board_id, arguments)
             except ValueError as exc:
+                if name in self._json_refusal_tools:
+                    raise ToolError(
+                        self._json_refusal(
+                            name,
+                            board_id,
+                            str(exc),
+                            code="raw/on-exit-forbidden",
+                            remedies=(
+                                "Remove on_exit; raw tools do not compose a safe lifecycle.",
+                            ),
+                        )
+                    ) from exc
                 raise ToolError(str(exc)) from exc
         try:
             request_id = context.request_id
@@ -446,9 +593,7 @@ class RegistryFastMCP(FastMCP):
                 )
 
             def invoke_sync():  # type: ignore[no-untyped-def]
-                return anyio.run(
-                    partial(tool.run, arguments, context=context, convert_result=True)
-                )
+                return anyio.run(partial(tool.run, arguments, context=context, convert_result=True))
 
             return await dispatch(
                 name,
@@ -469,6 +614,17 @@ class RegistryFastMCP(FastMCP):
                 message = wrap_layer2_response(message)
             raise ToolError(message) from exc
         except ToolError as exc:
+            if name in self._json_refusal_tools:
+                raise ToolError(
+                    self._json_refusal(
+                        name,
+                        board_id,
+                        str(exc),
+                        code=self._exception_code(exc),
+                        remedies=self._exception_remedies(exc),
+                        context=self._exception_context(exc),
+                    )
+                ) from exc
             if name in self._layer2_tools:
                 raise ToolError(wrap_layer2_response(str(exc))) from exc
             raise

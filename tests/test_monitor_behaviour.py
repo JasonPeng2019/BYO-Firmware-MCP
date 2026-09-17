@@ -269,7 +269,8 @@ class UsageSnapshotTick(_TickingMonitor):
 
         self.tick(self.SNAPSHOT_EVERY)
         self.assertEqual(
-            self.monitor._ledger.current_segment, 2,
+            self.monitor._ledger.current_segment,
+            2,
             "the first snapshot tick did not roll to a new segment",
         )
         self.assertTrue(
@@ -280,12 +281,14 @@ class UsageSnapshotTick(_TickingMonitor):
 
         self.tick(self.SNAPSHOT_EVERY)
         self.assertEqual(
-            self.monitor._ledger.current_segment, 3,
+            self.monitor._ledger.current_segment,
+            3,
             "the second snapshot tick did not roll again",
         )
         segments_after_second = {r.get("segment") for r in self.ledger_records()}
         self.assertGreater(
-            len(segments_after_second), len(segments_after_first),
+            len(segments_after_second),
+            len(segments_after_first),
             "records after the second roll did not land in a new segment file",
         )
 
@@ -339,6 +342,7 @@ class OneCadenceMovesEverythingItGoverns(MonitorTestCase):
         coarse_segments = coarse["segments"]
 
         self.tearDown()
+        self.doCleanups()
         self.setUp()
 
         fine = self._run_at_cadence(2, 8)
@@ -371,9 +375,7 @@ class CheckInTick(_TickingMonitor):
         """At call 9 both fire, exactly as call 500 does in the real cadences."""
 
         self.tick(self.CHECKIN_EVERY)
-        self.assertEqual(
-            self.snapshots()[-1]["detail"]["total_calls"], self.CHECKIN_EVERY
-        )
+        self.assertEqual(self.snapshots()[-1]["detail"]["total_calls"], self.CHECKIN_EVERY)
         self.assertEqual(self.monitor.consume_checkin_prompt(), CHECKIN_PROMPT)
 
 
@@ -431,7 +433,9 @@ class GracefulDegradation(MonitorTestCase):
         monitor.bind_workspace(None)
         broken = make_context()
         object.__setattr__(
-            broken, "connection_id", lambda board: 1 / 0  # type: ignore[misc]
+            broken,
+            "connection_id",
+            lambda board: 1 / 0,  # type: ignore[misc]
         )
         monitor._ctx = broken
         observation = monitor.begin("t", {"board_id": "b"}, "b")
@@ -460,12 +464,8 @@ class NullMonitorSurface(unittest.TestCase):
         self.assertIn("store unavailable", health["reason"])
 
     def test_submissions_are_refused_honestly(self) -> None:
-        self.assertEqual(
-            self.monitor.submit_report({})["status"], "monitor_unavailable"
-        )
-        self.assertEqual(
-            self.monitor.submit_checkin({})["status"], "monitor_unavailable"
-        )
+        self.assertEqual(self.monitor.submit_report({})["status"], "monitor_unavailable")
+        self.assertEqual(self.monitor.submit_checkin({})["status"], "monitor_unavailable")
 
     def test_the_surface_matches_the_real_monitor(self) -> None:
         for name in (
@@ -608,9 +608,13 @@ class SnapshotCarriesAllRequiredFields(MonitorTestCase):
         self.assertIn("per_tool", summary.get("activity", {}), "Missing per_tool in activity")
         self.assertIn("per_outcome", summary.get("activity", {}), "Missing per_outcome in activity")
         self.assertIn("exercised", summary.get("coverage", {}), "Missing exercised in coverage")
-        self.assertIn("never_exercised", summary.get("coverage", {}), "Missing never_exercised in coverage")
+        self.assertIn(
+            "never_exercised", summary.get("coverage", {}), "Missing never_exercised in coverage"
+        )
         self.assertIn("chain_head", summary.get("ledger", {}), "Missing chain_head in ledger")
-        self.assertIn("workspace_bound", summary.get("delivery", {}), "Missing workspace_bound in delivery")
+        self.assertIn(
+            "workspace_bound", summary.get("delivery", {}), "Missing workspace_bound in delivery"
+        )
         self.assertIn("state", summary.get("delivery", {}), "Missing state in delivery")
 
 
@@ -646,6 +650,7 @@ class CounterSurvivesBindWorkspace(MonitorTestCase):
 
         # Bind workspace (rebuilds ledger, delivery, etc.)
         import tempfile
+
         with tempfile.TemporaryDirectory() as tmpdir:
             monitor.bind_workspace(tmpdir)
 
@@ -658,7 +663,10 @@ class CounterSurvivesBindWorkspace(MonitorTestCase):
         self.assertEqual(count_after_bind, 3, "Counter reset after bind_workspace()")
         # Verify cadence is still measured from run start (call 3 triggers snapshot)
         snapshots = [r for r in self.ledger_records() if r.get("kind") == "usage_snapshot"]
-        self.assertTrue(snapshots, "Cadence did not fire at call 3 (would have reset if binding restarted counter)")
+        self.assertTrue(
+            snapshots,
+            "Cadence did not fire at call 3 (would have reset if binding restarted counter)",
+        )
 
 
 class VerifierDoesNotFlagAckedDeletion(MonitorTestCase):

@@ -12,13 +12,18 @@ Both cases here are load-bearing in a way nothing else in the suite covers:
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import importlib
 import json
+import os
+import sys
 import tempfile
 import unittest
 from pathlib import Path
 from typing import Any
 
-from pyocd_debug_mcp import discovery_hooks, server
+import pyocd_debug_mcp as _server_package
+from pyocd_debug_mcp import discovery_hooks
 from pyocd_debug_mcp.discovery_failures import CONTRACT_TOOL, REFRESH_TOOL
 from pyocd_debug_mcp.discovery_hooks import (
     load_hook_snapshot,
@@ -30,6 +35,108 @@ from pyocd_debug_mcp.tools.discovery import (
     DiscoveryToolServices,
     build_discovery_handlers,
 )
+
+MONITOR_ROOT_ENV = "BYO_MCP_MONITOR_ROOT"
+
+_MISSING = object()
+_MONITOR_TEMPORARY: tempfile.TemporaryDirectory[str] | None = None
+_MONITOR_ROOT: Path | None = None
+_SHARED_STORE_FINGERPRINT: tuple[tuple[str, str], ...] | None = None
+_PREVIOUS_SERVER_MODULE: Any | None = None
+_PREVIOUS_PACKAGE_SERVER: Any = _MISSING
+_PREVIOUS_MONITOR_ROOT_ENV: str | None = None
+_MONITOR_ROOT_ENV_WAS_SET = False
+server: Any
+
+
+def setUpModule() -> None:
+    global _MONITOR_TEMPORARY, _MONITOR_ROOT, _SHARED_STORE_FINGERPRINT
+    global _PREVIOUS_SERVER_MODULE, _PREVIOUS_PACKAGE_SERVER
+    global _PREVIOUS_MONITOR_ROOT_ENV, _MONITOR_ROOT_ENV_WAS_SET, server
+    _MONITOR_TEMPORARY = tempfile.TemporaryDirectory(prefix="byo-discovery-monitor-")
+    _MONITOR_ROOT = Path(_MONITOR_TEMPORARY.name).resolve()
+    _MONITOR_ROOT_ENV_WAS_SET = MONITOR_ROOT_ENV in os.environ
+    _PREVIOUS_MONITOR_ROOT_ENV = os.environ.get(MONITOR_ROOT_ENV)
+    _SHARED_STORE_FINGERPRINT = _shared_store_fingerprint()
+    os.environ[MONITOR_ROOT_ENV] = str(monitor_root())
+    from pyocd_debug_mcp.monitor import paths
+
+    paths._reset_cache(None)
+    _PREVIOUS_SERVER_MODULE = sys.modules.pop("pyocd_debug_mcp.server", None)
+    _PREVIOUS_PACKAGE_SERVER = getattr(_server_package, "server", _MISSING)
+    if _PREVIOUS_PACKAGE_SERVER is not _MISSING:
+        delattr(_server_package, "server")
+    try:
+        server = importlib.import_module("pyocd_debug_mcp.server")
+    except BaseException:
+        _restore_server_module()
+        _restore_monitor_root_environment()
+        if _MONITOR_TEMPORARY is not None:
+            _MONITOR_TEMPORARY.cleanup()
+        raise
+
+
+def tearDownModule() -> None:
+    try:
+        try:
+            server._monitor.closeout("test")
+        except BaseException:
+            pass
+        _restore_server_module()
+        if _shared_store_fingerprint() != _SHARED_STORE_FINGERPRINT:
+            raise AssertionError("discovery tool contract tests changed the shared monitor store")
+    finally:
+        _restore_monitor_root_environment()
+        if _MONITOR_TEMPORARY is not None:
+            _MONITOR_TEMPORARY.cleanup()
+
+
+def _restore_server_module() -> None:
+    """Discard the isolated import and put a pre-existing server binding back."""
+
+    isolated = sys.modules.pop("pyocd_debug_mcp.server", None)
+    if _PREVIOUS_SERVER_MODULE is not None:
+        sys.modules["pyocd_debug_mcp.server"] = _PREVIOUS_SERVER_MODULE
+    if _PREVIOUS_PACKAGE_SERVER is _MISSING:
+        if getattr(_server_package, "server", None) is isolated:
+            delattr(_server_package, "server")
+    else:
+        setattr(_server_package, "server", _PREVIOUS_PACKAGE_SERVER)
+
+
+def _restore_monitor_root_environment() -> None:
+    from pyocd_debug_mcp.monitor import paths
+
+    paths._reset_cache(None)
+    if _MONITOR_ROOT_ENV_WAS_SET:
+        assert _PREVIOUS_MONITOR_ROOT_ENV is not None
+        os.environ[MONITOR_ROOT_ENV] = _PREVIOUS_MONITOR_ROOT_ENV
+    else:
+        os.environ.pop(MONITOR_ROOT_ENV, None)
+
+
+def _shared_store_fingerprint() -> tuple[tuple[str, str], ...] | None:
+    from platformdirs import user_data_dir
+
+    root = Path(user_data_dir("BYO", appauthor=False, roaming=False))
+    if not root.exists():
+        return None
+    entries: list[tuple[str, str]] = []
+    for path in sorted(root.rglob("*")):
+        relative = path.relative_to(root).as_posix()
+        try:
+            if path.is_dir():
+                entries.append((f"directory:{relative}", ""))
+            elif path.is_file():
+                entries.append((f"file:{relative}", hashlib.sha256(path.read_bytes()).hexdigest()))
+        except OSError:
+            entries.append((f"unreadable:{relative}", ""))
+    return tuple(entries)
+
+
+def monitor_root() -> Path:
+    assert _MONITOR_ROOT is not None, "setUpModule did not initialize the monitor root"
+    return _MONITOR_ROOT
 
 
 def _flat(text: str | None) -> str:
@@ -128,17 +235,13 @@ class SchemaDriftTests(unittest.TestCase):
                 execution = discovery_hooks.execute_hook(snapshot.hooks[0])
                 self.assertTrue(execution.ok, execution.failure_detail)
                 assert execution.output is not None
-                rows = (
-                    execution.output.probes if kind == "probe" else execution.output.uarts
-                )
+                rows = execution.output.probes if kind == "probe" else execution.output.uarts
                 self.assertTrue(rows, "the published example hook returned no rows")
 
     def test_declared_limits_match_the_values_actually_enforced(self) -> None:
         limits = self.contract("probe")["limits"]
 
-        self.assertEqual(
-            limits["max_timeout_seconds"], discovery_hooks.MAX_HOOK_TIMEOUT_SECONDS
-        )
+        self.assertEqual(limits["max_timeout_seconds"], discovery_hooks.MAX_HOOK_TIMEOUT_SECONDS)
         self.assertEqual(limits["max_rows"], discovery_hooks.MAX_HOOK_ROWS)
         self.assertEqual(limits["max_field_characters"], discovery_hooks.MAX_FIELD_CHARS)
         self.assertEqual(limits["max_stdout_bytes"], discovery_hooks.MAX_HOOK_STDOUT_BYTES)
@@ -190,9 +293,7 @@ class SchemaDriftTests(unittest.TestCase):
         self.assertEqual(self.contract("probe")["hook_root"], str(self.root))
 
     def test_probe_contract_lists_registered_providers_and_uart_does_not(self) -> None:
-        self.assertEqual(
-            self.contract("probe")["pyocd_providers"], ["cmsisdap", "jlink", "stlink"]
-        )
+        self.assertEqual(self.contract("probe")["pyocd_providers"], ["cmsisdap", "jlink", "stlink"])
         self.assertNotIn("pyocd_providers", self.contract("uart"))
 
     def test_an_unsupported_kind_is_refused_with_the_supported_list(self) -> None:
@@ -211,6 +312,12 @@ class SchemaDriftTests(unittest.TestCase):
 
 class LiveServerContractTests(unittest.TestCase):
     """The same guarantees, through the real registered server tools."""
+
+    def test_live_server_monitor_uses_the_modules_disposable_root(self) -> None:
+        monitor_store = getattr(server._monitor, "_store", None)
+
+        self.assertEqual(getattr(monitor_store, "root", None), monitor_root())
+        self.assertIs(server.mcp._monitor, server._monitor)
 
     def test_probe_contract_providers_come_from_pyocd_probe_classes(self) -> None:
         from pyocd_debug_mcp.probe_inventory import registered_provider_ids
@@ -269,9 +376,7 @@ class UniqueIdGuidanceDriftTests(unittest.TestCase):
         from pyocd.probe.aggregator import DebugProbeAggregator
         from pyocd.probe.tcp_client_probe import TCPClientProbe
 
-        klasses, uid, is_explicit = DebugProbeAggregator._get_probe_classes(
-            "remote:localhost:5555"
-        )
+        klasses, uid, is_explicit = DebugProbeAggregator._get_probe_classes("remote:localhost:5555")
 
         self.assertEqual(list(klasses), [TCPClientProbe])
         self.assertTrue(is_explicit, "remote probes are only constructed when explicit")

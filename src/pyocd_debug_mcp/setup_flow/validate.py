@@ -13,6 +13,7 @@ from pyocd_debug_mcp.firmstore.cache import SerialEndpoint
 from pyocd_debug_mcp.firmstore.profiles import BoardProfile, ProfileError, ProfileRepository
 from pyocd_debug_mcp.firmstore.reports import ReportPaths, ReportWriter
 from pyocd_debug_mcp.kernel.operations import OperationCancelledError
+from pyocd_debug_mcp.services.connections import PROBE_CONNECTION_PREFIX, parse_probe_connection_id
 from pyocd_debug_mcp.setup_flow.preflight import FriendlyChoice, NO_INTERNALS_RELAY_INSTRUCTION
 from pyocd_debug_mcp.target_errors import LockedTargetError, TargetConnectionError
 
@@ -101,6 +102,11 @@ class ValidationInventory:
 class ValidationRequest:
     board_id: str
     probe_id: str | None = None
+    # Setup-full validates immutable *candidate* bytes before it may publish a
+    # capability generation.  These are deliberately operation-local inputs:
+    # they never alter what normal validation loads from the active policy.
+    candidate_profile: BoardProfile | None = None
+    candidate_safety_map: SafetyMapSnapshot | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -118,7 +124,7 @@ class ValidationHooks:
     """Server-owned map, gate, and mismatch integrations."""
 
     load_safety_map: Callable[[BoardProfile], SafetyMapSnapshot]
-    stamp_session: Callable[[str, str, str, str | None, str, str], bool]
+    stamp_session: Callable[[str, str, str, str | None, str, str, BoardProfile], bool]
     record_mismatch: Callable[[str, str, str, str | None, str, str], bool]
     rollback_session: Callable[[str, str], None] = lambda _board, _validation: None
 
@@ -130,7 +136,9 @@ class ValidationHooks:
                 False,
                 reason="The schema-v2 safety map is unavailable. Run board_safety_refresh.",
             ),
-            stamp_session=lambda _board, _run, _probe_id, _probe_uid, _mcu, _digest: False,
+            stamp_session=lambda _board, _run, _probe_id, _probe_uid, _mcu, _digest, _profile: (
+                False
+            ),
             record_mismatch=lambda _board, _run, _probe_id, _probe_uid, _expected, _observed: False,
         )
 
@@ -203,10 +211,24 @@ def _stable_probe_identity_equal(left: str | None, right: str | None) -> bool:
     if left_normalized == right_normalized:
         return True
     if left_normalized.isdecimal() and right_normalized.isdecimal():
-        return (left_normalized.lstrip("0") or "0") == (
-            right_normalized.lstrip("0") or "0"
-        )
+        return (left_normalized.lstrip("0") or "0") == (right_normalized.lstrip("0") or "0")
     return False
+
+
+def _canonical_assignment_matches_probe(selected_id: str | None, probe: ValidationProbe) -> bool:
+    """Match only the exact provider-qualified token issued for a stable probe."""
+
+    if selected_id is None:
+        return False
+    parsed = parse_probe_connection_id(selected_id)
+    if parsed is None:
+        return False
+    provider, uid = parsed
+    return (
+        probe.usb_serial is not None
+        and provider.casefold() == probe.probe_family.strip().casefold()
+        and uid.casefold() == probe.usb_serial.strip().casefold()
+    )
 
 
 class BoardValidator:
@@ -257,12 +279,27 @@ class BoardValidator:
         mismatch_recorded = False
         self._cancellation_checkpoint()
         try:
-            try:
-                profile = self._profiles.load(request.board_id)
-            except ProfileError as exc:
+            if (request.candidate_profile is None) != (request.candidate_safety_map is None):
                 raise ValidationBackendError(
-                    "validation_incomplete", "validation/profile-missing", str(exc)
-                ) from exc
+                    "validation_incomplete",
+                    "validation/candidate-incomplete",
+                    "Candidate validation requires both a profile and its exact safety map.",
+                )
+            if request.candidate_profile is not None:
+                profile = request.candidate_profile
+                if profile.board_id != request.board_id:
+                    raise ValidationBackendError(
+                        "validation_incomplete",
+                        "validation/candidate-board-mismatch",
+                        "Candidate validation profile does not belong to the requested board.",
+                    )
+            else:
+                try:
+                    profile = self._profiles.load(request.board_id)
+                except ProfileError as exc:
+                    raise ValidationBackendError(
+                        "validation_incomplete", "validation/profile-missing", str(exc)
+                    ) from exc
             if profile.mcu_part_number is None:
                 raise ValidationBackendError(
                     "validation_incomplete",
@@ -271,7 +308,7 @@ class BoardValidator:
                 )
             if profile.source_path.exists():
                 profile_before = profile.source_path.read_bytes()
-            safety_map = self._hooks.load_safety_map(profile)
+            safety_map = request.candidate_safety_map or self._hooks.load_safety_map(profile)
             steps.append(
                 ValidationStep(
                     1,
@@ -286,9 +323,7 @@ class BoardValidator:
             observed["inventory"] = {"probes": [asdict(item) for item in inventory.probes]}
             steps.append(ValidationStep(2, "Enumerate debug probes", "passed"))
 
-            selected_probe, probe_choices = self._select_probe(
-                profile, inventory, request.probe_id
-            )
+            selected_probe, probe_choices = self._select_probe(profile, inventory, request.probe_id)
             if probe_choices:
                 choices = probe_choices
                 retry_arguments = {
@@ -339,9 +374,7 @@ class BoardValidator:
                 )
             steps.append(ValidationStep(4, "Confirm verified target support", "passed"))
 
-            connection = self._backend.connect(
-                profile, selected_probe, self._step_timeout_seconds
-            )
+            connection = self._backend.connect(profile, selected_probe, self._step_timeout_seconds)
             self._cancellation_checkpoint()
             steps.append(ValidationStep(5, "Connect without target mutation", "passed"))
 
@@ -444,6 +477,7 @@ class BoardValidator:
                 selected_probe.usb_serial,
                 observed_identity,
                 safety_map.map_digest,
+                profile,
             )
             if not stamped:
                 steps.append(ValidationStep(7, "Associate current safety map", "failed"))
@@ -538,12 +572,19 @@ class BoardValidator:
                 "validation/no-probe",
                 "No compatible debug probe is currently visible.",
             )
+        canonical_assignment = selected_id is not None and selected_id.casefold().startswith(
+            PROBE_CONNECTION_PREFIX
+        )
         selected = next(
             (
                 probe
                 for probe in compatible
-                if _stable_probe_identity_equal(probe.probe_id, selected_id)
-                or _stable_probe_identity_equal(probe.usb_serial, selected_id)
+                if (
+                    _canonical_assignment_matches_probe(selected_id, probe)
+                    if canonical_assignment
+                    else _stable_probe_identity_equal(probe.probe_id, selected_id)
+                    or _stable_probe_identity_equal(probe.usb_serial, selected_id)
+                )
             ),
             None,
         )

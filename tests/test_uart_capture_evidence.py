@@ -17,6 +17,10 @@ from pyocd_debug_mcp.services.uart_capture import (
     exchange_uart_output,
     write_uart_output,
 )
+from pyocd_debug_mcp.services.uart_exchange_schema import (
+    MAX_UART_TEXT_BYTES,
+    validate_serial_exchange_parameters,
+)
 from pyocd_debug_mcp.tools.serial import (
     SerialToolServices,
     read_serial,
@@ -29,6 +33,7 @@ class _BufferedUART(UARTInterface):
     def __init__(self, incoming: bytes) -> None:
         self.incoming = bytearray(incoming)
         self.writes: list[bytes] = []
+        self.close_count = 0
 
     def open(self, device: str, *, baudrate: int, timeout_seconds: float) -> UARTPortHandle:
         transport = SimpleNamespace(timeout=timeout_seconds)
@@ -36,6 +41,7 @@ class _BufferedUART(UARTInterface):
 
     def close(self, handle: UARTPortHandle) -> None:
         del handle
+        self.close_count += 1
 
     def reset_input_buffer(self, handle: UARTPortHandle) -> None:
         del handle
@@ -74,6 +80,46 @@ def _services(*, capture: UARTCaptureResult, exchange: UARTExchangeResult) -> Se
 
 
 class UARTCaptureEvidenceTests(unittest.TestCase):
+    @staticmethod
+    def _raw_exchange_parameters(
+        *, text: str, expected_text: str, line_ending: str, ready_text: str | None = None
+    ) -> dict[str, object]:
+        return {
+            "steps": [{"text": text, "expected_text": expected_text, "line_ending": line_ending}],
+            "read_seconds": 1.0,
+            "baudrate": 115200,
+            "port": "COM_TEST",
+            "ready_text": ready_text,
+            "ready_seconds": 1.0 if ready_text is not None else 0.0,
+            "ready_probe_text": None,
+            "ready_probe_line_ending": "none",
+            "ready_probe_delay_seconds": 0.0,
+            "clear_input": False,
+        }
+
+    def test_raw_exchange_schema_counts_encoded_line_endings_and_all_ready_inputs(self) -> None:
+        """The schema cap is the actual transport payload, not label spelling or a later seam."""
+
+        exact = self._raw_exchange_parameters(
+            text="x" * (MAX_UART_TEXT_BYTES - 3),
+            expected_text="y",
+            line_ending="crlf",
+        )
+        self.assertIsNone(
+            validate_serial_exchange_parameters(exact, max_text_bytes=MAX_UART_TEXT_BYTES)
+        )
+        ready_overflow = self._raw_exchange_parameters(
+            text="x" * (MAX_UART_TEXT_BYTES - 5),
+            expected_text="y",
+            line_ending="none",
+            ready_text="ready",
+        )
+        self.assertIn(
+            "must not exceed",
+            validate_serial_exchange_parameters(ready_overflow, max_text_bytes=MAX_UART_TEXT_BYTES)
+            or "",
+        )
+
     def test_exchange_capture_is_not_silently_capped_at_65536_bytes(self) -> None:
         payload = (b"x" * 70_000) + b"DONE"
         adapter = _BufferedUART(payload)
@@ -209,9 +255,7 @@ class UartOpenFailureTests(unittest.TestCase):
 
     def test_serial_exchange_reports_a_genuine_port_failure_as_uart_open_failed(self) -> None:
         def _exchange_uart(*_args: Any, **_kwargs: Any) -> Any:
-            raise RuntimeError(
-                "Unable to exchange data on COM_TEST at 115200 baud: port vanished"
-            )
+            raise RuntimeError("Unable to exchange data on COM_TEST at 115200 baud: port vanished")
 
         services = _services_for_failure(exchange_uart=_exchange_uart)
         step_args: list[dict[str, Any]] = [

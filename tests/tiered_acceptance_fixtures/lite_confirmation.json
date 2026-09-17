@@ -1,0 +1,46 @@
+{
+  "schema_version": 1,
+  "decision": "confirm-or-correct",
+  "regions": [
+    {
+      "name": "SRAM",
+      "kind": "ram",
+      "start": "0x20000000",
+      "end": "0x20010000",
+      "readable": true,
+      "writable": true,
+      "executable": true,
+      "source_pages": [42],
+      "source_note": "operator-confirmed datasheet table"
+    },
+    {
+      "name": "application flash",
+      "kind": "application_flash",
+      "start": "0x00004000",
+      "end": "0x0003f000",
+      "readable": true,
+      "writable": false,
+      "executable": true,
+      "source_pages": [51],
+      "source_note": "operator-confirmed allocation"
+    },
+    {
+      "name": "bootloader",
+      "kind": "bootloader",
+      "start": "0x0003f000",
+      "end": "0x00040000",
+      "readable": true,
+      "writable": false,
+      "executable": true,
+      "source_pages": [51],
+      "source_note": "operator-confirmed protected bootloader"
+    }
+  ],
+  "flash": {
+    "backend_target": "nrf52840",
+    "erase_sectors": [
+      {"start": "0x00004000", "size": 4096}
+    ]
+  },
+  "recovery": null
+}

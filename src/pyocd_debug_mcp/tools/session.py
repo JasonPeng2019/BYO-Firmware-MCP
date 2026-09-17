@@ -10,7 +10,7 @@ from pyocd_debug_mcp.kernel.operations import wrap_layer2_response
 
 @dataclass(frozen=True, slots=True)
 class SessionToolServices:
-    connect: Callable[[str], str]
+    connect: Callable[..., str]
     connect_override: Callable[..., str]
     disconnect: Callable[[str], str]
     get_board_info: Callable[[str], str]
@@ -20,14 +20,14 @@ class SessionToolServices:
 def build_session_handlers(services: SessionToolServices) -> dict[str, Callable[..., str]]:
     """Build the exact revised session surface over composition-root services."""
 
-    def connect(board_id: str) -> str:
-        """Connect from the named project profile only.
+    def connect(
+        board_id: str,
+        probe_uid: str | None = None,
+        target: str | None = None,
+    ) -> str:
+        """Connect a named board; no-setup may supply a probe UID or target fallback."""
 
-        Probe, target, and external board-config overrides are intentionally absent. For a
-        deliberate exceptional manual connection, initialize connect_override-plan instead.
-        """
-
-        return wrap_layer2_response(services.connect(board_id))
+        return wrap_layer2_response(services.connect(board_id, probe_uid=probe_uid, target=target))
 
     def disconnect(board_id: str) -> str:
         """Close the named board session and release only its connection."""

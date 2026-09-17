@@ -14,7 +14,7 @@ from pyocd_debug_mcp.board_config import (
     RECOVER_MODE_MANUAL_ONLY,
     RECOVER_MODE_BACKEND_MASS_ERASE,
 )
-from pyocd_debug_mcp.firmstore.profiles import ProfileRepository
+from pyocd_debug_mcp.firmstore.profiles import BoardProfile, ProfileRepository
 from pyocd_debug_mcp.firmstore.reports import ReportWriter
 from pyocd_debug_mcp.guardrails.gate import GateManager
 from pyocd_debug_mcp.guardrails.plan_defs import PLAN_DEFINITIONS
@@ -32,6 +32,7 @@ from pyocd_debug_mcp.safety.map_build import (
     SafetyMapError,
     SafetyMapRepository,
 )
+from pyocd_debug_mcp.safety.enforce import SafetyPolicyError
 from pyocd_debug_mcp.safety.regions import (
     Provenance,
     RecoveryEraseDisclosure,
@@ -95,6 +96,16 @@ class PendingUnlockApproval:
 
 
 @dataclass(frozen=True, slots=True)
+class LiteRecoveryPolicy:
+    """Committed partial-policy facts for one native, typed recovery route."""
+
+    display_name: str
+    pyocd_target: str
+    mechanism: str
+    disclosure: RecoveryEraseDisclosure
+
+
+@dataclass(frozen=True, slots=True)
 class UnlockToolServices:
     server_run: ServerRun
     plan_engine: PlanEngine
@@ -110,6 +121,15 @@ class UnlockToolServices:
     recover_target: Callable[[TargetSessionHandle, str], str]
     finalize_recovery: Callable[[str], None]
     revoke_permission: Callable[[str, str], None]
+    manual_mass_erase_disclosure: (
+        Callable[[UnlockBinding, RecoveryEraseDisclosure], Mapping[str, object]] | None
+    ) = None
+    reserve_manual_mass_erase: Callable[[UnlockBinding], str] | None = None
+    consume_manual_mass_erase: Callable[[UnlockBinding, str], None] | None = None
+    abandon_manual_mass_erase: Callable[[UnlockBinding, str], None] | None = None
+    policy_profile: Callable[[str], BoardProfile] | None = None
+    policy_safety: Callable[[str], SafetyMapDocument] | None = None
+    policy_lite_recovery: Callable[[str], LiteRecoveryPolicy | None] | None = None
 
 
 def _json(document: Mapping[str, Any]) -> str:
@@ -170,10 +190,70 @@ class UnlockCoordinator:
         self.definition = PLAN_DEFINITIONS["target_unlock"]
         self._pending: dict[str, PendingUnlockApproval] = {}
         self._approved: dict[str, UnlockBinding] = {}
+        self._manual_claims: dict[str, str] = {}
         self._guard = threading.RLock()
 
-    def _identity(self, board_id: str) -> tuple[LiveUnlockIdentity, SafetyMapDocument]:
-        profile = self.services.profiles.load(board_id)
+    def _abandon_manual_claim(self, binding: UnlockBinding | None, claim_id: str | None) -> None:
+        if (
+            binding is not None
+            and claim_id is not None
+            and self.services.abandon_manual_mass_erase is not None
+        ):
+            self.services.abandon_manual_mass_erase(binding, claim_id)
+
+    def _abandon_without_masking(
+        self,
+        binding: UnlockBinding | None,
+        claim_id: str | None,
+        primary: BaseException,
+    ) -> None:
+        """Best-effort reservation cleanup must not replace the real failure."""
+
+        try:
+            self._abandon_manual_claim(binding, claim_id)
+        except Exception as cleanup_error:  # noqa: BLE001 - keep the submit/backend error primary
+            primary.add_note(f"manual mass-erase reservation cleanup failed: {cleanup_error}")
+
+    def _identity(
+        self, board_id: str
+    ) -> tuple[LiveUnlockIdentity, SafetyMapDocument | LiteRecoveryPolicy]:
+        lite = (
+            self.services.policy_lite_recovery(board_id)
+            if self.services.policy_lite_recovery is not None
+            else None
+        )
+        if lite is not None:
+            handle = self.services.handle_for(board_id)
+            metadata = session_metadata(handle)
+            probe = (metadata.probe_uid or "").strip()
+            if not probe:
+                raise PlanRefusal(
+                    "unlock/probe-identity-missing",
+                    "The active probe has no stable identity; reconnect with an identifiable probe.",
+                )
+            # Lite trusts the named policy facts but does not turn a live part
+            # string into full identity proof. Its mechanism/disclosure were
+            # validated from the immutable confirmation; backend support is
+            # checked by _mechanism below.
+            return (
+                LiveUnlockIdentity(
+                    self.services.server_run.run_id,
+                    board_id,
+                    lite.display_name,
+                    "not-asserted",
+                    str(metadata.live_part_number or metadata.target_override or "not-asserted"),
+                    lite.pyocd_target,
+                    probe,
+                    self.services.connection_id_for(board_id),
+                    self.services.current_map_digest(board_id),
+                ),
+                lite,
+            )
+        profile = (
+            self.services.policy_profile(board_id)
+            if self.services.policy_profile is not None
+            else self.services.profiles.load(board_id)
+        )
         handle = self.services.handle_for(board_id)
         metadata = session_metadata(handle)
         probe = (metadata.probe_uid or "").strip()
@@ -193,8 +273,12 @@ class UnlockCoordinator:
         )
         map_digest = self.services.current_map_digest(board_id)
         try:
-            artifacts = self.services.safety_repository.load_current(board_id)
-        except SafetyMapError as exc:
+            artifacts = (
+                self.services.policy_safety(board_id)
+                if self.services.policy_safety is not None
+                else self.services.safety_repository.load_current(board_id)
+            )
+        except (SafetyMapError, SafetyPolicyError) as exc:
             raise PlanRefusal(
                 "unlock/safety-map-invalid",
                 f"The current safety map is unavailable or invalid: {exc}. "
@@ -281,7 +365,13 @@ class UnlockCoordinator:
         assert isinstance(board_id, str)
         identity, artifacts = self._identity(board_id)
         handle = self.services.handle_for(board_id)
-        configured = handle.board.recover_mode if handle.board is not None else None
+        configured = (
+            artifacts.mechanism
+            if isinstance(artifacts, LiteRecoveryPolicy)
+            else handle.board.recover_mode
+            if handle.board is not None
+            else None
+        )
         parameters = fields.get("action_parameters")
         if not isinstance(parameters, Mapping):
             raise PlanRefusal(
@@ -291,18 +381,21 @@ class UnlockCoordinator:
         mechanism = self._mechanism(identity, configured, parameters["recovery_mechanism"])
         if mechanism is None:
             return None, None, identity
-        try:
-            disclosure = build_recovery_erase_disclosure(
-                _recovery_regions(artifacts),
-                _geometry(artifacts),
-                mass_erase=mechanism.mass_erase,
-            )
-        except RegionError as exc:
-            raise PlanRefusal(
-                "unlock/erase-disclosure-incomplete",
-                f"The current safety map cannot prove the complete recovery erase disclosure: "
-                f"{exc}. Run board_safety_refresh before requesting permission.",
-            ) from exc
+        if isinstance(artifacts, LiteRecoveryPolicy):
+            disclosure = artifacts.disclosure
+        else:
+            try:
+                disclosure = build_recovery_erase_disclosure(
+                    _recovery_regions(artifacts),
+                    _geometry(artifacts),
+                    mass_erase=mechanism.mass_erase,
+                )
+            except RegionError as exc:
+                raise PlanRefusal(
+                    "unlock/erase-disclosure-incomplete",
+                    f"The current safety map cannot prove the complete recovery erase disclosure: "
+                    f"{exc}. Run board_safety_refresh before requesting permission.",
+                ) from exc
         return (
             UnlockBinding(
                 plan_id,
@@ -423,18 +516,21 @@ class UnlockCoordinator:
             "target_unlock-plan with every other field unchanged and user_permission set to "
             f"one-time. Full-session approval cannot authorize this operation. {NO_INTERNALS}"
         )
-        return _json(
-            {
-                "status": "unlock_permission_requested",
-                "agent_prompt": prompt,
-                "plan_id": binding.plan_id,
-                "live_identity": asdict(identity),
-                "mechanism": asdict(binding.mechanism),
-                "disclosure": disclosure.to_document(),
-                "expected_losses": list(disclosure.expected_losses),
-                "report": report,
-            }
-        )
+        payload: dict[str, object] = {
+            "status": "unlock_permission_requested",
+            "agent_prompt": prompt,
+            "plan_id": binding.plan_id,
+            "live_identity": asdict(identity),
+            "mechanism": asdict(binding.mechanism),
+            "disclosure": disclosure.to_document(),
+            "expected_losses": list(disclosure.expected_losses),
+            "report": report,
+        }
+        if binding.mechanism.mass_erase and self.services.manual_mass_erase_disclosure is not None:
+            payload["manual_grant"] = dict(
+                self.services.manual_mass_erase_disclosure(binding, disclosure)
+            )
+        return _json(payload)
 
     def plan(self, fields: Mapping[str, object]) -> str:
         if all(value is None for value in fields.values()):
@@ -474,7 +570,21 @@ class UnlockCoordinator:
             )
         if permission is None:
             with self._guard:
-                self._approved.pop(preview.board_id, None)
+                old_approved = self._approved.pop(preview.board_id, None)
+                old_claim = self._manual_claims.pop(preview.board_id, None)
+            if old_approved is not None or old_claim is not None:
+                try:
+                    self._abandon_manual_claim(old_approved, old_claim)
+                except (
+                    Exception
+                ) as exc:  # cannot safely promise a replacement while old state is unknown
+                    raise PlanRefusal(
+                        "manual/abandon-failed",
+                        "The previous destructive recovery reservation could not be cleared; "
+                        "resolve the manual grant state before requesting a replacement disclosure.",
+                    ) from exc
+            with self._guard:
+                self._pending.pop(preview.board_id, None)
             # Revocation also invalidates any active plan through the store's
             # callback. It is deliberate even when no grant exists: a new
             # disclosure can never coexist with reusable prior authority.
@@ -526,16 +636,28 @@ class UnlockCoordinator:
                 "The target, probe, connection, safety map, erase ranges, mechanism, or Server "
                 "Run changed after disclosure. Fresh disclosure and approval are required.",
             )
-        result = self.services.plan_engine.submit(
-            self.definition.plan_tool_name,
-            fields,
-            session_id=session_id,
-            plan_id_override=pending.binding.plan_id,
-        )
+        manual_claim: str | None = None
+        if (
+            pending.binding.mechanism.mass_erase
+            and self.services.reserve_manual_mass_erase is not None
+        ):
+            manual_claim = self.services.reserve_manual_mass_erase(pending.binding)
+        try:
+            result = self.services.plan_engine.submit(
+                self.definition.plan_tool_name,
+                fields,
+                session_id=session_id,
+                plan_id_override=pending.binding.plan_id,
+            )
+        except BaseException as primary:
+            self._abandon_without_masking(pending.binding, manual_claim, primary)
+            raise
         assert result.plan is not None
         with self._guard:
             self._pending.pop(preview.board_id, None)
             self._approved[preview.board_id] = pending.binding
+            if manual_claim is not None:
+                self._manual_claims[preview.board_id] = manual_claim
         payload = accepted_plan_payload(result.plan)
         payload.update(
             {
@@ -556,9 +678,20 @@ class UnlockCoordinator:
         if active is None or approved is None or active.plan_id != approved.plan_id:
             raise PlanRefusal(
                 "unlock/approval-inactive",
-                "No active plan-id-bound one-time unlock approval exists; request a new disclosure.",
+                "unlock/approval-inactive: no active plan-id-bound one-time unlock approval "
+                "exists; request a new disclosure.",
             )
         if canonical_json(dict(parameters)) != active.canonical_parameters:
+            self.services.plan_engine.invalidate(
+                "target_unlock", board_id, "destructive recovery execution parameters changed"
+            )
+            self.services.revoke_permission(
+                board_id, "destructive recovery execution parameters changed"
+            )
+            with self._guard:
+                stale = self._approved.pop(board_id, None)
+                claim = self._manual_claims.pop(board_id, None)
+            self._abandon_manual_claim(stale, claim)
             raise PlanRefusal(
                 "unlock/parameter-mismatch",
                 "target_unlock parameters differ from the approved immutable plan.",
@@ -575,6 +708,8 @@ class UnlockCoordinator:
             )
             with self._guard:
                 self._approved.pop(board_id, None)
+                claim = self._manual_claims.pop(board_id, None)
+            self._abandon_manual_claim(approved, claim)
             raise PlanRefusal(
                 "unlock/binding-changed",
                 "The target, probe, connection, safety map, erase ranges, mechanism, or plan "
@@ -589,33 +724,70 @@ class UnlockCoordinator:
             )
             with self._guard:
                 self._approved.pop(board_id, None)
+                claim = self._manual_claims.pop(board_id, None)
+            self._abandon_manual_claim(approved, claim)
             raise PlanRefusal(
                 "unlock/binding-changed",
                 "The target, probe, connection, safety map, erase ranges, mechanism, or plan "
                 "changed before execution. Fresh disclosure and one-time approval are required.",
             )
 
+    def invalidate_execution_mismatch(self, board_id: str) -> None:
+        """Invalidate only this board's outstanding destructive approval/claim.
+
+        ``PlanEngine`` validates the public action schema before invoking this
+        coordinator's normal precondition.  A changed, but schema-valid,
+        recovery mechanism can therefore be rejected there first.  Its
+        reservation is still stale and must be abandoned before returning the
+        generic immutable-plan refusal.
+        """
+
+        with self._guard:
+            approved = self._approved.pop(board_id, None)
+            claim = self._manual_claims.pop(board_id, None)
+        if approved is None:
+            return
+        # Do not revoke the plan-engine permission here: its revocation hook
+        # would immediately relock the action and hide the more useful
+        # ``unlock/approval-inactive`` answer on a same-run retry.  The
+        # coordinator has removed the only destructive approval and durable
+        # claim, so the retained plan/permission pair grants no authority; a
+        # fresh disclosure and plan are still required before recovery can
+        # execute.
+        self._abandon_manual_claim(approved, claim)
+
     def invalidate_board(self, board_id: str) -> None:
         """Drop non-authorizing drafts and approved in-memory bindings on disconnect."""
 
         with self._guard:
             self._pending.pop(board_id, None)
-            self._approved.pop(board_id, None)
+            approved = self._approved.pop(board_id, None)
+            claim = self._manual_claims.pop(board_id, None)
+        self._abandon_manual_claim(approved, claim)
         self.services.revoke_permission(board_id, "target unlock binding invalidated")
 
     def execute(self, board_id: str, recovery_mechanism: str) -> str:
         with self._guard:
             approved = self._approved.pop(board_id, None)
+            manual_claim = self._manual_claims.pop(board_id, None)
         if approved is None:
             raise PlanRefusal(
                 "unlock/approval-inactive",
                 "The fresh one-time approval is no longer active.",
             )
         if recovery_mechanism != approved.mechanism.mechanism_id:
+            self._abandon_manual_claim(approved, manual_claim)
             raise PlanRefusal(
                 "unlock/parameter-mismatch",
                 "The recovery mechanism differs from the approved typed vendor operation.",
             )
+        if approved.mechanism.mass_erase:
+            if manual_claim is None or self.services.consume_manual_mass_erase is None:
+                raise PlanRefusal(
+                    "manual/locked",
+                    "Ask the human to invoke $mass-erase for the current disclosed recovery scope.",
+                )
+            self.services.consume_manual_mass_erase(approved, manual_claim)
         plan_id = approved.plan_id
         fields = {
             "live_identity": asdict(approved.identity),
@@ -625,31 +797,40 @@ class UnlockCoordinator:
         self.services.gate_manager.clear(
             board_id, "target unlock attempt started; board_validate is required"
         )
+        backend: str | None = None
+        backend_error: BaseException | None = None
         try:
             backend = self.services.recover_target(
                 self.services.handle_for(board_id), approved.mechanism.mechanism_id
             )
-        except Exception:
+        except BaseException as exc:
+            backend_error = exc
             self._report(
                 status="unlock_failed_revalidation_required",
                 board_id=board_id,
                 plan_id=plan_id,
                 fields=fields,
             )
-            raise
         try:
             self.services.finalize_recovery(board_id)
-        except Exception as exc:
-            report = self._report(
-                status="unlock_completed_cleanup_uncertain_reconnect_required",
-                board_id=board_id,
-                plan_id=plan_id,
-                fields={**fields, "backend": backend, "cleanup_error": str(exc)},
-            )
-            raise RuntimeError(
-                "Target recovery completed, but connection cleanup was uncertain. The old "
-                f"connection was revoked; reconnect and run board_validate before further use. Report: {report}"
-            ) from exc
+        except Exception as cleanup_error:
+            if backend_error is not None:
+                backend_error.add_note(
+                    f"recovery cleanup after failed backend attempt also failed: {cleanup_error}"
+                )
+            else:
+                report = self._report(
+                    status="unlock_completed_cleanup_uncertain_reconnect_required",
+                    board_id=board_id,
+                    plan_id=plan_id,
+                    fields={**fields, "backend": backend, "cleanup_error": str(cleanup_error)},
+                )
+                raise RuntimeError(
+                    "Target recovery completed, but connection cleanup was uncertain. The old "
+                    f"connection was revoked; reconnect and run board_validate before further use. Report: {report}"
+                ) from cleanup_error
+        if backend_error is not None:
+            raise backend_error
         report = self._report(
             status="unlock_completed_revalidation_required",
             board_id=board_id,

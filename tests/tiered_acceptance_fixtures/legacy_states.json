@@ -1,0 +1,86 @@
+{
+  "schema_version": 1,
+  "board_id": "legacy_board",
+  "recognized_initial_remnant": {
+    "profile": {
+      "schema_version": 2,
+      "board_id": "legacy_board",
+      "display_name": "Legacy initial setup board",
+      "mcu_part_number": "nRF52840",
+      "mcu_family": "nrf52",
+      "probe_family": "jlink",
+      "pyocd_target": "nrf52840",
+      "created_at": "2026-01-01T00:00:00Z",
+      "updated_at": "2026-01-01T00:00:00Z"
+    },
+    "expected": {
+      "tier": "no-setup",
+      "policy_status": "setup-incomplete",
+      "setup_incomplete": true,
+      "hardware_allowed": true
+    }
+  },
+  "missing_committed_map": {
+    "profile": {
+      "schema_version": 2,
+      "board_id": "legacy_board",
+      "display_name": "Legacy committed board",
+      "mcu_part_number": "nRF52840",
+      "mcu_family": "nrf52",
+      "probe_family": "jlink",
+      "pyocd_target": "nrf52840",
+      "safety_ref": ".firm/safety/legacy_board/map.json",
+      "created_at": "2026-01-01T00:00:00Z",
+      "updated_at": "2026-01-01T00:00:00Z"
+    },
+    "expected": {
+      "tier": null,
+      "policy_status": "corrupt",
+      "setup_incomplete": false,
+      "hardware_allowed": false
+    }
+  },
+  "corrupt_committed_map": {
+    "profile": {
+      "schema_version": 2,
+      "board_id": "legacy_board",
+      "display_name": "Legacy corrupted map board",
+      "mcu_part_number": "nRF52840",
+      "mcu_family": "nrf52",
+      "probe_family": "jlink",
+      "pyocd_target": "nrf52840",
+      "safety_ref": ".firm/safety/legacy_board/memory_map.yaml",
+      "created_at": "2026-01-01T00:00:00Z",
+      "updated_at": "2026-01-01T00:00:00Z"
+    },
+    "expected": {
+      "tier": null,
+      "policy_status": "corrupt",
+      "setup_incomplete": false,
+      "hardware_allowed": false
+    }
+  },
+  "ambiguous_provenance": {
+    "profile": {
+      "schema_version": 2,
+      "board_id": "legacy_board",
+      "display_name": "Ambiguous legacy board",
+      "mcu_part_number": "nRF52840",
+      "mcu_family": "nrf52",
+      "probe_family": "jlink",
+      "pyocd_target": "nrf52840",
+      "created_at": "2026-01-01T00:00:00Z",
+      "updated_at": "2026-01-01T00:00:00Z"
+    },
+    "contradictory_artifacts": [
+      ".firm/safety/legacy_board/map.json",
+      ".firm/setup/legacy-attempt/continuation.json"
+    ],
+    "expected": {
+      "tier": null,
+      "policy_status": "corrupt",
+      "setup_incomplete": false,
+      "hardware_allowed": false
+    }
+  }
+}

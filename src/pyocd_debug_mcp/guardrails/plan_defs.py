@@ -170,6 +170,8 @@ def _field(
 
 
 def _validate_setup_parameters(values: Mapping[str, object]) -> str | None:
+    if values.get("target_tier") not in {"setup-lite", "setup-full"}:
+        return "target_tier must be exactly setup-lite or setup-full"
     requires_uart = values.get("requires_uart")
     baudrate = values.get("serial_baudrate")
     serial_id = values.get("serial_id")
@@ -206,6 +208,12 @@ _DEFINITIONS = (
         "board_setup-plan",
         "Create or repair one logical board profile and its safety evidence.",
         (
+            _field(
+                "target_tier",
+                FieldType.TEXT,
+                "Explicit safety policy to commit: setup-lite or setup-full.",
+                choices=("setup-lite", "setup-full"),
+            ),
             _field("mode", FieldType.TEXT, "Exactly setup or repair.", choices=("setup", "repair")),
             _field("connection_id", FieldType.TEXT, "Intended enumerated physical connection."),
             _field("display_name", FieldType.TEXT, "User-provided familiar board name."),

@@ -1,0 +1,32 @@
+{
+  "schema_version": 1,
+  "project_relative_directory": ".agent-workspace/runtime/manual-permissions",
+  "epoch": {
+    "schema": 1,
+    "server_run_id": "run-fixture"
+  },
+  "downgrade": {
+    "schema": 1,
+    "action": "downgrade",
+    "state": "unlocked",
+    "server_run_id": "run-fixture",
+    "grant_id": "grant-fixture",
+    "board_id": "left_controller",
+    "policy_digest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "binding_digest": null,
+    "claim_id": null,
+    "created_at": "2026-01-01T00:00:00Z"
+  },
+  "mass_erase": {
+    "schema": 1,
+    "action": "mass-erase",
+    "state": "unlocked",
+    "server_run_id": "run-fixture",
+    "grant_id": "grant-fixture-mass-erase",
+    "board_id": "left_controller",
+    "policy_digest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "binding_digest": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "claim_id": null,
+    "created_at": "2026-01-01T00:00:00Z"
+  }
+}

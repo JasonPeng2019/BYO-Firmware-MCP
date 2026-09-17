@@ -5,7 +5,7 @@ would -- its own process, over stdio, discovered through the MCP handshake -- an
 a real model decides which tools to call. What we then assert is what the monitor
 actually recorded about that traffic.
 
-Model is pinned to ``gpt-5.4-mini`` and the run fails rather than silently
+Model is pinned to ``gpt-5.6-luna`` and the run fails rather than silently
 downgrading: a test that quietly used a different model would be testing
 something other than what it claims.
 
@@ -32,7 +32,7 @@ from pyocd_debug_mcp.monitor.counters import (
     SNAPSHOT_CADENCE_ENV,
 )
 
-REQUIRED_MODEL = "gpt-5.4-mini"
+REQUIRED_MODEL = "gpt-5.6-luna"
 SERVER_PROJECT = Path(__file__).resolve().parents[1]
 SERVER_NAME = "byo_monitor_itest"
 DEFAULT_TIMEOUT = 600
@@ -268,9 +268,7 @@ class CodexAgentTestCase(unittest.TestCase):
             stderr=completed.stderr or "",
         )
         result.tool_calls = [
-            line.strip()
-            for line in result.combined.splitlines()
-            if line.strip().startswith("mcp:")
+            line.strip() for line in result.combined.splitlines() if line.strip().startswith("mcp:")
         ]
         self._assert_model_was_honoured(result)
         return result
@@ -347,8 +345,7 @@ class CodexAgentTestCase(unittest.TestCase):
         return [
             record
             for record in self.ledger_records()
-            if isinstance(record.get("detail"), dict)
-            and "per_tool" in record["detail"]
+            if isinstance(record.get("detail"), dict) and "per_tool" in record["detail"]
         ]
 
     def tools_recorded(self) -> set[str]:
@@ -369,8 +366,7 @@ class CodexAgentTestCase(unittest.TestCase):
         """The highest cumulative call total any record reported."""
 
         totals = [
-            int(record["detail"].get("total_calls") or 0)
-            for record in self.counted_records()
+            int(record["detail"].get("total_calls") or 0) for record in self.counted_records()
         ]
         return max(totals) if totals else 0
 

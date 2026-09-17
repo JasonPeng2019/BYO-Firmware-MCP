@@ -1166,8 +1166,10 @@ class GenericSafetyMapDocument:
         rows = raw["regions"]
         if not isinstance(rows, list) or not rows:
             raise SafetyMapError("generic memory map regions must be a non-empty list")
-        authority_source = _exact_mapping(
-            raw["authority_source"],
+        authority_value = raw["authority_source"]
+        assert isinstance(authority_value, Mapping)
+        authority_kind = authority_value.get("kind")
+        authority_fields = (
             {
                 "kind",
                 "support_id",
@@ -1176,8 +1178,27 @@ class GenericSafetyMapDocument:
                 "pack_sha256",
                 "pdsc_device",
                 "pyocd_target",
-            },
-            "generic authority_source",
+            }
+            if authority_kind == "resolved_pack"
+            else {
+                "kind",
+                "support_id",
+                "part_number",
+                "pyocd_target",
+                "geometry_sha256",
+                "identity_address",
+                "identity_expected",
+                "identity_mask",
+                "identity_width_bits",
+                "identity_label",
+            }
+            if authority_kind == "resolved_builtin_target"
+            else set()
+        )
+        if not authority_fields:
+            raise SafetyMapError("generic authority_source kind is unsupported")
+        authority_source = _exact_mapping(
+            authority_value, authority_fields, "generic authority_source"
         )
         if any(not isinstance(item, str) for item in authority_source.values()):
             raise SafetyMapError("generic authority_source values must be strings")
@@ -1407,10 +1428,20 @@ def require_reconciled_authority(
     if isinstance(document, GenericSafetyMapDocument):
         _validated_generic_deployment_policy(document.deployment_policy)
         try:
-            from pyocd_debug_mcp.setup_flow.device_support import resolve_registered_pack_support
+            from pyocd_debug_mcp.setup_flow.device_support import (
+                resolve_persisted_builtin_target_support,
+                resolve_registered_pack_support,
+            )
 
             candidate = (
-                resolve_registered_pack_support(document.identity.mcu_part_number)
+                (
+                    resolve_persisted_builtin_target_support(
+                        document.identity.mcu_part_number,
+                        document.authority_source,
+                    )
+                    if document.identity.authority_kind == "resolved_builtin_target"
+                    else resolve_registered_pack_support(document.identity.mcu_part_number)
+                )
                 if generic_support_resolver is None
                 else generic_support_resolver(document.identity.mcu_part_number)
             )

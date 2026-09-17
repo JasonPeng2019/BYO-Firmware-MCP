@@ -16,6 +16,7 @@ from __future__ import annotations
 import io
 import os
 import hashlib
+import json
 import re
 import secrets
 import signal
@@ -24,7 +25,7 @@ import threading
 import time
 import unicodedata
 from collections.abc import Callable, Mapping
-from dataclasses import replace
+from dataclasses import asdict, replace
 from pathlib import Path
 from typing import Any, cast
 
@@ -36,13 +37,14 @@ from pyocd_debug_mcp.board_config import (
     BoardConfig,
     ConfigError,
     load_board_configs_from_paths,
+    preview_board_config_paths,
     select_boards_by_id,
 )
 from pyocd_debug_mcp.guardrails.flash_gate import resolve_flash_request
 from pyocd_debug_mcp.guardrails.gate import GateManager, GateRefusal
 from pyocd_debug_mcp.guardrails.permissions import PermissionStore
 from pyocd_debug_mcp.guardrails.plan_defs import PLAN_DEFINITIONS, PlanDefinition
-from pyocd_debug_mcp.guardrails.plan_engine import PlanEngine, PlanRefusal
+from pyocd_debug_mcp.guardrails.plan_engine import PlanEngine, PlanRefusal, canonical_json
 from pyocd_debug_mcp.firmstore.cache import (
     AttachmentCache,
     CacheResolution,
@@ -130,6 +132,24 @@ from pyocd_debug_mcp.services.session_runtime import (
     utc_now_text,
 )
 from pyocd_debug_mcp.services import target_control
+from pyocd_debug_mcp.capabilities.manual_permissions import (
+    ManualPermissionError,
+    ManualPermissionRepository,
+)
+from pyocd_debug_mcp.capabilities.lite import (
+    LiteConfirmation,
+    LiteConfirmationError,
+    conservative_lite_proposal,
+    native_lite_recovery_disclosure,
+    normalize_lite_confirmation,
+)
+from pyocd_debug_mcp.capabilities.policy import (
+    CapabilityPolicyError,
+    CapabilityPolicyRepository,
+    Tier,
+)
+from pyocd_debug_mcp.capabilities.matrix import route_names
+from pyocd_debug_mcp.capabilities.routing import TierRouteRefusal, TierRouter
 from pyocd_debug_mcp.services.symbols import (
     ResolvedSymbol,
     find_symbols,
@@ -223,6 +243,7 @@ from pyocd_debug_mcp.safety.map_build import (
     GenericMapIdentity,
     GenericMapGeometry,
     GenericSafetyMapDocument,
+    SafetyMapDocument,
     GenericSourceDigests,
     EraseSector,
     MapGeometry,
@@ -242,8 +263,10 @@ from pyocd_debug_mcp.safety.map_build import (
 )
 from pyocd_debug_mcp.safety.refresh import SafetyRefreshRequest, SafetyRefresher
 from pyocd_debug_mcp.safety.regions import (
+    ActionCategory,
     AddressRange,
     Provenance,
+    Refusal,
     RegionKind,
     SafetyRegion,
     SourceAuthority,
@@ -328,10 +351,12 @@ from pyocd_debug_mcp.tools.remote_probes import (
     build_remote_probe_handlers,
 )
 from pyocd_debug_mcp.tools.unlock import (
+    LiteRecoveryPolicy,
     UnlockCoordinator,
     UnlockToolServices,
     build_unlock_handlers,
 )
+from pyocd_debug_mcp.tools.raw import RawToolServices, build_raw_handlers
 
 load_local_env()
 
@@ -346,6 +371,53 @@ mcp = RegistryFastMCP("pyocd-debug")
 tool_registry = mcp.registry
 server_run = create_server_run()
 assignment_store = RunAssignmentStore(server_run.assignments)
+_capability_policies = CapabilityPolicyRepository(_project_root)
+_tier_router = TierRouter(_capability_policies)
+_manual_permissions = ManualPermissionRepository(_project_root, server_run.run_id)
+_tiered_auto_target_resolver: Callable[[str], str | None] | None = None
+try:
+    _manual_permissions.reset_startup()
+except Exception:
+    # Startup reset failure is deliberately scoped to manual authorization.
+    # Raw discovery/connection must remain available and the manual repository
+    # will return its stable reset-failed refusal if asked to consume authority.
+    pass
+
+
+def configure_tiered_test_seams(
+    *,
+    backend: object | None = None,
+    auto_target_resolver: Callable[[str], str | None] | None = None,
+    policy_repository: CapabilityPolicyRepository | None = None,
+    manual_permission_repository: ManualPermissionRepository | None = None,
+) -> dict[str, str]:
+    """Install deterministic tier-test dependencies for this imported server.
+
+    Acceptance tests must set ``BYO_MCP_ARTIFACT_ROOT`` before importing this
+    module, then set ``BYO_MCP_TEST_SEAMS=1`` and call this public helper.  The
+    backend must implement the normal target-control backend methods; the
+    optional resolver supplies a no-profile target when its fake cannot auto
+    resolve.  Supplying repositories permits deterministic restart/fault tests
+    without monkeypatching private server objects.
+    """
+
+    if os.environ.get("BYO_MCP_TEST_SEAMS") != "1":
+        raise RuntimeError("configure_tiered_test_seams requires BYO_MCP_TEST_SEAMS=1")
+    global _capability_policies, _tier_router, _manual_permissions, _tiered_auto_target_resolver
+    if backend is not None:
+        target_control.configure_backend_for_tests(backend)
+    if policy_repository is not None:
+        _capability_policies = policy_repository
+        _tier_router = TierRouter(policy_repository)
+    if manual_permission_repository is not None:
+        _manual_permissions = manual_permission_repository
+    _tiered_auto_target_resolver = auto_target_resolver
+    return {
+        "project_root": str(_project_root),
+        "policy_root": str(_capability_policies.root),
+        "manual_permission_root": str(_manual_permissions.root),
+        "server_run_id": server_run.run_id,
+    }
 
 
 def _server_version() -> str:
@@ -452,6 +524,7 @@ def _validate_plan_scope(
 ) -> None:
     connection = connection_manager.maybe_connection(board_id)
     if definition.action_name == "board_setup":
+        tier_state = _capability_policies.resolve(board_id)
         try:
             profile = _profile_repository.load(board_id)
         except ProfileError:
@@ -460,7 +533,9 @@ def _validate_plan_scope(
             _profile_repository.store.layout.board_profile(board_id, suffix=suffix)
             for suffix in (".yaml", ".yml", ".json")
         )
-        if profile is not None or any(path.exists() for path in existing_profile_paths):
+        if tier_state.tier is None and (
+            profile is not None or any(path.exists() for path in existing_profile_paths)
+        ):
             active = plan_engine.active_plan("board_setup", board_id)
             mode = active.action_parameters.get("mode") if active is not None else None
             if mode != "repair" or profile is None or not _profile_needs_repair(profile):
@@ -543,29 +618,398 @@ def _current_target(board_id: str) -> str:
 
 
 def _check_memory_safety(board_id: str, address: int, width: int) -> None:
-    _safety_policy.check_memory_write(board_id, address, width)
+    if _tier_router.state_for(board_id).tier is Tier.SETUP_LITE:
+        _check_lite_range(
+            board_id,
+            ActionCategory.MEMORY_WRITE,
+            AddressRange.from_start_size(address, width // 8),
+        )
+        return
+    _check_active_snapshot_range(
+        board_id, ActionCategory.MEMORY_WRITE, AddressRange.from_start_size(address, width // 8)
+    )
 
 
 def _check_memory_read_safety(board_id: str, address: int, size_bytes: int) -> None:
-    _safety_policy.check_memory_read(board_id, address, size_bytes)
+    if _tier_router.state_for(board_id).tier is Tier.SETUP_LITE:
+        _check_lite_range(
+            board_id,
+            ActionCategory.MEMORY_READ,
+            AddressRange.from_start_size(address, size_bytes),
+        )
+        return
+    _check_active_snapshot_range(
+        board_id, ActionCategory.MEMORY_READ, AddressRange.from_start_size(address, size_bytes)
+    )
 
 
 def _check_register_safety(board_id: str, address: int) -> None:
-    _safety_policy.check_register_write(board_id, address)
+    if _tier_router.state_for(board_id).tier is Tier.SETUP_LITE:
+        _check_lite_range(
+            board_id,
+            ActionCategory.REGISTER_WRITE,
+            AddressRange.from_start_size(address, 4),
+        )
+        return
+    _check_active_snapshot_range(
+        board_id, ActionCategory.REGISTER_WRITE, AddressRange.from_start_size(address, 4)
+    )
+
+
+def _check_active_snapshot_range(board_id: str, action: ActionCategory, requested: AddressRange):
+    """Contain a protected route against its immutable active generation.
+
+    Compatibility files are setup staging only.  In particular, an interrupted
+    full-tier refresh must leave both range checks and connection authority on
+    the old pointer generation.
+    """
+
+    state = _tier_router.state_for(board_id)
+    if state.tier is Tier.SETUP_LITE:
+        return _check_lite_range(board_id, action, requested)
+    snapshot = state.map_snapshot
+    if state.tier is not Tier.SETUP_FULL or not isinstance(snapshot, Mapping):
+        raise SafetyPolicyError(
+            "safety/map-refresh-required",
+            "The active protected policy has no immutable safety snapshot.",
+            remedy=("board_safety_refresh",),
+        )
+    try:
+        document = (
+            SafetyMapDocument.from_document(snapshot)
+            if snapshot.get("schema_version") == 2
+            else GenericSafetyMapDocument.from_document(snapshot)
+        )
+        require_reconciled_authority(document)
+        result = document.safety_map.check(action, (requested,))
+    except (SafetyMapError, ValueError) as exc:
+        raise SafetyPolicyError(
+            "safety/map-refresh-required",
+            f"The committed safety snapshot is invalid: {exc}",
+            remedy=("board_safety_refresh",),
+        ) from exc
+    if isinstance(result, Refusal):
+        raise SafetyPolicyError(result.code, result.reason, remedy=("board_safety_refresh",))
+    return result
+
+
+def _active_snapshot_aggregate(board_id: str) -> str:
+    """Return the active generation map digest, never a mutable staging digest."""
+
+    state = _tier_router.state_for(board_id)
+    if state.tier is Tier.SETUP_LITE:
+        if state.policy_digest is None:
+            raise SafetyPolicyError(
+                "safety/lite-map-invalid",
+                "setup-lite has no policy digest.",
+                remedy=("board_setup",),
+            )
+        return state.policy_digest
+    snapshot = state.map_snapshot
+    if state.tier is not Tier.SETUP_FULL or not isinstance(snapshot, Mapping):
+        raise SafetyPolicyError(
+            "safety/map-refresh-required",
+            "No active full safety snapshot exists.",
+            remedy=("board_safety_refresh",),
+        )
+    try:
+        document = (
+            SafetyMapDocument.from_document(snapshot)
+            if snapshot.get("schema_version") == 2
+            else GenericSafetyMapDocument.from_document(snapshot)
+        )
+        require_reconciled_authority(document)
+        return document.canonical_digest
+    except (SafetyMapError, ValueError) as exc:
+        raise SafetyPolicyError(
+            "safety/map-refresh-required",
+            f"The committed safety snapshot is invalid: {exc}",
+            remedy=("board_safety_refresh",),
+        ) from exc
+
+
+def _active_full_document(board_id: str) -> SafetyMapDocument | GenericSafetyMapDocument:
+    state = _tier_router.state_for(board_id)
+    if state.tier is not Tier.SETUP_FULL or not isinstance(state.map_snapshot, Mapping):
+        raise SafetyPolicyError(
+            "safety/map-refresh-required",
+            "No active full safety snapshot exists.",
+            remedy=("board_safety_refresh",),
+        )
+    try:
+        document = (
+            SafetyMapDocument.from_document(state.map_snapshot)
+            if state.map_snapshot.get("schema_version") == 2
+            else GenericSafetyMapDocument.from_document(state.map_snapshot)
+        )
+        require_reconciled_authority(document)
+        return document
+    except (SafetyMapError, ValueError) as exc:
+        raise SafetyPolicyError(
+            "safety/map-refresh-required",
+            f"The committed safety snapshot is invalid: {exc}",
+            remedy=("board_safety_refresh",),
+        ) from exc
+
+
+def _active_policy_profile(board_id: str) -> BoardProfile:
+    state = _tier_router.state_for(board_id)
+    if state.tier is not Tier.SETUP_FULL or state.profile_snapshot is None:
+        raise ProfileError("the active policy has no full immutable profile snapshot")
+    return _profile_repository.from_snapshot(board_id, state.profile_snapshot)
+
+
+def _active_lite_recovery_policy(board_id: str) -> LiteRecoveryPolicy | None:
+    """Hydrate native recovery only from the committed lite confirmation."""
+
+    state = _tier_router.state_for(board_id)
+    if state.tier is not Tier.SETUP_LITE:
+        return None
+    if not isinstance(state.map_snapshot, Mapping):
+        raise PlanRefusal(
+            "unlock/lite-recovery-invalid",
+            "The active setup-lite policy has no recovery confirmation; run board_setup.",
+        )
+    recovery = state.map_snapshot.get("recovery")
+    if recovery is None:
+        raise PlanRefusal(
+            "unlock/lite-native-unavailable",
+            "This setup-lite policy documents no native backend recovery mechanism. "
+            "Use an individually permitted raw/composed procedure where documented, or complete "
+            "setup-full for the existing reviewed recovery workflow.",
+        )
+    if not isinstance(recovery, Mapping) or not isinstance(recovery.get("mechanism"), str):
+        raise PlanRefusal(
+            "unlock/lite-recovery-invalid",
+            "The active setup-lite recovery confirmation is malformed; run board_setup.",
+        )
+    try:
+        disclosure = native_lite_recovery_disclosure(board_id, state.map_snapshot)
+        profile = (
+            _profile_repository.from_snapshot(board_id, state.profile_snapshot)
+            if isinstance(state.profile_snapshot, Mapping)
+            else None
+        )
+    except (LiteConfirmationError, ProfileError) as exc:
+        raise PlanRefusal(
+            "unlock/lite-recovery-invalid",
+            f"The active setup-lite recovery evidence is incomplete: {exc}",
+        ) from exc
+    if profile is None:
+        raise PlanRefusal(
+            "unlock/lite-recovery-invalid",
+            "The active setup-lite policy has no immutable connection profile.",
+        )
+    return LiteRecoveryPolicy(
+        profile.display_name,
+        profile.board.pyocd_target,
+        recovery["mechanism"],
+        disclosure,
+    )
+
+
+def _check_lite_range(board_id: str, action: ActionCategory, requested: AddressRange) -> RegionKind:
+    """Enforce only confirmed, persisted lite classifications; unknown stays denied."""
+
+    state = _tier_router.state_for(board_id)
+    snapshot = state.map_snapshot
+    rows = snapshot.get("regions") if isinstance(snapshot, Mapping) else None
+    if not isinstance(rows, list):
+        raise SafetyPolicyError(
+            "safety/lite-map-invalid",
+            "setup-lite has no confirmed region classifications for this operation.",
+            remedy=("board_setup",),
+        )
+    try:
+        for raw in rows:
+            if not isinstance(raw, Mapping):
+                continue
+            raw_kind = raw["kind"]
+            kind = RegionKind.BOOTLOADER_FLASH if raw_kind == "bootloader" else RegionKind(raw_kind)
+            start = raw["start"]
+            end = raw["end"]
+            if isinstance(start, bool) or isinstance(end, bool):
+                raise ValueError("lite region endpoints must not be booleans")
+            parsed_start = int(start, 0) if isinstance(start, str) else int(start)
+            parsed_end = int(end, 0) if isinstance(end, str) else int(end)
+            region = AddressRange(parsed_start, parsed_end)
+            contained = region.contains(requested)
+            if not contained:
+                continue
+            allowed = (
+                action is ActionCategory.MEMORY_READ
+                and raw.get("readable") is True
+                and kind
+                in {
+                    RegionKind.RAM,
+                    RegionKind.PHYSICAL_RAM,
+                    RegionKind.APPLICATION_FLASH,
+                    RegionKind.BOOTLOADER_FLASH,
+                    RegionKind.ROM,
+                    RegionKind.PERIPHERAL,
+                    RegionKind.PERIPHERAL_READ_ONLY,
+                }
+                or action is ActionCategory.MEMORY_WRITE
+                and raw.get("writable") is True
+                and kind in {RegionKind.RAM, RegionKind.PHYSICAL_RAM}
+                or action is ActionCategory.REGISTER_WRITE
+                and raw.get("writable") is True
+                and kind in {RegionKind.PERIPHERAL, RegionKind.PERIPHERAL_WRITE_ONLY}
+                or action is ActionCategory.BREAKPOINT
+                and raw.get("executable") is True
+                and kind
+                in {
+                    RegionKind.RAM,
+                    RegionKind.PHYSICAL_RAM,
+                    RegionKind.APPLICATION_FLASH,
+                    RegionKind.BOOTLOADER_FLASH,
+                    RegionKind.ROM,
+                }
+                or action is ActionCategory.FLASH_APPLICATION
+                and raw.get("writable") is True
+                and kind is RegionKind.APPLICATION_FLASH
+                or action is ActionCategory.FLASH_BOOTLOADER
+                and raw.get("writable") is True
+                and kind is RegionKind.BOOTLOADER_FLASH
+            )
+            if allowed:
+                return kind
+    except (KeyError, TypeError, ValueError) as exc:
+        raise SafetyPolicyError(
+            "safety/lite-map-invalid",
+            f"setup-lite confirmed geometry is invalid: {exc}",
+            remedy=("board_setup",),
+        ) from exc
+    raise SafetyPolicyError(
+        "safety/lite-containment-refused",
+        f"The requested {action.value} range is not fully confirmed by this setup-lite map.",
+        remedy=("use_raw_operation", "board_setup"),
+    )
 
 
 def _check_breakpoint_safety(board_id: str, address: int, elf_path: Path) -> None:
-    _safety_policy.check_breakpoint(board_id, address, elf_path)
+    if _tier_router.state_for(board_id).tier is Tier.SETUP_LITE:
+        _check_lite_range(
+            board_id,
+            ActionCategory.BREAKPOINT,
+            AddressRange.from_start_size(address, 2),
+        )
+        return
+    _safety_policy.check_breakpoint(
+        board_id, address, elf_path, document=_active_full_document(board_id)
+    )
 
 
 def _check_flash_safety(tool_name: str, board_id: str, artifact: Path) -> None:
     role = BuildRole.APPLICATION if tool_name == "flash_application" else BuildRole.BOOTLOADER
-    current = _safety_repository.load_current(board_id)
+    state = _tier_router.state_for(board_id)
+    if state.tier is Tier.SETUP_LITE:
+        snapshot = state.map_snapshot if isinstance(state.map_snapshot, Mapping) else {}
+        flash = snapshot.get("flash")
+        if not isinstance(flash, Mapping):
+            raise SafetyPolicyError(
+                "safety/lite-flash-evidence-unavailable",
+                "setup-lite has no confirmed flash backend and erase-sector evidence.",
+                remedy=("flash_raw", "board_setup"),
+            )
+        backend_target = flash.get("backend_target")
+        sectors = flash.get("erase_sectors")
+        if (
+            not isinstance(backend_target, str)
+            or not backend_target.strip()
+            or not isinstance(sectors, list)
+            or not sectors
+            or backend_target.casefold() != _current_target(board_id).casefold()
+        ):
+            raise SafetyPolicyError(
+                "safety/lite-flash-evidence-unavailable",
+                "setup-lite flash requires a matching confirmed backend target and erase sectors.",
+                remedy=("flash_raw", "board_setup"),
+            )
+        sector_ranges: list[AddressRange] = []
+        try:
+            for sector in sectors:
+                if not isinstance(sector, Mapping):
+                    raise ValueError("erase sector must be an object")
+                start = sector["start"]
+                end = sector["end"]
+                if isinstance(start, bool) or isinstance(end, bool):
+                    raise ValueError("erase sector endpoints must not be booleans")
+                sector_ranges.append(
+                    AddressRange(
+                        int(start, 0) if isinstance(start, str) else int(start),
+                        int(end, 0) if isinstance(end, str) else int(end),
+                    )
+                )
+        except (KeyError, TypeError, ValueError) as exc:
+            raise SafetyPolicyError(
+                "safety/lite-flash-evidence-unavailable",
+                f"setup-lite erase-sector evidence is invalid: {exc}",
+                remedy=("flash_raw", "board_setup"),
+            ) from exc
+        evidence = _safety_policy._extract_runtime_evidence(role, artifact)  # noqa: SLF001 - shared verified parser
+        action = (
+            ActionCategory.FLASH_APPLICATION
+            if role is BuildRole.APPLICATION
+            else ActionCategory.FLASH_BOOTLOADER
+        )
+        if evidence.initial_stack_pointer is None or evidence.initial_stack_pointer < 4:
+            raise SafetyPolicyError(
+                "safety/vector-stack-invalid",
+                "The ELF has no usable Cortex-M initial stack pointer.",
+                remedy=("select_valid_build_artifact",),
+            )
+        _check_lite_range(
+            board_id,
+            ActionCategory.MEMORY_WRITE,
+            AddressRange.from_start_size(evidence.initial_stack_pointer - 4, 4),
+        )
+        content_ranges = tuple(
+            segment.load_range
+            for segment in evidence.loadable_segments
+            if segment.load_range is not None
+        ) + tuple(evidence.hex_ranges)
+        if not content_ranges or evidence.reset_handler is None:
+            raise SafetyPolicyError(
+                "safety/flash-content-missing",
+                "The selected artifact lacks complete loadable flash and reset evidence.",
+                remedy=("select_valid_build_artifact",),
+            )
+        checked = list(content_ranges)
+        checked.extend(
+            AddressRange.from_start_size(value, size)
+            for value, size in (
+                (evidence.reset_handler, 2),
+                (evidence.entry_point, 1),
+                (evidence.vector_table, 8),
+            )
+            if value is not None
+        )
+        for requested in checked:
+            _check_lite_range(board_id, action, requested)
+        touched = [
+            sector
+            for sector in sector_ranges
+            if any(sector.overlaps(item) for item in content_ranges)
+        ]
+        if not touched or any(
+            not any(sector.contains(item) for sector in sector_ranges) for item in content_ranges
+        ):
+            raise SafetyPolicyError(
+                "safety/geometry-incomplete",
+                "Confirmed erase sectors do not fully cover the artifact's flash content.",
+                remedy=("flash_raw", "board_setup"),
+            )
+        for sector in touched:
+            _check_lite_range(board_id, action, sector)
+        return
+    current = _active_full_document(board_id)
     if role is BuildRole.APPLICATION and isinstance(current, GenericSafetyMapDocument):
         _safety_policy.check_generic_application_candidate(
             board_id,
             artifact,
             current_target=_current_target(board_id),
+            document=current,
         )
         return
     try:
@@ -574,6 +1018,7 @@ def _check_flash_safety(tool_name: str, board_id: str, artifact: Path) -> None:
             role,
             artifact,
             current_target=_current_target(board_id),
+            document=_active_full_document(board_id),
         )
     except SafetyPolicyError as exc:
         if (
@@ -581,22 +1026,30 @@ def _check_flash_safety(tool_name: str, board_id: str, artifact: Path) -> None:
             or exc.code != "safety/partition-authority-unavailable"
         ):
             raise
+        current = _active_full_document(board_id)
+        if not isinstance(current, GenericSafetyMapDocument):
+            raise
         _safety_policy.check_generic_application_candidate(
             board_id,
             artifact,
             current_target=_current_target(board_id),
+            document=current,
         )
 
 
 def _require_layer0(tool_name: str, board_id: str) -> None:
     if tool_name not in _GUARDED_READ_ACTIONS | _WRITE_CAPABLE_ACTIONS:
         return
+    # Lite preserves existing plans/permissions and containment, but it trusts
+    # the named board and deliberately has no live identity-validation gate.
+    if _tier_router.state_for(board_id).tier is Tier.SETUP_LITE:
+        return
     connection = connection_manager.connection_for(board_id)
     try:
         if tool_name in _GUARDED_READ_ACTIONS:
             gate_manager.require_validated(board_id, connection.connection_id)
         else:
-            aggregate = _safety_policy.current_aggregate(board_id)
+            aggregate = _active_snapshot_aggregate(board_id)
             stamp = gate_manager.require_write(board_id, connection.connection_id, aggregate)
             if tool_name == "flash_bootloader" and stamp.identity_capability != "exact":
                 raise GateRefusal(
@@ -625,8 +1078,17 @@ def _parse_action_integer(value: object, field_name: str) -> int:
 
 
 def _register_write_is_write_only(board_id: str, address: int, mask: int) -> bool:
-    allowed = _safety_policy.check_register_write(board_id, address)
-    write_only = RegionKind.PERIPHERAL_WRITE_ONLY in allowed.classifications
+    requested = AddressRange.from_start_size(address, 4)
+    state = _tier_router.state_for(board_id)
+    if state.tier is Tier.SETUP_LITE:
+        write_only = (
+            _check_lite_range(board_id, ActionCategory.REGISTER_WRITE, requested)
+            is RegionKind.PERIPHERAL_WRITE_ONLY
+        )
+    else:
+        allowed = _check_active_snapshot_range(board_id, ActionCategory.REGISTER_WRITE, requested)
+        assert not isinstance(allowed, RegionKind)
+        write_only = RegionKind.PERIPHERAL_WRITE_ONLY in allowed.classifications
     if write_only and mask != 0xFFFFFFFF:
         raise ValueError(
             "write-only SVD registers require a full 32-bit mask because masked "
@@ -658,7 +1120,7 @@ def _enforce_action_containment(
                 if length_value is None
                 else _parse_action_integer(length_value, "length")
             )
-            _safety_policy.check_memory_read(board_id, address, size_bytes)
+            _check_memory_read_safety(board_id, address, size_bytes)
         elif tool_name == "write_memory":
             operation = current_operation()
             if operation is not None:
@@ -693,7 +1155,7 @@ def _enforce_action_containment(
                         supplied_elf,
                         resolved,
                     )
-            _safety_policy.check_memory_write(board_id, address, width)
+            _check_memory_safety(board_id, address, width)
         elif tool_name == "set_breakpoint":
             target = parameters["symbol_or_address"]
             elf_path = Path(cast(str, parameters["elf_artifact"])).expanduser().resolve()
@@ -704,7 +1166,7 @@ def _enforce_action_containment(
                     raise ValueError("symbol_or_address must be a symbol or address")
                 address = resolve_symbol(elf_path, target).address
             address = canonicalize_breakpoint_address(address)
-            _safety_policy.check_breakpoint(board_id, address, elf_path)
+            _check_breakpoint_safety(board_id, address, elf_path)
         elif tool_name in {"flash_application", "flash_bootloader"}:
             handle = _maybe_handle(board_id)
             context = _action_context(tool_name, board_id)
@@ -745,6 +1207,25 @@ def _enforce_guarded_invocation(
     _monitor.check_block()
     parameters = {name: value for name, value in arguments.items() if name != "board_id"}
 
+    # The plan engine correctly rejects immutable action drift, but it does so
+    # before this coordinator precondition and relocks the legacy tool.  A
+    # target-unlock drift also invalidates a durable manual mass-erase claim,
+    # so handle it first while the exact active plan is still observable.  The
+    # coordinator removes only this board's approval/claim; the retained plan
+    # then produces its precise approval-inactive refusal on a retry.
+    if tool_name == "target_unlock":
+        active_unlock_plan = plan_engine.active_plan("target_unlock", board_id)
+        if (
+            active_unlock_plan is not None
+            and canonical_json(parameters) != active_unlock_plan.canonical_parameters
+        ):
+            _unlock_coordinator.invalidate_execution_mismatch(board_id)
+            raise PlanRefusal(
+                "unlock/parameter-mismatch",
+                "target_unlock parameters differ from the immutable plan binding.",
+                session_id=_active_session_id(board_id),
+            )
+
     def validate_layer0_and_action() -> None:
         if tool_name in {"board_setup", "board_fix_setup"}:
             connection_id = parameters.get("connection_id")
@@ -781,13 +1262,94 @@ def _enforce_guarded_invocation(
                 ) from exc
         _enforce_action_containment(tool_name, board_id, parameters)
 
-    plan_engine.enforce(
-        tool_name,
-        board_id,
-        parameters,
-        session_id=_active_session_id(board_id),
-        preconditions=validate_layer0_and_action,
-    )
+    try:
+        plan_engine.enforce(
+            tool_name,
+            board_id,
+            parameters,
+            session_id=_active_session_id(board_id),
+            preconditions=validate_layer0_and_action,
+        )
+    except PlanRefusal as exc:
+        if tool_name == "target_unlock" and exc.code == "plan/parameter-mismatch":
+            _unlock_coordinator.invalidate_execution_mismatch(board_id)
+        raise
+
+
+def _enforce_tier_route(tool_name: str, board_id: str, arguments: Mapping[str, object]) -> None:
+    """Apply safe-route policy before the legacy registry's missing-plan refusal."""
+
+    del arguments
+    try:
+        _tier_router.require_safe(tool_name, board_id)
+    except TierRouteRefusal as exc:
+        raise PlanRefusal(
+            exc.code,
+            exc.message,
+            session_id=_active_session_id(board_id),
+            remedies=exc.remedies,
+        ) from exc
+
+
+def _enforce_raw_invocation(
+    tool_name: str,
+    board_id: str,
+    arguments: Mapping[str, object],
+) -> None:
+    """Retain the global stop for raw hardware work and recheck the captured route."""
+
+    del arguments
+    state = _tier_router.state_for(board_id)
+    assert state.tier is not None
+    try:
+        _tier_router.require_raw(tool_name, board_id, state=state)
+    except TierRouteRefusal as exc:
+        context: dict[str, object] = {"tier": state.tier.value}
+        if state.tier is not Tier.SETUP_FULL:
+            context["raw"] = True
+        if state.tier is Tier.SETUP_LITE:
+            warning = _tier_router.raw_error_warning(tool_name, board_id, state=state)
+            if warning is not None:
+                context["warning"] = warning
+        raise PlanRefusal(
+            exc.code,
+            exc.message,
+            session_id=_active_session_id(board_id),
+            remedies=exc.remedies,
+            context=context,
+        ) from exc
+    _monitor.check_block()
+
+
+def _enforce_direct_tiered_hardware(
+    tool_name: str,
+    board_id: str,
+    arguments: Mapping[str, object],
+) -> None:
+    """Apply corruption denial and the global stop to map-independent hardware calls."""
+
+    del tool_name, arguments
+    _tier_router.state_for(board_id)
+    _monitor.check_block()
+
+
+def _enforce_full_identity_route(
+    tool_name: str,
+    board_id: str,
+    arguments: Mapping[str, object],
+) -> None:
+    """Keep identity validation a full-tier-only operation with a useful remedy."""
+
+    del tool_name, arguments
+    state = _tier_router.state_for(board_id)
+    assert state.tier is not None
+    if state.tier is not Tier.SETUP_FULL:
+        raise PlanRefusal(
+            "tier/wrong-route",
+            "This board does not have setup-full identity policy; run setup-full to validate identity.",
+            session_id=_active_session_id(board_id),
+        )
+    _monitor.check_block()
 
 
 def _supported_registers_for(board_id: str) -> tuple[str, ...]:
@@ -969,7 +1531,16 @@ def resolve_board_config(
             try:
                 return repository.load(bid).board
             except ProfileError:
-                pass
+                # A project can contain a pre-schema-v2 board config while a
+                # capability generation supplies the tier evidence.  Keep the
+                # historical config reader available for that narrow
+                # compatibility route; the capability policy still decides
+                # whether any hardware action is permitted.
+                paths = preview_board_config_paths(repository.store.layout.boards)
+                try:
+                    return select_boards_by_id(load_board_configs_from_paths(paths), [bid])[0]
+                except ConfigError:
+                    pass
         raise ConfigError(
             f"Board profile '{bid}' was not found in the configured artifact root. "
             "Run board setup first."
@@ -1101,13 +1672,9 @@ def _require_unchanged_hook_source(board_id: str, selection: ProbeSelection) -> 
     if selection.hook_source_sha256 is None:
         return
     hook_ids = {
-        token.split(":", 1)[1]
-        for token in selection.provenance
-        if token.startswith("hook:")
+        token.split(":", 1)[1] for token in selection.provenance if token.startswith("hook:")
     }
-    current = {
-        hook.hook_id: hook.file_sha256 for hook in _hook_snapshot_store.current().hooks
-    }
+    current = {hook.hook_id: hook.file_sha256 for hook in _hook_snapshot_store.current().hooks}
     for hook_id in hook_ids:
         if current.get(hook_id) != selection.hook_source_sha256:
             raise RuntimeError(
@@ -1270,16 +1837,31 @@ def _connect_impl(
         uid = None
         tgt = None
         try:
-            try:
-                board = resolve_board_config(
-                    board_id,
-                    board_config,
-                    allow_environment_overrides=allow_environment_overrides,
+            policy_state = _tier_router.state_for(board_id)
+            protected_profile: BoardProfile | None = None
+            # A no-setup connection is target-only.  Inactive compatibility
+            # profiles must not become an identity assertion by accident.
+            no_setup_target_only = policy_state.tier is Tier.NO_SETUP and allow_missing_profile
+            if policy_state.tier in {Tier.SETUP_LITE, Tier.SETUP_FULL}:
+                if policy_state.profile_snapshot is None:
+                    raise ProfileError(
+                        "protected capability policy has no committed profile snapshot"
+                    )
+                protected_profile = _profile_repository.from_snapshot(
+                    board_id, policy_state.profile_snapshot
                 )
-            except ConfigError:
-                if not allow_missing_profile or not target:
-                    raise
-                board = None
+                board = protected_profile.board
+            elif not no_setup_target_only:
+                try:
+                    board = resolve_board_config(
+                        board_id,
+                        board_config,
+                        allow_environment_overrides=allow_environment_overrides,
+                    )
+                except ConfigError:
+                    if not allow_missing_profile:
+                        raise
+                    board = None
             assigned_uid = (
                 _assigned_probe_uid_for_connect(board_id)
                 if not allow_environment_overrides and unique_id is None
@@ -1293,24 +1875,46 @@ def _connect_impl(
             tgt = (
                 target
                 or (board.pyocd_target if board else None)
+                or (
+                    _tiered_auto_target_resolver(board_id)
+                    if board is None and _tiered_auto_target_resolver is not None
+                    else None
+                )
                 or (os.environ.get("PYOCD_TARGET") if allow_environment_overrides else None)
                 or None
             )
             try:
-                stored_profile = _profile_repository.load(board_id)
+                stored_profile = protected_profile
+                if stored_profile is None and not no_setup_target_only:
+                    stored_profile = _profile_repository.load(board_id)
             except ProfileError:
-                if _profile_repository.store.layout.board_profile(board_id).is_file():
+                # ``resolve_board_config`` can deliberately select a valid
+                # legacy board-config document here.  It has no v2 profile
+                # metadata (packs/PDSC authority), so connect it normally but
+                # do not fabricate those stronger facts.  If no board was
+                # resolved, preserve the established fail-closed profile
+                # failure for a claimed v2 path.
+                if (
+                    board is None
+                    and _profile_repository.store.layout.board_profile(board_id).is_file()
+                ):
                     raise
                 selected_pack = None
                 selected_pdsc_device = None
             else:
-                selected_pack = _verified_pack_for_profile(stored_profile)
-                selected_pdsc_device = (
-                    stored_profile.device_support["pdsc_device"]
-                    if selected_pack is not None and stored_profile.device_support is not None
+                selected_pack = (
+                    _verified_pack_for_profile(stored_profile)
+                    if stored_profile is not None
                     else None
                 )
-                if selected_pack is not None:
+                selected_pdsc_device = (
+                    stored_profile.device_support["pdsc_device"]
+                    if selected_pack is not None
+                    and stored_profile is not None
+                    and stored_profile.device_support is not None
+                    else None
+                )
+                if selected_pack is not None and stored_profile is not None:
                     if (
                         target is not None
                         and target.casefold() != stored_profile.board.pyocd_target.casefold()
@@ -1404,13 +2008,24 @@ def _connect_impl(
 
 
 @mcp.tool()
-def connect(board_id: str) -> str:
-    """Connect using only the named schema-v2 project profile.
+def connect(board_id: str, probe_uid: str | None = None, target: str | None = None) -> str:
+    """Connect a named board, using profile policy or no-setup raw target resolution."""
 
-    Normal connection accepts no manual probe, target, or external board-config override.
-    Initialize connect_override-plan for a deliberate exceptional manual connection.
-    """
-
+    state = _tier_router.state_for(board_id)
+    if state.tier is Tier.NO_SETUP:
+        return _connect_impl(
+            board_id,
+            unique_id=probe_uid,
+            target=target,
+            allow_environment_overrides=False,
+            allow_missing_profile=True,
+        )
+    if probe_uid is not None or target is not None:
+        raise TierRouteRefusal(
+            "tier/wrong-route",
+            "Only a no-setup board may supply probe_uid or target to connect; use its configured profile route.",
+            ("connect",),
+        )
     return _connect_impl(board_id, allow_environment_overrides=False)
 
 
@@ -1457,21 +2072,29 @@ def _connect_under_reset_impl(
                 session=_runtime_for(board_id),
             )
         # This recovery route is intentionally isolated from launch-time
-        # overrides: the approved action and persisted board profile are its
-        # entire routing authority.
-        board = resolve_board_config(board_id, None, allow_environment_overrides=False)
+        # overrides. Protected tiers hydrate their profile only from the
+        # active capability generation, never from a staged compatibility file.
+        policy_state = _tier_router.state_for(board_id)
+        if policy_state.tier in {Tier.SETUP_LITE, Tier.SETUP_FULL}:
+            if policy_state.profile_snapshot is None:
+                raise ProfileError("protected capability policy has no committed profile snapshot")
+            stored_profile = _profile_repository.from_snapshot(
+                board_id, policy_state.profile_snapshot
+            )
+            board = stored_profile.board
+        else:
+            board = resolve_board_config(board_id, None, allow_environment_overrides=False)
+            try:
+                stored_profile = _profile_repository.load(board_id)
+            except ProfileError:
+                stored_profile = None
         resolved_uid = _resolve_probe_uid_for_connect(
             board, probe_uid, allow_environment_override=False
         )
-        resolved_target = (
-            target_override
-            or (board.pyocd_target if board else None)
-        )
-        try:
-            stored_profile = _profile_repository.load(board_id)
-        except ProfileError:
+        resolved_target = target_override or (board.pyocd_target if board else None)
+        if stored_profile is None:
             if _profile_repository.store.layout.board_profile(board_id).is_file():
-                raise
+                raise ProfileError("board profile is unreadable")
             selected_pack = None
             selected_pdsc_device = None
         else:
@@ -1663,12 +2286,197 @@ def get_board_info(board_id: str) -> str:
             if connection is None:
                 return f"Board '{board_id}' is not connected. Call `connect` first."
             handle = connection.handle
+            tier_state = _tier_router.state_for(board_id)
+            if tier_state.tier is Tier.NO_SETUP:
+                metadata = session_metadata(handle)
+                return "\n".join(
+                    (
+                        f"board_id: {board_id}",
+                        "identity_assertion: not-asserted",
+                        f"live_target: {metadata.target_override or '<backend-auto>'}",
+                        f"probe_uid: {metadata.probe_uid or '<unknown>'}",
+                        "configured_profile: inactive for explicit no-setup policy",
+                    )
+                )
             b = handle.board
             if b is None:
                 return NO_BOARD_CONFIG_MESSAGE
             return format_board_info(b)
 
         return _run_logged_tool(board_id, "get_board_info", {"board_id": board_id}, operation)
+
+
+@mcp.tool()
+def get_capabilities(board_id: str) -> str:
+    """Return the explicit tier and preferred safe/raw routes for one named board."""
+
+    # A discovery response must not combine a prior gate stamp with a newly
+    # replaced capability pointer. Use the same per-board operation lock as
+    # protected dispatch, and accept a full identity proof only when it binds
+    # the active immutable aggregate and live connection.
+    with connection_manager.lock_for(board_id):
+        state = _capability_policies.resolve(board_id)
+        connection = connection_manager.maybe_connection(board_id)
+        stamp = gate_manager.snapshot(board_id)
+        aggregate: str | None = None
+        if state.tier is Tier.SETUP_FULL:
+            try:
+                aggregate = _active_snapshot_aggregate(board_id)
+            except SafetyPolicyError:
+                aggregate = None
+        live_identity = (
+            stamp.identity_capability
+            if (
+                aggregate is not None
+                and connection is not None
+                and stamp is not None
+                and stamp.connection_id == connection.connection_id
+                and stamp.map_digest == aggregate
+                and stamp.identity_capability in {"exact", "compatible"}
+            )
+            else None
+        )
+        native_recovery_backend_available = False
+        if state.tier in {Tier.SETUP_LITE, Tier.SETUP_FULL} and connection is not None:
+            if state.tier is Tier.SETUP_LITE:
+                recovery = (
+                    state.map_snapshot.get("recovery")
+                    if isinstance(state.map_snapshot, Mapping)
+                    else None
+                )
+                mechanism = recovery.get("mechanism") if isinstance(recovery, Mapping) else None
+            else:
+                profile = (
+                    state.profile_snapshot if isinstance(state.profile_snapshot, Mapping) else {}
+                )
+                mechanism = profile.get("recover_mode") if isinstance(profile, Mapping) else None
+            if isinstance(mechanism, str):
+                try:
+                    native_recovery_backend_available = target_control.supports_recovery(
+                        connection.handle, mechanism
+                    )
+                except Exception:  # diagnostics never turn an uncertain backend into support
+                    native_recovery_backend_available = False
+        payload = _tier_router.capabilities(
+            board_id,
+            project_root=_project_root,
+            identity_capability=live_identity,
+            native_recovery_backend_available=native_recovery_backend_available,
+            state=state,
+        )
+    try:
+        manual_ready, manual_error = _manual_permissions.readiness
+        if not manual_ready:
+            raise ManualPermissionError(
+                "reset-failed", manual_error or "startup reset did not complete"
+            )
+        payload["manual_permissions"] = {
+            "root": str(_manual_permissions.root),
+            "epoch_status": "ready",
+            "downgrade": {
+                "state": _manual_permissions.status("downgrade").state,
+                "skill": "$downgrade",
+            },
+            "mass_erase": {
+                "state": _manual_permissions.status("mass-erase").state,
+                "skill": "$mass-erase",
+            },
+        }
+    except ManualPermissionError as exc:
+        payload["manual_permissions"] = {
+            "root": str(_manual_permissions.root),
+            "epoch_status": "reset-failed",
+            "error": str(exc),
+        }
+    return json.dumps(payload, sort_keys=True)
+
+
+@mcp.tool()
+def unlock_operator(board_id: str, action: str, grant_id: str) -> str:
+    """Issue one run-local token from a human-invoked `$downgrade` manual grant."""
+
+    try:
+        if action != "downgrade":
+            raise ManualPermissionError(
+                "wrong-action",
+                "unlock_operator supports only downgrade; safe mass erase uses its disclosure flow.",
+            )
+        state = _tier_router.state_for(board_id)
+        if state.tier is Tier.NO_SETUP or state.policy_digest is None:
+            raise TierRouteRefusal(
+                "tier/wrong-route", "This board is already no-setup; no downgrade is available."
+            )
+        token = _manual_permissions.issue_downgrade_token(board_id, grant_id, state.policy_digest)
+    except (ManualPermissionError, TierRouteRefusal) as exc:
+        return _manual_refusal_payload(board_id, action, exc)
+    return json.dumps(
+        {
+            "schema_version": 1,
+            "status": "operator_permission_issued",
+            "action": "downgrade",
+            "board_id": board_id,
+            "grant_id": grant_id,
+            "permission": token,
+            "server_run_id": server_run.run_id,
+            "policy_digest": state.policy_digest,
+        },
+        sort_keys=True,
+    )
+
+
+@mcp.tool()
+def downgrade(board_id: str, permission: str) -> str:
+    """Consume one manual downgrade token and atomically return the board to no-setup."""
+
+    try:
+        with connection_manager.lock_for(board_id):
+            state = _tier_router.state_for(board_id)
+            if state.tier is Tier.NO_SETUP or state.policy_digest is None:
+                raise TierRouteRefusal(
+                    "tier/wrong-route", "This board is already no-setup; no downgrade is available."
+                )
+            _manual_permissions.consume_downgrade(board_id, permission, state.policy_digest)
+            committed = _capability_policies.downgrade_to_no_setup(board_id)
+            gate_manager.clear(board_id, "manual downgrade committed")
+            plan_engine.invalidate_board(board_id, "manual downgrade committed")
+            _unlock_coordinator.invalidate_board(board_id)
+            return json.dumps(
+                {
+                    "schema_version": 1,
+                    "status": "downgraded",
+                    "board_id": board_id,
+                    "tier": committed.tier.value if committed.tier is not None else None,
+                    "policy_status": committed.status,
+                    "policy_digest": committed.policy_digest,
+                    "setup_incomplete": True,
+                },
+                sort_keys=True,
+            )
+    except (ManualPermissionError, TierRouteRefusal) as exc:
+        return _manual_refusal_payload(board_id, "downgrade", exc)
+
+
+def _manual_refusal_payload(board_id: str, action: str, exc: Exception) -> str:
+    code = (
+        exc.code if isinstance(exc, (ManualPermissionError, TierRouteRefusal)) else "manual/refused"
+    )
+    if isinstance(exc, ManualPermissionError) and not code.startswith("manual/"):
+        code = f"manual/{code}"
+    return json.dumps(
+        {
+            "schema_version": 1,
+            "status": "refused",
+            "code": code,
+            "board_id": board_id,
+            "action": action,
+            "project_root": str(_project_root),
+            "message": str(exc),
+            "remedies": [f"Ask the human to invoke ${action}."]
+            if action in {"downgrade", "mass-erase"}
+            else [],
+        },
+        sort_keys=True,
+    )
 
 
 def _require_loaded_board(handle: TargetSessionHandle) -> BoardConfig:
@@ -2451,7 +3259,7 @@ def _stage_generic_allocation(
     pending_handle: object,
 ) -> None:
     _pending_generic_allocations.pop(board_id, None)
-    current = _safety_repository.load_current(board_id)
+    current = _active_full_document(board_id)
     if not isinstance(current, GenericSafetyMapDocument):
         return
     if not isinstance(pending_handle, TargetSessionHandle):
@@ -2464,8 +3272,9 @@ def _stage_generic_allocation(
         board_id,
         artifact,
         current_target=_current_target(board_id),
+        document=current,
     )
-    profile = _profile_repository.load(board_id)
+    profile = _active_policy_profile(board_id)
     if profile.mcu_part_number is None:
         raise SafetyMapError("generic profile has no exact MCU part number")
     if profile.device_support is None:
@@ -2522,7 +3331,7 @@ def _prepare_generic_allocation(
     del pending_handle
     if tool_name != "flash_application":
         return None
-    current = _safety_repository.load_current(board_id)
+    current = _active_full_document(board_id)
     if not isinstance(current, GenericSafetyMapDocument):
         return None
     pending = _pending_generic_allocations.pop(board_id, None)
@@ -2551,11 +3360,70 @@ def _prepare_generic_allocation(
 def _commit_generic_allocation(board_id: str, pending: object) -> None:
     if not isinstance(pending, _PendingGenericAllocation):
         raise TypeError("invalid generic deployment allocation")
-    _safety_repository.commit_if_current(board_id, pending.expected_map_digest, pending.document)
+    state = _capability_policies.resolve(board_id)
+    active = _active_full_document(board_id)
+    if (
+        state.tier is not Tier.SETUP_FULL
+        or state.profile_snapshot is None
+        or not isinstance(active, GenericSafetyMapDocument)
+        or active.canonical_digest != pending.expected_map_digest
+    ):
+        raise SafetyPolicyError(
+            "safety/allocation-proof-stale",
+            "The active protected policy changed before deployment allocation commit.",
+            remedy=("replace_flash_plan",),
+        )
+    projected = _safety_repository.load_current(board_id)
+    if not isinstance(projected, GenericSafetyMapDocument):
+        raise SafetyPolicyError(
+            "safety/allocation-proof-stale",
+            "The compatibility map is no longer a generic deployment policy.",
+            remedy=("replace_flash_plan",),
+        )
+    selected = pending.document
+    projection_commit_required = True
+    if projected.canonical_digest != pending.expected_map_digest:
+        try:
+            replayed = generic_map_with_allocation(active, projected.deployment_policy)
+            valid_successor = (
+                replayed.canonical_digest == projected.canonical_digest
+                and projected.canonical_digest == pending.document.canonical_digest
+            )
+        except (AttributeError, SafetyMapError, TypeError, ValueError):
+            valid_successor = False
+        if not valid_successor:
+            raise SafetyPolicyError(
+                "safety/allocation-proof-stale",
+                "The compatibility map changed incompatibly before deployment allocation commit.",
+                remedy=("replace_flash_plan",),
+            )
+        # A previous projection-first process may have persisted this exact
+        # direct successor without advancing the authoritative generation.
+        # Its parent/digests/geometry were replayed above, so adopt it rather
+        # than discarding one-way ownership or widening it again.
+        selected = projected
+        projection_commit_required = False
+    # The immutable capability generation is the protected-route authority;
+    # publish the one-way allocation there before updating its compatibility
+    # projection or touching hardware. A projection-first failure would leave
+    # later recovery validating against the old active snapshot.
+    _capability_policies.commit(
+        board_id,
+        Tier.SETUP_FULL,
+        setup_incomplete=state.setup_incomplete,
+        profile_snapshot=state.profile_snapshot,
+        map_snapshot=selected.to_document(),
+        evidence=state.evidence,
+        retained_generations=state.retained_generations,
+    )
+    if projection_commit_required:
+        _safety_repository.commit_if_current(
+            board_id, pending.expected_map_digest, pending.document
+        )
     connection = connection_manager.maybe_connection(board_id)
     if connection is not None:
         gate_manager.refresh_map_stamp(
-            board_id, connection.connection_id, pending.document.canonical_digest
+            board_id, connection.connection_id, selected.canonical_digest
         )
 
 
@@ -2672,6 +3540,146 @@ for _handler_name, _handler in (
         structured_output=False,
     )
 
+raw_tool_handlers = build_raw_handlers(
+    RawToolServices(
+        router=lambda: _tier_router,
+        global_stop=_monitor.check_block,
+        handle_for=_handle,
+        read_memory=target_control.read_memory,
+        read_block=target_control.read_memory_block,
+        write_memory=target_control.write_memory,
+        write_register=target_control.write_core_register,
+        set_breakpoint=target_control.set_breakpoint,
+        reset=lambda handle, halt_after: target_control.reset(handle, halt_after=halt_after),
+        flash=lambda handle, artifact: target_control.flash_firmware(
+            handle, artifact, halt_after_reset=False
+        ),
+        recover=lambda handle, mechanism: target_control.recover_target(
+            handle, recover_mode=mechanism
+        ),
+        capture_uart=lambda *args, **kwargs: capture_uart_output(*args, **kwargs),
+        write_uart=lambda *args, **kwargs: write_uart_output(*args, **kwargs),
+        exchange_uart=lambda *args, **kwargs: exchange_uart_output(*args, **kwargs),
+        # Resolve at call time: raw handlers register before the unlock
+        # coordinator/finalizer is constructed below.
+        finalize_recovery=lambda board_id: _finalize_unlock_recovery(board_id),
+    )
+)
+
+
+def _raw_refusal_context(operation: str, board_id: str) -> Mapping[str, object]:
+    """Enrich dispatcher-time raw refusals from the same current tier snapshot."""
+
+    state = _tier_router.state_for(board_id)
+    assert state.tier is not None
+    payload: dict[str, object] = {"tier": state.tier.value}
+    if state.tier is not Tier.SETUP_FULL:
+        payload["raw"] = True
+    try:
+        warning = _tier_router.raw_error_warning(operation, board_id, state=state)
+    except TierRouteRefusal:
+        warning = None
+    if warning is not None:
+        payload["warning"] = warning
+    return payload
+
+
+def _tiered_batch_child_result(
+    board_id: str,
+    tool_name: str,
+    result: Any,
+) -> Any:
+    """Give setup-lite safe fallback children their versioned result envelope.
+
+    Safe tools predate tier routing and retain their human-readable Layer-2
+    reply at the direct/full surface.  A static MCP client reaches a newly
+    admitted setup-lite safe operation through an ``action_batch`` fallback,
+    though, and needs a stable machine-readable result to distinguish an
+    allowed mapped action from a late containment refusal.  Keep that narrow
+    adaptation at the tier/batch boundary so legacy full child payloads remain
+    byte-for-byte compatible.
+    """
+
+    if tool_name not in route_names("safe") or not isinstance(result, str):
+        return result
+    state = _tier_router.state_for(board_id)
+    if state.tier is not Tier.SETUP_LITE:
+        return result
+    body = result.split("\n", 1)[0]
+    refusal = re.fullmatch(r"Refused \[([^]]+)\]: (.*?)(?: session_id=.*)?", body)
+    payload: dict[str, object] = {
+        "schema_version": 1,
+        "board_id": board_id,
+        "tier": state.tier.value,
+        "operation": tool_name,
+    }
+    if refusal is not None:
+        payload.update(
+            {
+                "status": "refused",
+                "code": refusal.group(1),
+                "message": refusal.group(2),
+            }
+        )
+    else:
+        payload.update({"status": "ok", "result": body})
+    return json.dumps(payload, sort_keys=True)
+
+
+def _tiered_batch_child_error(
+    board_id: str,
+    tool_name: str,
+    error: BaseException,
+) -> Any | None:
+    """Represent a late lite containment refusal as a completed fallback child.
+
+    Plan submission intentionally does not grant a range forever: the guarded
+    child rechecks the immutable map just before target I/O.  That recheck is a
+    normal tiered refusal, not an execution failure of the surrounding static
+    client fallback.  Existing tiers retain the historical batch failure path.
+    """
+
+    if tool_name not in route_names("safe"):
+        return None
+    state = _tier_router.state_for(board_id)
+    if state.tier is not Tier.SETUP_LITE:
+        return None
+    message = str(error).split("\n", 1)[0]
+    if "setup-lite map" not in message:
+        return None
+    return json.dumps(
+        {
+            "schema_version": 1,
+            "status": "refused",
+            "code": "safety/lite-containment-refused",
+            "board_id": board_id,
+            "tier": state.tier.value,
+            "operation": tool_name,
+            "message": message,
+        },
+        sort_keys=True,
+    )
+
+
+if set(raw_tool_handlers) != set(route_names("raw")):
+    raise RuntimeError("raw handler registration does not match the tier route inventory")
+for _raw_name, _raw_handler in raw_tool_handlers.items():
+    mcp.add_tool(
+        _raw_handler,
+        name=_raw_name,
+        description=_raw_handler.__doc__,
+        structured_output=False,
+    )
+    forbid_unknown_tool_arguments(mcp, _raw_name)
+    mcp.configure_layer2(_raw_name)
+    mcp.configure_json_refusals(_raw_name, context=_raw_refusal_context)
+    mcp.configure_route_guard(_raw_name, guard=_enforce_raw_invocation)
+    mcp.configure_guarded_dispatch(
+        _raw_name,
+        guard=_enforce_raw_invocation,
+        lock_for_board=lambda board_id: connection_manager.lock_for(board_id),
+    )
+
 # FastMCP ignores unknown fields by default. Normal connect must fail closed rather than silently
 # dropping manual override fields, including when it is dispatched as an action_batch child.
 forbid_unknown_tool_arguments(mcp, "connect")
@@ -2690,25 +3698,9 @@ LAYER2_ACTIONS = tuple(
 for _layer2_action in LAYER2_ACTIONS:
     mcp.configure_layer2(_layer2_action)
 
-CONNECTION_AND_REGISTER_GUARDED_ACTIONS = (
-    "connect_override",
-    "reset_and_halt",
-    "connect_under_reset",
-    "write_cpu_register",
-    "set_execution_state",
-    "register_write",
-)
-MEMORY_FLASH_AND_SERIAL_GUARDED_ACTIONS = (
-    "read_memory_address",
-    "write_memory",
-    "set_breakpoint",
-    "flash_application",
-    "flash_bootloader",
-    "read_serial",
-    "write_serial",
-    "serial_exchange",
-)
-GUARDED_ACTIONS = CONNECTION_AND_REGISTER_GUARDED_ACTIONS + MEMORY_FLASH_AND_SERIAL_GUARDED_ACTIONS
+# The target-unlock coordinator owns its additional one-time disclosure
+# handshake below, but it remains a ``safe`` row in the same inventory.
+GUARDED_ACTIONS = tuple(name for name in route_names("safe") if name != "target_unlock")
 for _guarded_action in GUARDED_ACTIONS:
     tool_registry.configure(
         _guarded_action,
@@ -2721,6 +3713,24 @@ for _guarded_action in GUARDED_ACTIONS:
         guard=_enforce_guarded_invocation,
         lock_for_board=lambda board_id: connection_manager.lock_for(board_id),
     )
+    mcp.configure_route_guard(_guarded_action, guard=_enforce_tier_route)
+
+for _direct_hardware_action in route_names("direct"):
+    mcp.configure_route_guard(_direct_hardware_action, guard=_enforce_direct_tiered_hardware)
+    mcp.configure_guarded_dispatch(
+        _direct_hardware_action,
+        guard=_enforce_direct_tiered_hardware,
+        lock_for_board=lambda board_id: connection_manager.lock_for(board_id),
+    )
+
+# Symbol resolution is local metadata, but this path proceeds to a mapped memory
+# read; it must not bypass raw/no-setup route precedence.
+mcp.configure_route_guard("read_memory_symbol", guard=_enforce_tier_route)
+mcp.configure_guarded_dispatch(
+    "read_memory_symbol",
+    guard=_enforce_guarded_invocation,
+    lock_for_board=lambda board_id: connection_manager.lock_for(board_id),
+)
 
 plan_tool_handlers = register_plan_tools(
     mcp,
@@ -3128,10 +4138,10 @@ def _safety_continuation(prefix: str) -> str:
     return f"{prefix}-{secrets.token_hex(8)}"
 
 
-def _derive_reviewed_safety_map(board_id: str):
+def _derive_reviewed_safety_map(board_id: str, *, profile: BoardProfile | None = None):
     """Reproduce one complete candidate from profile plus packaged reviewed evidence."""
 
-    profile = _profile_repository.load(board_id)
+    profile = profile or _profile_repository.load(board_id)
     profile_document = profile.to_document()
     datasheet_digest = profile_document.get("datasheet_sha256")
     if not isinstance(datasheet_digest, str) or not datasheet_digest.strip():
@@ -3184,10 +4194,15 @@ def _derive_reviewed_safety_map(board_id: str):
     )
 
 
-def _derive_generic_safety_map(board_id: str) -> GenericSafetyMapDocument:
+def _derive_generic_safety_map(
+    board_id: str,
+    *,
+    profile: BoardProfile | None = None,
+    prior: GenericSafetyMapDocument | None = None,
+) -> GenericSafetyMapDocument:
     """Build a read/debug-only schema-v3 map from a replayed pack binding."""
 
-    profile = _profile_repository.load(board_id)
+    profile = profile or _profile_repository.load(board_id)
     if profile.mcu_part_number is None or profile.device_support is None:
         raise SafetyMapError("profile lacks a resolved generic device-support source")
     candidate = _replay_profile_device_support(profile)
@@ -3261,16 +4276,18 @@ def _derive_generic_safety_map(board_id: str) -> GenericSafetyMapDocument:
     deployment_policy: Mapping[str, object] = {"kind": "none"}
     partitions = MapPartitions(None)
     deployment_regions: tuple[SafetyRegion, ...] = ()
-    map_path = _safety_repository.path(board_id)
-    try:
-        prior = _safety_repository.load_current(board_id)
-    except SafetyMapError as exc:
-        if map_path.is_file():
-            raise SafetyMapError(
-                "existing generic map is unreadable; refusing to discard possible one-way "
-                "deployment ownership"
-            ) from exc
-        prior = None
+    if prior is None:
+        map_path = _safety_repository.path(board_id)
+        try:
+            loaded = _safety_repository.load_current(board_id)
+        except SafetyMapError as exc:
+            if map_path.is_file():
+                raise SafetyMapError(
+                    "existing generic map is unreadable; refusing to discard possible one-way "
+                    "deployment ownership"
+                ) from exc
+            loaded = None
+        prior = loaded if isinstance(loaded, GenericSafetyMapDocument) else None
     if (
         isinstance(prior, GenericSafetyMapDocument)
         and prior.deployment_policy.get("kind") == "artifact_application_allocation"
@@ -3413,47 +4430,45 @@ def _require_map_authority(document) -> None:
 
 
 def _require_current_reviewed_map(document) -> None:
-    """Reject a valid but stale map without consulting any build output."""
+    """Validate a mutable setup candidate without making it active authority.
+
+    Setup staging still needs the baseline map validator. Protected connection,
+    containment, validation, and refresh paths instead consume the immutable
+    pointer snapshot and call ``_require_map_authority`` directly.
+    """
 
     _require_map_authority(document)
-    candidate = (
-        _derive_generic_safety_map(document.board_id)
-        if isinstance(document, GenericSafetyMapDocument)
-        else _derive_reviewed_safety_map(document.board_id)
-    )
-    if document != candidate:
-        raise SafetyMapError(
-            "the stable map no longer matches the semantic profile or current reviewed evidence; "
-            "run board_safety_refresh"
-        )
 
 
-def _derive_safety_map(board_id: str):
-    """Re-derive the sole map using the profile's recorded authority kind."""
+def _derive_safety_map(
+    board_id: str,
+    *,
+    profile: BoardProfile | None = None,
+    prior: GenericSafetyMapDocument | None = None,
+):
+    """Re-derive from explicit authority, or legacy staging when requested."""
 
-    profile = _profile_repository.load(board_id)
+    profile = profile or _profile_repository.load(board_id)
     return (
-        _derive_generic_safety_map(board_id)
+        _derive_generic_safety_map(board_id, profile=profile, prior=prior)
         if profile.device_support is not None
-        else _derive_reviewed_safety_map(board_id)
+        else _derive_reviewed_safety_map(board_id, profile=profile)
     )
 
 
 _safety_policy = SafetyPolicy(
     _safety_repository,
-    authority_verifier=_require_current_reviewed_map,
+    # A committed generation owns the profile/map pair for every protected
+    # operation. Replaying its authority is still mandatory, but a mutable
+    # compatibility profile must not redefine it before a refresh commits.
+    authority_verifier=_require_map_authority,
 )
 
 
 def _restamp_after_refresh(board_id: str, map_digest: str, identity_changed: bool) -> None:
-    expected_ref = (
-        _firm_store.layout.safety_reference_prefix(board_id) / "memory_map.yaml"
-    ).as_posix()
-    profile = _profile_repository.load(board_id)
-    if profile.safety_ref != expected_ref:
-        _profile_repository.commit_safety_ref(
-            _profile_repository.stage_safety_ref(board_id, expected_ref)
-        )
+    # Compatibility profile files are projections, never active protected
+    # authority. Pointer publication owns the transition; this hook only
+    # maintains the volatile identity stamp for an already-live session.
     if identity_changed:
         gate_manager.clear(board_id, "stable map identity changed during safety refresh")
         return
@@ -3483,9 +4498,90 @@ _safety_refresher = SafetyRefresher(
 def _run_board_safety_refresh(board_id: str) -> Mapping[str, object]:
     """Public v2 safety maintenance: deterministic rebuild with no artifact inputs."""
 
-    return _safety_refresher.refresh(
-        SafetyRefreshRequest(board_id, _safety_continuation("safety-refresh"))
-    ).to_payload()
+    tier_state = _tier_router.state_for(board_id)
+    if tier_state.tier is Tier.SETUP_LITE:
+        # Lite has no derived full map to rebuild.  Its operator-confirmed
+        # geometry and provenance are the active immutable generation; replay
+        # them verbatim so a maintenance call cannot silently replace partial
+        # facts with mutable legacy artifacts or an extractor guess.
+        return {
+            "schema_version": 1,
+            "status": "safety_refresh_replayed",
+            "board_id": board_id,
+            "tier": Tier.SETUP_LITE.value,
+            "policy_digest": tier_state.policy_digest,
+            "map_snapshot": dict(tier_state.map_snapshot or {}),
+            "evidence": dict(tier_state.evidence or {}),
+            "message": "Replayed the active setup-lite confirmation without changing it.",
+        }
+    if tier_state.tier is not Tier.SETUP_FULL:
+        return _safety_refresher.blocked(
+            SafetyRefreshRequest(board_id, _safety_continuation("safety-refresh")),
+            "the board has no active setup-full immutable policy",
+        ).to_payload()
+    request = SafetyRefreshRequest(board_id, _safety_continuation("safety-refresh"))
+    try:
+        profile = _active_policy_profile(board_id)
+        previous = _active_full_document(board_id)
+        candidate = _derive_safety_map(
+            board_id,
+            profile=profile,
+            prior=previous if isinstance(previous, GenericSafetyMapDocument) else None,
+        )
+        if candidate.board_id != board_id:
+            raise SafetyMapError("derived memory map belongs to a different board")
+        _capability_policies.commit(
+            board_id,
+            Tier.SETUP_FULL,
+            profile_snapshot=profile.to_document(),
+            map_snapshot=candidate.to_document(),
+            evidence=tier_state.evidence,
+            retained_generations=tier_state.retained_generations,
+        )
+        # This compatibility projection is deliberately after the policy
+        # pointer. A crash/failure can never make it the authority for a
+        # protected route; rerunning refresh repairs only this projection.
+        _safety_repository.commit(board_id, candidate)
+        identity_changed = previous.identity != candidate.identity
+        _restamp_after_refresh(board_id, candidate.canonical_digest, identity_changed)
+    except (ProfileError, SafetyMapError, SafetyPolicyError, ValueError, OSError) as exc:
+        return _safety_refresher.blocked(request, str(exc)).to_payload()
+    connection = connection_manager.maybe_connection(board_id)
+    stamp = gate_manager.snapshot(board_id)
+    live = bool(
+        connection is not None
+        and not identity_changed
+        and stamp is not None
+        and stamp.connection_id == connection.connection_id
+        and stamp.map_digest == candidate.canonical_digest
+    )
+    return {
+        "status": "safety_refresh_completed",
+        "agent_prompt": (
+            "Safety refresh replayed the active immutable profile and reviewed evidence. "
+            + (
+                "The current live identity proof remains bound to the refreshed map."
+                if live
+                else "Run board_validate before protected planning."
+            )
+        ),
+        "choices": [],
+        "observed": {
+            "board_id": board_id,
+            "changed_groups": [] if previous == candidate else ["immutable_evidence_replayed"],
+            "map_digest": candidate.canonical_digest,
+            "drift_classification": "fresh" if previous == candidate else "reviewed_source_change",
+            "validation_required": not live,
+            "next_action": "continue_current_workflow" if live else "board_validate",
+        },
+        "constraints": [
+            "Refresh replays only the active immutable generation and reviewed evidence.",
+            "Mutable setup staging files do not authorize protected operations.",
+        ],
+        "rejected_candidates": [],
+        "accepted_response": None,
+        "validation_plan": [] if live else ["board_validate"],
+    }
 
 
 _REQUIRED_BASE_SAFETY_KINDS = frozenset(
@@ -3512,43 +4608,62 @@ def _missing_base_safety_kinds(
     return tuple(sorted(kind.value for kind in required - present))
 
 
-def _load_validation_safety_map(profile) -> SafetyMapSnapshot:
-    try:
-        document = _safety_repository.load_current(profile.board_id)
-        _require_map_authority(document)
-        missing_kinds = _missing_base_safety_kinds(
-            document.regions, generic=isinstance(document, GenericSafetyMapDocument)
+def _validation_safety_snapshot(
+    profile: BoardProfile,
+    document: SafetyMapDocument | GenericSafetyMapDocument,
+) -> SafetyMapSnapshot:
+    """Validate one profile/map pair without consulting mutable compatibility paths."""
+
+    _require_map_authority(document)
+    missing_kinds = _missing_base_safety_kinds(
+        document.regions, generic=isinstance(document, GenericSafetyMapDocument)
+    )
+    if missing_kinds:
+        return SafetyMapSnapshot(
+            True,
+            False,
+            reason=(
+                "The safety map lacks required base classifications "
+                f"{', '.join(missing_kinds)}. Run board_safety_refresh."
+            ),
         )
-        if missing_kinds:
-            return SafetyMapSnapshot(
-                True,
-                False,
-                reason=(
-                    "The safety map lacks required base classifications "
-                    f"{', '.join(missing_kinds)}. Run board_safety_refresh."
-                ),
-            )
-        if (
-            document.identity.mcu_part_number != profile.mcu_part_number
-            or document.identity.pyocd_target != profile.board.pyocd_target
-        ):
-            return SafetyMapSnapshot(
-                True,
-                False,
-                document.canonical_digest,
-                "The safety-map identity does not match the profile. Run board_safety_refresh.",
-            )
-        map_digest = _safety_policy.current_aggregate(profile.board_id)
-    except (SafetyMapError, SafetyPolicyError, ValueError) as exc:
+    if (
+        document.identity.mcu_part_number != profile.mcu_part_number
+        or document.identity.pyocd_target != profile.board.pyocd_target
+    ):
+        return SafetyMapSnapshot(
+            True,
+            False,
+            document.canonical_digest,
+            "The safety-map identity does not match the profile. Run board_safety_refresh.",
+        )
+    return SafetyMapSnapshot(
+        True,
+        True,
+        document.canonical_digest,
+        "Profile and current safety map agree.",
+    )
+
+
+def _load_validation_safety_map(profile: BoardProfile) -> SafetyMapSnapshot:
+    try:
+        # Compatibility artifacts can be staged for a future setup. Ordinary
+        # validation must use only the active generation which the current
+        # pointer chose. Setup-full supplies its exact candidate explicitly.
+        active_profile = _active_policy_profile(profile.board_id)
+        document = _active_full_document(profile.board_id)
+        return _validation_safety_snapshot(active_profile, document)
+    except (SafetyMapError, SafetyPolicyError, ProfileError, ValueError) as exc:
         return SafetyMapSnapshot(
             False,
             False,
             reason=f"Safety map is missing or inconsistent; run board_safety_refresh: {exc}",
         )
-    return SafetyMapSnapshot(True, True, map_digest, "Profile and current safety map agree.")
 
 
-def _known_provider_for_board(board_id: str) -> str | None:
+def _known_provider_for_board(
+    board_id: str, *, candidate_profile: BoardProfile | None = None
+) -> str | None:
     """Best-available provider for a board, for rebuilding a provisional connection_id.
 
     M3 (FIX 8 addendum): `_stamp_validation_session` and `_record_validation_mismatch`
@@ -3570,16 +4685,23 @@ def _known_provider_for_board(board_id: str) -> str | None:
         provider = str(session_metadata(connection.handle).probe_family or "").strip()
         if provider:
             return provider
-    try:
-        profile = _profile_repository.load(board_id)
-    except ProfileError:
-        return None
+    if candidate_profile is not None:
+        profile = candidate_profile
+    else:
+        try:
+            profile = _active_policy_profile(board_id)
+        except ProfileError:
+            return None
     provider = str(getattr(profile.board, "probe_family", "") or "").strip()
     return provider or None
 
 
 def _provisional_setup_connection_id(
-    board_id: str, probe_id: str, probe_uid: str | None
+    board_id: str,
+    probe_id: str,
+    probe_uid: str | None,
+    *,
+    candidate_profile: BoardProfile | None = None,
 ) -> str:
     """Rebuild the exact connection_id `_setup_overview` would have minted for this probe.
 
@@ -3592,7 +4714,7 @@ def _provisional_setup_connection_id(
 
     if probe_uid is None:
         return probe_id
-    provider = _known_provider_for_board(board_id)
+    provider = _known_provider_for_board(board_id, candidate_profile=candidate_profile)
     if provider is None:
         # Neither a live connection nor the board's profile can name a provider (a
         # race this rare -- the connection vanished between the live read and this
@@ -3613,6 +4735,7 @@ def _stamp_validation_session(
     probe_uid: str | None,
     observed_mcu: str,
     map_digest: str,
+    candidate_profile: BoardProfile | None = None,
 ) -> bool:
     connection = connection_manager.maybe_connection(board_id)
     stable_probe = (probe_uid or probe_id).strip()
@@ -3623,9 +4746,14 @@ def _stamp_validation_session(
         return False
     if connected_probe_uid is None and connection.connection_id != stable_probe:
         return False
-    provisional_connection_id = _provisional_setup_connection_id(board_id, probe_id, probe_uid)
+    provisional_connection_id = _provisional_setup_connection_id(
+        board_id,
+        probe_id,
+        probe_uid,
+        candidate_profile=candidate_profile,
+    )
     try:
-        profile = _profile_repository.load(board_id)
+        profile = candidate_profile or _active_policy_profile(board_id)
         capability = "exact"
         if profile.device_support is not None and profile.mcu_part_number is not None:
             proof = _replay_profile_device_support(profile).identity_proof
@@ -3785,6 +4913,8 @@ _setup_target_overrides: dict[str, str] = {}
 _setup_attachment_overrides: dict[str, tuple[str | None, str, int | None]] = {}
 _setup_builtin_candidates: dict[str, BuiltInTargetSupportCandidate] = {}
 _setup_selections_by_board: dict[str, PreflightSelections] = {}
+_setup_lite_confirmations: dict[str, LiteConfirmation] = {}
+_setup_tiers: dict[str, Tier] = {}
 _setup_pack_pipelines: dict[
     tuple[str, str, tuple[str | None, str, int | None] | None],
     tuple[PackCandidatePipeline, list[tuple[str | None, str, int | None]]],
@@ -4034,7 +5164,128 @@ def _mcu_family(mcu_part_number: str, target: str) -> str:
     return normalized or _normalized_target_identity(target)
 
 
+def _setup_lite_connection_phase(context: SetupPhaseContext) -> SetupPhaseOutcome:
+    """Attach and record only trusted operator facts for setup-lite.
+
+    This deliberately bypasses catalog/pack resolution and live silicon proof:
+    those are setup-full authority requirements.  It still verifies that the
+    selected probe can open the selected backend target and captures the local
+    datasheet bytes before a compatibility profile is staged.
+    """
+
+    user_input = context.user_input
+    target = context.preflight.selected_target
+    probe = context.preflight.selected_probe
+    if target is None or probe is None or probe.probe_family == "unknown":
+        return SetupPhaseOutcome.stop(
+            "setup_connection_failed",
+            "setup/connection-input-missing",
+            "A recognized selected probe and backend target are required before setup-lite.",
+        )
+    try:
+        evidence = capture_datasheet_evidence(
+            _profile_repository.store, Path(user_input.datasheet_path)
+        )
+    except (OSError, ValueError) as exc:
+        return SetupPhaseOutcome.stop(
+            "setup_blocked",
+            "setup/datasheet-evidence-invalid",
+            f"The local datasheet could not be captured for setup-lite: {exc}",
+        )
+    board = BoardConfig(
+        board_id=user_input.board_id,
+        display_name=user_input.display_name,
+        mcu_family=_mcu_family(user_input.mcu_part_number, target),
+        probe_family=probe.probe_family,
+        pyocd_target=target,
+        probe_type=probe.description,
+        probe_hint_terms=(),
+        serial_hint_terms=(),
+        test_addr=None,
+        default_baudrate=user_input.serial_baudrate or 115200,
+    )
+    opened: list[TargetSessionHandle] = []
+
+    def connect(candidate_target: str, _pack_path: str | None) -> None:
+        handle = target_control.open_session(
+            board=board,
+            unique_id=probe.usb_serial,
+            target=candidate_target,
+            server_timeouts=_staged_server_timeouts,
+        )
+        opened.append(handle)
+        try:
+            selected_probe_uid = probe.usb_serial or probe.probe_id
+            if not _stable_identity_equal(selected_probe_uid, session_metadata(handle).probe_uid):
+                raise TargetConnectionError(
+                    "live setup-lite probe identity changed during connection"
+                )
+        finally:
+            target_control.close_session(handle)
+
+    try:
+        existing = _profile_repository.load(user_input.board_id)
+    except ProfileError:
+        existing = None
+    try:
+        if existing is None:
+            committed = ProfileCommitCoordinator(
+                _profile_repository, live_connect=connect, before_commit=cancellation_checkpoint
+            ).commit_core(
+                {
+                    "board_id": user_input.board_id,
+                    "display_name": user_input.display_name,
+                    "mcu_part_number": user_input.mcu_part_number,
+                    "mcu_family": _mcu_family(user_input.mcu_part_number, target),
+                    "probe_family": probe.probe_family,
+                    "pyocd_target": target,
+                    **(
+                        {"serial_baudrate": user_input.serial_baudrate}
+                        if user_input.requires_uart
+                        else {}
+                    ),
+                }
+            )
+        else:
+            if (
+                existing.mcu_part_number != user_input.mcu_part_number
+                or _profile_name_key(existing.display_name)
+                != _profile_name_key(user_input.display_name)
+                or existing.board.pyocd_target.casefold() != target.casefold()
+            ):
+                raise ProfileError(
+                    "setup-lite inputs do not match the established profile identity"
+                )
+            connect(target, None)
+            committed = existing
+        cancellation_checkpoint()
+        committed = _profile_repository.commit_optional(
+            _profile_repository.stage_optional(
+                user_input.board_id,
+                {
+                    "datasheet_sha256": evidence.sha256,
+                    "datasheet_ref": evidence.reference,
+                },
+            )
+        )
+    except Exception as exc:  # setup must not activate staged facts before policy commit
+        return SetupPhaseOutcome.stop(
+            "setup_connection_failed",
+            "setup/live-connect-failed",
+            f"Live setup-lite connection failed before profile commit: {exc}",
+        )
+    return SetupPhaseOutcome.success(
+        "setup-lite-core-profile-committed-after-connect",
+        profile=committed.source_path.name,
+        live_connections=len(opened),
+        datasheet_sha256=evidence.sha256,
+    )
+
+
 def _setup_connection_phase(context: SetupPhaseContext) -> SetupPhaseOutcome:
+    is_lite = _setup_target_tier(context.user_input.board_id) is Tier.SETUP_LITE
+    if is_lite:
+        return _setup_lite_connection_phase(context)
     try:
         support = _resolve_setup_support(context.user_input)
         generic = _is_generic_support(support)
@@ -4122,7 +5373,9 @@ def _setup_connection_phase(context: SetupPhaseContext) -> SetupPhaseOutcome:
     opened: list[TargetSessionHandle] = []
     captured_datasheet_ref: str | None = None
     identity_proof = (
-        generic_support.candidate.identity_proof if generic_support is not None else None
+        None
+        if is_lite
+        else (generic_support.candidate.identity_proof if generic_support is not None else None)
     )
     setup_board = BoardConfig(
         board_id=context.user_input.board_id,
@@ -4134,34 +5387,58 @@ def _setup_connection_phase(context: SetupPhaseContext) -> SetupPhaseOutcome:
         probe_hint_terms=(),
         serial_hint_terms=(),
         test_addr=(
-            generic_geometry.flash_start
-            if generic_geometry is not None
-            else legacy_catalog.test_read_address
+            None
+            if is_lite
+            else (
+                generic_geometry.flash_start
+                if generic_geometry is not None
+                else legacy_catalog.test_read_address
+            )
         ),
         silicon_id_addr=(
-            identity_proof.address
-            if identity_proof is not None
-            else (None if generic else legacy_catalog.silicon_id_address)
+            None
+            if is_lite
+            else (
+                identity_proof.address
+                if identity_proof is not None
+                else (None if generic else legacy_catalog.silicon_id_address)
+            )
         ),
         silicon_id_expected=(
-            identity_proof.expected
-            if identity_proof is not None
-            else (None if generic else legacy_catalog.silicon_id_expected)
+            None
+            if is_lite
+            else (
+                identity_proof.expected
+                if identity_proof is not None
+                else (None if generic else legacy_catalog.silicon_id_expected)
+            )
         ),
         silicon_id_mask=(
-            identity_proof.mask
-            if identity_proof is not None
-            else (None if generic else legacy_catalog.silicon_id_mask)
+            None
+            if is_lite
+            else (
+                identity_proof.mask
+                if identity_proof is not None
+                else (None if generic else legacy_catalog.silicon_id_mask)
+            )
         ),
         silicon_id_width_bits=(
-            identity_proof.width_bits
-            if identity_proof is not None
-            else (32 if generic else legacy_catalog.silicon_id_width_bits)
+            32
+            if is_lite
+            else (
+                identity_proof.width_bits
+                if identity_proof is not None
+                else (32 if generic else legacy_catalog.silicon_id_width_bits)
+            )
         ),
         silicon_id_label=(
-            identity_proof.label
-            if identity_proof is not None
-            else ("" if generic else legacy_catalog.silicon_id_label or "")
+            ""
+            if is_lite
+            else (
+                identity_proof.label
+                if identity_proof is not None
+                else ("" if generic else legacy_catalog.silicon_id_label or "")
+            )
         ),
         default_baudrate=(115200 if generic else legacy_catalog.default_baudrate),
         debug_protocol=None,
@@ -4233,7 +5510,11 @@ def _setup_connection_phase(context: SetupPhaseContext) -> SetupPhaseOutcome:
                     "silicon or committing a profile. Restart setup_overview with the current "
                     "friendly connection inventory."
                 )
-            if generic_support is not None and generic_support.candidate.identity_proof is None:
+            if (
+                not is_lite
+                and generic_support is not None
+                and generic_support.candidate.identity_proof is None
+            ):
                 observed_cpuid = target_control.read_memory(handle, 0xE000ED00, 32)
                 proof = live_cpuid_compatibility_proof(observed_cpuid)
                 if isinstance(generic_support.candidate, BuiltInTargetSupportCandidate):
@@ -4260,7 +5541,7 @@ def _setup_connection_phase(context: SetupPhaseContext) -> SetupPhaseOutcome:
                         "silicon_id_label": proof.label,
                     }
                 )
-            if setup_board.silicon_id_addr is not None:
+            if not is_lite and setup_board.silicon_id_addr is not None:
                 observed = target_control.read_memory(
                     handle, setup_board.silicon_id_addr, setup_board.silicon_id_width_bits
                 )
@@ -4274,8 +5555,9 @@ def _setup_connection_phase(context: SetupPhaseContext) -> SetupPhaseOutcome:
                         "Live silicon identity did not match the reviewed board catalog "
                         f"(observed 0x{observed:08X}, expected 0x{expected:08X})."
                     )
-            assert setup_board.test_addr is not None
-            target_control.read_memory(handle, setup_board.test_addr, 32)
+            if not is_lite:
+                assert setup_board.test_addr is not None
+                target_control.read_memory(handle, setup_board.test_addr, 32)
             evidence = capture_datasheet_evidence(
                 _profile_repository.store, Path(context.user_input.datasheet_path)
             )
@@ -4286,7 +5568,11 @@ def _setup_connection_phase(context: SetupPhaseContext) -> SetupPhaseOutcome:
             target_control.close_session(handle)
 
     optional_fields = {
-        "test_read_address": setup_board.test_addr,
+        **(
+            {"test_read_address": setup_board.test_addr}
+            if setup_board.test_addr is not None
+            else {}
+        ),
         "datasheet_sha256": actual_datasheet_hash,
         "datasheet_ref": (
             _profile_repository.store.layout.datasheet_evidence(actual_datasheet_hash)
@@ -4295,7 +5581,11 @@ def _setup_connection_phase(context: SetupPhaseContext) -> SetupPhaseOutcome:
         ),
         **(
             {"device_support": generic_support.candidate.to_authority_document()}
-            if generic_support is not None and generic_support.candidate.identity_proof is not None
+            if (
+                not is_lite
+                and generic_support is not None
+                and generic_support.candidate.identity_proof is not None
+            )
             else {}
         ),
         **(
@@ -4316,7 +5606,7 @@ def _setup_connection_phase(context: SetupPhaseContext) -> SetupPhaseOutcome:
                 "silicon_id_width_bits": setup_board.silicon_id_width_bits,
                 "silicon_id_label": setup_board.silicon_id_label,
             }
-            if setup_board.silicon_id_addr is not None
+            if not is_lite and setup_board.silicon_id_addr is not None
             else {}
         ),
     }
@@ -4397,6 +5687,11 @@ def _setup_connection_phase(context: SetupPhaseContext) -> SetupPhaseOutcome:
 
 
 def _setup_validation_phase(context: SetupPhaseContext) -> SetupPhaseOutcome:
+    if _setup_target_tier(context.user_input.board_id) is Tier.SETUP_LITE:
+        return SetupPhaseOutcome.success(
+            "setup-lite-trusts-named-board",
+            capability_level="trusted-not-proven",
+        )
     selected_probe = context.preflight.selected_probe
     result = _board_validator.validate(
         ValidationRequest(
@@ -4475,6 +5770,25 @@ def _build_automatic_catalog_safety(context: SetupPhaseContext):
 
 
 def _setup_safety_research_phase(context: SetupPhaseContext) -> SetupPhaseOutcome:
+    if _setup_target_tier(context.user_input.board_id) is Tier.SETUP_LITE:
+        confirmation = _setup_lite_confirmations.get(context.user_input.board_id)
+        if confirmation is None:
+            proposal = conservative_lite_proposal(Path(context.user_input.datasheet_path))
+            return SetupPhaseOutcome.stop(
+                "setup_research_required",
+                "setup/lite-confirmation-required",
+                "Review the conservative local datasheet proposal and provide the exact "
+                "setup-lite confirmation. Unknown geometry must remain omitted.",
+                details={
+                    "exact_response_fields": ["decision", "regions", "flash", "recovery"],
+                    "lite_proposal": proposal,
+                },
+            )
+        return SetupPhaseOutcome.success(
+            "setup/lite-confirmed-geometry",
+            confirmed_region_count=confirmation.region_count,
+            capability_level="trusted-not-proven",
+        )
     try:
         artifacts = _safety_repository.load_current(context.user_input.board_id)
         _require_current_reviewed_map(artifacts)
@@ -4503,6 +5817,18 @@ def _setup_safety_research_phase(context: SetupPhaseContext) -> SetupPhaseOutcom
 
 
 def _setup_safety_map_phase(context: SetupPhaseContext) -> SetupPhaseOutcome:
+    if _setup_target_tier(context.user_input.board_id) is Tier.SETUP_LITE:
+        confirmation = _setup_lite_confirmations.get(context.user_input.board_id)
+        if confirmation is None:
+            return SetupPhaseOutcome.stop(
+                "setup_safety_incomplete",
+                "setup/lite-confirmation-missing",
+                "Provide the server-requested setup-lite confirmation before committing a map.",
+            )
+        return SetupPhaseOutcome.success(
+            "setup/lite-map-consistent",
+            region_count=confirmation.region_count,
+        )
     try:
         artifacts = _safety_repository.load_current(context.user_input.board_id)
         _require_current_reviewed_map(artifacts)
@@ -4542,6 +5868,50 @@ def _setup_safety_map_phase(context: SetupPhaseContext) -> SetupPhaseOutcome:
 
 def _setup_commit_phase(context: SetupPhaseContext) -> SetupPhaseOutcome:
     board_id = context.user_input.board_id
+    target_tier = _setup_target_tier(board_id)
+    if target_tier is Tier.SETUP_LITE:
+        confirmation = _setup_lite_confirmations.get(board_id)
+        if confirmation is None:
+            return SetupPhaseOutcome.stop(
+                "setup_safety_incomplete",
+                "setup/lite-confirmation-missing",
+                "Provide the server-requested setup-lite confirmation before committing a policy.",
+            )
+        try:
+            profile = _profile_repository.load(board_id)
+            confirmed_regions = confirmation.evidence.get("confirmed_regions")
+            confirmed_flash = confirmation.evidence.get("flash")
+            if not isinstance(confirmed_regions, list) or not isinstance(confirmed_flash, Mapping):
+                raise LiteConfirmationError("confirmed lite evidence is incomplete")
+            policy_map: dict[str, object] = {
+                "board_id": board_id,
+                "regions": confirmed_regions,
+                "flash": confirmed_flash,
+            }
+            if confirmation.evidence.get("recovery") is not None:
+                policy_map["recovery"] = confirmation.evidence["recovery"]
+            _capability_policies.commit(
+                board_id,
+                target_tier,
+                profile_snapshot=profile.to_document(),
+                # Persist the exact confirmed rows as immutable policy
+                # evidence. Normalization is an in-memory containment aid;
+                # rewriting source spellings or address text at commit would
+                # make a crash/restart report facts the operator never wrote.
+                map_snapshot=policy_map,
+                evidence=confirmation.evidence,
+            )
+        except Exception as exc:  # noqa: BLE001 - setup records terminal policy failures
+            return SetupPhaseOutcome.stop(
+                "setup_validation_failed",
+                "setup/lite-policy-commit-failed",
+                f"The confirmed setup-lite policy could not be committed: {exc}",
+            )
+        return SetupPhaseOutcome.success(
+            "setup-lite-policy-committed",
+            capability_level="trusted-not-proven",
+            confirmed_region_count=confirmation.region_count,
+        )
     expected_ref = (
         _firm_store.layout.safety_reference_prefix(board_id) / "memory_map.yaml"
     ).as_posix()
@@ -4552,11 +5922,19 @@ def _setup_commit_phase(context: SetupPhaseContext) -> SetupPhaseOutcome:
             profile = _profile_repository.commit_safety_ref(
                 _profile_repository.stage_safety_ref(board_id, expected_ref)
             )
+        # The profile and map have been staged for this setup attempt, but the
+        # active capability pointer must not move until validation succeeds.
+        # Give the validator these exact parsed candidates explicitly rather
+        # than asking its ordinary active-policy hooks to read them early.
+        artifacts = _safety_repository.load_current(board_id)
+        candidate_safety_map = _validation_safety_snapshot(profile, artifacts)
         probe = context.preflight.selected_probe
         result = _board_validator.validate(
             ValidationRequest(
                 board_id,
                 probe.probe_id if probe is not None else None,
+                candidate_profile=profile,
+                candidate_safety_map=candidate_safety_map,
             )
         )
     except Exception as exc:  # noqa: BLE001 - setup records the terminal report
@@ -4577,6 +5955,13 @@ def _setup_commit_phase(context: SetupPhaseContext) -> SetupPhaseOutcome:
             result.agent_prompt,
             details={"validation_status": result.status, "validation_code": result.code},
         )
+    _capability_policies.commit(
+        board_id,
+        target_tier,
+        profile_snapshot=profile.to_document(),
+        map_snapshot=artifacts.to_document(),
+        evidence={"source": "setup", "tier": target_tier.value},
+    )
     return SetupPhaseOutcome.success(
         (
             "setup/safety-reference-committed-configuration-only"
@@ -4606,13 +5991,63 @@ def _confirm_setup_cache(user_input: SetupUserInput, decision) -> None:
 def _get_setup_status(board_id: str) -> Mapping[str, object]:
     """Return a non-authoritative setup barrier for external orchestration."""
 
+    tier_state = _capability_policies.resolve(board_id)
+    # Explicit lower tiers never consult compatibility profile/map paths.  A
+    # named no-setup board is intentionally usable through raw routes; a lite
+    # board carries its own immutable partial facts.  Treating either as a
+    # missing full profile would falsely demand refresh and, worse, make a
+    # pre-pointer compatibility write authoritative.
+    if tier_state.tier in {Tier.NO_SETUP, Tier.SETUP_LITE}:
+        assert tier_state.tier is not None
+        connection = connection_manager.maybe_connection(board_id)
+        routes = _tier_router.capabilities(board_id, project_root=_project_root)["capabilities"]
+        lite = tier_state.tier is Tier.SETUP_LITE
+        return {
+            "status": "setup_lite_ready" if lite else "raw_ready",
+            "board_id": board_id,
+            "configuration_ready": True,
+            "live_session_ready": connection is not None,
+            "ready_for_code": False,
+            "ready_for_flash_planning": any(
+                isinstance(row, Mapping)
+                and row.get("family") == "flash-application"
+                and row.get("available") is True
+                for row in routes
+            ),
+            "ready_for_uart_work": False,
+            "uart_attachment_ready": False,
+            "identity_capability": None,
+            "configuration_reason": (
+                "confirmed immutable setup-lite policy" if lite else "explicit no-setup raw policy"
+            ),
+            "remedy": (
+                "Use the advertised contained setup-lite routes or raw routes with their warning."
+                if lite
+                else "Raw routes are available after connect; choose setup-lite or setup-full to add safe routes."
+            ),
+            "tier": tier_state.tier.value,
+            "policy_status": tier_state.status,
+            "policy_digest": tier_state.policy_digest,
+            "setup_incomplete": tier_state.setup_incomplete,
+            "capabilities": routes,
+            "project_root": str(_project_root),
+        }
     configuration_ready = False
     configuration_reason = "schema-v2 profile or current safety evidence is missing"
     aggregate: str | None = None
     profile: BoardProfile | None = None
     try:
-        profile = _profile_repository.load(board_id)
-        artifacts = _safety_repository.load_current(board_id)
+        if tier_state.tier is not Tier.SETUP_FULL:
+            raise SafetyMapError("the committed policy is not a full safety tier")
+        if tier_state.profile_snapshot is None or tier_state.map_snapshot is None:
+            raise SafetyMapError("the committed full policy lacks a profile or map snapshot")
+        profile = _profile_repository.from_snapshot(board_id, tier_state.profile_snapshot)
+        artifacts = (
+            SafetyMapDocument.from_document(tier_state.map_snapshot)
+            if tier_state.map_snapshot.get("schema_version") == 2
+            else GenericSafetyMapDocument.from_document(tier_state.map_snapshot)
+        )
+        require_reconciled_authority(artifacts)
         if (
             profile.safety_ref
             != (_firm_store.layout.safety_reference_prefix(board_id) / "memory_map.yaml").as_posix()
@@ -4630,7 +6065,7 @@ def _get_setup_status(board_id: str) -> Mapping[str, object]:
                 + ", ".join(missing_kinds)
             )
         else:
-            aggregate = _safety_policy.current_aggregate(board_id)
+            aggregate = _active_snapshot_aggregate(board_id)
             configuration_ready = True
             configuration_reason = "profile and safety evidence are current"
     except (ProfileError, SafetyMapError, SafetyPolicyError, ValueError) as exc:
@@ -4804,6 +6239,11 @@ def _get_setup_status(board_id: str) -> Mapping[str, object]:
         "configuration_reason": configuration_reason,
         "remedy": remedy,
         "build_guidance": build_guidance,
+        "tier": tier_state.tier.value if tier_state.tier is not None else None,
+        "policy_status": tier_state.status,
+        "policy_digest": tier_state.policy_digest,
+        "setup_incomplete": tier_state.setup_incomplete,
+        "project_root": str(_project_root),
     }
     if uart_hook_contract_call is not None:
         status["uart_hook_contract_call"] = dict(uart_hook_contract_call)
@@ -5115,7 +6555,16 @@ def _setup_overview(
         complete = False
         reason = "incomplete profile; repair is required"
         route_kind = "repair"
-        if not _profile_needs_repair(profile):
+        tier_state = _capability_policies.resolve(profile.board_id)
+        if tier_state.tier is Tier.NO_SETUP:
+            complete = True
+            route_kind = "no-setup"
+            reason = "explicit no-setup policy; raw connect and raw operations are available"
+        elif tier_state.tier is Tier.SETUP_LITE:
+            complete = True
+            route_kind = "lite"
+            reason = "explicit setup-lite policy; only its confirmed contained routes are available"
+        elif not _profile_needs_repair(profile):
             route_kind = "refresh"
             try:
                 artifacts = _safety_repository.load_current(profile.board_id)
@@ -5276,6 +6725,7 @@ def _setup_overview(
                 provisional_bindings[single_connection] = board_id
                 single_serial = serial_rows[0]["choice_id"] if len(serial_rows) == 1 else None
                 known_parameters: dict[str, object] = {
+                    "target_tier": None,
                     "mode": "setup",
                     "connection_id": single_connection,
                     "display_name": name,
@@ -5324,8 +6774,23 @@ def _setup_overview(
                     {
                         "display_name": name,
                         "board_id": board_id,
-                        "route": "setup",
-                        "next_tool": "board_setup-plan",
+                        "route": "no-setup",
+                        "next_tool": "connect",
+                        "next_call": {
+                            "tool": "connect",
+                            "arguments": {
+                                "board_id": board_id,
+                                "probe_uid": None,
+                                "target": None,
+                            },
+                        },
+                        "capabilities": _tier_router.capabilities(
+                            board_id, project_root=_project_root
+                        )["capabilities"],
+                        "optional_escalation": {
+                            "next_tool": "board_setup-plan",
+                            "target_tier_choices": ["setup-lite", "setup-full"],
+                        },
                         "load_call": {
                             "tool": "load_setup_tool",
                             "arguments": {
@@ -5379,10 +6844,33 @@ def _setup_overview(
                 )
                 continue
             provisional_bindings[selected_connection] = profile.board_id
+            if route_kind in {"no-setup", "lite"}:
+                routes.append(
+                    {
+                        "display_name": name,
+                        "board_id": profile.board_id,
+                        "route": route_kind,
+                        "next_tool": "connect",
+                        "next_call": {
+                            "tool": "connect",
+                            "arguments": {"board_id": profile.board_id},
+                        },
+                        "reason": reason,
+                        "capabilities": _tier_router.capabilities(
+                            profile.board_id, project_root=_project_root
+                        )["capabilities"],
+                        "optional_escalation": {
+                            "next_tool": "board_setup-plan",
+                            "target_tier_choices": ["setup-lite", "setup-full"],
+                        },
+                    }
+                )
+                continue
             if route_kind == "repair":
                 setup_definition = PLAN_DEFINITIONS["board_setup"]
                 single_serial = serial_rows[0]["choice_id"] if len(serial_rows) == 1 else None
                 known_parameters: dict[str, object] = {
+                    "target_tier": None,
                     "mode": "repair",
                     "connection_id": selected_connection,
                     "display_name": profile.display_name,
@@ -5758,6 +7246,28 @@ def _setup_continue(
             "the current setup response is waiting for a friendly choice, not research"
         )
 
+    # Lite does not infer exact identity or geometry from an extractor.  Its
+    # confirmation is a separate, exact schema that becomes the partial
+    # immutable capability snapshot used by containment after the next
+    # board_fix_setup continuation.
+    if _setup_target_tier(board_id) is Tier.SETUP_LITE and set(response) == {
+        "decision",
+        "regions",
+        "flash",
+        "recovery",
+    }:
+        try:
+            _setup_lite_confirmations[board_id] = normalize_lite_confirmation(board_id, response)
+        except LiteConfirmationError as exc:
+            raise ResearchError("setup/lite-confirmation-invalid", str(exc)) from exc
+        return {
+            "status": "setup_continuation_accepted",
+            "board_id": board_id,
+            "accepted": "lite_confirmation",
+            "identity": {"assertion": "trusted-not-proven", "capability": None},
+            "redirect": "Call board_fix_setup now under the active paired setup allowance.",
+        }
+
     target_fields = {"pyocd_target", "evidence", "reasoning_summary"}
     pack_fields = {
         "pack_id",
@@ -6018,9 +7528,7 @@ def _setup_continue(
     }
 
 
-def _clear_setup_continuation(
-    board_id: str, expected_allowance_id: str | None = None
-) -> None:
+def _clear_setup_continuation(board_id: str, expected_allowance_id: str | None = None) -> None:
     if (
         expected_allowance_id is not None
         and setup_tool_loader.allowance_for(board_id) != expected_allowance_id
@@ -6030,6 +7538,8 @@ def _clear_setup_continuation(
     _setup_attachment_overrides.pop(board_id, None)
     _setup_builtin_candidates.pop(board_id, None)
     _setup_selections_by_board.pop(board_id, None)
+    _setup_lite_confirmations.pop(board_id, None)
+    _setup_tiers.pop(board_id, None)
     for key in tuple(_setup_pack_pipelines):
         if key[0] == board_id:
             _setup_pack_pipelines.pop(key, None)
@@ -6039,9 +7549,7 @@ def _clear_setup_continuation(
 def _close_setup_allowance(board_id: str, allowance_id: str, reason: str) -> None:
     """Close paired authority and every run-scoped continuation fact together."""
 
-    plan_engine.complete_paired_plan(
-        "board_setup", board_id, reason, expected_plan_id=allowance_id
-    )
+    plan_engine.complete_paired_plan("board_setup", board_id, reason, expected_plan_id=allowance_id)
     _clear_setup_continuation(board_id, allowance_id)
     setup_tool_loader.clear_allowance(board_id, allowance_id)
 
@@ -6049,6 +7557,19 @@ def _close_setup_allowance(board_id: str, allowance_id: str, reason: str) -> Non
 def _setup_plan_eligibility(board_id: str) -> tuple[bool, str]:
     """Expose populated setup only for first setup or an exact live mismatch route."""
 
+    tier_state = _capability_policies.resolve(board_id)
+    if tier_state.tier is Tier.NO_SETUP:
+        return (
+            True,
+            "The explicit no-setup policy may deliberately establish setup-lite or setup-full; "
+            "any retained compatibility profile is inactive until the new policy commits.",
+        )
+    if tier_state.tier in {Tier.SETUP_LITE, Tier.SETUP_FULL}:
+        return (
+            True,
+            "The explicit committed tier may be deliberately refreshed or escalated through a new setup plan; "
+            "the current immutable generation remains active until replacement commit.",
+        )
     try:
         profile = _profile_repository.load(board_id)
     except ProfileError as exc:
@@ -6090,15 +7611,34 @@ def _setup_plan_eligibility(board_id: str) -> tuple[bool, str]:
     )
 
 
+def _tiered_setup_phase(
+    handler: Callable[[SetupPhaseContext], SetupPhaseOutcome],
+) -> Callable[[SetupPhaseContext], SetupPhaseOutcome]:
+    """Persist an incomplete setup attempt without making staged bytes active."""
+
+    def wrapped(context: SetupPhaseContext) -> SetupPhaseOutcome:
+        outcome = handler(context)
+        if not outcome.verified:
+            try:
+                _capability_policies.mark_setup_incomplete(context.user_input.board_id)
+            except CapabilityPolicyError:
+                # Existing corrupt state is already fail-closed and cannot be
+                # repaired by merely recording another attempt.
+                pass
+        return outcome
+
+    return wrapped
+
+
 _setup_workflow = SetupWorkflow(
     _report_writer,
     _setup_inventory,
     phase_handlers={
-        SetupPhase.CONNECTION: _setup_connection_phase,
-        SetupPhase.VALIDATION: _setup_validation_phase,
-        SetupPhase.SAFETY_RESEARCH: _setup_safety_research_phase,
-        SetupPhase.SAFETY_MAP: _setup_safety_map_phase,
-        SetupPhase.COMMIT: _setup_commit_phase,
+        SetupPhase.CONNECTION: _tiered_setup_phase(_setup_connection_phase),
+        SetupPhase.VALIDATION: _tiered_setup_phase(_setup_validation_phase),
+        SetupPhase.SAFETY_RESEARCH: _tiered_setup_phase(_setup_safety_research_phase),
+        SetupPhase.SAFETY_MAP: _tiered_setup_phase(_setup_safety_map_phase),
+        SetupPhase.COMMIT: _tiered_setup_phase(_setup_commit_phase),
     },
     on_allowance_closed=_close_setup_allowance,
     on_cache_confirmation=_confirm_setup_cache,
@@ -6208,6 +7748,22 @@ for _setup_action in SETUP_GUARDED_ACTIONS:
     )
     forbid_unknown_tool_arguments(mcp, _setup_action)
 
+# These handlers are registered later than ordinary hardware actions because
+# setup owns their construction; configure their tier guards only after that
+# registration has completed.
+mcp.configure_route_guard("board_safety_refresh", guard=_enforce_tier_route)
+mcp.configure_guarded_dispatch(
+    "board_safety_refresh",
+    guard=_enforce_direct_tiered_hardware,
+    lock_for_board=lambda board_id: connection_manager.lock_for(board_id),
+)
+mcp.configure_route_guard("board_validate", guard=_enforce_full_identity_route)
+mcp.configure_guarded_dispatch(
+    "board_validate",
+    guard=_enforce_full_identity_route,
+    lock_for_board=lambda board_id: connection_manager.lock_for(board_id),
+)
+
 
 def _finalize_unlock_recovery(board_id: str) -> None:
     """Revoke a destructively recovered connection even if cleanup is imperfect."""
@@ -6240,6 +7796,111 @@ def _revoke_unlock_permission(board_id: str, reason: str) -> None:
     permission_store.revoke("target_unlock", board_id, reason=reason)
 
 
+def _manual_mass_erase_binding_digest(binding: object) -> tuple[str, str]:
+    """Bind a manual erase grant to policy, live connection, mechanism and loss scope."""
+
+    from pyocd_debug_mcp.tools.unlock import UnlockBinding
+
+    if not isinstance(binding, UnlockBinding):
+        raise TypeError("manual mass-erase binding has an invalid type")
+    state = _tier_router.state_for(binding.identity.board_id)
+    if state.policy_digest is None:
+        raise ManualPermissionError("stale-policy", "the board has no current committed policy")
+    material = {
+        "board_id": binding.identity.board_id,
+        "policy_digest": state.policy_digest,
+        "live_identity": asdict(binding.identity),
+        "mechanism": asdict(binding.mechanism),
+        "disclosure": json.loads(binding.erase_disclosure_json),
+    }
+    return state.policy_digest, hashlib.sha256(
+        json.dumps(material, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
+
+
+def _manual_mass_erase_disclosure(binding: object, disclosure: object) -> Mapping[str, object]:
+    del disclosure
+    policy_digest, binding_digest = _manual_mass_erase_binding_digest(binding)
+    try:
+        grant = _manual_permissions.status("mass-erase")
+        state = grant.state
+        grant_id = grant.grant_id
+    except ManualPermissionError as exc:
+        state = "locked"
+        grant_id = None
+        return {
+            "action": "mass-erase",
+            "skill": "$mass-erase",
+            "grant_id": grant_id,
+            "project_root": str(_project_root),
+            "policy_digest": policy_digest,
+            "binding_digest": binding_digest,
+            "state": "reset-failed",
+            "instruction": f"Ask the human to invoke $mass-erase: {exc}",
+        }
+    return {
+        "action": "mass-erase",
+        "skill": "$mass-erase",
+        "grant_id": grant_id,
+        "project_root": str(_project_root),
+        "policy_digest": policy_digest,
+        "binding_digest": binding_digest,
+        "state": state,
+        "instruction": "Ask the human to invoke $mass-erase with these exact bindings.",
+    }
+
+
+def _reserve_manual_mass_erase(binding: object) -> str:
+    policy_digest, binding_digest = _manual_mass_erase_binding_digest(binding)
+    from pyocd_debug_mcp.tools.unlock import UnlockBinding
+
+    assert isinstance(binding, UnlockBinding)
+    grant = _manual_permissions.status("mass-erase")
+    if grant.grant_id is None:
+        raise ManualPermissionError("locked", "ask the human to invoke $mass-erase")
+    return _manual_permissions.reserve_mass_erase(
+        binding.identity.board_id,
+        grant.grant_id,
+        policy_digest,
+        binding_digest,
+    )
+
+
+def _setup_target_tier(board_id: str) -> Tier:
+    """Read the immutable tier choice from the active setup plan, never user continuation."""
+
+    active = plan_engine.active_plan("board_setup", board_id)
+    if active is None:
+        try:
+            return _setup_tiers[board_id]
+        except KeyError as exc:
+            raise SetupWorkflowError("setup has no active tier-bearing board_setup plan") from exc
+    value = active.action_parameters.get("target_tier")
+    try:
+        selected = Tier(value)
+    except (TypeError, ValueError) as exc:
+        raise SetupWorkflowError("setup plan has an invalid target_tier") from exc
+    _setup_tiers[board_id] = selected
+    return selected
+
+
+def _consume_manual_mass_erase(binding: object, claim_id: str) -> None:
+    policy_digest, binding_digest = _manual_mass_erase_binding_digest(binding)
+    from pyocd_debug_mcp.tools.unlock import UnlockBinding
+
+    assert isinstance(binding, UnlockBinding)
+    _manual_permissions.consume_mass_erase(
+        binding.identity.board_id, policy_digest, binding_digest, claim_id
+    )
+
+
+def _abandon_manual_mass_erase(binding: object, claim_id: str) -> None:
+    from pyocd_debug_mcp.tools.unlock import UnlockBinding
+
+    assert isinstance(binding, UnlockBinding)
+    _manual_permissions.abandon_mass_erase(binding.identity.board_id, claim_id)
+
+
 _unlock_coordinator = UnlockCoordinator(
     UnlockToolServices(
         server_run=server_run,
@@ -6251,13 +7912,20 @@ _unlock_coordinator = UnlockCoordinator(
         handle_for=_handle,
         connection_id_for=lambda board_id: _connection(board_id).connection_id,
         session_id_for=_active_session_id,
-        current_map_digest=_safety_policy.current_aggregate,
+        current_map_digest=_active_snapshot_aggregate,
         supports_recovery=target_control.supports_recovery,
         recover_target=lambda handle, mechanism: target_control.recover_target(
             handle, recover_mode=mechanism
         ),
         finalize_recovery=_finalize_unlock_recovery,
         revoke_permission=_revoke_unlock_permission,
+        manual_mass_erase_disclosure=_manual_mass_erase_disclosure,
+        reserve_manual_mass_erase=_reserve_manual_mass_erase,
+        consume_manual_mass_erase=_consume_manual_mass_erase,
+        abandon_manual_mass_erase=_abandon_manual_mass_erase,
+        policy_profile=_active_policy_profile,
+        policy_safety=lambda board_id: cast(SafetyMapDocument, _active_full_document(board_id)),
+        policy_lite_recovery=_active_lite_recovery_policy,
     )
 )
 unlock_tool_handlers = build_unlock_handlers(_unlock_coordinator)
@@ -6282,9 +7950,12 @@ mcp.configure_guarded_dispatch(
     guard=_enforce_guarded_invocation,
     lock_for_board=lambda board_id: connection_manager.lock_for(board_id),
 )
+mcp.configure_route_guard("target_unlock", guard=_enforce_tier_route)
 batch_tool_handlers = build_batch_handlers(
     mcp.call_tool,
     tool_exists=tool_registry.is_registered,
+    normalize_child_result=_tiered_batch_child_result,
+    normalize_child_error=_tiered_batch_child_error,
 )
 for _batch_name, _batch_handler in batch_tool_handlers.items():
     mcp.add_tool(
@@ -6322,6 +7993,9 @@ def _bind_managed_board_resources(operation: ManagedOperation) -> None:
         "read_serial",
         "write_serial",
         "serial_exchange",
+        "read_serial_raw",
+        "write_serial_raw",
+        "serial_exchange_raw",
         "wait",
     }:
         return
@@ -6368,6 +8042,15 @@ def _bind_managed_board_resources(operation: ManagedOperation) -> None:
         evict_captured_connection(reason)
 
     def release_reset() -> None:
+        # A guarded child can be rejected by plan/containment before its handler
+        # begins. It has not acquired or changed target state, so an otherwise
+        # unconditional reset release would itself be backend I/O after the
+        # refusal. This is especially visible through an ``action_batch``
+        # fallback, which intentionally normalizes that child refusal and lets
+        # the outer batch complete. Keep release cleanup for handlers that did
+        # begin (and therefore may have touched the debug target).
+        if operation.handler_started_at is None:
+            return
         try:
             target_control.release_reset(handle)
         except TargetConnectionError as release_error:

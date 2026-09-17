@@ -13,7 +13,8 @@ from pyocd_debug_mcp.adapters.swd_interface import TargetSessionHandle
 from pyocd_debug_mcp.board_config import BoardConfig
 from pyocd_debug_mcp.firmstore.reports import ReportPaths
 from pyocd_debug_mcp.kernel.operations import ManagedOperation
-from pyocd_debug_mcp.services.connections import ConnectionManager
+from pyocd_debug_mcp.kernel.run_state import create_server_run
+from pyocd_debug_mcp.services.connections import ConnectionManager, probe_connection_id
 from pyocd_debug_mcp.setup_flow.validate import (
     BoardValidator,
     SafetyMapSnapshot,
@@ -25,7 +26,7 @@ from pyocd_debug_mcp.setup_flow.validate import (
     ValidationResult,
 )
 from pyocd_debug_mcp.target_errors import TargetConnectionError, TargetControlError
-from pyocd_debug_mcp.tools.setup import _load_guidance, build_setup_handlers
+from pyocd_debug_mcp.tools.setup import SetupToolLoadState, _load_guidance, build_setup_handlers
 
 
 class ValidationHonestyTests(unittest.TestCase):
@@ -53,8 +54,8 @@ class ValidationHonestyTests(unittest.TestCase):
         )
 
     @staticmethod
-    def _managed_operation(board_id: str) -> ManagedOperation:
-        return ManagedOperation(
+    def _managed_operation(board_id: str, *, handler_started: bool = False) -> ManagedOperation:
+        operation = ManagedOperation(
             operation_id="operation-test",
             request_id="request-test",
             tool_name="read_memory",
@@ -63,6 +64,76 @@ class ValidationHonestyTests(unittest.TestCase):
             non_interruptible=False,
             preserve_halt=False,
         )
+        if handler_started:
+            operation.mark_handler_started()
+        return operation
+
+    def test_candidate_validation_uses_staged_profile_and_map_before_policy_commit(self) -> None:
+        """Fresh setup validates its exact staged bytes without an active policy pointer."""
+
+        board = BoardConfig(
+            board_id="fresh_board",
+            display_name="Fresh board",
+            mcu_family="stm32",
+            probe_family="jlink",
+            pyocd_target="stm32f4",
+            probe_type="jlink",
+            probe_hint_terms=(),
+            serial_hint_terms=(),
+            silicon_id_addr=0xE0042000,
+            silicon_id_expected=0x1234,
+            silicon_id_mask=0xFFFFFFFF,
+            silicon_id_width_bits=32,
+            silicon_id_label="device id",
+            test_addr=0x20000000,
+        )
+        candidate = SimpleNamespace(
+            board_id=board.board_id,
+            board=board,
+            mcu_part_number="STM32F4",
+            source_path=Path("staged-profile.yaml"),
+            device_support=None,
+        )
+        stamp = Mock(return_value=True)
+        profiles = SimpleNamespace(
+            load=Mock(side_effect=AssertionError("candidate validation must not load a profile"))
+        )
+        validator = BoardValidator(
+            cast(Any, profiles),
+            Mock(),
+            ValidationBackend(
+                inventory=lambda: ValidationInventory(
+                    probes=(ValidationProbe("probe-1", "Probe", "jlink", "serial-1"),)
+                ),
+                target_supported=lambda _target: True,
+                connect=lambda *_args: object(),
+                read_memory=lambda *_args: 0x1234,
+                capture_serial=Mock(),
+                close=Mock(),
+            ),
+            hooks=ValidationHooks(
+                load_safety_map=Mock(
+                    side_effect=AssertionError("candidate validation must not load active safety")
+                ),
+                stamp_session=stamp,
+                record_mismatch=lambda *_args: False,
+            ),
+        )
+        reports = ReportPaths(Path("report.json"), Path("events.jsonl"))
+
+        with patch.object(validator, "_write_report", return_value=reports):
+            result = validator.validate(
+                ValidationRequest(
+                    "fresh_board",
+                    "probe-1",
+                    candidate_profile=candidate,
+                    candidate_safety_map=SafetyMapSnapshot(True, True, "candidate-map-digest"),
+                )
+            )
+
+        self.assertEqual(result.status, "validation_passed")
+        profiles.load.assert_not_called()
+        self.assertEqual(stamp.call_args.args[-1], candidate)
 
     def test_payload_describes_hard_worker_deadline_and_recovery(self) -> None:
         result = ValidationResult(
@@ -78,7 +149,9 @@ class ValidationHonestyTests(unittest.TestCase):
 
         constraints = result.to_payload()["constraints"]
 
-        self.assertTrue(any("enforced by the parent process" in constraint for constraint in constraints))
+        self.assertTrue(
+            any("enforced by the parent process" in constraint for constraint in constraints)
+        )
         self.assertTrue(any("reconnect and revalidate" in constraint for constraint in constraints))
         self.assertFalse(any("best-effort" in constraint for constraint in constraints))
 
@@ -246,9 +319,7 @@ class ValidationHonestyTests(unittest.TestCase):
                 close=Mock(),
             ),
             hooks=ValidationHooks(
-                load_safety_map=lambda _profile: SafetyMapSnapshot(
-                    True, True, "map-digest"
-                ),
+                load_safety_map=lambda _profile: SafetyMapSnapshot(True, True, "map-digest"),
                 stamp_session=stamp,
                 record_mismatch=lambda *_args: False,
             ),
@@ -270,6 +341,89 @@ class ValidationHonestyTests(unittest.TestCase):
             stamp.call_args.args[2:4],
             ("session:runtime-uidless", None),
         )
+
+    def test_canonical_assignment_token_selects_only_the_matching_provider_probe(self) -> None:
+        """A loader-issued opaque token is a selector, not a raw UID prompt."""
+
+        board = BoardConfig(
+            board_id="assigned-board",
+            display_name="Assigned board",
+            mcu_family="family",
+            probe_family="jlink",
+            pyocd_target="part",
+            probe_type="jlink",
+            probe_hint_terms=(),
+            serial_hint_terms=(),
+            silicon_id_addr=0x1000,
+            silicon_id_expected=0x1234,
+            silicon_id_mask=0xFFFFFFFF,
+            silicon_id_width_bits=32,
+            silicon_id_label="device id",
+            test_addr=0,
+        )
+        profile = SimpleNamespace(
+            board_id=board.board_id,
+            board=board,
+            mcu_part_number="part",
+            source_path=Path("missing-profile.json"),
+            device_support=None,
+        )
+        matching_probe = ValidationProbe("runtime-probe", "J-Link", "jlink", "USB-000123")
+        backend_connect = Mock(return_value=object())
+        validator = BoardValidator(
+            cast(Any, SimpleNamespace(load=Mock(return_value=profile))),
+            Mock(),
+            ValidationBackend(
+                inventory=lambda: ValidationInventory(probes=(matching_probe,)),
+                target_supported=lambda _target: True,
+                connect=backend_connect,
+                read_memory=lambda *_args: 0x1234,
+                capture_serial=Mock(),
+                close=Mock(),
+            ),
+            hooks=ValidationHooks(
+                load_safety_map=lambda _profile: SafetyMapSnapshot(True, True, "map-digest"),
+                stamp_session=lambda *_args: True,
+                record_mismatch=lambda *_args: False,
+            ),
+        )
+        reports = ReportPaths(Path("report.json"), Path("events.jsonl"))
+        assignment_token = probe_connection_id("jlink", "USB-000123")
+        require_assignment = Mock()
+        handlers = build_setup_handlers(
+            cast(
+                Any,
+                SimpleNamespace(
+                    loader=SetupToolLoadState(create_server_run()),
+                    validator=validator,
+                    require_assignment=require_assignment,
+                    assigned_connection=lambda _board_id: assignment_token,
+                ),
+            )
+        )
+
+        with patch.object(validator, "_write_report", return_value=reports):
+            loader_payload = json.loads(
+                handlers["load_setup_tool"](board.board_id, "board_validate")
+            )
+            selected = json.loads(
+                handlers["board_validate"](
+                    **cast(dict[str, str], loader_payload["next_call"]["arguments"])
+                )
+            )
+            wrong_provider = validator.validate(
+                ValidationRequest(
+                    board.board_id,
+                    probe_connection_id("cmsisdap", "USB-000123"),
+                )
+            )
+
+        self.assertEqual(loader_payload["next_call"]["arguments"]["probe_id"], assignment_token)
+        self.assertEqual(selected["status"], "validation_passed")
+        self.assertEqual(wrong_provider.status, "validation_needs_user_input")
+        self.assertEqual(wrong_provider.code, "validation/probe-selection-required")
+        self.assertEqual(backend_connect.call_count, 1)
+        require_assignment.assert_called_once_with(board.board_id, assignment_token)
 
     def test_validation_holds_stable_board_lock_through_close_and_report(self) -> None:
         manager = ConnectionManager()
@@ -315,9 +469,7 @@ class ValidationHonestyTests(unittest.TestCase):
                     replacement.append(
                         manager.assign(
                             "board-1",
-                            TargetSessionHandle(
-                                None, None, "replacement-probe", "worker", None
-                            ),
+                            TargetSessionHandle(None, None, "replacement-probe", "worker", None),
                             Mock(name="replacement_runtime"),
                         )
                     )
@@ -330,6 +482,7 @@ class ValidationHonestyTests(unittest.TestCase):
 
             threads = []
             for board_id in ("board-1", "board-2"):
+
                 def try_lock(selected: str = board_id) -> None:
                     lock = manager.lock_for(selected)
                     acquired = lock.acquire(blocking=False)
@@ -617,9 +770,7 @@ class ValidationHonestyTests(unittest.TestCase):
 
         self.assertIs(raised.exception, gate_failure)
         self.assertIsNone(manager.maybe_connection("board-1"))
-        gate.clear.assert_called_once_with(
-            "board-1", "validation connection was not stamped"
-        )
+        gate.clear.assert_called_once_with("board-1", "validation connection was not stamped")
         close_runtime.assert_called_once_with(runtime)
         close_session.assert_called_once_with(handle)
 
@@ -633,7 +784,7 @@ class ValidationHonestyTests(unittest.TestCase):
         other_runtime = Mock(name="other_runtime")
         failed = manager.assign("board-1", failed_handle, failed_runtime)
         other = manager.assign("board-2", other_handle, other_runtime)
-        operation = self._managed_operation("board-1")
+        operation = self._managed_operation("board-1", handler_started=True)
         gate = SimpleNamespace(clear=Mock())
 
         with (
@@ -652,13 +803,37 @@ class ValidationHonestyTests(unittest.TestCase):
 
         self.assertIsNone(manager.maybe_connection("board-1"))
         self.assertIs(manager.maybe_connection("board-2"), other)
-        self.assertTrue(any("reset transport lost" in error for error in operation.resources.cleanup_errors))
+        self.assertTrue(
+            any("reset transport lost" in error for error in operation.resources.cleanup_errors)
+        )
         gate.clear.assert_called_once_with(
             "board-1",
             "target connection failed while releasing reset",
         )
         close_session.assert_called_once_with(failed.handle)
         close_runtime.assert_called_once_with(failed.runtime_session)
+
+    def test_pre_handler_cleanup_does_not_touch_the_reset_line(self) -> None:
+        """A plan/containment refusal precedes every reset-release backend call."""
+
+        from pyocd_debug_mcp import server
+
+        manager = ConnectionManager()
+        handle = TargetSessionHandle(None, None, "probe-1", "worker-1", None)
+        assignment = manager.assign("board-1", handle, Mock(name="runtime"))
+        # Deliberately do not mark this operation's handler as started: this
+        # is the managed lifecycle after a precondition refusal.
+        operation = self._managed_operation("board-1")
+
+        with (
+            patch.object(server, "connection_manager", manager),
+            patch.object(server.target_control, "release_reset") as release_reset,
+        ):
+            server._bind_managed_board_resources(operation)
+            operation.resources.cleanup(preserve_halt=False)
+
+        release_reset.assert_not_called()
+        self.assertIs(manager.maybe_connection("board-1"), assignment)
 
     def test_reset_release_transport_loss_preserves_concurrent_replacement(self) -> None:
         from pyocd_debug_mcp import server
@@ -667,7 +842,7 @@ class ValidationHonestyTests(unittest.TestCase):
         stale_handle = TargetSessionHandle(None, None, "probe-1", "worker-1", None)
         replacement_handle = TargetSessionHandle(None, None, "probe-2", "worker-2", None)
         manager.assign("board-1", stale_handle, Mock(name="stale_runtime"))
-        operation = self._managed_operation("board-1")
+        operation = self._managed_operation("board-1", handler_started=True)
         gate = SimpleNamespace(clear=Mock())
 
         with (
@@ -701,7 +876,7 @@ class ValidationHonestyTests(unittest.TestCase):
         manager = ConnectionManager()
         handle = TargetSessionHandle(None, None, "probe-1", "worker-1", None)
         assignment = manager.assign("board-1", handle, Mock(name="runtime"))
-        operation = self._managed_operation("board-1")
+        operation = self._managed_operation("board-1", handler_started=True)
         gate = SimpleNamespace(clear=Mock())
 
         with (
@@ -730,7 +905,7 @@ class ValidationHonestyTests(unittest.TestCase):
         handle = TargetSessionHandle(None, None, "probe-1", "worker-1", None)
         runtime = Mock(name="runtime")
         manager.assign("board-1", handle, runtime)
-        operation = self._managed_operation("board-1")
+        operation = self._managed_operation("board-1", handler_started=True)
         gate = SimpleNamespace(clear=Mock())
 
         with (

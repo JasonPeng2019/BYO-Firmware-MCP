@@ -430,8 +430,8 @@ class RoundThreeRegressionTests(unittest.TestCase):
         handle = TargetSessionHandle(None, None, "probe", "worker", None)
         with (
             patch.object(
-                server._safety_repository,
-                "load_current",
+                server,
+                "_active_full_document",
                 return_value=object.__new__(GenericSafetyMapDocument),
             ),
             patch.object(
@@ -440,7 +440,7 @@ class RoundThreeRegressionTests(unittest.TestCase):
                 return_value=(None, ()),
             ),
             patch.object(server, "_current_target", return_value="test123"),
-            patch.object(server._profile_repository, "load", return_value=profile),
+            patch.object(server, "_active_policy_profile", return_value=profile),
             patch.object(server, "_replay_profile_device_support", return_value=object()),
             patch.object(
                 server,
@@ -451,3 +451,290 @@ class RoundThreeRegressionTests(unittest.TestCase):
             with self.assertRaises(server.SafetyPolicyError) as refused:
                 server._stage_generic_allocation("board", Path("artifact.elf"), handle)
         self.assertEqual(refused.exception.code, "safety/driver-unbounded")
+
+    def test_r3_08_generic_allocation_advances_authoritative_policy_before_projection(self) -> None:
+        events: list[str] = []
+        allocated_snapshot = {"schema_version": 3, "board_id": "board", "allocated": True}
+        allocated = Mock()
+        allocated.canonical_digest = "b" * 64
+        allocated.to_document.return_value = allocated_snapshot
+        pending = server._PendingGenericAllocation(
+            "a" * 64,
+            "c" * 64,
+            "connection",
+            allocated,
+        )
+        active = SimpleNamespace(
+            tier=server.Tier.SETUP_FULL,
+            setup_incomplete=False,
+            profile_snapshot={"schema_version": 2, "board_id": "board"},
+            map_snapshot={"schema_version": 3, "board_id": "board", "allocated": False},
+            evidence={"validated": True},
+            retained_generations=("retained",),
+        )
+        projected = Mock(spec=GenericSafetyMapDocument)
+        projected.canonical_digest = pending.expected_map_digest
+
+        def commit_policy(*_args, **kwargs):
+            events.append("policy")
+            self.assertEqual(kwargs["map_snapshot"], allocated_snapshot)
+            self.assertEqual(kwargs["profile_snapshot"], active.profile_snapshot)
+            self.assertEqual(kwargs["evidence"], active.evidence)
+            self.assertEqual(kwargs["retained_generations"], active.retained_generations)
+            return SimpleNamespace(policy_digest="d" * 64)
+
+        def commit_projection(*_args):
+            events.append("projection")
+
+        with (
+            patch.object(server._capability_policies, "resolve", return_value=active),
+            patch.object(server._capability_policies, "commit", side_effect=commit_policy),
+            patch.object(
+                server,
+                "_active_full_document",
+                return_value=projected,
+            ),
+            patch.object(server._safety_repository, "load_current", return_value=projected),
+            patch.object(
+                server._safety_repository,
+                "commit_if_current",
+                side_effect=commit_projection,
+            ),
+            patch.object(server.connection_manager, "maybe_connection", return_value=None),
+        ):
+            server._commit_generic_allocation("board", pending)
+
+        self.assertEqual(events, ["policy", "projection"])
+
+    def test_r3_08_generic_allocation_adopts_valid_projected_successor(self) -> None:
+        events: list[str] = []
+        requested_range = server.AddressRange(0x08000000, 0x08001000)
+        active = Mock(spec=GenericSafetyMapDocument)
+        active.canonical_digest = "a" * 64
+        pending_document = Mock()
+        pending_document.canonical_digest = "b" * 64
+        pending_document.partitions.application = requested_range
+        pending = server._PendingGenericAllocation(
+            active.canonical_digest,
+            "c" * 64,
+            "connection",
+            pending_document,
+        )
+        projected = Mock(spec=GenericSafetyMapDocument)
+        projected.canonical_digest = "b" * 64
+        projected.deployment_policy = {"kind": "artifact_application_allocation"}
+        projected.partitions.application = requested_range
+        projected.to_document.return_value = {
+            "schema_version": 3,
+            "board_id": "board",
+            "projected": True,
+        }
+        state = SimpleNamespace(
+            tier=server.Tier.SETUP_FULL,
+            setup_incomplete=False,
+            profile_snapshot={"schema_version": 2, "board_id": "board"},
+            evidence={"validated": True},
+            retained_generations=(),
+        )
+
+        def commit_policy(*_args, **kwargs):
+            events.append("policy")
+            self.assertEqual(kwargs["map_snapshot"], projected.to_document())
+            return SimpleNamespace(policy_digest="d" * 64)
+
+        with (
+            patch.object(server._capability_policies, "resolve", return_value=state),
+            patch.object(server._capability_policies, "commit", side_effect=commit_policy),
+            patch.object(server, "_active_full_document", return_value=active),
+            patch.object(server._safety_repository, "load_current", return_value=projected),
+            patch.object(server, "generic_map_with_allocation", return_value=projected),
+            patch.object(server._safety_repository, "commit_if_current") as projection_commit,
+            patch.object(server.connection_manager, "maybe_connection", return_value=None),
+        ):
+            server._commit_generic_allocation("board", pending)
+
+        self.assertEqual(events, ["policy"])
+        projection_commit.assert_not_called()
+
+    def test_r3_08_generic_allocation_rejects_incompatible_projected_successor(self) -> None:
+        requested_range = server.AddressRange(0x08000000, 0x08001000)
+        active = Mock(spec=GenericSafetyMapDocument)
+        active.canonical_digest = "a" * 64
+        pending_document = Mock()
+        pending_document.partitions.application = requested_range
+        pending = server._PendingGenericAllocation(
+            active.canonical_digest,
+            "c" * 64,
+            "connection",
+            pending_document,
+        )
+        projected = Mock(spec=GenericSafetyMapDocument)
+        projected.canonical_digest = "b" * 64
+        projected.deployment_policy = {"kind": "artifact_application_allocation"}
+        projected.partitions.application = requested_range
+        state = SimpleNamespace(
+            tier=server.Tier.SETUP_FULL,
+            setup_incomplete=False,
+            profile_snapshot={"schema_version": 2, "board_id": "board"},
+            evidence={"validated": True},
+            retained_generations=(),
+        )
+
+        with (
+            patch.object(server._capability_policies, "resolve", return_value=state),
+            patch.object(server._capability_policies, "commit") as policy_commit,
+            patch.object(server, "_active_full_document", return_value=active),
+            patch.object(server._safety_repository, "load_current", return_value=projected),
+            patch.object(
+                server,
+                "generic_map_with_allocation",
+                return_value=SimpleNamespace(canonical_digest="d" * 64),
+            ),
+            patch.object(server._safety_repository, "commit_if_current") as projection_commit,
+            patch.object(server.connection_manager, "maybe_connection") as connection_lookup,
+        ):
+            with self.assertRaises(server.SafetyPolicyError) as refused:
+                server._commit_generic_allocation("board", pending)
+
+        self.assertEqual(refused.exception.code, "safety/allocation-proof-stale")
+        policy_commit.assert_not_called()
+        projection_commit.assert_not_called()
+        connection_lookup.assert_not_called()
+
+    def test_r3_08_generic_allocation_rejects_non_generic_active_map(self) -> None:
+        allocated = Mock(spec=GenericSafetyMapDocument)
+        pending = server._PendingGenericAllocation(
+            "a" * 64,
+            "b" * 64,
+            "connection",
+            allocated,
+        )
+        state = SimpleNamespace(
+            tier=server.Tier.SETUP_FULL,
+            setup_incomplete=False,
+            profile_snapshot={"schema_version": 2, "board_id": "board"},
+            evidence={"validated": True},
+            retained_generations=(),
+        )
+        ordinary = object.__new__(server.SafetyMapDocument)
+
+        with (
+            patch.object(server._capability_policies, "resolve", return_value=state),
+            patch.object(server._capability_policies, "commit") as policy_commit,
+            patch.object(server, "_active_full_document", return_value=ordinary),
+            patch.object(server._safety_repository, "load_current") as projection_load,
+        ):
+            with self.assertRaises(server.SafetyPolicyError) as refused:
+                server._commit_generic_allocation("board", pending)
+
+        self.assertEqual(refused.exception.code, "safety/allocation-proof-stale")
+        policy_commit.assert_not_called()
+        projection_load.assert_not_called()
+
+    def test_r3_08_generic_allocation_rejects_replay_valid_strict_superset(self) -> None:
+        requested_range = server.AddressRange(0x08000000, 0x08001000)
+        active = Mock(spec=GenericSafetyMapDocument)
+        active.canonical_digest = "a" * 64
+        pending_document = Mock()
+        pending_document.canonical_digest = "c" * 64
+        pending_document.partitions.application = requested_range
+        pending = server._PendingGenericAllocation(
+            active.canonical_digest,
+            "d" * 64,
+            "connection",
+            pending_document,
+        )
+        projected = Mock(spec=GenericSafetyMapDocument)
+        projected.canonical_digest = "b" * 64
+        projected.deployment_policy = {"kind": "artifact_application_allocation"}
+        projected.partitions.application = server.AddressRange(0x08000000, 0x08002000)
+        state = SimpleNamespace(
+            tier=server.Tier.SETUP_FULL,
+            setup_incomplete=False,
+            profile_snapshot={"schema_version": 2, "board_id": "board"},
+            evidence={"validated": True},
+            retained_generations=(),
+        )
+
+        with (
+            patch.object(server._capability_policies, "resolve", return_value=state),
+            patch.object(server._capability_policies, "commit") as policy_commit,
+            patch.object(server, "_active_full_document", return_value=active),
+            patch.object(server._safety_repository, "load_current", return_value=projected),
+            patch.object(server, "generic_map_with_allocation", return_value=projected),
+            patch.object(server._safety_repository, "commit_if_current") as projection_commit,
+            patch.object(server.connection_manager, "maybe_connection") as connection_lookup,
+        ):
+            with self.assertRaises(server.SafetyPolicyError) as refused:
+                server._commit_generic_allocation("board", pending)
+
+        self.assertEqual(refused.exception.code, "safety/allocation-proof-stale")
+        policy_commit.assert_not_called()
+        projection_commit.assert_not_called()
+        connection_lookup.assert_not_called()
+
+    def test_r3_08_projection_failure_after_policy_commit_never_reaches_flash(self) -> None:
+        active = Mock(spec=GenericSafetyMapDocument)
+        active.canonical_digest = "a" * 64
+        allocated = Mock()
+        allocated.canonical_digest = "b" * 64
+        allocated.to_document.return_value = {
+            "schema_version": 3,
+            "board_id": "board",
+            "allocated": True,
+        }
+        pending = server._PendingGenericAllocation(
+            active.canonical_digest,
+            "c" * 64,
+            "connection",
+            allocated,
+        )
+        state = SimpleNamespace(
+            tier=server.Tier.SETUP_FULL,
+            setup_incomplete=False,
+            profile_snapshot={"schema_version": 2, "board_id": "board"},
+            evidence={"validated": True},
+            retained_generations=(),
+        )
+        request = SimpleNamespace(
+            identity=SimpleNamespace(as_log_fields=lambda: {}),
+            artifact_path=Path("artifact.hex"),
+        )
+        flash_target = Mock(return_value=(request.artifact_path, "halted"))
+        clear_pending = Mock()
+        services = FlashToolServices(
+            runtime_for=lambda _: None,
+            active_session_id=lambda _: None,
+            duration_ms=lambda _: 0,
+            record_event=Mock(),
+            format_refusal=lambda refusal, **_: refusal.message,
+            action_context=lambda tool, board: ActionContext("test", tool, board),
+            maybe_handle_for=lambda _: object(),
+            handle_for=lambda _: object(),
+            resolve_request=lambda *_: request,
+            flash_target=flash_target,
+            error_code=lambda _: "safety/projection-write-failed",
+            prepare_generic_allocation=lambda *_: pending,
+            commit_generic_allocation=server._commit_generic_allocation,
+            clear_generic_allocation=clear_pending,
+        )
+
+        with (
+            patch.object(server._capability_policies, "resolve", return_value=state),
+            patch.object(server._capability_policies, "commit") as policy_commit,
+            patch.object(server, "_active_full_document", return_value=active),
+            patch.object(server._safety_repository, "load_current", return_value=active),
+            patch.object(
+                server._safety_repository,
+                "commit_if_current",
+                side_effect=server.SafetyMapError("projection write failed"),
+            ),
+            patch.object(server.connection_manager, "maybe_connection") as connection_lookup,
+        ):
+            with self.assertRaisesRegex(server.SafetyMapError, "projection write failed"):
+                build_flash_handlers(services)["flash_application"]("board", "artifact.hex")
+
+        policy_commit.assert_called_once()
+        flash_target.assert_not_called()
+        connection_lookup.assert_not_called()
+        clear_pending.assert_called_once_with("board")

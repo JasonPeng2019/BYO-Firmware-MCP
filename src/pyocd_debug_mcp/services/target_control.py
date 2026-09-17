@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any
 
 from pyocd_debug_mcp.adapters.swd_interface import TargetSessionHandle
 from pyocd_debug_mcp.adapters.swd_process import ProcessIsolatedSWDInterface
@@ -13,7 +14,19 @@ from pyocd_debug_mcp.board_config import (
 )
 from pyocd_debug_mcp.timeouts import ServerTimeoutConfig
 
-_BACKEND = ProcessIsolatedSWDInterface()
+_BACKEND: Any = ProcessIsolatedSWDInterface()
+
+
+def configure_backend_for_tests(backend: Any) -> None:
+    """Replace the backend only through the server's explicit test seam.
+
+    This is intentionally a narrow assignment rather than a general runtime
+    configuration API: acceptance fixtures supply a deterministic backend with
+    the normal SWD interface methods, and production never calls it.
+    """
+
+    global _BACKEND
+    _BACKEND = backend
 
 
 def open_session(

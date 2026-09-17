@@ -475,14 +475,24 @@ class ProfileRepository:
 
     def load(self, board_id: str) -> BoardProfile:
         identity = _require_board_id(board_id)
-        matches = [
-            profile
-            for profile in self.load_all()
-            if profile.board_id == identity
-        ]
+        matches = [profile for profile in self.load_all() if profile.board_id == identity]
         if not matches:
             raise ProfileError(f"Board profile not found: {identity}")
         return matches[0]
+
+    def from_snapshot(self, board_id: str, document: Mapping[str, object]) -> BoardProfile:
+        """Hydrate one already-committed profile without consulting mutable profile files.
+
+        Capability generations own the protected tier's profile authority.  The
+        nominal path is supplied only for schema diagnostics; no bytes are read
+        from it here.
+        """
+
+        identity = _require_board_id(board_id)
+        profile = self._from_v2_document(document, self.store.layout.board_profile(identity))
+        if profile.board_id != identity:
+            raise ProfileError("committed profile snapshot board identity is contradictory")
+        return profile
 
     def _assert_display_available(self, candidate: BoardProfile) -> None:
         candidate_key = _display_identity(candidate.display_name)

@@ -145,7 +145,8 @@ def read_serial(
             board_id,
             normalized_args,
             PolicyRefusal(
-                "uart/invalid-read-seconds", "read_seconds must be a positive finite number."
+                "uart/invalid-read-seconds",
+                "read_seconds must be a positive finite number.",
             ),
             started,
             runtime,
@@ -238,6 +239,16 @@ def write_serial(
 
     started = time.monotonic()
     runtime = services.runtime_for(board_id)
+    if not isinstance(text, str):
+        return _record_refusal(
+            services,
+            "write_serial",
+            board_id,
+            {"board_id": board_id, "text_length": None},
+            PolicyRefusal("uart/invalid-text", "text must be UTF-8 text."),
+            started,
+            runtime,
+        )
     normalized_args: dict[str, object] = {
         "board_id": board_id,
         "port": port,
@@ -268,7 +279,8 @@ def write_serial(
             board_id,
             normalized_args,
             PolicyRefusal(
-                "uart/invalid-timeout", "timeout_seconds must be a positive finite number."
+                "uart/invalid-timeout",
+                "timeout_seconds must be a positive finite number.",
             ),
             started,
             runtime,

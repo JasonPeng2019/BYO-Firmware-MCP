@@ -115,10 +115,21 @@ class SafetyPolicy:
             AddressRange.from_start_size(address, 4),
         )
 
-    def check_breakpoint(self, board_id: str, address: int, elf_path: Path) -> Allowed:
+    def check_breakpoint(
+        self,
+        board_id: str,
+        address: int,
+        elf_path: Path,
+        *,
+        document: SafetyMapDocument | GenericSafetyMapDocument | None = None,
+    ) -> Allowed:
         """Require both stable partition authority and current-ELF executable evidence."""
 
-        loaded = self.load(board_id)
+        loaded = (
+            LoadedSafetyMap(document, document.safety_map)
+            if document is not None
+            else self.load(board_id)
+        )
         requested = AddressRange.from_start_size(address, 2)
         partition_result = loaded.safety_map.check(ActionCategory.FLASH_APPLICATION, (requested,))
         if isinstance(partition_result, Refusal):
@@ -156,8 +167,13 @@ class SafetyPolicy:
         artifact_path: Path,
         *,
         current_target: str,
+        document: SafetyMapDocument | GenericSafetyMapDocument | None = None,
     ) -> BuildEvidence:
-        loaded = self.load(board_id)
+        loaded = (
+            LoadedSafetyMap(document, document.safety_map)
+            if document is not None
+            else self.load(board_id)
+        )
         expected_target = loaded.document.identity.pyocd_target
         if current_target != expected_target:
             raise SafetyPolicyError(
@@ -256,24 +272,32 @@ class SafetyPolicy:
         artifact_path: Path,
         *,
         current_target: str,
+        document: GenericSafetyMapDocument | None = None,
     ) -> tuple[BuildEvidence, tuple[AddressRange, ...]]:
         """Validate a generic application artifact against physical pack authority."""
 
-        loaded = self.load(board_id)
-        document = loaded.document
-        if not isinstance(document, GenericSafetyMapDocument):
+        loaded = (
+            LoadedSafetyMap(document, document.safety_map)
+            if document is not None
+            else self.load(board_id)
+        )
+        active_document = loaded.document
+        if not isinstance(active_document, GenericSafetyMapDocument):
             raise SafetyPolicyError(
                 "safety/partition-authority-unavailable",
                 "Artifact-defined allocation is available only for a generic map.",
                 remedy=("board_safety_refresh",),
             )
-        if current_target.casefold() != document.identity.pyocd_target.casefold():
+        if current_target.casefold() != active_document.identity.pyocd_target.casefold():
             raise SafetyPolicyError(
                 "safety/target-mismatch",
                 "The live target does not match the generic support record.",
                 remedy=("correct_board_assignment", "board_validate"),
             )
-        if not document.geometry.erase_available or not document.geometry.erase_sectors:
+        if (
+            not active_document.geometry.erase_available
+            or not active_document.geometry.erase_sectors
+        ):
             raise SafetyPolicyError(
                 "safety/geometry-incomplete",
                 "The verified support package has no bounded sector erase/program proof.",
@@ -317,14 +341,14 @@ class SafetyPolicy:
                 remedy=("select_valid_build_artifact",),
             )
         examined.append(AddressRange.from_start_size(evidence.reset_handler, 2))
-        if any(not document.geometry.contains_flash(item) for item in examined):
+        if any(not active_document.geometry.contains_flash(item) for item in examined):
             raise SafetyPolicyError(
                 "safety/flash-outside-physical-device",
                 "The artifact is not wholly inside verified physical internal flash.",
                 remedy=("select_correct_build",),
             )
-        touched = self._erase_sectors(document, content_ranges)
-        all_sectors = tuple(item.address_range for item in document.geometry.erase_sectors)
+        touched = self._erase_sectors(active_document, content_ranges)
+        all_sectors = tuple(item.address_range for item in active_document.geometry.erase_sectors)
         first = min(all_sectors.index(item) for item in touched)
         last = max(all_sectors.index(item) for item in touched)
         allocation = all_sectors[first : last + 1]

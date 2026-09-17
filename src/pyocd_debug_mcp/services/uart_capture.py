@@ -69,6 +69,7 @@ class UARTExchangeResult:
             and all(step.matched for step in self.steps)
         )
 
+
 def capture_uart_output(
     device: str,
     baudrate: int,
@@ -192,6 +193,7 @@ def write_uart_output(
     payload: bytes,
     *,
     timeout_seconds: float = 1.0,
+    max_bytes: int | None = None,
     adapter: UARTInterface | None = None,
 ) -> UARTWriteResult:
     """Write bounded UART bytes through the same backend-neutral transport as capture."""
@@ -200,6 +202,8 @@ def write_uart_output(
         raise ValueError("baudrate must be > 0")
     if timeout_seconds <= 0:
         raise ValueError("timeout_seconds must be > 0")
+    if max_bytes is not None and (max_bytes <= 0 or len(payload) > max_bytes):
+        raise ValueError(f"payload must not exceed {max_bytes} bytes")
 
     backend = adapter or _BACKEND
     started = time.monotonic()
@@ -236,12 +240,18 @@ def exchange_uart_output(
     ready_probe_delay_seconds: float = 0.0,
     followup_steps: tuple[tuple[bytes, str], ...] = (),
     clear_input: bool = False,
+    max_bytes: int | None = None,
+    max_steps: int | None = None,
+    max_input_bytes: int | None = None,
+    max_read_seconds: float | None = None,
     adapter: UARTInterface | None = None,
 ) -> UARTExchangeResult:
     """Write and capture the immediate response through one bounded port open."""
 
     if baudrate <= 0 or read_seconds <= 0:
         raise ValueError("baudrate and read_seconds must be positive")
+    if max_read_seconds is not None and read_seconds > max_read_seconds:
+        raise ValueError(f"read_seconds must not exceed {max_read_seconds:g}")
     if ready_text is not None and (not ready_text or ready_seconds <= 0):
         raise ValueError("ready_text requires a positive ready_seconds window")
     if ready_probe_delay_seconds < 0 or ready_probe_delay_seconds > ready_seconds:
@@ -250,6 +260,17 @@ def exchange_uart_output(
         raise ValueError("ready_probe_delay_seconds requires a ready_probe")
     if not payload or not expected_text:
         raise ValueError("payload and expected_text must be non-empty")
+    input_bytes = len(payload) + len(expected_text.encode("utf-8"))
+    if ready_text is not None:
+        input_bytes += len(ready_text.encode("utf-8"))
+    if ready_probe is not None:
+        input_bytes += len(ready_probe)
+    for step_payload, step_expected in followup_steps:
+        input_bytes += len(step_payload) + len(step_expected.encode("utf-8"))
+    if max_input_bytes is not None and input_bytes > max_input_bytes:
+        raise ValueError(f"UART exchange inputs must not exceed {max_input_bytes} bytes")
+    if max_steps is not None and len(followup_steps) + 1 > max_steps:
+        raise ValueError(f"UART exchange must contain at most {max_steps} steps")
     backend = adapter or _BACKEND
     started = time.monotonic()
     captured = bytearray()
@@ -278,9 +299,13 @@ def exchange_uart_output(
                 cancellation_checkpoint()
                 chunk = backend.read(port_handle, 256)
                 if chunk:
+                    if max_bytes is not None:
+                        chunk = chunk[: max(0, max_bytes - len(captured))]
                     captured.extend(chunk)
                     if ready_text in captured.decode("utf-8", errors="replace"):
                         ready_matched = True
+                        break
+                    if max_bytes is not None and len(captured) >= max_bytes:
                         break
                 if (
                     not probe_sent
@@ -301,9 +326,13 @@ def exchange_uart_output(
                     cancellation_checkpoint()
                     chunk = backend.read(port_handle, 256)
                     if chunk:
+                        if max_bytes is not None:
+                            chunk = chunk[: max(0, max_bytes - len(captured))]
                         captured.extend(chunk)
                         step_capture.extend(chunk)
                         if step_expected in step_capture.decode("utf-8", errors="replace"):
+                            break
+                        if max_bytes is not None and len(captured) >= max_bytes:
                             break
                 step_result = UARTExchangeStepResult(
                     step_expected,

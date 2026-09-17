@@ -116,9 +116,7 @@ class RecordsOccasionsNotCalls(MonitorTestCase):
             add_snapshot(self.ledger, total=total)
         totals = [
             json.loads(line)["detail"]["total_calls"]
-            for line in self.ledger.resident_files()[0]
-            .read_text(encoding="utf-8")
-            .splitlines()
+            for line in self.ledger.resident_files()[0].read_text(encoding="utf-8").splitlines()
         ]
         self.assertEqual(totals, [100, 200, 300])
         self.assertEqual(totals, sorted(totals))
@@ -128,9 +126,7 @@ class RecordsOccasionsNotCalls(MonitorTestCase):
             self.assertTrue(self.ledger.append(kind, detail={"marker": kind}))
         kinds = [
             json.loads(line)["kind"]
-            for line in self.ledger.resident_files()[0]
-            .read_text(encoding="utf-8")
-            .splitlines()
+            for line in self.ledger.resident_files()[0].read_text(encoding="utf-8").splitlines()
         ]
         self.assertEqual(kinds, ["boot", "usage_snapshot", "checkin", "report", "close"])
 
@@ -177,9 +173,7 @@ class LedgerAppend(MonitorTestCase):
     def test_hardening_state_is_observable(self) -> None:
         add_snapshot(self.ledger)
         expected = (
-            Hardening.APPLIED.value
-            if sys.platform == "win32"
-            else Hardening.UNSUPPORTED.value
+            Hardening.APPLIED.value if sys.platform == "win32" else Hardening.UNSUPPORTED.value
         )
         self.assertEqual(self.ledger.hardening, expected)
 
@@ -256,9 +250,7 @@ class ChainIntegrity(MonitorTestCase):
         lines = self.path.read_text(encoding="utf-8").splitlines()
         record = json.loads(lines[2])
         record["detail"]["total_calls"] = 1  # understate the usage count
-        lines[2] = json.dumps(
-            record, ensure_ascii=False, sort_keys=True, separators=(",", ":")
-        )
+        lines[2] = json.dumps(record, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
         self.path.write_text("\n".join(lines) + "\n", encoding="utf-8")
         self.assertIs(verify_file(self.path), VerificationOutcome.CHAIN_INVALID)
 
@@ -273,6 +265,7 @@ class ChainIntegrity(MonitorTestCase):
 
     def test_appending_a_valid_record_is_not_flagged(self) -> None:
         ledger = SegmentLedger(self.store, "ws-b", "run-2")
+        self.addCleanup(ledger.seal)
         add_snapshot(ledger, total=100)
         add_snapshot(ledger, total=200)
         path = ledger.resident_files()[0]

@@ -8,46 +8,93 @@ abrupt kill is picked up at the next boot.
 
 from __future__ import annotations
 
+import hashlib
 import json
+import os
 import shutil
 import subprocess
 import tempfile
 import time
 import unittest
+from collections.abc import Mapping
 from pathlib import Path
 
-from tests.store_cleanup import restore as store_restore
-from tests.store_cleanup import snapshot as store_snapshot
+from tests import tiered_acceptance_support as acceptance_support
 
 SERVER_PROJECT = Path(__file__).resolve().parents[1]
+MONITOR_ROOT_ENV = "BYO_MCP_MONITOR_ROOT"
 
-_STORE_BEFORE: "set[str] | None" = None
+_MONITOR_TEMPORARY: tempfile.TemporaryDirectory[str] | None = None
+_MONITOR_ROOT: Path | None = None
+_SHARED_STORE_FINGERPRINT: tuple[tuple[str, str], ...] | None = None
 
 
 def setUpModule() -> None:
-    global _STORE_BEFORE
-    _STORE_BEFORE = store_snapshot()
+    global _MONITOR_TEMPORARY, _MONITOR_ROOT, _SHARED_STORE_FINGERPRINT
+    _MONITOR_TEMPORARY = tempfile.TemporaryDirectory(prefix="byo-stdio-monitor-")
+    _MONITOR_ROOT = Path(_MONITOR_TEMPORARY.name).resolve()
+    _SHARED_STORE_FINGERPRINT = _shared_store_fingerprint()
 
 
 def tearDownModule() -> None:
-    """Restore the real store to what was there before this module ran."""
+    """Assert the lifecycle module never altered the shared monitor store."""
 
-    store_restore(_STORE_BEFORE)
+    try:
+        if _shared_store_fingerprint() != _SHARED_STORE_FINGERPRINT:
+            raise AssertionError("stdio lifecycle tests changed the shared monitor store")
+    finally:
+        from pyocd_debug_mcp.monitor import paths
+
+        paths._reset_cache(None)
+        if _MONITOR_TEMPORARY is not None:
+            _MONITOR_TEMPORARY.cleanup()
 
 
-
-def store_root() -> Path:
+def _shared_store_root() -> Path:
     from platformdirs import user_data_dir
 
     return Path(user_data_dir("BYO", appauthor=False, roaming=False))
 
 
+def _shared_store_fingerprint() -> tuple[tuple[str, str], ...] | None:
+    """Return a content fingerprint without retaining shared-store contents."""
+
+    root = _shared_store_root()
+    if not root.exists():
+        return None
+    entries: list[tuple[str, str]] = []
+    for path in sorted(root.rglob("*")):
+        relative = path.relative_to(root).as_posix()
+        try:
+            if path.is_dir():
+                entries.append((f"directory:{relative}", ""))
+            elif path.is_file():
+                entries.append((f"file:{relative}", hashlib.sha256(path.read_bytes()).hexdigest()))
+        except OSError:
+            entries.append((f"unreadable:{relative}", ""))
+    return tuple(entries)
+
+
+def monitor_root() -> Path:
+    assert _MONITOR_ROOT is not None, "setUpModule did not initialize the monitor root"
+    return _MONITOR_ROOT
+
+
 class StdioServer:
     """A live server subprocess speaking JSON-RPC over stdio."""
 
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        *,
+        command: list[str] | None = None,
+        extra_environment: Mapping[str, str] | None = None,
+    ) -> None:
+        environment = os.environ.copy()
+        environment[MONITOR_ROOT_ENV] = str(monitor_root())
+        if extra_environment is not None:
+            environment.update(extra_environment)
         self.proc = subprocess.Popen(
-            ["uv", "run", "--project", str(SERVER_PROJECT), "pyocd-debug-mcp"],
+            command or ["uv", "run", "--project", str(SERVER_PROJECT), "pyocd-debug-mcp"],
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
@@ -55,6 +102,7 @@ class StdioServer:
             encoding="utf-8",
             bufsize=1,
             cwd=str(SERVER_PROJECT),
+            env=environment,
         )
         self.stdout_lines: list[str] = []
 
@@ -104,12 +152,33 @@ class StdioServer:
 
     def close_stdin_and_wait(self, timeout: float = 30.0) -> int:
         assert self.proc.stdin is not None
-        self.proc.stdin.close()
-        return self.proc.wait(timeout=timeout)
+        try:
+            self.proc.stdin.close()
+            return self.proc.wait(timeout=timeout)
+        finally:
+            self._close_pipes()
 
     def kill(self) -> None:
-        self.proc.kill()
-        self.proc.wait(timeout=30)
+        try:
+            if self.proc.poll() is None:
+                if os.name == "nt":
+                    subprocess.run(
+                        ["taskkill", "/PID", str(self.proc.pid), "/T", "/F"],
+                        check=False,
+                        stdout=subprocess.DEVNULL,
+                        stderr=subprocess.DEVNULL,
+                    )
+                else:
+                    self.proc.kill()
+            self.proc.wait(timeout=30)
+        finally:
+            self._close_pipes()
+
+    def _close_pipes(self) -> None:
+        for stream in (self.proc.stdin, self.proc.stdout, self.proc.stderr):
+            if stream is None or stream.closed:
+                continue
+            stream.close()
 
     def stderr_text(self) -> str:
         assert self.proc.stderr is not None
@@ -122,9 +191,9 @@ class LifecycleTestCase(unittest.TestCase):
         self.addCleanup(shutil.rmtree, self.project, True)
         from pyocd_debug_mcp.monitor import paths
 
-        paths._reset_cache(None)
+        paths._reset_cache(monitor_root())
         self.workspace = paths.workspace_id(self.project)
-        self.store = store_root()
+        self.store = monitor_root()
         self.addCleanup(self._clean)
 
     def _clean(self) -> None:
@@ -259,6 +328,59 @@ class ServerStartsWithNoTransportConfigured(LifecycleTestCase):
         self.assertIn("no off-box copy", payload["delivery"]["off_box_note"])
 
 
+class TieredBackendRehearsalOverStdio(LifecycleTestCase):
+    """A fake backend crosses the actual module-entrypoint process boundary."""
+
+    def test_module_entrypoint_injects_fake_backend_before_raw_read(self) -> None:
+        proof_path = (
+            self.project / ".agent-workspace" / "runtime" / "stdio-rehearsal" / "backend.jsonl"
+        )
+        with acceptance_support.tiered_stdio_rehearsal_environment(
+            self.project, proof_path
+        ) as environment:
+            server = StdioServer(
+                command=[
+                    "uv",
+                    "run",
+                    "--offline",
+                    "--no-sync",
+                    "--project",
+                    str(SERVER_PROJECT),
+                    "python",
+                    "-m",
+                    "pyocd_debug_mcp.server",
+                ],
+                extra_environment=environment,
+            )
+            self.addCleanup(server.kill)
+            initialized = server.initialize()
+            self.assertIn("result", initialized)
+            connected = server.call(
+                "connect",
+                {"board_id": "stdio_fixture_board", "target": "nrf52840"},
+            )
+            self.assertIn("result", connected)
+            raw_response = server.call(
+                "read_memory_raw",
+                {"board_id": "stdio_fixture_board", "address": "0x20000000"},
+                request_id=3,
+            )
+            raw_payload = json.loads(raw_response["result"]["content"][0]["text"])
+            self.assertEqual(raw_payload["status"], "ok")
+            self.assertEqual(raw_payload["tier"], "no-setup")
+            self.assertEqual(server.close_stdin_and_wait(), 0)
+
+        events = [
+            json.loads(line)["event"]
+            for line in proof_path.read_text(encoding="utf-8").splitlines()
+            if line.strip()
+        ]
+        self.assertLess(events.index("seam-installed"), events.index("backend-open"))
+        self.assertLess(events.index("backend-open"), events.index("backend-read-memory"))
+        for line in server.stdout_lines:
+            self.assertEqual(json.loads(line).get("jsonrpc"), "2.0")
+
+
 if __name__ == "__main__":
     unittest.main()
 
@@ -311,9 +433,7 @@ class ProfessionalBuildOverTheProtocol(LifecycleTestCase):
 
     def setUp(self) -> None:
         super().setUp()
-        self.profile = (
-            SERVER_PROJECT / "src" / "pyocd_debug_mcp" / "monitor" / "build_profile.py"
-        )
+        self.profile = SERVER_PROJECT / "src" / "pyocd_debug_mcp" / "monitor" / "build_profile.py"
         self.original = self.profile.read_text(encoding="utf-8")
         self.profile.write_text(
             self.original.replace(

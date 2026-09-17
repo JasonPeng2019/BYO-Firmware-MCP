@@ -33,6 +33,19 @@ _PLACEHOLDERS = frozenset({"n/a", "na", "none", "null", "placeholder", "tbd", "t
 class PlanRefusal(PolicyRefusal):
     """A plan or planned execution failed deterministic validation."""
 
+    def __init__(
+        self,
+        code: str,
+        message: str,
+        *,
+        session_id: str | None = None,
+        remedies: tuple[str, ...] = (),
+        context: Mapping[str, object] | None = None,
+    ) -> None:
+        super().__init__(code, message, session_id=session_id)
+        self.remedies = remedies
+        self.context = dict(context or {})
+
 
 class PlanStatus(str, Enum):
     ACTIVE = "active"

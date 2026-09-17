@@ -3,13 +3,14 @@
 from __future__ import annotations
 
 import json
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Mapping
 from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, JsonValue
 
 from pyocd_debug_mcp.kernel.operations import SAFE_EXIT_REMINDER
 from pyocd_debug_mcp.monitor.tools import MONITOR_TOOL_NAMES
+
 
 class BatchChild(BaseModel):
     """One JSON-only MCP child call with no extra or authority-bearing fields."""
@@ -22,6 +23,8 @@ class BatchChild(BaseModel):
 
 ChildDispatcher = Callable[[str, dict[str, Any]], Awaitable[Any]]
 ToolLookup = Callable[[str], bool]
+ChildResultNormalizer = Callable[[str, str, JsonValue], JsonValue]
+ChildErrorNormalizer = Callable[[str, str, BaseException], JsonValue | None]
 
 
 class BatchValidationError(ValueError):
@@ -60,14 +63,10 @@ def _validate_children(
                 f"actions[{index}].tool_name must not contain surrounding whitespace"
             )
         if not tool_exists(name):
-            raise BatchValidationError(
-                f"actions[{index}] names unknown tool '{name}'"
-            )
+            raise BatchValidationError(f"actions[{index}] names unknown tool '{name}'")
         child_board = child.arguments.get("board_id")
         if not isinstance(child_board, str) or not child_board:
-            raise BatchValidationError(
-                f"actions[{index}] must contain a non-empty string board_id"
-            )
+            raise BatchValidationError(f"actions[{index}] must contain a non-empty string board_id")
         if child_board != board:
             raise BatchValidationError(
                 f"actions[{index}] targets board '{child_board}', not shared board '{board}'"
@@ -78,9 +77,18 @@ def _validate_children(
 
 def _json_result(value: Any) -> JsonValue:
     if isinstance(value, list):
+        # ``FastMCP.call_tool`` returns one TextContent wrapper for ordinary
+        # text tools. A stable-client fallback promises the child tool's
+        # public text payload, not an implementation-specific content list.
+        if len(value) == 1:
+            item = value[0]
+            text = getattr(item, "text", None)
+            if isinstance(text, str):
+                return text
+            if isinstance(item, Mapping) and isinstance(item.get("text"), str):
+                return item["text"]
         return [
-            item.model_dump(mode="json") if isinstance(item, BaseModel) else item
-            for item in value
+            item.model_dump(mode="json") if isinstance(item, BaseModel) else item for item in value
         ]
     if isinstance(value, BaseModel):
         return value.model_dump(mode="json")
@@ -93,6 +101,8 @@ def build_batch_handlers(
     dispatch_child: ChildDispatcher,
     *,
     tool_exists: ToolLookup,
+    normalize_child_result: ChildResultNormalizer | None = None,
+    normalize_child_error: ChildErrorNormalizer | None = None,
 ) -> dict[str, Callable[..., Awaitable[str]]]:
     """Build the batch tool without introducing a second authorization path."""
 
@@ -114,6 +124,20 @@ def build_batch_handlers(
             try:
                 result = await dispatch_child(child.tool_name, arguments)
             except Exception as exc:  # child dispatch owns the typed authorization failure
+                normalized_error = (
+                    normalize_child_error(board_id, child.tool_name, exc)
+                    if normalize_child_error is not None
+                    else None
+                )
+                if normalized_error is not None:
+                    completed.append(
+                        {
+                            "index": index,
+                            "tool_name": child.tool_name,
+                            "result": normalized_error,
+                        }
+                    )
+                    continue
                 failure = {
                     "index": index,
                     "tool_name": child.tool_name,
@@ -125,7 +149,11 @@ def build_batch_handlers(
                 {
                     "index": index,
                     "tool_name": child.tool_name,
-                    "result": _json_result(result),
+                    "result": (
+                        normalize_child_result(board_id, child.tool_name, _json_result(result))
+                        if normalize_child_result is not None
+                        else _json_result(result)
+                    ),
                 }
             )
 
@@ -135,9 +163,7 @@ def build_batch_handlers(
             "completed": list(completed),
             "failure": dict(failure) if failure is not None else None,
         }
-        body = json.dumps(
-            payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")
-        )
+        body = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
         return f"{body}\n{SAFE_EXIT_REMINDER}"
 
     return {"action_batch": action_batch}
@@ -146,5 +172,7 @@ def build_batch_handlers(
 __all__ = [
     "BatchChild",
     "BatchValidationError",
+    "ChildErrorNormalizer",
+    "ChildResultNormalizer",
     "build_batch_handlers",
 ]

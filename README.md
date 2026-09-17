@@ -40,6 +40,18 @@ If the client does not start the server from the firmware project, set
 `BYO_MCP_ARTIFACT_ROOT` to that project's absolute path. Do not point it at this
 repository.
 
+To isolate passive monitor records for one launch, set
+`BYO_MCP_MONITOR_ROOT` to an absolute directory before starting the server:
+
+```text
+BYO_MCP_MONITOR_ROOT=/absolute/path/to/byo-monitor uv run --locked pyocd-debug-mcp
+```
+
+A nonblank monitor root is exclusive: `server_data/` and `simulated_remote/`
+are created beneath it, never beneath per-user app data or the artifact root.
+If that directory cannot be resolved or written, monitoring buffers in memory;
+server startup and hardware behavior continue normally.
+
 ## Server documentation
 
 - [Server guide](SERVER_GUIDE.md): setup, tool workflow, and safety model.
@@ -50,6 +62,38 @@ repository.
   specifications, plans, and recorded results for the Sentry monitor/logger work.
 
 ## Firmware MCP capabilities
+
+### Tiered capability routing
+
+Each named logical board has an explicit project-local safety tier. A newly
+named board is `no-setup`: use `connect` (optionally with its explicit
+`probe_uid` or `target`) and the `*_raw` tools when the operator deliberately
+owns unbounded-address risk. `setup-lite` adds confirmed coarse map containment
+and retains raw escape hatches; every lite raw response instructs the agent to
+display that bypass warning to the human. `setup-full` preserves the existing
+validated/guarded workflow and refuses new raw routes.
+
+Use `get_capabilities(board_id)` or `get_setup_status(board_id)` before acting;
+both report the per-board tier, policy status and authoritative project root.
+An incomplete initial setup (or a post-downgrade no-setup policy) remains raw.
+An interrupted escalation from lite or full retains its prior active tier and
+records the incomplete attempt separately. A corrupt committed policy is never
+treated as raw and must be repaired before hardware access.
+
+`$downgrade` and `$mass-erase` are manual-only workspace skills. The server
+uses their project-local grants under `.agent-workspace/runtime/manual-permissions`,
+resets those grants at every startup, and consumes each authorization once. Ask
+the human to invoke the named skill; do not create or edit a grant directly.
+Mass erase reserves that exact disclosure before plan acceptance and consumes it
+before the backend call; a cancelled, changed, or failed plan discards the old
+grant and requires a fresh skill invocation.
+
+Raw memory, flash, and UART routes are deliberately bounded: raw serial reads,
+writes, exchanges, payloads, and captured output have finite operation limits.
+Existing planned full UART behavior is preserved.
+Lite safe routes require the explicitly confirmed region/config/backend facts
+for that operation; full safe routes additionally retain their normal live
+identity and plan prerequisites.
 
 The server provides a guarded board-development surface:
 

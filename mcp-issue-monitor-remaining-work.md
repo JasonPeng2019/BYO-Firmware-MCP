@@ -9,6 +9,10 @@ this file records only the remaining release-readiness work.
 - [ ] Add and ship the required client-side, tool-agnostic workspace skill.
 - [ ] Include the skill's enumerated signal criteria and exact issue/check-in
   templates.
+- [ ] Replace the current local `simulated_remote/` filler with the real
+  OAuth/OpenID-authenticated remote delivery pipeline. The present Sentry SDK
+  integration uses `dsn=None` and a local envelope writer, so
+  `FILLER_SIMULATED` acknowledgements are not off-box delivery.
 - [ ] Complete explicit automated coverage for AC-104 under-reporting tiers 1
   and 2. Tier 3's limit is tested and documented, but the coverage map still
   classifies AC-104 as partial.

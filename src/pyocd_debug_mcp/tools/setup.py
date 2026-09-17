@@ -23,9 +23,7 @@ from pyocd_debug_mcp.setup_flow.validate import (
     ValidationRequest,
 )
 
-SETUP_LOADABLE_TOOLS = frozenset(
-    {"board_setup-plan", "board_safety_refresh", "board_validate"}
-)
+SETUP_LOADABLE_TOOLS = frozenset({"board_setup-plan", "board_safety_refresh", "board_validate"})
 
 
 def _json(document: Mapping[str, Any]) -> str:
@@ -408,6 +406,20 @@ def build_setup_handlers(services: SetupToolServices) -> dict[str, Callable[...,
             serial_id=serial_id or "",
         )
 
+    def _planned_target_tier(active: object, supplied: str | None) -> str | None:
+        """Use the plan's tier when a legacy direct caller has no field for it."""
+
+        action_parameters = getattr(active, "action_parameters", None)
+        if not isinstance(action_parameters, Mapping):
+            return supplied
+        planned = action_parameters.get("target_tier")
+        if not isinstance(planned, str):
+            raise ValueError("immutable board_setup plan has no valid target_tier")
+        selected = planned if supplied is None else supplied
+        if selected != planned:
+            raise ValueError("target_tier must exactly match the immutable board_setup plan")
+        return selected
+
     def board_setup(
         board_id: str,
         mode: str,
@@ -418,6 +430,7 @@ def build_setup_handlers(services: SetupToolServices) -> dict[str, Callable[...,
         serial_baudrate: int | None,
         serial_id: str | None,
         datasheet_path: str,
+        target_tier: str | None = None,
     ) -> str:
         """Run the first setup attempt covered by the active setup plan."""
 
@@ -429,6 +442,7 @@ def build_setup_handlers(services: SetupToolServices) -> dict[str, Callable[...,
                     "redirect": "Call board_setup-plan with a valid permitted plan first.",
                 }
             )
+        _planned_target_tier(active, target_tier)
         if mode not in {"setup", "repair"}:
             raise ValueError("mode must be setup or repair")
         if services.require_assignment is not None:
@@ -468,10 +482,15 @@ def build_setup_handlers(services: SetupToolServices) -> dict[str, Callable[...,
         serial_baudrate: int | None,
         serial_id: str | None,
         datasheet_path: str,
+        target_tier: str | None = None,
     ) -> str:
         """Use the setup plan's single paired repair allowance."""
 
+        active = services.plan_engine.active_plan("board_setup", board_id)
+        if active is not None:
+            _planned_target_tier(active, target_tier)
         del (
+            target_tier,
             mode,
             connection_id,
             display_name,

@@ -23,6 +23,17 @@ its default project `.firm` directory. Setup creates project-local profiles and 
 metadata only after the client supplies the user's exact part number, datasheet, and researched target
 or pack candidate.
 
+For an isolated monitor store, set `BYO_MCP_MONITOR_ROOT` to an absolute directory at launch:
+
+```text
+BYO_MCP_MONITOR_ROOT=/absolute/path/to/byo-monitor uv run --locked pyocd-debug-mcp
+```
+
+When nonblank, this is the monitor's only disk candidate; `server_data/` and
+`simulated_remote/` stay beneath it rather than using per-user app data or
+`BYO_MCP_ARTIFACT_ROOT`. If it is unavailable, the passive monitor buffers in
+memory and the server still starts; it does not write monitoring records elsewhere.
+
 Generic command-line utilities are available without any bundled board data:
 
 ```text
@@ -137,6 +148,32 @@ Exact schemas and status payload behavior are in
 [docs/client-contract.md](docs/client-contract.md) and the live MCP descriptions.
 
 ## Safety model
+
+### Tiered operation selection
+
+Safety setup is optional, but the active policy is explicit for each named
+board configuration. Call `get_capabilities(board_id)` to see the current
+`no-setup`, `setup-lite`, or `setup-full` tier and the preferred tool route.
+No-setup uses raw explicit-address operations subject to transport limits and
+the global operational stop. Lite uses confirmed coarse classifications for
+safe operations and keeps raw alternatives; raw lite results must be displayed
+to the human as a containment-bypass warning. Full retains the established
+validated safe route and rejects new raw calls.
+
+Do not infer raw availability from a missing or damaged map: an explicitly
+committed incomplete setup remains no-setup, while corrupt committed policy
+fails closed. Manual downgrade and mass-erase authority is scoped to this
+project root, must come from the human-invoked `$downgrade` or `$mass-erase`
+skill, is single-use, and is reset on every server startup.
+
+An incomplete initial setup is raw-capable. If an escalation from an existing
+lite or full policy stops before its pointer commit, the prior immutable tier
+continues to govern hardware and the attempt is marked incomplete; staged
+profile/map files do not become authority. Raw UART operations have finite
+duration, input, and output limits; existing planned full UART behavior is
+preserved. Lite flash/recovery need their
+explicit confirmed geometry/backend/native-mechanism facts; never infer them
+from the board name or a retained full profile.
 
 Each logical board has one live connection and one operation boundary.
 Same-board calls serialize while different boards can execute concurrently.
