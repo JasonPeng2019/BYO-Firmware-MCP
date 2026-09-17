@@ -17,6 +17,18 @@ from pyocd_debug_mcp.timeouts import ServerTimeoutConfig
 _BACKEND: Any = ProcessIsolatedSWDInterface()
 
 
+def configure_backend_for_runtime(backend: Any) -> None:
+    """Install the sidecar-selected process backend before the server imports.
+
+    This is distinct from the test seam: packaged launches use the compiled
+    sidecar itself for every provider worker, so they never depend on a Python
+    interpreter being installed on the customer's PATH.
+    """
+
+    global _BACKEND
+    _BACKEND = backend
+
+
 def configure_backend_for_tests(backend: Any) -> None:
     """Replace the backend only through the server's explicit test seam.
 

@@ -461,6 +461,9 @@ def _board_record(board: BoardConfig | None) -> dict[str, Any] | None:
 class ProcessIsolatedSWDInterface(SWDInterface):
     """SWD proxy whose worker, not the MCP process, owns native providers."""
 
+    def __init__(self, *, worker_argv: Sequence[str] | None = None) -> None:
+        self._worker_argv = tuple(worker_argv) if worker_argv is not None else None
+
     def _open(
         self,
         operation: str,
@@ -478,7 +481,7 @@ class ProcessIsolatedSWDInterface(SWDInterface):
         operation_timeout_seconds: float | None = None,
     ) -> TargetSessionHandle:
         deadline = _operation_deadline(operation_timeout_seconds)
-        worker = _WorkerClient(deadline=deadline)
+        worker = _WorkerClient(worker_argv=self._worker_argv, deadline=deadline)
         arguments = {
             "board": _board_record(board),
             "unique_id": unique_id,
