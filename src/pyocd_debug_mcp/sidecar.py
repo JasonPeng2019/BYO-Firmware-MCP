@@ -328,6 +328,7 @@ def _manual_permission(args: argparse.Namespace) -> int:
 
 def _self_test(args: argparse.Namespace) -> int:
     contract: RuntimeContract | None = None
+    runtime_root: Path | None = None
     if args.runtime_root is not None:
         runtime_root = _canonical_directory(args.runtime_root, "runtime root")
         contract = _load_runtime_contract(runtime_root)
@@ -341,6 +342,7 @@ def _self_test(args: argparse.Namespace) -> int:
 
     temporary_project: tempfile.TemporaryDirectory[str] | None = None
     if contract is not None:
+        assert runtime_root is not None
         temporary_project = tempfile.TemporaryDirectory(prefix="byo-sidecar-self-test-")
         project_root = Path(temporary_project.name).resolve()
         worker_argv = _provider_worker_argv(
