@@ -120,7 +120,8 @@ class SidecarRuntimeTests(unittest.TestCase):
                     self.assertEqual(context.runtime_root, runtime.resolve())
                     self.assertEqual(os.environ["BYO_MCP_ARTIFACT_ROOT"], str(project.resolve()))
                     self.assertEqual(
-                        os.environ["PYOCD_MCP_RUNS_ROOT"], str(project / ".firm" / "runs")
+                        os.environ["PYOCD_MCP_RUNS_ROOT"],
+                        str((project / ".firm" / "runs").resolve()),
                     )
                     self.assertEqual(Path.cwd(), runtime.resolve())
             finally:
