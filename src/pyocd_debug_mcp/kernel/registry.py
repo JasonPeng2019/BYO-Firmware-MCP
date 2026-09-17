@@ -262,6 +262,15 @@ class RegistryFastMCP(FastMCP):
         self._monitor: DispatchMonitor | None = None
         super().__init__(name=name, **settings)
 
+    def set_server_version(self, version: str) -> None:
+        """Bind initialization metadata to this product's release version."""
+
+        if not version:
+            raise ValueError("server version must not be empty")
+        # FastMCP does not expose the low-level server version in its
+        # constructor, but MCP initialize responses are generated there.
+        self._mcp_server.version = version
+
     def configure_monitor(self, monitor: DispatchMonitor | None) -> None:
         """Attach the passive dispatch observer."""
 

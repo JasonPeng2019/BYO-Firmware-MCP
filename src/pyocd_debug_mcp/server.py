@@ -32,6 +32,7 @@ from typing import Any, cast
 from pyocd.target.pack.cmsis_pack import CmsisPack  # type: ignore[import-untyped]
 from elftools.common.exceptions import ELFError
 
+from pyocd_debug_mcp import __version__
 from pyocd_debug_mcp.adapters.swd_interface import TargetSessionHandle, session_metadata
 from pyocd_debug_mcp.board_config import (
     BoardConfig,
@@ -368,6 +369,7 @@ _project_root = (
 )
 
 mcp = RegistryFastMCP("pyocd-debug")
+mcp.set_server_version(__version__)
 tool_registry = mcp.registry
 server_run = create_server_run()
 assignment_store = RunAssignmentStore(server_run.assignments)

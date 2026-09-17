@@ -19,6 +19,7 @@ import unittest
 from collections.abc import Mapping
 from pathlib import Path
 
+from pyocd_debug_mcp import __version__
 from tests import tiered_acceptance_support as acceptance_support
 
 SERVER_PROJECT = Path(__file__).resolve().parents[1]
@@ -217,6 +218,14 @@ class LifecycleTestCase(unittest.TestCase):
 
 
 class StdoutIsOnlyProtocolFraming(LifecycleTestCase):
+    def test_initialization_advertises_the_product_version(self) -> None:
+        """The installed launcher must identify its own release, not FastMCP."""
+
+        server = StdioServer()
+        self.addCleanup(server.kill)
+        response = server.initialize()
+        self.assertEqual(response["result"]["serverInfo"]["version"], __version__)
+
     def test_every_stdout_line_is_valid_json_rpc(self) -> None:
         """Stdout is the wire: one stray byte breaks framing intermittently."""
 
