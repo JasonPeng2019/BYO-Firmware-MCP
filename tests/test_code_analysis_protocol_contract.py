@@ -329,15 +329,19 @@ class FramingAndRouting(FakeServiceCase):
         )
         first = self.position_of("helper", occurrence=0)
         second = self.position_of("add")
+        other = self.project.write_text("src/other.c", self.source().read_bytes().decode("utf-8"))
+        self.project.write_database(
+            [self.project.entry("src/main.c"), self.project.entry("src/other.c")]
+        )
         calls = [
             Call(
                 self.service.references,
-                file_path=str(self.source()),
+                file_path=str(source),
                 line=line,
                 column=column,
                 timeout_seconds=15.0,
             )
-            for line, column in (first, second)
+            for source, (line, column) in zip((self.source(), other), (first, second), strict=True)
         ]
         results = [call.join(30) for call in calls]
         ids = [message["id"] for message in self.fake.received("textDocument/references")]

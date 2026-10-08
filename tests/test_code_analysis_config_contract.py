@@ -395,16 +395,16 @@ class DatabaseSelectionContract(ConfigCase):
 
     def test_explicit_database_must_be_named_compile_commands_json(self) -> None:
         self.default_database()
-        other = self.project.write_database(
-            [self.project.entry("src/main.c")], "build/commands.json"
-        )
+        self.project.write_database([self.project.entry("src/main.c")], "build/commands.json")
         self.project.write_config(
             {"schema_version": 1, "compilation_database": "build/commands.json"}
         )
         snapshot = load(self.project.root)
         found = [p for p in field(snapshot, "problems") if "compile_commands.json" in describe(p)]
         self.assertTrue(found, f"wrong filename not explained: {problem_codes(snapshot)}")
-        self.assertFalse(same_path(field(snapshot, "database_path"), other))
+        self.assertEqual(
+            list(field(snapshot, "entries")), [], "invalid filename cannot supply commands"
+        )
 
     def test_explicit_directory_is_rejected(self) -> None:
         self.default_database("build/compile_commands.json")
@@ -440,7 +440,7 @@ class DatabaseSelectionContract(ConfigCase):
                 self.assertEqual(field(snapshot, "database_sha256"), sha256_bytes(raw))
                 self.assertEqual(path.read_bytes(), raw, "database bytes were rewritten")
                 (entry,) = list(field(snapshot, "entries"))
-                self.assertTrue(same_path(field(entry, "file"), project.path("src/main.c")))
+                self.assertTrue(same_path(field(entry, "source"), project.path("src/main.c")))
                 self.assertTrue(same_path(field(entry, "directory"), project.root))
                 decoded[escaped] = list(field(entry, "arguments", None) or [])
         if set(decoded) == {False, True}:  # subtest failures above already report a missing side
@@ -504,7 +504,7 @@ class DatabaseEntriesContract(ConfigCase):
         self.assert_clean(snapshot)
         (entry,) = self.entries(snapshot)
         self.assertTrue(same_path(field(entry, "directory"), self.project.path("build/obj")))
-        self.assertTrue(same_path(field(entry, "file"), self.project.path("src/main.c")))
+        self.assertTrue(same_path(field(entry, "source"), self.project.path("src/main.c")))
 
     def test_missing_working_directory_or_source_is_invalid(self) -> None:
         for name, entry in {
@@ -548,7 +548,7 @@ class DatabaseEntriesContract(ConfigCase):
         self.assert_clean(snapshot)
         (entry,) = self.entries(snapshot)
         self.assertEqual(list(field(entry, "arguments")), arguments)
-        self.assertEqual(field(entry, "output"), "build/main.o")
+        self.assertEqual(field(entry, "raw")["output"], "build/main.o")
 
     def test_command_text_is_opaque_never_whitespace_split(self) -> None:
         command = 'cc "-DNAME=\\"a b\\"" -I "inc dir" -c src/main.c'

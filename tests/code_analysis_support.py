@@ -979,7 +979,16 @@ class FakeServiceCase(unittest.TestCase):
     sources: Mapping[str, str] = {"src/main.c": C_SOURCE, "src/util.h": C_HEADER}
 
     def scenario(self) -> dict[str, Any]:
-        return {}
+        return {
+            "responses": {
+                "textDocument/definition": {
+                    "result": {
+                        "uri": "$request_uri",
+                        "range": raw_range((2, 4), (2, 10)),
+                    }
+                }
+            }
+        }
 
     def setUp(self) -> None:
         directory = temporary_directory("byo-ca-")
@@ -987,8 +996,8 @@ class FakeServiceCase(unittest.TestCase):
         self.addCleanup(directory.__exit__, None, None, None)
         self.project = simple_project(self.base / "project", sources=self.sources)
         self.fake = FakeClangd(self.base / "fake", self.scenario())
-        self.service = make_service(self.project.root, fake=self.fake, testcase=self)
         self.addCleanup(self._assert_fake_processes_released)
+        self.service = make_service(self.project.root, fake=self.fake, testcase=self)
 
     def _assert_fake_processes_released(self) -> None:
         # Runs after the service shutdown cleanup (LIFO): no owned peer or its

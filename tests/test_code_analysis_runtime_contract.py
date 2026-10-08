@@ -13,6 +13,8 @@ from __future__ import annotations
 
 import contextlib
 import os
+import shutil
+import sys
 import time
 import unittest
 from collections.abc import Generator
@@ -24,6 +26,7 @@ from tests.code_analysis_support import (
     OWNED_CLEANUP_SECONDS,
     SCHEDULING_SLACK_SECONDS,
     FakeClangd,
+    FAKE_CLANGD,
     analysis_module,
     field,
     isolated_path_environment,
@@ -69,7 +72,33 @@ class RuntimeCase(unittest.TestCase):
         fake = FakeClangd(self.base / f"{name}-fake", scenario or {})
         directory = self.base / name
         directory.mkdir()
-        write_shim(directory, "clangd", fake.scenario_path)
+        if os.name == "nt":
+            # Native discovery/identity stays real. Redirect only the owned spawn
+            # argv to the framed Python peer; no batch file or shell is executed.
+            executable = directory / "clangd.exe"
+            shutil.copyfile(sys.executable, executable)
+            runtime = analysis_module("code_analysis_runtime")
+            original = runtime.popen_owned
+
+            def launch(argv, *args, **kwargs):
+                self.assertEqual(argv, [str(executable.resolve()), "--version"])
+                return original(
+                    [
+                        sys.executable,
+                        str(FAKE_CLANGD),
+                        "--scenario",
+                        str(fake.scenario_path),
+                        "--version",
+                    ],
+                    *args,
+                    **kwargs,
+                )
+
+            replacement = mock.patch.object(runtime, "popen_owned", launch)
+            replacement.start()
+            self.addCleanup(replacement.stop)
+        else:
+            write_shim(directory, "clangd", fake.scenario_path)
         return directory, fake
 
     def assert_unavailable(self, program: Any) -> None:
