@@ -473,8 +473,13 @@ class RegistryFastMCP(FastMCP):
             return result
         if not prompt:
             return result
-        if tool_name in {"get_code_analysis_status", "find_code_definition", "find_code_references",
-                         "get_code_hover", "get_code_diagnostics"} and isinstance(result, list):
+        if tool_name in {
+            "get_code_analysis_status",
+            "find_code_definition",
+            "find_code_references",
+            "get_code_hover",
+            "get_code_diagnostics",
+        } and isinstance(result, list):
             return [*result, TextContent(type="text", text=prompt)]
         try:
             for block in result if isinstance(result, list) else ():
@@ -545,8 +550,13 @@ class RegistryFastMCP(FastMCP):
         tool = self._tool_manager.get_tool(name)
         if tool is None:
             raise ToolError(f"Unknown tool: {name}")
-        if name in {"get_code_analysis_status", "find_code_definition", "find_code_references",
-                    "get_code_hover", "get_code_diagnostics"}:
+        if name in {
+            "get_code_analysis_status",
+            "find_code_definition",
+            "find_code_references",
+            "get_code_hover",
+            "get_code_diagnostics",
+        }:
             # Reject overrides before interpreting board/finalizer extras. These
             # metadata tools must never reach a hardware finalizer on bad input.
             try:

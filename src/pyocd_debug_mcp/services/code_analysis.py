@@ -320,6 +320,8 @@ class CodeAnalysisService:
         dependencies: tuple[Any, ...],
         deadline: float,
         cancellation: Any,
+        *,
+        require_diagnostics: bool = False,
     ) -> int:
         _acquire(self._session_guard, deadline, cancellation)
         try:
@@ -328,17 +330,24 @@ class CodeAnalysisService:
                     "configuration-changed", "Analysis generation invalidated.", status="incomplete"
                 )
             old = self._documents.get(source)
-            if old is not None and old.sha256 == digest and old.dependencies == dependencies:
-                return old.version
+            unchanged = (
+                old is not None and old.sha256 == digest and old.dependencies == dependencies
+            )
+            if unchanged and old is not None:
+                if (
+                    not require_diagnostics
+                    or adapter.diagnostics_for(source.as_uri(), old.version) is not None
+                ):
+                    return old.version
             version = self._versions.get(source, 0) + 1
             self._versions[source] = version
             adapter.clear_diagnostics(source.as_uri())
             document = {"uri": source.as_uri(), "version": version}
-            if old is not None and old.sha256 == digest:
+            if old is not None and old.sha256 == digest and not unchanged:
                 # Known header changes need a fresh parse even with identical
                 # source bytes: clangd may deduplicate an unchanged didChange.
                 adapter.notify("textDocument/didClose", {"textDocument": {"uri": source.as_uri()}})
-            if old is None or old.sha256 == digest:
+            if old is None or (old.sha256 == digest and not unchanged):
                 adapter.notify(
                     "textDocument/didOpen",
                     {
@@ -685,6 +694,7 @@ class CodeAnalysisService:
                 dependency_identity,
                 deadline,
                 cancellation,
+                require_diagnostics=operation == "diagnostics",
             )
             result["source"]["document_version"] = version
             if operation == "diagnostics":

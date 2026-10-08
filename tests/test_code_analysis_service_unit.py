@@ -39,7 +39,7 @@ from pyocd_debug_mcp.tools.code_analysis import (
 )
 from pyocd_debug_mcp.tools.plans import forbid_unknown_tool_arguments
 
-from test_clangd_adapter_unit import fake_factory, make_project
+from test_clangd_adapter_unit import PEER, fake_factory, make_project
 
 
 def record_regression(name, value):
@@ -53,6 +53,74 @@ def record_regression(name, value):
 
 
 class ServiceTests(unittest.TestCase):
+    def test_missing_current_diagnostics_forces_unchanged_saved_revision(self):
+        self.service.shutdown()
+        factory = fake_factory(self.root, "silent")
+        peer = self.root / "peer.py"
+        peer.write_text(
+            PEER.replace(
+                "if mode == 'silent': return",
+                "if mode == 'silent' and not __import__('os').path.exists(sys.argv[2]+'.enable'): return",
+            ),
+            encoding="utf-8",
+        )
+        self.service = CodeAnalysisService(
+            AnalysisRuntimeContext(self.root), factory, program_resolver=lambda *args: self.program
+        )
+        definition = self.service.definition("main.cpp", 1, 5)
+        self.assertEqual(definition["status"], "ok", definition)
+        adapter = self.service._adapter
+        self.assertIsNone(
+            adapter.diagnostics_for(self.source.as_uri(), definition["source"]["document_version"])
+        )
+        (self.root / "received.jsonl.enable").touch()
+        result = self.service.diagnostics("main.cpp", timeout_seconds=0.5)
+        record_regression(
+            "missing-current-diagnostics", {"definition": definition, "result": result}
+        )
+        self.assertEqual(result["status"], "ok", result)
+        self.assertGreater(
+            result["source"]["document_version"], definition["source"]["document_version"]
+        )
+        self.assertEqual(result["source"]["sha256"], definition["source"]["sha256"])
+        self.assertEqual(result["data"]["observed_count"], 0)
+        again = self.service.diagnostics("main.cpp", timeout_seconds=0.5)
+        self.assertEqual(again["source"], result["source"])
+        frames = [
+            json.loads(line)
+            for line in (self.root / "received.jsonl").read_text(encoding="utf-8").splitlines()
+        ]
+        changes = [frame for frame in frames if frame.get("method") == "textDocument/didChange"]
+        self.assertEqual(len(changes), 1)
+        self.assertTrue(changes[0]["params"]["wantDiagnostics"])
+        self.assertEqual(
+            changes[0]["params"]["textDocument"]["version"], result["source"]["document_version"]
+        )
+        self.assertEqual(
+            changes[0]["params"]["contentChanges"],
+            [{"text": self.source.read_bytes().decode("utf-8")}],
+        )
+        record_regression("missing-current-diagnostics-frames", frames)
+
+    def test_missing_current_diagnostics_still_silent_is_bounded_and_incomplete(self):
+        self.service.shutdown()
+        self.service = CodeAnalysisService(
+            AnalysisRuntimeContext(self.root),
+            fake_factory(self.root, "silent"),
+            program_resolver=lambda *args: self.program,
+        )
+        definition = self.service.definition("main.cpp", 1, 5)
+        started = time.monotonic()
+        result = self.service.diagnostics("main.cpp", timeout_seconds=0.1)
+        elapsed = time.monotonic() - started
+        record_regression("still-silent-diagnostics", {"result": result, "elapsed": elapsed})
+        self.assertEqual(result["status"], "incomplete", result)
+        self.assertEqual(result["code"], "analysis/diagnostics-missing", result)
+        self.assertGreater(
+            result["source"]["document_version"], definition["source"]["document_version"]
+        )
+        self.assertLess(elapsed, 0.1 + ARGUMENT_TIMEOUT_GRACE_SECONDS)
+
     def test_regression_every_tool_description_discloses_saved_scope(self):
         for name, handler in build_code_analysis_handlers(
             CodeAnalysisToolServices(self.service)
@@ -424,10 +492,328 @@ class ServiceTests(unittest.TestCase):
         anyio.run(check)
 
 
+class VersionProbeTests(unittest.TestCase):
+    """Run actual owned version peers; clocks, communicate and admission stay real."""
+
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory(prefix="analysis version cap ")
+        self.root = Path(self.temp.name).resolve()
+        self.addCleanup(self.temp.cleanup)
+        make_project(self.root)
+        self.context = AnalysisRuntimeContext(self.root)
+        self.control = self.root / "version-mode.txt"
+        self.control.write_text("hung", encoding="utf-8")
+        self.peer = self.root / "version-peer.py"
+        self.peer.write_text(
+            "import json, os, sys, threading\n"
+            "from pathlib import Path\n"
+            "assert sys.argv[-1] == '--version'\n"
+            "mode = Path(sys.argv[1]).read_text(encoding='utf-8')\n"
+            "with open(sys.argv[2], 'a', encoding='utf-8') as log:\n"
+            "    log.write(json.dumps({'pid':os.getpid(), 'mode':mode, 'argv':sys.argv})+'\\n')\n"
+            "if mode == 'hung': threading.Event().wait(60)\n"
+            "if mode == 'bad': print('failed version', file=sys.stderr); sys.exit(7)\n"
+            "print('clangd executable version fixture 1')\n",
+            encoding="utf-8",
+        )
+        from pyocd_debug_mcp.kernel.processes import ProcessMarkerStore
+
+        self.store = ProcessMarkerStore(self.root / "version-markers")
+        self.children = []
+        self.identities = []
+        original_popen = runtime.popen_owned
+
+        def route(argv, **kwargs):
+            if argv != [str(Path(sys.executable).resolve()), "--version"]:
+                return original_popen(argv, **kwargs)
+            process, marker = original_popen(
+                [
+                    sys.executable,
+                    str(self.peer),
+                    str(self.control),
+                    str(self.root / "started.jsonl"),
+                    "--version",
+                ],
+                **kwargs,
+            )
+            self.children.append((process, marker))
+            self.identities.append(json.loads(marker.read_text(encoding="utf-8")))
+            return process, marker
+
+        for patcher in [
+            patch.object(runtime, "_which_path_only", return_value=sys.executable),
+            patch.object(runtime, "popen_owned", side_effect=route),
+            patch.object(runtime, "ProcessMarkerStore", return_value=self.store),
+            patch.object(runtime, "_probe_cache", {}),
+            patch.object(runtime, "_probe_lock", threading.Lock()),
+            patch.object(runtime, "_spawn_admission", threading.Lock()),
+        ]:
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        self.addCleanup(self.cleanup_children)
+        self.assertEqual(
+            Path(runtime.__file__).resolve(),
+            Path(__file__).resolve().parents[1] / "src/pyocd_debug_mcp/code_analysis_runtime.py",
+        )
+
+    def cleanup_children(self):
+        for process, marker in self.children:
+            if process.poll() is None:
+                self.assertTrue(runtime.terminate_process_group(process))
+                self.store.remove(marker)
+            for pipe in (process.stdin, process.stdout, process.stderr):
+                if pipe is not None and not pipe.closed:
+                    pipe.close()
+
+    def observe(self, name, **data):
+        data.update(
+            owned_identities=self.identities,
+            child_exits=[p.poll() for p, _ in self.children],
+            remaining_markers=list(map(str, self.store.root.glob("*.json"))),
+            cache_problems=[
+                [p.to_payload() for p in item.problems] for item in runtime._probe_cache.values()
+            ],
+        )
+        record_regression(name, data)
+        self.assertTrue(all(code is not None for code in data["child_exits"]), data)
+        self.assertEqual(data["remaining_markers"], [], data)
+
+    def test_own_five_second_cap_is_unavailable_and_cached_while_caller_lives(self):
+        deadline = time.monotonic() + 60
+        started = time.monotonic()
+        result = None
+        timeout = None
+        try:
+            result = resolve_analysis_program(self.context, "clangd", deadline)
+        except TimeoutError as exc:
+            timeout = str(exc)
+        elapsed = time.monotonic() - started
+        self.observe(
+            "own-cap",
+            caller_remaining=deadline - time.monotonic(),
+            elapsed=elapsed,
+            timeout=timeout,
+            problems=[p.to_payload() for p in result.problems] if result else None,
+        )
+        self.assertIsNotNone(result, "own cap incorrectly propagated caller TimeoutError")
+        self.assertEqual(result.problems[0].code, "analysis/executable-unavailable")
+        self.assertGreaterEqual(elapsed, 5)
+        self.assertLess(elapsed, 5 + ARGUMENT_TIMEOUT_GRACE_SECONDS)
+        self.assertGreater(deadline - time.monotonic(), 40)
+        self.assertEqual(len(self.children), 1)
+        again = resolve_analysis_program(self.context, "clangd", time.monotonic() + 60)
+        self.assertIs(again, result)
+        self.assertEqual(len(self.children), 1, "negative cache unexpectedly restarted the peer")
+
+    def test_public_query_with_live_caller_reports_own_cap_unavailable(self):
+        service = CodeAnalysisService(self.context)
+        self.addCleanup(service.shutdown)
+        started = time.monotonic()
+        result = service.hover("main.cpp", 1, 5, timeout_seconds=60)
+        elapsed = time.monotonic() - started
+        self.observe("own-cap-public", result=result, elapsed=elapsed)
+        self.assertEqual(result["status"], "unavailable", result)
+        self.assertEqual(result["code"], "analysis/executable-unavailable", result)
+        self.assertIsNone(service._adapter)
+        self.assertLess(elapsed, 5 + ARGUMENT_TIMEOUT_GRACE_SECONDS)
+
+    def test_own_cap_cause_survives_caller_expiry_during_confirmed_cleanup(self):
+        original_cleanup = runtime.terminate_process_group
+
+        def delayed_cleanup(process):
+            threading.Event().wait(0.2)
+            return original_cleanup(process)
+
+        deadline = time.monotonic() + 5.1
+        result = None
+        timeout = None
+        with patch.object(runtime, "terminate_process_group", side_effect=delayed_cleanup):
+            try:
+                result = resolve_analysis_program(self.context, "clangd", deadline)
+            except TimeoutError as exc:
+                timeout = str(exc)
+        self.observe(
+            "own-cap-cleanup-overlap",
+            timeout=timeout,
+            caller_remaining=deadline - time.monotonic(),
+            problems=[p.to_payload() for p in result.problems] if result else None,
+        )
+        self.assertLess(deadline - time.monotonic(), 0)
+        self.assertIsNotNone(result, "cleanup reclassified the already established own cap")
+        self.assertEqual(result.problems[0].code, "analysis/executable-unavailable")
+        self.assertEqual(len(runtime._probe_cache), 1)
+
+    def test_actual_caller_expiry_is_transient_and_independent_peer_recovers(self):
+        for budget in (-0.01, 0.15):
+            with self.subTest(budget=budget), patch.object(runtime, "_probe_cache", {}):
+                self.control.write_text("hung", encoding="utf-8")
+                with self.assertRaises(TimeoutError):
+                    resolve_analysis_program(self.context, "clangd", time.monotonic() + budget)
+                self.assertEqual(runtime._probe_cache, {})
+                self.control.write_text("good", encoding="utf-8")
+                result = resolve_analysis_program(self.context, "clangd", time.monotonic() + 5)
+                self.assertFalse(result.problems)
+                self.assertIn("executable version fixture", result.version)
+                self.observe("caller-expiry-" + str(budget), version=result.version)
+
+    def test_actual_cancellation_is_transient_and_independent_peer_recovers(self):
+        event = threading.Event()
+        with patch.object(
+            runtime, "current_operation", return_value=SimpleNamespace(cancellation_requested=event)
+        ):
+            with concurrent.futures.ThreadPoolExecutor(1) as pool:
+                future = pool.submit(
+                    resolve_analysis_program, self.context, "clangd", time.monotonic() + 60
+                )
+                limit = time.monotonic() + 3
+                while not (self.root / "started.jsonl").exists() and time.monotonic() < limit:
+                    event.wait(0.005)
+                self.assertTrue((self.root / "started.jsonl").exists())
+                event.set()
+                with self.assertRaises(TimeoutError):
+                    future.result(3)
+        self.assertEqual(runtime._probe_cache, {})
+        self.control.write_text("good", encoding="utf-8")
+        result = resolve_analysis_program(self.context, "clangd", time.monotonic() + 5)
+        self.assertFalse(result.problems)
+        self.observe("caller-cancellation", version=result.version)
+
+    def test_admission_queue_expiry_is_not_executable_failure_evidence(self):
+        runtime._spawn_admission.acquire()
+        try:
+            started = time.monotonic()
+            with self.assertRaises(TimeoutError):
+                resolve_analysis_program(self.context, "clangd", time.monotonic() + 60)
+            self.assertGreaterEqual(time.monotonic() - started, 5)
+            self.assertFalse(self.children)
+            self.assertEqual(runtime._probe_cache, {})
+        finally:
+            runtime._spawn_admission.release()
+        self.control.write_text("good", encoding="utf-8")
+        result = resolve_analysis_program(self.context, "clangd", time.monotonic() + 5)
+        self.assertFalse(result.problems)
+        self.observe("admission-queue", version=result.version)
+
+    def test_probe_queue_and_late_spawn_caller_expiry_do_not_poison_cache(self):
+        runtime._probe_lock.acquire()
+        try:
+            with self.assertRaises(TimeoutError):
+                resolve_analysis_program(self.context, "clangd", time.monotonic() + 0.05)
+            self.assertFalse(self.children)
+            self.assertEqual(runtime._probe_cache, {})
+        finally:
+            runtime._probe_lock.release()
+        original = runtime.popen_owned
+        entered = threading.Event()
+        release = threading.Event()
+
+        def delayed(*args, **kwargs):
+            entered.set()
+            release.wait(1)
+            return original(*args, **kwargs)
+
+        with patch.object(runtime, "popen_owned", side_effect=delayed):
+            with concurrent.futures.ThreadPoolExecutor(1) as pool:
+                future = pool.submit(
+                    resolve_analysis_program, self.context, "clangd", time.monotonic() + 0.1
+                )
+                self.assertTrue(entered.wait(1))
+                with self.assertRaises(TimeoutError):
+                    future.result(2)
+                self.assertEqual(runtime._probe_cache, {})
+                release.set()
+                # Admission releases only after actual late-owned-child cleanup.
+                self.assertTrue(runtime._spawn_admission.acquire(timeout=3))
+                runtime._spawn_admission.release()
+        self.control.write_text("good", encoding="utf-8")
+        result = resolve_analysis_program(self.context, "clangd", time.monotonic() + 5)
+        self.assertFalse(result.problems)
+        self.observe("probe-queue-and-late-spawn", version=result.version)
+
+    def test_public_caller_expiry_is_incomplete_then_independent_query_recovers(self):
+        service = CodeAnalysisService(self.context)
+        self.addCleanup(service.shutdown)
+        result = service.hover("main.cpp", 1, 5, timeout_seconds=0.15)
+        self.assertEqual(result["status"], "incomplete", result)
+        self.assertEqual(result["code"], "analysis/timeout", result)
+        self.assertEqual(runtime._probe_cache, {})
+        self.control.write_text("good", encoding="utf-8")
+        program = resolve_analysis_program(self.context, "clangd", time.monotonic() + 5)
+        self.assertFalse(program.problems)
+        service.adapter_factory = fake_factory(self.root)
+        recovered = service.hover("main.cpp", 1, 5, timeout_seconds=3)
+        self.assertEqual(recovered["status"], "ok", recovered)
+        service.shutdown()
+        self.assertFalse(list((self.root / "markers").glob("*.json")))
+        self.observe("caller-expiry-public", result=result, recovered=recovered)
+
+
 @unittest.skipUnless(
     os.environ.get("BYO_TEST_CLANGD"), "Set explicit BYO_TEST_CLANGD private test fixture."
 )
 class RealClangdTests(unittest.TestCase):
+    def test_native_missing_current_diagnostics_protocol_characterization(self):
+        make_project(self.root)
+        self.service = CodeAnalysisService(AnalysisRuntimeContext(self.root))
+        first = self.service.diagnostics("main.cpp", timeout_seconds=5)
+        self.assertEqual(first["status"], "ok", first)
+        adapter = self.service._adapter
+        process = adapter.process
+        incoming = []
+        outgoing = []
+        original_route = adapter._route
+        original_send = adapter._send
+
+        def route(message):
+            incoming.append(message)
+            return original_route(message)
+
+        def send(message):
+            outgoing.append(message)
+            return original_send(message)
+
+        # Simulate absent client revision evidence without changing saved bytes,
+        # the native child, its negotiated protocol or its actual diagnostics.
+        adapter.clear_diagnostics(Path(first["source"]["path"]).as_uri())
+        with (
+            patch.object(adapter, "_route", side_effect=route),
+            patch.object(adapter, "_send", side_effect=send),
+        ):
+            result = self.service.diagnostics("main.cpp", timeout_seconds=5)
+        self.service.shutdown()
+        record_regression(
+            "native-missing-current-characterization",
+            {
+                "first": first,
+                "result": result,
+                "queued_messages": outgoing,
+                "native_received_messages": incoming,
+                "stderr": adapter.stderr_tail,
+                "argv": adapter._argv(),
+                "executable_sha256": sha256_bytes(self.executable.read_bytes()),
+                "child_exit": process.poll(),
+            },
+        )
+        changes = [m for m in outgoing if m.get("method") == "textDocument/didChange"]
+        self.assertEqual(len(changes), 1)
+        self.assertTrue(changes[0]["params"]["wantDiagnostics"])
+        self.assertGreater(
+            result["source"]["document_version"], first["source"]["document_version"]
+        )
+        self.assertIn(result["status"], {"ok", "incomplete"}, result)
+        matching = [
+            m
+            for m in incoming
+            if m.get("method") == "textDocument/publishDiagnostics"
+            and m["params"].get("version") == result["source"]["document_version"]
+        ]
+        if result["status"] == "ok":
+            self.assertTrue(matching, "native success needs explicit version evidence")
+        else:
+            self.assertEqual(result["code"], "analysis/diagnostics-missing", result)
+            self.assertFalse(matching, "record the native limitation without relabeling evidence")
+        self.assertIsNotNone(process.poll())
+
     def test_known_header_change_reopens_same_saved_bytes_for_fresh_native_diagnostics(self):
         source = make_project(self.root)
         header = self.root / "selected.h"
