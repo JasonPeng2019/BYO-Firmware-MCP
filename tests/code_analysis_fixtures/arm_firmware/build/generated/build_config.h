@@ -1,0 +1,1 @@
+#define HEARTBEAT_STEP 3u
