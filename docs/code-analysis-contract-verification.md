@@ -1,5 +1,11 @@
 # Contract-stage verification record
 
+ROOT scope update, 2026-10-08: Windows x86_64 validation is sufficient for this
+run's acceptance. Run no further Linux or macOS checks; those platforms are
+unverified and are not completion gates. The earlier four-target requirements
+below record the original contract-stage scope, not the current requirement.
+No historical failure, skipped check or missing proof is relabeled as passing.
+
 Date: 2026-10-08. Baseline:
 `a5321d76fc980fa0577c9beb11dc216dc3e3a68f`.
 Lane: `mcp-contracts`; branch: `lane/cppcheck-clangd/mcp-contracts-run1`.

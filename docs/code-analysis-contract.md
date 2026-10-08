@@ -3,6 +3,13 @@
 Contract revision: 3, 2026-10-08. Prepared in the `mcp-contracts` lane against
 Firmware MCP commit `a5321d76fc980fa0577c9beb11dc216dc3e3a68f`.
 
+ROOT scope update, 2026-10-08: the user made Windows x86_64 sufficient for
+acceptance and instructed no further Linux checks. Run no further Linux or macOS
+checks; other platforms remain unverified and are not completion gates for this
+run. Both Cppcheck runners, all five clangd tools, real Windows installed-bundle
+proof and the other behavior/quality requirements remain. Earlier four-platform
+requirements in the supplied planning text are superseded by this instruction.
+
 This is the server stage's contract for ROOT acceptance and subsequent lane
 handoff. It implements the supplied specification's decisions on paper; it does
 not register tools, change verification behavior, select native program versions,
