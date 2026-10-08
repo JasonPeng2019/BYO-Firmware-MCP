@@ -1,6 +1,6 @@
 # Firmware analysis implementation contract
 
-Contract revision: 1, 2026-10-08. Prepared in the `mcp-contracts` lane against
+Contract revision: 2, 2026-10-08. Prepared in the `mcp-contracts` lane against
 Firmware MCP commit `a5321d76fc980fa0577c9beb11dc216dc3e3a68f`.
 
 This is the server stage's contract for ROOT acceptance and subsequent lane
@@ -10,6 +10,11 @@ or establish release readiness. ROOT owns integration, launch and fallback
 decisions. The [implementation and test plan](code-analysis-implementation-plan.md)
 reserves writers and gates; [verification](code-analysis-contract-verification.md)
 records what this lane actually checked.
+
+Revision 2 incorporates ROOT's native decisions on explicit Cppcheck
+`missingInclude` enablement and original ownership reservations, plus the
+Windows development smoke and its Unicode-path failure. Project JSON schema
+version remains 1. No native version or four-platform runtime is accepted.
 
 ## Authority and live repository evidence
 
@@ -225,9 +230,11 @@ and run identity in the verification evidence.
 The existing final line and exit convention stay `VERIFY: PASS`/`VERIFY: FAIL`.
 Static analysis has its own `status` enum; only `pass` permits full verification
 to pass, and earlier failures cannot be erased. This is not a new MCP tool or skill.
+Project settings stay separate from the compiled workflow pack's `CompiledVerify`
+schema; add no fields there and preserve verify syntax and loader invocation policy.
 
 Use explicit argv with error checking and
-`--enable=warning,performance,portability,information` (append `style` only when
+`--enable=warning,performance,portability,information,missingInclude` (append `style` only when
 enabled), `--error-exitcode=1`, `--xml`, `--xml-version=2`,
 `--project=<selected-or-filtered-db>`, `--platform=<explicit-target-xml>` and only
 configured `--suppressions-list=<file>`. No default `--force`, premium/MISRA checks,
@@ -236,6 +243,13 @@ and exercised with the pinned executable. The
 [Cppcheck manual](https://cppcheck.sourceforge.io/manual.html) documents project
 import and platform setup; the [CLI reference](https://github.com/cppcheck-opensource/cppcheck/blob/main/man/cppcheck.1.xml)
 is the reference for flags, not a substitute for compatibility evidence.
+
+The explicit `missingInclude` group is required by ROOT's native smoke decision
+(events `218d1604ed7c4ac8a029be315fff9988` and
+`fbfc317836b64e2cacccbea3767cb367`). With the candidate Windows Cppcheck 2.22.0,
+`information` alone omits missing-header diagnostics and exits 0. This lane's
+ASCII control independently reproduced that gap and the corrected XML/exit
+behavior. The implementation must not infer coverage from that silent exit.
 
 | State | Evidence/rule |
 | --- | --- |
@@ -251,6 +265,20 @@ severity alone does not classify a coverage problem: maintain a tested diagnosti
 ID table against the eventual pinned version. Unknown/anomalous diagnostic IDs
 that may signal lost coverage must not be silently accepted; record the issue
 and resolve its classification with version-specific evidence.
+
+Required initial diagnostic cases, backed by the development smoke:
+
+| ID / evidence | Classification obligation |
+| --- | --- |
+| `missingInclude` | `blocked`, including severity `information` and exit 1; absent generated/project header prevents promised coverage. |
+| `missingIncludeSystem` | `blocked`, including severity `information` and exit 1. Do not silently waive it because the native message mentions standard-library modeling. |
+| `nullPointer` | Error finding: `findings_failed` with valid XML and explained exit 1. |
+| `checkersReport` with normal active-checker counts | Display as information; it does not by itself fail an otherwise complete exit-0 run. A critical-error report is not clean evidence and must be explained/classified. |
+
+Exit 1 explained solely by a known coverage-blocking ID is `blocked`, not an
+unexplained-exit execution error. Test both include IDs with the explicit enable
+group and keep the without-group false-negative case as a regression fixture.
+These cases do not finish the pinned-version classification table.
 
 Both runners emit the same static-step record fields (JSON evidence file even
 when their normal display remains text):

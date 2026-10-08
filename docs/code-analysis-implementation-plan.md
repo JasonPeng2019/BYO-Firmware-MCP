@@ -1,6 +1,6 @@
 # Firmware analysis ownership and verification plan
 
-Revision 1, 2026-10-08. Inputs are the supplied spec/approach/principles/model
+Revision 2, 2026-10-08. Inputs are the supplied spec/approach/principles/model
 assignments, this lane's baseline
 `a5321d76fc980fa0577c9beb11dc216dc3e3a68f`, and the
 [shared contract](code-analysis-contract.md). This plan reserves future writers;
@@ -15,17 +15,22 @@ adapter/service responsibilities, logical runtime boundary and required tests ar
 defined. No broad implementation has begun. No board, main checkout or sibling
 repository was accessed. The native invocation identifies `mcp-contracts`, Codex
 `gpt-6.1-sol`, effort `max`, service tier `default`, explicit `permission_mode=yolo`.
-The lane inbox initially contains no assignment event to acknowledge; result
-reporting uses the supplied native result helper and identity binding.
+The lane inbox initially contained no assignment event; subsequent ROOT messages
+were received and acknowledged through the native helper. Exact receipt and
+decision evidence is recorded in the verification document and native result.
+Automatic hook execution is unproven; ROOT owns that launch diagnosis and any
+fix before dependent workers. ROOT subsequently reports a fixed adapter and
+fresh automatic-hook proof for future workers (event `90193ede13cd47ffa19af2acc2cea63f`);
+this does not prove this original invocation's hooks. No harness/hook files were changed here.
 
 | Prerequisite | Current disposition / ROOT action |
 | --- | --- |
 | Contract and ownership acceptance | ROOT reviews this committed candidate and distributes exactly its revision/commit. Changes affecting public semantics go through ROOT before dependent edits. |
-| Native tool versions/digests | **Unselected**: neither clangd nor Cppcheck is on this lane's PATH. No version-only or real-program compatibility smoke passed; no version is guessed. Packaging obtains candidates and successful smoke evidence before pinning. |
+| Native tool versions/digests | **Unselected**: initially neither tool was on PATH; ROOT later authorized read/execute access to official Windows development candidates clangd 23.1.0 / Cppcheck 2.22.0. Both version probes and ASCII ARM controls ran, but the Cppcheck Unicode-path case failed. Preserve the failure; packaging resolves candidate compatibility, LSP and four-target evidence before any version pin. |
 | Physical runtime layout/manifest | **Unresolved packaging prerequisite**: logical resolver/context boundary is fixed. ROOT and packaging must accept exact manifest entries, vendor data/resource paths and relocation evidence before packaging or consumers hardcode a layout. |
-| Cppcheck diagnostic-ID/library-model policy | Contract precedence is fixed; the pinned version's coverage-ID classification and each supported firmware fixture's library setup require smoke evidence. No generic vendor-support claim. |
+| Cppcheck diagnostic-ID/library-model policy | Explicit `missingInclude` enablement and `missingInclude`/`missingIncludeSystem` blocked classification are required by ROOT and reproduced in lane smoke. Complete the eventual pinned-version table and each supported firmware fixture's library setup; no generic vendor-support claim. |
 | Command representation/header/config precedence | Native smoke must prove command-only/both-field behavior, inferred header context, standard position encoding, fresh versioned diagnostics and effective `.clangd` selection. Unsupported behavior is an explicit configuration/incomplete result. |
-| Other repository contexts | Workspace, installer and release file paths below are reservations from supplied references, not live inspections. ROOT confirms actual authored paths/test registration/CI before launching their native lanes. No retargeting an active server runtime. |
+| Other repository contexts | Workspace/installer reservations below incorporate ROOT's original-card decisions; their live source/CI were not inspected here. ROOT confirms native repository contexts and authoritative commands before launching those lanes. No retargeting an active server runtime. |
 | Independent validation | Reserve named test files first; give test engineers a separate native worktree and the exact combined candidate. Review is a different assignment. |
 
 Missing program versions/layout do not block this documentation-stage deliverable;
@@ -64,21 +69,24 @@ their repository-local contexts before use; none was inspected here.
 
 | Future owner | Supplied/proposed authored paths | Responsibility |
 | --- | --- | --- |
-| `cppcheck-workspace` | `.agent-workspace/internal/verify_backend.py`; proposed `.agent-workspace/internal/code_analysis.py`; `.agent-workspace/skills-src/common/verify/SKILL.md`; `.agent-workspace/skills-src/common/query-codebase/SKILL.md`; `.agent-workspace/internal/query_backend.py` | Python static step and config/scope handling; required Cppcheck after normal/local builds; authored verify guidance and semantic-vs-text query guidance. Regenerate views only through live workspace tooling. |
-| `cppcheck-workspace-tests` | Proposed `.agent-workspace/tests/test_code_analysis_contract.py`; `.agent-workspace/tests/test_cppcheck_verification.py`; `.agent-workspace/tests/test_cppcheck_real_program.py`; `.agent-workspace/tests/code_analysis_fixtures/` | Independent workspace fixtures/parity/run-classification tests. ROOT verifies test directory/discovery before dispatch. |
-| `cppcheck-installer` | `launcher/src/workflow.rs`; new `launcher/src/code_analysis.rs` | Native firmware verification parity, including local overrides and complete reports; no hidden workspace Python. Packaging may not edit `workflow.rs` without ownership transfer. |
-| `cppcheck-installer-tests` | Proposed `launcher/tests/code_analysis_contract.rs`; `launcher/tests/code_analysis_installed.rs`; `launcher/tests/fixtures/code_analysis/` | Independent Rust contract/fixture parity and installed verification checks. Required module declarations/public test access go through the production owner. |
-| Packaging implementer | `launcher/src/main.rs`; `release/scripts/build_release.py` in the actual ROOT-confirmed release context | Module declaration needed by `code_analysis.rs`, doctor/runtime resolution integration, existing release builder, manifests/digests/SBOM/licenses/archive wiring. Allocate any additional existing inventory files before launch, after live inspection. |
-| Packaging independent tester (ROOT assignment required) | Proposed `release/tests/test_code_analysis_archive_contract.py`; `release/tests/test_installed_code_analysis.py`; `release/tests/fixtures/code_analysis/` in the confirmed release context | Real installed four-target tests, immutable-runtime provenance, supporting data, no-PATH dependencies and update/uninstall preservation. Separate ownership from packaging implementation/review. |
+| `cppcheck-workspace` | `.agent-workspace/internal/verify_backend.py`; proposed focused `.agent-workspace/internal/code_analysis.py`; `.agent-workspace/skills-src/common/verify/SKILL.md`; `.agent-workspace/skills-src/common/query-codebase/SKILL.md`; `.agent-workspace/internal/query_backend.py` in the host workspace layout | Python static step/config/scope handling; required Cppcheck after normal/local builds; authored verify and semantic-vs-text query guidance. Confirm any new helper path against original card before edits; regenerate views through live workspace tooling. |
+| `cppcheck-workspace` | `tests/fixtures/code-analysis/` recursively in the authored workspace repository | Common language-neutral parity corpus, expected outcomes and SHA256 handoff manifest. Python implementer chooses concrete filenames inside this ROOT-reserved directory. |
+| `cppcheck-workspace-tests` | `tests/test_cppcheck_acceptance.py`; `tests/test_cppcheck_real_program.py`; `tests/fixtures/cppcheck-acceptance/` recursively in the authored workspace repository | Original-card independent test reservations; not the implementer's common corpus. No proposed replacement paths or implicit transfer. |
+| `cppcheck-installer` | `launcher/src/workflow.rs`; new `launcher/src/code_analysis.rs`; `launcher/tests/fixtures/code-analysis/` recursively in installer | Native verification parity and ownership of the exact ROOT-transferred common corpus copy/consumption. No hidden workspace Python. Packaging may not edit `workflow.rs` without transfer. |
+| `cppcheck-installer` until acceptance | `launcher/src/main.rs` | Own necessary module declaration for `code_analysis.rs` through Cppcheck-stage acceptance; no concurrent packaging writer. |
+| `cppcheck-installer-tests` | `launcher/src/code_analysis/acceptance_tests.rs`; `launcher/tests/cppcheck_acceptance.rs`; `launcher/tests/fixtures/cppcheck-acceptance/` recursively; `release/scripts/test_code_analysis_installed.py` | Original-card independent Rust acceptance, independent fixtures and installed verification script. Module declarations/public access go through the production owner. |
+| Packaging implementer after explicit transfer | `launcher/src/main.rs`; `release/scripts/build_release.py` in ROOT-confirmed installer/release context | ROOT transfers `main.rs` diagnostics ownership after Rust-stage acceptance. Existing release builder owns manifests/digests/SBOM/licenses/archive wiring; allocate additional actual inventory files after live inspection. |
+| Installed independent test roles / ROOT | Existing `cppcheck-installer-tests` installed script above and `mcp-tests` real-clangd/fixture files; new archive/CI files need a ROOT allocation | Run four-target real installed coverage independently of packaging implementation/review. Do not take write ownership of another tester's script or invent replacement file reservations. |
 | `cppcheck-workspace-review`, `cppcheck-installer-review`, packaging reviewer | No write ownership | Independent review of each stage and final installed evidence. |
 
-Paths prefixed "proposed" are precise reservations awaiting ROOT's live-context
-confirmation, not claims that those test trees exist. ROOT supplies authoritative
-workspace regeneration, Rust registration and release/CI commands from those
-repositories; this server task cannot invent them. Packaging's `main.rs` ownership
-means installer module/doctor changes must be requested from that writer, not
-concurrently edited by the Cppcheck worker. Server runtime-resolution changes stay
-with `mcp-clangd` unless ROOT transfers them.
+The ownership decisions above come from native ROOT events
+`230a68f2257e4b598a9cd0b570032c63` and
+`8ad72be2b6554ab6977e7763bab50733`. A helper path marked proposed still needs
+original-card/live-context confirmation; accepted tester/corpus paths are not
+replacements. ROOT supplies authoritative regeneration, Rust registration and
+release/CI commands from those repositories. `main.rs` has one writer at a time:
+Rust module declaration first, packaging diagnostics only after ROOT's explicit
+transfer. Server runtime-resolution changes stay with `mcp-clangd` unless transferred.
 
 ## Roles and candidate/fixture handoff
 
@@ -105,9 +113,12 @@ duplicate/conflicting commands, header/directory/source/zero scope, command-only
 quoting, both command fields, local override, information/style, coverage-ID
 blockers, malformed XML, exit 1 without findings, exit 0 with findings, timeout,
 internal failure and non-ASCII/spaced paths. ROOT transfers the accepted fixture
-bytes by commit/artifact and records a corpus digest. The workspace test owner
-can originate the corpus; installer and server test owners port harnesses without
-changing expected semantics. Corpus changes require a new digest and affected
+bytes by commit/artifact and records a corpus digest. The Python implementer
+owns the common corpus in `tests/fixtures/code-analysis/`; ROOT transfers the
+same bundle to the Rust implementer's `launcher/tests/fixtures/code-analysis/`.
+Independent engineers derive additional fixtures in their separate reserved
+directories and port harnesses without changing accepted common outcomes.
+Corpus changes require a new digest and affected
 reruns. Version-dependent raw diagnostic IDs are recorded separately from semantic
 case outcomes, never used to hide a failed analyzer result.
 
@@ -129,9 +140,9 @@ evidence; rerun relevant checks on the final candidate after production fixes.
 | G2 protocol / `mcp-tests` | Split headers/body, concatenated/multibyte frames, concurrent out-of-order replies, server requests/refused edits, required capabilities, initialization/encoding; URI decoding and readable/unreadable target ranges; Location/LocationLink/null and hover variants. | Fake peer proves actual framing/conversion/failure handling, with no exposed generic methods or MCP stdout contamination. |
 | G3 freshness/concurrency/deadlines / `mcp-tests` | Saved changes, same-file serialization/different-file interleaving, monotonic versions; stale/unversioned/silent/wrong-URI/version diagnostics; forced unchanged revision; source/db/config changes during calls; dependency invalidation; finite request budgets including queue/probe/init; MCP cancellation, late replies, crash/EOF/wedged process. | No false-clean file or mixed revision, explicit affected-waiter errors, no hidden retry, bounded completion/cleanup. Measure monotonic timings, allowing documented cleanup grace rather than resetting phase budgets. |
 | G4 availability/compatibility / `mcp-tests` | All five names in discovery and direct calls for no board, no-setup/lite/full, revoked and unvalidated identity, unrelated bad policy, both monitoring profiles; missing clangd/config; unknown override args; check-in boundary, nested dispatch behavior, strict JSON analysis block and separate prompt. | Matrix equals full public inventory; analysis performs no policy write/read, permission/unlock, inventory/probe/hardware call. Existing tools keep response/prompt behavior. |
-| G5 real-program compatibility / independent testers + packaging | Real clean and defective C/C++; exact Cppcheck argv/XML/exit interpretation, target integer/pointer model, generated headers/library setup. Real clangd overloaded/template definitions, cross-file references/hover, Unicode/CRLF, changed saved files and explicit empty diagnostics. Header-context and project/user `.clangd` conflict checks; literal driver allowlist execution checks. | Passing `--version` alone never selects a program version. Retain actual commands, expected/observed outcomes, diagnostics, executable/data hashes and cleanup evidence. ARM smoke proves ABI/includes/defines, no board needed. |
+| G5 real-program compatibility / independent testers + packaging | Real clean/defective C/C++; exact Cppcheck argv/XML/exit, target model and library setup; explicit `missingInclude` group, both include IDs blocked, normal information retained, without-group regression and Unicode-path reproduction. Real clangd overloaded/template definitions, cross-file references/hover, Unicode/CRLF, saved changes and explicit empty diagnostics. Header-context, project/user `.clangd` conflict and literal driver allowlist checks. | Passing `--version` or ASCII-only controls never selects a program version. Retain commands, expected/observed outcomes, diagnostics, executable/data hashes and cleanup evidence. A real ARM firmware fixture must prove ABI/includes/defines; synthetic parsing smoke is partial evidence. |
 | G6 repository regression / owning test engineers | Locked environment, focused suites plus relevant full repository suites, formatting/type checks and current inventory/monitor/stdio/sidecar/process tests. Workspace/Rust/release authoritative commands supplied from their own guidance/CI. | All required checks pass on combined candidate; actual failures/skips are listed. Mocks do not replace native or installed gates. |
-| G7 installed-product / packaging independent tester | Windows x86_64; Linux x86_64/glibc 2.28; macOS x86_64 and arm64. Clean hosts without analysis tools on PATH, spaces/Unicode/relocation, real host and cross-target fixture; doctor, queries and verify/local override; bundled cfg/resource headers/dependencies/licenses/digests/SBOM; no source/cache/report archive contamination; update/uninstall preserve config. | One evidence row per target/artifact. Root/executable provenance proves the active immutable runtime, not launcher/cwd. Required missing platform/artifact/program/data gate remains incomplete. |
+| G7 installed-product / ROOT-assigned independent test roles | Windows x86_64; Linux x86_64/glibc 2.28; macOS x86_64 and arm64. Clean hosts without analysis tools on PATH, spaces/Unicode/relocation, real host and cross-target fixture; doctor, queries and verify/local override; bundled cfg/resource headers/dependencies/licenses/digests/SBOM; no source/cache/report archive contamination; update/uninstall preserve config. | One evidence row per target/artifact. Root/executable provenance proves the active immutable runtime, not launcher/cwd. Required missing platform/artifact/program/data gate remains incomplete. |
 | G8 lifecycle / `mcp-tests` + installed tester | Start lazy, no child for status; repeated/idle shutdown, real MCP EOF and cancellation/signal paths, child crash and descendants, all waiters released; marker retention on unconfirmed kill, cleanup on next startup; board cleanup before monitor delivery. | No leftover owned child/blocked waiter; lifecycle is exercised through actual `RegistryFastMCP` and `server.main`, not solely direct service shutdown. POSIX and Windows ownership need target-specific evidence. |
 | G9 final acceptance / ROOT + independent reviewer/test engineer | Resolve review findings, integrate fixes, rerun affected gates, compare final commit/artifact/corpus identity to reports. | Product readiness only after G1-G8 plus review pass on final candidate. This contract-stage result does not satisfy those future gates. Publication remains separately authorized. |
 
