@@ -14,6 +14,8 @@ packaging prerequisite, so only its failure-closed behavior is asserted here.
 from __future__ import annotations
 
 import contextlib
+import hashlib
+import json
 import os
 import shutil
 import sys
@@ -176,6 +178,87 @@ class ManagedRuntime(RuntimeCase):
 
 
 class BoundedProbes(RuntimeCase):
+    def test_status_first_hung_probe_is_identity_cached_and_does_not_start_lsp(self) -> None:
+        """No-argument status owns the probe cap; it has no expiring caller budget."""
+        runtime = analysis_module("code_analysis_runtime")
+        processes = analysis_module("kernel.processes")
+        directory, fake = self.shim(scenario={"version": {"sleep": 60}})
+        executable = next(directory.iterdir()).resolve()
+        store = processes.ProcessMarkerStore(self.base / "status-probe-markers")
+        children: list[tuple[Any, Path]] = []
+        identities: list[dict[str, Any]] = []
+        original_spawn = runtime.popen_owned
+
+        def observed_spawn(*args: Any, **kwargs: Any) -> Any:
+            process, marker = original_spawn(*args, **kwargs)
+            children.append((process, marker))
+            identities.append(json.loads(marker.read_text(encoding="utf-8")))
+            return process, marker
+
+        def cleanup_children() -> None:
+            for process, marker in children:
+                if process.poll() is None:
+                    self.assertTrue(processes.terminate_process_group(process))
+                    store.remove(marker)
+
+        self.addCleanup(cleanup_children)
+        service = make_service(
+            self.project.root, program_resolver=runtime.resolve_analysis_program, testcase=self
+        )
+        inputs = {
+            path: hashlib.sha256(path.read_bytes()).hexdigest()
+            for path in (executable, self.project.root / "compile_commands.json")
+        }
+        calls = []
+        with (
+            only_on_path(directory),
+            mock.patch.object(runtime, "_probe_cache", {}),
+            mock.patch.object(runtime, "ProcessMarkerStore", return_value=store),
+            mock.patch.object(runtime, "popen_owned", side_effect=observed_spawn),
+        ):
+            for _ in range(2):
+                started = time.monotonic()
+                envelope = service.status()
+                calls.append(
+                    {
+                        "envelope": envelope,
+                        "elapsed": time.monotonic() - started,
+                        "probe_children": len(children),
+                        "cache_entries": len(runtime._probe_cache),
+                    }
+                )
+            # Record both public calls before asserting, so RED proves the repeat.
+            print(
+                "STATUS_FIRST_HUNG_PROBE "
+                + json.dumps(
+                    {
+                        "calls": calls,
+                        "owned_identities": identities,
+                        "child_exits": [process.poll() for process, _ in children],
+                        "remaining_markers": list(map(str, store.root.glob("*.json"))),
+                    }
+                )
+            )
+            for index, call in enumerate(calls):
+                with self.subTest(call=index):
+                    envelope = call["envelope"]
+                    assert_envelope(self, envelope, "status", status="unavailable")
+                    self.assertEqual(envelope["code"], "analysis/executable-unavailable")
+                    self.assertIn("5-second", envelope["message"])
+                    self.assertTrue(same_path(envelope["data"]["executable"], executable))
+                    self.assertEqual(envelope["data"]["executable_origin"], "path")
+                    self.assertLess(call["elapsed"], PROBE_BOUND)
+                    self.assertEqual(call["probe_children"], 1, "unchanged status re-probed")
+                    self.assertEqual(call["cache_entries"], 1, "own-cap failure was not cached")
+            self.assertEqual(len(fake.events("version_probe")), 1)
+            self.assertEqual(fake.starts(), [], "status must never initialize LSP")
+            self.assertIsNone(service._adapter)
+            self.assertTrue(all(process.poll() is not None for process, _ in children))
+            self.assertEqual(list(store.root.glob("*.json")), [])
+            self.assertEqual(
+                {path: hashlib.sha256(path.read_bytes()).hexdigest() for path in inputs}, inputs
+            )
+
     def test_expired_caller_budget_does_not_poison_an_independent_probe(self) -> None:
         directory, fake = self.shim()
         context = make_context(self.project.root)
