@@ -7,6 +7,7 @@ request owns only a waiter, never the shared subprocess.
 from __future__ import annotations
 
 import json
+import os
 import queue
 import subprocess
 import threading
@@ -14,8 +15,7 @@ import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
-from urllib.parse import urlsplit
-from urllib.request import url2pathname
+from urllib.parse import unquote, urlsplit
 
 from pyocd_debug_mcp.code_analysis_config import AnalysisConfigSnapshot
 from pyocd_debug_mcp.code_analysis_runtime import (
@@ -30,6 +30,7 @@ from pyocd_debug_mcp.kernel.processes import (
     ProcessMarkerStore,
     terminate_process_group,
 )
+from pyocd_debug_mcp.kernel.operations import ARGUMENT_TIMEOUT_GRACE_SECONDS
 
 
 class ClangdFailure(RuntimeError):
@@ -110,13 +111,28 @@ def local_uri_path(uri: str) -> Path | None:
         or parts.fragment
     ):
         return None
-    # url2pathname performs percent decoding; do not decode twice.
-    path = url2pathname(parts.path)
-    if not path:
+    try:
+        decoded = unquote(parts.path, encoding="utf-8", errors="strict")
+    except UnicodeError:
         return None
-    if not Path(path).is_absolute():
+    if not decoded or "\0" in decoded or decoded.startswith(("//", "\\\\")):
         return None
-    return Path(path).resolve()
+    if os.name == "nt":
+        # Decode the colon before recognizing a drive. nturl2path in Python
+        # 3.10-3.12 otherwise treats /c%3A/... as a root-relative path.
+        if (
+            len(decoded) < 4
+            or decoded[0] != "/"
+            or not "A" <= decoded[1].upper() <= "Z"
+            or decoded[2] != ":"
+            or decoded[3] not in "/\\"
+        ):
+            return None
+        decoded = decoded[1:]
+    path = Path(decoded)
+    if not path.is_absolute():
+        return None
+    return path.resolve()
 
 
 @dataclass
@@ -275,8 +291,10 @@ class ClangdAdapter:
 
     def _send(self, value: dict[str, Any]) -> None:
         with self._guard:
-            if self._failure is not None:
-                raise self._failure
+            cleanup = value.get("method") in {"$/cancelRequest", "shutdown", "exit"}
+            response = "method" not in value and "id" in value
+            if (self._failure is not None or self._closing) and not (cleanup or response):
+                raise self._failure or ClangdFailure("child-exited", "Analysis session is closing.")
             data = json.dumps(
                 value, ensure_ascii=False, allow_nan=False, separators=(",", ":")
             ).encode("utf-8")
@@ -308,21 +326,15 @@ class ClangdAdapter:
                 raise pending.failure
             return pending.result
         except TimeoutError:
-            try:
-                self.cancel(request_id)
-            except ClangdFailure:
-                pass
-            # A stuck parser/write can strand other callers. Terminate this generation
-            # explicitly instead of guessing that cancellation was honored.
-            self._fail(
-                ClangdFailure(
-                    "timeout",
-                    "Shared clangd generation stopped after request deadline/cancellation.",
-                    status="incomplete",
-                )
-            )
             if not self._closing:
-                self.shutdown(time.monotonic() + 5, graceful=False)
+                self.shutdown(
+                    time.monotonic() + ARGUMENT_TIMEOUT_GRACE_SECONDS,
+                    failure=ClangdFailure(
+                        "timeout",
+                        "Shared clangd generation stopped after request deadline/cancellation.",
+                        status="incomplete",
+                    ),
+                )
             raise
         finally:
             with self._guard:
@@ -495,12 +507,26 @@ class ClangdAdapter:
         except (OSError, ValueError):
             return
 
-    def shutdown(self, deadline: float, *, graceful: bool = True) -> None:
+    def shutdown(
+        self, deadline: float, *, graceful: bool = True, failure: ClangdFailure | None = None
+    ) -> None:
         with self._shutdown_guard:
             process = self.process
             if process is None:
                 return
             self._closing = True
+            transport_usable = not self.failed
+            with self._guard:
+                pending_ids = list(self._pending)
+            for request_id in pending_ids:
+                try:
+                    self.cancel(request_id)
+                except ClangdFailure:
+                    break
+            # Hold shutdown ownership while waking sibling callers, so their
+            # cleanup cannot kill the child before the cancel/close exchange.
+            if failure is not None:
+                self._fail(failure)
             # MCP stdio clients may escalate after two seconds of EOF. clangd
             # can keep indexing the standard library after acknowledging exit;
             # bound that wait by the existing native group grace, then own/kill it.
@@ -508,8 +534,11 @@ class ClangdAdapter:
                 deadline - MAX_OWNED_PROCESS_CLEANUP_SECONDS,
                 time.monotonic() + DEFAULT_PROCESS_GROUP_CLEANUP_GRACE_SECONDS,
             )
-            if graceful and not self.failed and process.poll() is None:
+            if graceful and transport_usable and process.poll() is None:
                 try:
+                    # FIFO writes plus this bounded roundtrip let a writable
+                    # peer receive the preceding cancellations before termination.
+                    # A blocked pipe/server expires this existing grace and is killed.
                     self.request("shutdown", None, graceful_deadline)
                     self.notify("exit", {})
                     process.wait(timeout=max(0.001, graceful_deadline - time.monotonic()))

@@ -79,12 +79,15 @@ class CodeAnalysisService:
         # The native reader can lose relative-directory commands and use host
         # flags. Shared parsing still resolves these relative to the project.
         for index, entry in enumerate(snapshot.entries):
-            if not Path(entry.raw["directory"]).is_absolute():
+            if (
+                not Path(entry.raw["directory"]).is_absolute()
+                and not Path(entry.raw["file"]).is_absolute()
+            ):
                 problems.append(
                     AnalysisProblem(
                         "analysis/database-invalid",
-                        "clangd cannot establish the selected build from a relative compilation working directory.",
-                        "Re-export compile_commands.json with absolute directory fields; preserve the original arguments and target flags.",
+                        "clangd cannot establish the selected build when both compilation directory and source paths are relative.",
+                        "Re-export compile_commands.json with absolute directory/source fields; preserve the original arguments and target flags.",
                         f"compilation_database[{index}].directory",
                         "clangd",
                     )
@@ -311,8 +314,6 @@ class CodeAnalysisService:
         dependencies: tuple[Any, ...],
         deadline: float,
         cancellation: Any,
-        *,
-        force: bool,
     ) -> int:
         _acquire(self._session_guard, deadline, cancellation)
         try:
@@ -321,18 +322,17 @@ class CodeAnalysisService:
                     "configuration-changed", "Analysis generation invalidated.", status="incomplete"
                 )
             old = self._documents.get(source)
-            if (
-                old is not None
-                and old.sha256 == digest
-                and old.dependencies == dependencies
-                and not force
-            ):
+            if old is not None and old.sha256 == digest and old.dependencies == dependencies:
                 return old.version
             version = self._versions.get(source, 0) + 1
             self._versions[source] = version
             adapter.clear_diagnostics(source.as_uri())
             document = {"uri": source.as_uri(), "version": version}
-            if old is None:
+            if old is not None and old.sha256 == digest:
+                # Known header changes need a fresh parse even with identical
+                # source bytes: clangd may deduplicate an unchanged didChange.
+                adapter.notify("textDocument/didClose", {"textDocument": {"uri": source.as_uri()}})
+            if old is None or old.sha256 == digest:
                 adapter.notify(
                     "textDocument/didOpen",
                     {
@@ -654,7 +654,6 @@ class CodeAnalysisService:
                         dependency_identity,
                         deadline,
                         cancellation,
-                        force=False,
                     )
                 finally:
                     origin_lock.release()
@@ -680,7 +679,6 @@ class CodeAnalysisService:
                 dependency_identity,
                 deadline,
                 cancellation,
-                force=operation == "diagnostics",
             )
             result["source"]["document_version"] = version
             if operation == "diagnostics":
