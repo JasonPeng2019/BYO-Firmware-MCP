@@ -46,7 +46,7 @@
               "items": {
                 "allOf": [
                   { "$ref": "#/$defs/relativePath" },
-                  { "pattern": "^analysis/cppcheck/[^/]+\\.dll$" }
+                  { "pattern": "^analysis/cppcheck/[^/]+\\.dll$(?![\\s\\S])" }
                 ]
               }
             },
@@ -60,7 +60,7 @@
           "properties": {
             "version": { "$ref": "#/$defs/version" },
             "executable": { "type": "string", "const": "analysis/clangd/bin/clangd.exe" },
-            "resource_dir": { "type": "string", "pattern": "^analysis/clangd/lib/clang/[1-9][0-9]*$" },
+            "resource_dir": { "type": "string", "pattern": "^analysis/clangd/lib/clang/[1-9][0-9]*$(?![\\s\\S])" },
             "licenses": {
               "type": "array",
               "minItems": 1,
@@ -84,7 +84,7 @@
               "items": {
                 "allOf": [
                   { "$ref": "#/$defs/relativePath" },
-                  { "pattern": "^analysis/clangd/bin/[^/]+\\.dll$" }
+                  { "pattern": "^analysis/clangd/bin/[^/]+\\.dll$(?![\\s\\S])" }
                 ]
               }
             },
@@ -95,11 +95,11 @@
     }
   },
   "$defs": {
-    "version": { "type": "string", "pattern": "^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)$" },
+    "version": { "type": "string", "pattern": "^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)$(?![\\s\\S])" },
     "relativePath": {
       "type": "string",
       "minLength": 1,
-      "pattern": "^(?!.*(?:^|/)\\.{1,2}(?:/|$))(?!.*[. ](?:/|$))[^/\\\\<>:\"|?*\\u0000-\\u001f]+(?:/[^/\\\\<>:\"|?*\\u0000-\\u001f]+)*$"
+      "pattern": "^(?!.*(?:^|/)\\.{1,2}(?:/|$))(?!.*[. ](?:/|$))[^/\\\\<>:\"|?*\\u0000-\\u001f]+(?:/[^/\\\\<>:\"|?*\\u0000-\\u001f]+)*$(?![\\s\\S])"
     }
   }
 }
