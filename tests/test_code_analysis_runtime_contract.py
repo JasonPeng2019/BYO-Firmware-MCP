@@ -5,7 +5,9 @@ context, name, deadline)`` is the single resolver.  Managed launches never
 substitute PATH; source/development uses a supplied runtime first, then PATH,
 and reports the origin.  ``--version`` probes are owned, bounded (5 s plus
 confirmed cleanup), cached by canonical identity and changed bytes; a nonzero or
-timed-out probe is unavailable evidence.  The physical manifest mapping is a
+timed-out probe is unavailable evidence.  An expired caller deadline is not
+executable evidence: internally it is a typed ``TimeoutError`` and publicly an
+``incomplete``/``analysis/timeout`` envelope.  The physical manifest mapping is a
 packaging prerequisite, so only its failure-closed behavior is asserted here.
 """
 
@@ -28,9 +30,11 @@ from tests.code_analysis_support import (
     FakeClangd,
     FAKE_CLANGD,
     analysis_module,
+    assert_envelope,
     field,
     isolated_path_environment,
     make_context,
+    make_service,
     real_clangd_or_skip,
     same_path,
     simple_project,
@@ -105,6 +109,19 @@ class RuntimeCase(unittest.TestCase):
         self.assertFalse(usable(program), program)
         self.assertTrue(tuple(field(program, "problems")), "unavailability must be explained")
 
+    def assert_public_caller_expiry_is_incomplete_timeout(self) -> None:
+        # Public control: caller expiry is an incomplete timeout, never a clean,
+        # unavailable or executable-failure result.
+        runtime = analysis_module("code_analysis_runtime")
+        service = make_service(
+            self.project.root, program_resolver=runtime.resolve_analysis_program, testcase=self
+        )
+        envelope = service.definition(
+            str(self.project.root / "src" / "main.c"), 5, 25, timeout_seconds=0.001
+        )
+        assert_envelope(self, envelope, "definition", status="incomplete")
+        self.assertEqual(envelope["code"], "analysis/timeout", envelope)
+
 
 class PathResolution(RuntimeCase):
     def test_empty_path_is_unavailable_with_a_problem(self) -> None:
@@ -163,10 +180,12 @@ class BoundedProbes(RuntimeCase):
         directory, fake = self.shim()
         context = make_context(self.project.root)
         with only_on_path(directory):
-            expired = resolve(context, budget=0.0)
-            self.assert_unavailable(expired)
+            with self.assertRaises(TimeoutError):
+                resolve(context, budget=0.0)
+            self.assertEqual(fake.events("version_probe"), [], "an expired caller probed")
             retry = resolve(context, budget=10.0)
-        self.assertTrue(usable(retry), "caller deadline is not executable failure evidence")
+            self.assertTrue(usable(retry), "caller deadline is not executable failure evidence")
+            self.assert_public_caller_expiry_is_incomplete_timeout()
         self.assertEqual(len(fake.events("version_probe")), 1)
         self.assertEqual(fake.starts(), [], "version probe must not initialize LSP")
 
@@ -197,11 +216,11 @@ class BoundedProbes(RuntimeCase):
         directory, fake = self.shim(scenario={"version": {"sleep": 60}})
         started = time.monotonic()
         with only_on_path(directory):
-            program = resolve(make_context(self.project.root), budget=0.0)
-        self.assertLess(
-            time.monotonic() - started, OWNED_CLEANUP_SECONDS + SCHEDULING_SLACK_SECONDS
-        )
-        self.assert_unavailable(program)
+            with self.assertRaises(TimeoutError):
+                resolve(make_context(self.project.root), budget=0.0)
+            elapsed = time.monotonic() - started
+            self.assert_public_caller_expiry_is_incomplete_timeout()
+        self.assertLess(elapsed, OWNED_CLEANUP_SECONDS + SCHEDULING_SLACK_SECONDS)
         pids = [event["pid"] for event in fake.events("version_probe")]
         self.assertEqual(
             wait_pids_gone(pids, OWNED_CLEANUP_SECONDS), [], "an expired probe left a child"
