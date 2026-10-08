@@ -1,0 +1,36 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "BYO project analysis configuration, schema version 1",
+  "description": "Syntax contract only. Filesystem identity, finite numbers, database commands, target settings and driver allowlisting also require the semantic checks in ../code-analysis-contract.md.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version"],
+  "properties": {
+    "schema_version": { "type": "integer", "const": 1 },
+    "compilation_database": { "$ref": "#/$defs/path" },
+    "cppcheck": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "platform_file": { "$ref": "#/$defs/path" },
+        "suppressions_file": { "$ref": "#/$defs/path" },
+        "enable_style": { "type": "boolean", "default": false },
+        "timeout_seconds": { "type": "number", "exclusiveMinimum": 0, "default": 120 }
+      }
+    },
+    "clangd": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "query_driver_paths": {
+          "type": "array",
+          "default": [],
+          "items": { "$ref": "#/$defs/path" }
+        }
+      }
+    }
+  },
+  "$defs": {
+    "path": { "type": "string", "minLength": 1, "pattern": "^[^\\u0000]+$" }
+  }
+}
