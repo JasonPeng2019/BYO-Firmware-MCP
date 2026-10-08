@@ -13,6 +13,27 @@ environments/scratch remain outside that commit.
 
 ## Actual checks
 
+### ROOT clarification after independent integrated review, 2026-10-08
+
+The frozen `9aabd167` review reproduced clangd's native
+`<selected-database-directory>/.cache/clangd/index/` writes while source,
+configuration, database, generated headers and policy inputs remained intact.
+The independent real-program test required every project write to be under
+`.firm/code-analysis/`; that was broader than the supplied specification's
+permission for local analysis caches. ROOT explicitly clarified the contract to
+allow only the documented native index shards and generated `.gitignore` there,
+while protecting all other project files. This is a recorded oracle correction,
+not a claim that the original strict tree test passed. Background indexing and
+the original selected database remain required; no native LLVM fork, database
+redirection or filesystem-policy workaround was selected.
+
+The independent reviewer assessed both interpretations and the alternative
+native storage-root patch. Its report remains **REVISE** for five other confirmed
+production defects. The exact report and boundary appendix are hash-bound in
+ROOT's run evidence `root-review-delivery-audit.json`; repaired-candidate testing
+and affected review must assess the clarified contract and corrected oracle
+together. This clarification supplies no installed or four-platform evidence.
+
 | Check | Actual command / result |
 | --- | --- |
 | Lane and authority | `git rev-parse --show-toplevel`, `git branch --show-current`, `git rev-parse HEAD`, `git status --short`: assigned worktree/branch and baseline matched. Initial untracked `.agent-workspace/` and `.codex/` were preserved. No lane-local `AGENTS.md`. |

@@ -574,8 +574,19 @@ revoked/unvalidated identities and an unrelated corrupt policy. Assert that no
 hardware backend, probe inventory, board-policy reader/writer or unlock operation
 is consulted by analysis. Check-in observation/deadlines remain in place.
 
-Only local caches/reports may be written under `.firm/code-analysis/`. No source,
-database, `.clangd`, policy or library suppression is rewritten. No rename,
+The service stores its own local analysis reports and metadata under
+`.firm/code-analysis/`. Clangd may also maintain its ordinary background-index
+cache at `<selected-database-directory>/.cache/clangd/index/`, including its
+generated `.gitignore` and index shards. This native cache is disposable analysis
+data; its location does not change the selected original database or authorize
+other project writes. The original specification permits local analysis caches;
+it does not require a modified clangd build to relocate this native cache.
+
+Verification must allow those explicitly named native cache files while checking
+that all other project files remain unchanged. Preserve the earlier stricter
+tree-preservation failure as evidence of an overbroad test expectation, not a
+passing execution. No source, generated header, database, `.clangd`, policy or
+library suppression is rewritten. No rename,
 formatting, code action, build, flashing, download or editor buffer API is exposed.
 Update/uninstall and archive exclusion require installed-product checks in the
 packaging stage. Existing releases stay unchanged; release publication needs

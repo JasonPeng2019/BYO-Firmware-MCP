@@ -158,6 +158,15 @@ evidence; rerun relevant checks on the final candidate after production fixes.
 | G9 final acceptance / ROOT + independent reviewer/test engineer | Resolve review findings, integrate fixes, rerun affected gates, compare final commit/artifact/corpus identity to reports. Check installer `docs/code-analysis-release-notes.md` describes mandatory Cppcheck, accurate configuration migration and on-disk-only clangd against the delivered candidate. | Product readiness only after G1-G8, required notes/migration and review pass on final candidate. Missing/inaccurate notes prevent acceptance. This contract-stage result does not satisfy future gates. Publication remains separately authorized. |
 
 G1 maps to supplied acceptance checks 1-2; G5 includes 3-4; G2-G3 include 4-5;
+
+Native write-preservation checks must distinguish permitted disposable analysis
+data from protected project inputs. The service's reports/metadata use
+`.firm/code-analysis/`; stock clangd's selected-database-local
+`.cache/clangd/index/` shards and generated `.gitignore` are also permitted.
+Check every other project file, including generated headers, source, database,
+`.clangd` and board policy, for unchanged bytes. Retain the initial stricter
+native tree-oracle failure and its explicit contract clarification; final
+independent tests and review must validate the corrected boundary together.
 G4 is 6; G3/G8 are 7; G7 is 8. Tests record setup failures as blockers or skips
 with unmet prerequisite, never as a passing clean analysis.
 
