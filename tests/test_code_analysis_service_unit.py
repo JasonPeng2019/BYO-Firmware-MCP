@@ -53,6 +53,35 @@ def record_regression(name, value):
 
 
 class ServiceTests(unittest.TestCase):
+    def test_known_generated_header_invalidates_without_duplicate_walked_headers(self):
+        generated = self.root / ".firm/build/generated/selected.h"
+        generated.parent.mkdir(parents=True)
+        generated.write_text("#define SELECTED 7\n", encoding="utf-8")
+        ordinary = self.root / "selected.h"
+        ordinary.write_text("#define ORDINARY 1\n", encoding="utf-8")
+        before = self.service._dependency_identity(time.monotonic() + 1, None)
+        self.assertNotIn(str(generated), dict(before))
+        ordinary_hover = self.service.hover(str(ordinary), 1, 9)
+        self.assertEqual(ordinary_hover["status"], "ok", ordinary_hover)
+        self.assertEqual(self.service._dependency_identity(time.monotonic() + 1, None), before)
+        opened = self.service.hover(str(generated), 1, 9)
+        self.assertEqual(opened["status"], "ok", opened)
+        clean = self.service.diagnostics("main.cpp")
+        generated.write_text("#define SELECTED 9\n", encoding="utf-8")
+        changed = self.service.diagnostics("main.cpp")
+        records = self.service._dependency_identity(time.monotonic() + 1, None)
+        record_regression(
+            "known-generated-header-framed",
+            {"opened": opened, "clean": clean, "changed": changed, "dependencies": records},
+        )
+        self.assertEqual(changed["status"], "ok", changed)
+        self.assertGreater(
+            changed["source"]["document_version"], clean["source"]["document_version"]
+        )
+        self.assertEqual(changed["source"]["sha256"], clean["source"]["sha256"])
+        self.assertEqual(dict(records)[str(generated)], sha256_bytes(generated.read_bytes()))
+        self.assertEqual(len(records), len(dict(records)))
+
     def test_missing_current_diagnostics_forces_unchanged_saved_revision(self):
         self.service.shutdown()
         factory = fake_factory(self.root, "silent")
@@ -752,6 +781,80 @@ class VersionProbeTests(unittest.TestCase):
     os.environ.get("BYO_TEST_CLANGD"), "Set explicit BYO_TEST_CLANGD private test fixture."
 )
 class RealClangdTests(unittest.TestCase):
+    def test_known_generated_header_saved_change_and_restore_native(self):
+        from pyocd_debug_mcp.adapters.clangd import ClangdAdapter
+
+        source = make_project(self.root)
+        header = self.root / ".firm/build/generated/selected.h"
+        header.parent.mkdir(parents=True)
+        header.write_text("#define SELECTED 7\n", encoding="utf-8")
+        source.write_text(
+            '#include ".firm/build/generated/selected.h"\nstatic_assert(SELECTED == 7);\nint value;\n',
+            encoding="utf-8",
+        )
+        database = self.root / "compile_commands.json"
+        original_database = database.read_bytes()
+        incoming = []
+
+        def factory(program, snapshot, marker_store):
+            adapter = ClangdAdapter(program, snapshot, marker_store)
+            route = adapter._route
+
+            def observed(message):
+                incoming.append(message)
+                return route(message)
+
+            adapter._route = observed
+            return adapter
+
+        self.service = CodeAnalysisService(AnalysisRuntimeContext(self.root), factory)
+        evidence = {"executable_sha256": sha256_bytes(self.executable.read_bytes())}
+        adapter = None
+        try:
+            initial = self.service.diagnostics("main.cpp", timeout_seconds=5)
+            evidence["initial"] = initial
+            self.assertEqual(initial["status"], "ok", initial)
+            adapter = self.service._adapter
+            process, marker = adapter.process, adapter.marker
+            evidence["argv"] = adapter._argv()
+            evidence["owned_marker"] = json.loads(marker.read_text(encoding="utf-8"))
+            opened = self.service.hover(str(header), 1, 9, timeout_seconds=5)
+            clean = self.service.diagnostics("main.cpp", timeout_seconds=5)
+            evidence.update(opened=opened, clean=clean)
+            self.assertEqual(opened["status"], "ok", opened)
+            self.assertEqual(clean["status"], "ok", clean)
+            self.assertEqual(clean["data"]["observed_count"], 0)
+            header.write_text("#define SELECTED 9\n", encoding="utf-8")
+            changed = self.service.diagnostics("main.cpp", timeout_seconds=5)
+            evidence["changed"] = changed
+            self.assertEqual(changed["status"], "ok", changed)
+            self.assertEqual(changed["source"]["sha256"], clean["source"]["sha256"])
+            self.assertGreater(
+                changed["source"]["document_version"], clean["source"]["document_version"]
+            )
+            self.assertEqual(changed["data"]["observed_count"], 1, changed)
+            header.write_text("#define SELECTED 7\n", encoding="utf-8")
+            restored = self.service.diagnostics("main.cpp", timeout_seconds=5)
+            evidence["restored"] = restored
+            self.assertEqual(restored["status"], "ok", restored)
+            self.assertGreater(
+                restored["source"]["document_version"], changed["source"]["document_version"]
+            )
+            self.assertEqual(restored["data"]["observed_count"], 0)
+            self.assertEqual(database.read_bytes(), original_database)
+        finally:
+            self.service.shutdown()
+            evidence["received_messages"] = incoming
+            if adapter is not None:
+                evidence.update(
+                    child_exit=process.poll(),
+                    marker_exists=marker.exists(),
+                    stderr=adapter.stderr_tail,
+                )
+            record_regression("known-generated-header-native", evidence)
+        self.assertIsNotNone(process.poll())
+        self.assertFalse(marker.exists())
+
     def test_native_missing_current_diagnostics_protocol_characterization(self):
         make_project(self.root)
         self.service = CodeAnalysisService(AnalysisRuntimeContext(self.root))

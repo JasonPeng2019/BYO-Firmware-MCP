@@ -281,7 +281,7 @@ class CodeAnalysisService:
 
     def _dependency_identity(self, deadline: float, cancellation: Any) -> tuple[Any, ...]:
         """Observe project headers to invalidate diagnostics; external/global index remains unverified."""
-        records: list[tuple[str, str]] = []
+        records: dict[str, str] = {}
         for directory, subdirs, files in os.walk(self.context.project_root):
             subdirs[:] = [
                 d
@@ -293,23 +293,21 @@ class CodeAnalysisService:
                 path = Path(directory) / name
                 if path.suffix.lower() in HEADER_SUFFIXES:
                     try:
-                        records.append((str(path), sha256_bytes(path.read_bytes())))
+                        records[str(path)] = sha256_bytes(path.read_bytes())
                     except OSError:
-                        records.append((str(path), "unreadable"))
+                        records[str(path)] = "unreadable"
         with self._document_guard:
-            external = [
-                p
-                for p in self._document_locks
-                if p.suffix.lower() in HEADER_SUFFIXES
-                and not p.is_relative_to(self.context.project_root)
-            ]
-        for path in external:
+            known_headers = [p for p in self._document_locks if p.suffix.lower() in HEADER_SUFFIXES]
+        # Explicitly known headers can live in excluded generated/runtime trees.
+        for path in known_headers:
             remaining(deadline, cancellation)
+            if str(path) in records:
+                continue
             try:
-                records.append((str(path), sha256_bytes(path.read_bytes())))
+                records[str(path)] = sha256_bytes(path.read_bytes())
             except OSError:
-                records.append((str(path), "unreadable"))
-        return tuple(sorted(records))
+                records[str(path)] = "unreadable"
+        return tuple(sorted(records.items()))
 
     def _sync(
         self,
