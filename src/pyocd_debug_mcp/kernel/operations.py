@@ -152,6 +152,7 @@ def _vendor_uart_budget() -> float:
         DEFAULT_EXTERNAL_COMMAND_TIMEOUT_SECONDS + MAX_OWNED_PROCESS_CLEANUP_SECONDS
     )
 
+
 T = TypeVar("T")
 BeforeExecution = Callable[[], None]
 Cleanup = Callable[[], None]
@@ -543,7 +544,12 @@ def operation_timeout_seconds(
     """Return the finite A-11 timeout budget for a tool invocation."""
 
     values = arguments or {}
-    if tool_name in {"find_code_definition", "find_code_references", "get_code_hover", "get_code_diagnostics"}:
+    if tool_name in {
+        "find_code_definition",
+        "find_code_references",
+        "get_code_hover",
+        "get_code_diagnostics",
+    }:
         try:
             requested = _positive_finite_number(values.get("timeout_seconds", 30.0))
         except OverflowError:
