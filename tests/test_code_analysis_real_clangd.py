@@ -537,6 +537,124 @@ class ArmFirmware(RealClangdCase):
             self.assertEqual(envelope["status"], "not_configured", envelope)
 
 
+SELECTED_SOURCE = (
+    '#include "selected.h"\n'
+    'static_assert(SELECTED == 7, "fresh header required");\n'
+    "int main() { return SELECTED; }\n"
+)
+
+
+class KnownHeaderFreshness(RealClangdCase):
+    """A saved change to a header the selected build includes is never stale-clean.
+
+    The header directory comes from the original database include path and the
+    header is explicitly queried first, so it is known to the session.  A header
+    under the project's ``.firm/build/generated`` (a generated build header) gets
+    the same promise as an ordinary ``include`` header: after ``7 -> 9`` the next
+    diagnostics call is a newer document version carrying the current error, a
+    fresh session agrees, and restoring the header returns to a fresh clean result.
+    """
+
+    def _owned_clangd_pids(self) -> list[int]:
+        import psutil
+
+        return [
+            child.pid
+            for child in psutil.Process().children(recursive=True)
+            if same_path(child.exe(), self.executable)
+        ]
+
+    def _assert_header_change_is_fresh(self, relative_header: str) -> None:
+        project = AnalysisProject(self.base / "project")
+        project.write_text("src/main.cpp", SELECTED_SOURCE)
+        header = project.write_text(relative_header, "#define SELECTED 7\n")
+        database = project.write_database(
+            [
+                project.entry(
+                    "src/main.cpp",
+                    arguments=[
+                        "clang++",
+                        "-std=c++17",
+                        "-I",
+                        str(header.parent),
+                        "-c",
+                        str(project.path("src/main.cpp")),
+                    ],
+                )
+            ]
+        )
+        protected = {path: path.read_bytes() for path in (database, project.path("src/main.cpp"))}
+        analysis = self.service(project)
+
+        initial = assert_envelope(
+            self, diagnostics(analysis, project, "src/main.cpp"), "diagnostics", status="ok"
+        )
+        self.assertEqual(initial["data"]["diagnostics"], [], json.dumps(initial, indent=2))
+        known = assert_envelope(
+            self,
+            query(analysis, "hover", project, relative_header, "SELECTED"),
+            "hover",
+            status="ok",
+        )
+        assert_source(self, known, header)
+        self.assertIn("SELECTED 7", known["data"]["contents"]["value"])
+
+        header.write_text("#define SELECTED 9\n", encoding="utf-8", newline="\n")
+        changed = diagnostics(analysis, project, "src/main.cpp")
+        self.assertEqual(
+            (changed["status"], changed.get("code")),
+            ("ok", None),
+            f"a known header change needs a current result: {json.dumps(changed, indent=2)}",
+        )
+        assert_source(self, changed, project.path("src/main.cpp"))
+        messages = [item["message"] for item in changed["data"]["diagnostics"]]
+        self.assertTrue(
+            any("fresh header required" in message for message in messages),
+            f"stale clean result after the saved header changed 7 -> 9: {json.dumps(changed, indent=2)}",
+        )
+        self.assertIn(1, [item["severity"] for item in changed["data"]["diagnostics"]])
+        self.assertGreater(
+            changed["source"]["document_version"], initial["source"]["document_version"]
+        )
+
+        control_service = self.service(project)
+        control = assert_envelope(
+            self, diagnostics(control_service, project, "src/main.cpp"), "diagnostics", status="ok"
+        )
+        self.assertTrue(
+            any(
+                "fresh header required" in item["message"]
+                for item in control["data"]["diagnostics"]
+            ),
+            f"fresh-session native control: {json.dumps(control, indent=2)}",
+        )
+
+        header.write_text("#define SELECTED 7\n", encoding="utf-8", newline="\n")
+        restored = assert_envelope(
+            self, diagnostics(analysis, project, "src/main.cpp"), "diagnostics", status="ok"
+        )
+        self.assertEqual(restored["data"]["diagnostics"], [], json.dumps(restored, indent=2))
+        self.assertGreater(
+            restored["source"]["document_version"], changed["source"]["document_version"]
+        )
+
+        pids = self._owned_clangd_pids()
+        self.assertTrue(pids, "both sessions own a clangd child")
+        analysis.shutdown()
+        control_service.shutdown()
+        self.assertEqual(
+            wait_pids_gone(pids, OWNED_CLEANUP_SECONDS), [], "clangd outlived shutdown"
+        )
+        for path, data in protected.items():
+            self.assertEqual(path.read_bytes(), data, f"{path} must not be modified")
+
+    def test_ordinary_include_header_change_is_fresh(self) -> None:
+        self._assert_header_change_is_fresh("include/selected.h")
+
+    def test_generated_header_under_firm_build_change_is_fresh(self) -> None:
+        self._assert_header_change_is_fresh(".firm/build/generated/selected.h")
+
+
 class RealStdioShutdown(RealClangdCase):
     def test_stdin_eof_terminates_owned_clangd_within_the_bound(self) -> None:
         project = copy_fixture("host_c", self.base / "host_c")
