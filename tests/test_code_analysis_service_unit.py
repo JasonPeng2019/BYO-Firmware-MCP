@@ -522,6 +522,168 @@ class ServiceTests(unittest.TestCase):
 
 
 class VersionProbeTests(unittest.TestCase):
+    def test_public_status_own_cap_is_cached_and_changed_executable_reprobes(self):
+        executable = self.root / "status-version.exe"
+        shutil.copyfile(sys.executable, executable)
+        original_spawn = runtime.popen_owned
+
+        def private_version_peer(argv, **kwargs):
+            self.assertEqual(argv, [str(executable), "--version"])
+            return original_spawn([str(Path(sys.executable).resolve()), "--version"], **kwargs)
+
+        (self.root / "byo-analysis.json").write_text(
+            '{"schema_version":1,"compilation_database":"compile_commands.json"}',
+            encoding="utf-8",
+        )
+        (self.root / ".clangd").write_text(
+            "CompileFlags:\n  Add: [-DSTATUS_FIXTURE=1]\n", encoding="utf-8"
+        )
+        protected = {
+            str(path): sha256_bytes(path.read_bytes())
+            for path in [
+                self.root / "main.cpp",
+                self.root / "compile_commands.json",
+                self.root / "byo-analysis.json",
+                self.root / ".clangd",
+                Path(sys.executable),
+            ]
+        }
+        service = CodeAnalysisService(self.context)
+        self.addCleanup(service.shutdown)
+        handler = build_code_analysis_handlers(CodeAnalysisToolServices(service))[
+            "get_code_analysis_status"
+        ]
+        calls = []
+        with (
+            patch.object(runtime, "_which_path_only", return_value=str(executable)),
+            patch.object(runtime, "popen_owned", side_effect=private_version_peer),
+        ):
+            for index in range(4):
+                if index == 2:
+                    executable.write_bytes(executable.read_bytes() + b"changed identity fixture")
+                    self.control.write_text("good", encoding="utf-8")
+                started = time.monotonic()
+                result = json.loads(handler())
+                calls.append(
+                    {
+                        "result": result,
+                        "elapsed": time.monotonic() - started,
+                        "child_count": len(self.children),
+                        "cache_size": len(runtime._probe_cache),
+                        "cache_keys": list(runtime._probe_cache),
+                    }
+                )
+        after = {path: sha256_bytes(Path(path).read_bytes()) for path in protected}
+        self.observe(
+            "public-status-cache", calls=calls, protected_before=protected, protected_after=after
+        )
+        first, repeated, changed, changed_repeated = calls
+        self.assertEqual(first["result"]["status"], "unavailable", first)
+        self.assertEqual(first["result"]["code"], "analysis/executable-unavailable")
+        self.assertIn("5-second spawn/probe", first["result"]["message"])
+        self.assertEqual(first["result"]["data"]["executable"], str(executable))
+        self.assertEqual(first["cache_size"], 1)
+        self.assertGreaterEqual(first["elapsed"], 5)
+        self.assertLess(first["elapsed"], 5 + ARGUMENT_TIMEOUT_GRACE_SECONDS)
+        self.assertEqual(repeated["result"], first["result"])
+        self.assertEqual(repeated["child_count"], 1)
+        self.assertLess(repeated["elapsed"], 1)
+        self.assertEqual(changed["result"]["status"], "ok", changed)
+        self.assertEqual(changed["child_count"], 2)
+        self.assertEqual(changed["cache_size"], 2)
+        self.assertIn("executable version fixture", changed["result"]["data"]["version"])
+        self.assertEqual(changed_repeated["result"], changed["result"])
+        self.assertEqual(changed_repeated["child_count"], 2)
+        self.assertEqual(protected, after)
+        self.assertIsNone(service._adapter)
+
+    def test_public_status_managed_expiry_is_transient_then_independent_retry(self):
+        from pyocd_debug_mcp.kernel.operations import ManagedOperation, _current_operation
+
+        for budget in (0.0, 0.15):
+            with self.subTest(budget=budget), patch.object(runtime, "_probe_cache", {}):
+                self.control.write_text("hung", encoding="utf-8")
+                service = CodeAnalysisService(self.context)
+                self.addCleanup(service.shutdown)
+                handler = build_code_analysis_handlers(CodeAnalysisToolServices(service))[
+                    "get_code_analysis_status"
+                ]
+                managed = ManagedOperation(
+                    "status-expiry",
+                    "request",
+                    "get_code_analysis_status",
+                    None,
+                    budget,
+                    False,
+                    False,
+                )
+                token = _current_operation.set(managed)
+                started = time.monotonic()
+                try:
+                    expired = json.loads(handler())
+                finally:
+                    _current_operation.reset(token)
+                elapsed = time.monotonic() - started
+                transient_cache = dict(runtime._probe_cache)
+                self.control.write_text("good", encoding="utf-8")
+                recovered = json.loads(handler())
+                self.observe(
+                    "public-status-expiry-" + str(budget),
+                    expired=expired,
+                    recovered=recovered,
+                    elapsed=elapsed,
+                    transient_cache=transient_cache,
+                )
+                self.assertEqual(expired["status"], "incomplete", expired)
+                self.assertEqual(expired["code"], "analysis/timeout", expired)
+                self.assertEqual(transient_cache, {})
+                self.assertLess(elapsed, budget + ARGUMENT_TIMEOUT_GRACE_SECONDS)
+                self.assertEqual(recovered["status"], "ok", recovered)
+                self.assertIsNone(service._adapter)
+
+    def test_public_status_managed_cancellation_is_transient_then_independent_retry(self):
+        from pyocd_debug_mcp.kernel.operations import ManagedOperation, _current_operation
+
+        managed = ManagedOperation(
+            "status-cancel", "request", "get_code_analysis_status", None, 60, False, False
+        )
+        service = CodeAnalysisService(self.context)
+        self.addCleanup(service.shutdown)
+        handler = build_code_analysis_handlers(CodeAnalysisToolServices(service))[
+            "get_code_analysis_status"
+        ]
+
+        def call():
+            token = _current_operation.set(managed)
+            try:
+                return json.loads(handler())
+            finally:
+                _current_operation.reset(token)
+
+        with concurrent.futures.ThreadPoolExecutor(1) as pool:
+            pending = pool.submit(call)
+            limit = time.monotonic() + 3
+            while not (self.root / "started.jsonl").exists() and time.monotonic() < limit:
+                managed.cancellation_requested.wait(0.005)
+            self.assertTrue((self.root / "started.jsonl").exists())
+            managed.request_cancel("status fixture cancelled")
+            cancelled = pending.result(3)
+        transient_cache = dict(runtime._probe_cache)
+        self.control.write_text("good", encoding="utf-8")
+        recovered = json.loads(handler())
+        self.observe(
+            "public-status-cancel",
+            cancelled=cancelled,
+            recovered=recovered,
+            transient_cache=transient_cache,
+        )
+        self.assertEqual(cancelled["status"], "incomplete", cancelled)
+        self.assertEqual(cancelled["code"], "analysis/timeout", cancelled)
+        self.assertIn("cancelled", cancelled["message"])
+        self.assertEqual(transient_cache, {})
+        self.assertEqual(recovered["status"], "ok", recovered)
+        self.assertIsNone(service._adapter)
+
     """Run actual owned version peers; clocks, communicate and admission stay real."""
 
     def setUp(self):

@@ -33,7 +33,7 @@ from pyocd_debug_mcp.code_analysis_runtime import (
     remaining,
     resolve_analysis_program,
 )
-from pyocd_debug_mcp.kernel.operations import current_operation
+from pyocd_debug_mcp.kernel.operations import DEFAULT_OPERATION_TIMEOUT_SECONDS, current_operation
 
 INDEX_LIMITATIONS = [
     "One selected build configuration; no claim about other boards, targets or macro combinations.",
@@ -182,7 +182,15 @@ class CodeAnalysisService:
         return result
 
     def status(self) -> dict[str, Any]:
-        deadline = time.monotonic() + 5
+        managed = current_operation()
+        # The resolver owns the five-second probe cap; this is the actual
+        # request budget, including any time already spent in the dispatcher.
+        deadline = (
+            managed.started_at + managed.timeout_seconds
+            if managed is not None
+            else time.monotonic() + DEFAULT_OPERATION_TIMEOUT_SECONDS
+        )
+        cancellation = managed.cancellation_requested if managed is not None else None
         snapshot = self._snapshot()
         result = self._envelope("status", snapshot)
         if snapshot.database_path is not None:
@@ -192,15 +200,15 @@ class CodeAnalysisService:
                 + "; service-owned reports/metadata use .firm/code-analysis/."
             )
         try:
+            remaining(deadline, cancellation)
             program = self.program_resolver(self.context, "clangd", deadline)
         except TimeoutError as exc:
             program = ResolvedAnalysisProgram("clangd")
             self._failure(
                 result,
-                "unavailable",
-                "executable-unavailable",
+                "incomplete",
+                "timeout",
                 str(exc),
-                "Restore a responsive executable and required data.",
             )
         clangd_problems = self._clangd_problems(snapshot)
         problems = [
