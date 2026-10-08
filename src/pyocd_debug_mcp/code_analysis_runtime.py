@@ -269,6 +269,12 @@ def resolve_analysis_program(
                         f"Version probe failed ({process.returncode}): {errors.decode('utf-8', errors='replace')[-4096:]}"
                     )
                 version = output.decode("utf-8", errors="replace").strip()
+            except TimeoutError:
+                # Establish the cause before cleanup can consume the caller's
+                # remaining time. Only a started probe's own cap is executable
+                # failure evidence; caller expiry/cancellation stays transient.
+                remaining(deadline, cancellation)
+                raise RuntimeError("Version probe exceeded its 5-second spawn/probe budget.")
             finally:
                 cleaned = terminate_process_group(process)
                 if cleaned:

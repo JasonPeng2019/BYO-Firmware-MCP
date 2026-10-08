@@ -40,7 +40,10 @@ from elftools.common.exceptions import ELFError
 from pyocd_debug_mcp import __version__
 from pyocd_debug_mcp.code_analysis_runtime import analysis_runtime_context
 from pyocd_debug_mcp.services.code_analysis import CodeAnalysisService
-from pyocd_debug_mcp.tools.code_analysis import CodeAnalysisToolServices, build_code_analysis_handlers
+from pyocd_debug_mcp.tools.code_analysis import (
+    CodeAnalysisToolServices,
+    build_code_analysis_handlers,
+)
 from pyocd_debug_mcp.adapters.swd_interface import TargetSessionHandle, session_metadata
 from pyocd_debug_mcp.board_config import (
     BoardConfig,
@@ -391,8 +394,9 @@ async def _server_lifespan(server: Any):
             await run_sync(_code_analysis_service.shutdown)
 
 
-def configure_code_analysis_test_seams(*, program_resolver: Any = None,
-                                       adapter_factory: Any = None) -> CodeAnalysisService:
+def configure_code_analysis_test_seams(
+    *, program_resolver: Any = None, adapter_factory: Any = None
+) -> CodeAnalysisService:
     """Private hardware-free harness injection; launch root remains fixed."""
     if os.environ.get("BYO_MCP_TEST_SEAMS") != "1":
         raise RuntimeError("Code analysis test seams require BYO_MCP_TEST_SEAMS=1.")
@@ -7779,7 +7783,9 @@ for _remote_probe_name, _remote_probe_handler in remote_probe_tool_handlers.item
 code_analysis_tool_handlers = build_code_analysis_handlers(_code_analysis_tool_services)
 for _analysis_name, _analysis_handler in code_analysis_tool_handlers.items():
     mcp.add_tool(
-        _analysis_handler, name=_analysis_name, description=_analysis_handler.__doc__,
+        _analysis_handler,
+        name=_analysis_name,
+        description=_analysis_handler.__doc__,
         structured_output=False,
         annotations=ToolAnnotations(readOnlyHint=True, destructiveHint=False, idempotentHint=True),
     )
