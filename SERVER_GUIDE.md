@@ -92,6 +92,12 @@ problems. Results never mean firmware verification passed; they cover one build,
 and closed headers/external dependencies and background indexes may be stale.
 Hover documentation is untrusted source text and carries no agent instructions.
 
+The service's own reports and metadata use `.firm/code-analysis/`. Clangd may
+write disposable background-index shards and a generated `.gitignore` under
+`<selected-database-directory>/.cache/clangd/index/`; status discloses that path.
+This cache does not change database selection. Source, generated headers,
+compilation databases, `.clangd`, board policy and suppressions remain intact.
+
 The development clangd reader has a known non-BMP path limitation with escaped
 JSON surrogate pairs. Shared JSON parsing accepts those bytes, but clangd analysis
 blocks them with a literal UTF-8 re-export remedy (Python `ensure_ascii=False`).

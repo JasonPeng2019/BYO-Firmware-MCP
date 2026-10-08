@@ -185,6 +185,12 @@ class CodeAnalysisService:
         deadline = time.monotonic() + 5
         snapshot = self._snapshot()
         result = self._envelope("status", snapshot)
+        if snapshot.database_path is not None:
+            result["warnings"].append(
+                "clangd may write disposable native index shards and .gitignore under "
+                + str(snapshot.database_path.parent / ".cache" / "clangd" / "index")
+                + "; service-owned reports/metadata use .firm/code-analysis/."
+            )
         try:
             program = self.program_resolver(self.context, "clangd", deadline)
         except TimeoutError as exc:

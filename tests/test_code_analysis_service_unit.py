@@ -60,6 +60,12 @@ class ServiceTests(unittest.TestCase):
             with self.subTest(tool=name):
                 self.assertIn("saved", handler.__doc__.lower())
 
+    def test_status_discloses_selected_database_native_cache_without_starting_session(self):
+        result = self.service.status()
+        self.assertEqual(result["status"], "ok", result)
+        self.assertIn(str(self.root / ".cache" / "clangd" / "index"), " ".join(result["warnings"]))
+        self.assertIsNone(self.service._adapter)
+
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory(prefix="analysis service é 😀 ")
         self.root = Path(self.temp.name).resolve()
@@ -541,8 +547,32 @@ class RealClangdTests(unittest.TestCase):
         )
         self.assertEqual(restored["data"]["observed_count"], 0)
 
-    def test_regression_background_cache_stays_inside_analysis_directory(self):
+    def test_regression_background_cache_preserves_other_project_inputs(self):
+        # ROOT clarified the exact native cache exception at 8d18af229c3608be7c7a16be5ce79e328e7d06ff.
+        # The earlier strict oracle failure stays in retained red/green evidence.
         make_project(self.root)
+        build = self.root / "build"
+        build.mkdir()
+        database = (self.root / "compile_commands.json").rename(build / "compile_commands.json")
+        (self.root / "byo-analysis.json").write_text(
+            json.dumps(
+                {"schema_version": 1, "compilation_database": "build/compile_commands.json"}
+            ),
+            encoding="utf-8",
+        )
+        protected = {
+            "include/generated.h": b"#define TARGET_VALUE 7\n",
+            ".clangd": b"# Project-owned clangd configuration.\n",
+            "policy/board.json": b'{"project_owned": true}\n',
+            "config/suppressions.txt": b"project_owned_suppression\n",
+            ".firm/policy.json": b'{"project_owned": true}\n',
+        }
+        for name, content in protected.items():
+            path = self.root / name
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(content)
+        native_cache = build / ".cache" / "clangd" / "index"
+        cache_directories = {build / ".cache", native_cache.parent, native_cache}
 
         def tree():
             return {
@@ -550,7 +580,14 @@ class RealClangdTests(unittest.TestCase):
                 if path.is_file()
                 else "<dir>"
                 for path in self.root.rglob("*")
-                if not path.is_relative_to(self.root / ".firm")
+                if not path.is_relative_to(self.root / ".firm" / "code-analysis")
+                and path != self.root / ".firm"
+                and path not in cache_directories
+                and not (
+                    path.is_file()
+                    and path.parent == native_cache
+                    and (path.name == ".gitignore" or path.suffix == ".idx")
+                )
             }
 
         before = tree()
@@ -559,8 +596,53 @@ class RealClangdTests(unittest.TestCase):
         self.assertEqual(result["status"], "ok", result)
         self.service.shutdown()
         after = tree()
-        record_regression("background-cache", {"before": before, "after": after, "result": result})
-        self.assertEqual(before, after, "analysis changed paths outside .firm/code-analysis")
+        generated = [p.relative_to(self.root).as_posix() for p in native_cache.glob("*")]
+        record_regression(
+            "native-cache-boundary",
+            {
+                "contract_commit": "8d18af229c3608be7c7a16be5ce79e328e7d06ff",
+                "before": before,
+                "after": after,
+                "native_cache_files": generated,
+                "result": result,
+            },
+        )
+        self.assertTrue(generated, "native cache was not exercised")
+        self.assertEqual(before, after, "analysis changed protected project inputs")
+
+        # The exception must not mask protected inputs, the whole .firm tree,
+        # another cache root, nested cache data or arbitrary files in this cache.
+        for path in [database, self.root / "main.cpp", *(self.root / name for name in protected)]:
+            with self.subTest(protected=path.relative_to(self.root).as_posix()):
+                content = path.read_bytes()
+                try:
+                    path.write_bytes(content + b"unapproved mutation")
+                    self.assertNotEqual(before, tree())
+                finally:
+                    path.write_bytes(content)
+        for name in [
+            ".cache/clangd/index/wrong-root.idx",
+            "build/.cache/clangd/other.idx",
+            "build/.cache/clangd/index/arbitrary.txt",
+            "build/.cache/clangd/index/nested/other.idx",
+            ".firm/unapproved.txt",
+        ]:
+            with self.subTest(unapproved=name):
+                path = self.root / name
+                new_parents = []
+                parent = path.parent
+                while parent != self.root and not parent.exists():
+                    new_parents.append(parent)
+                    parent = parent.parent
+                path.parent.mkdir(parents=True, exist_ok=True)
+                try:
+                    path.write_bytes(b"unapproved write")
+                    self.assertNotEqual(before, tree())
+                finally:
+                    path.unlink()
+                    for parent in new_parents:
+                        parent.rmdir()
+                self.assertEqual(before, tree())
 
     def test_regression_transient_version_deadlines_do_not_poison_independent_retry(self):
         context = AnalysisRuntimeContext(self.root)
