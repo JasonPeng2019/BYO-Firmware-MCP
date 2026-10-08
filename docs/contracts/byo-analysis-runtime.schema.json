@@ -1,0 +1,105 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "BYO Windows analysis runtime mapping, schema version 1",
+  "description": "Closed syntax for analysis/runtime.json. Release files is the sole payload digest inventory. Filesystem containment, inventory/SBOM completeness, resource major/version agreement, PE/dependency identity and version probes require the semantic checks in ../code-analysis-runtime-manifest.md. There are no implicit defaults.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "platform", "architecture", "programs"],
+  "properties": {
+    "schema_version": { "type": "integer", "const": 1 },
+    "platform": { "type": "string", "const": "windows" },
+    "architecture": { "type": "string", "const": "x86_64" },
+    "programs": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["cppcheck", "clangd"],
+      "properties": {
+        "cppcheck": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["version", "executable", "cfg_dir", "platforms_dir", "licenses", "dependencies", "sbom_ref"],
+          "properties": {
+            "version": { "$ref": "#/$defs/version" },
+            "executable": { "type": "string", "const": "analysis/cppcheck/cppcheck.exe" },
+            "cfg_dir": { "type": "string", "const": "analysis/cppcheck/cfg" },
+            "platforms_dir": { "type": "string", "const": "analysis/cppcheck/platforms" },
+            "licenses": {
+              "type": "array",
+              "minItems": 4,
+              "uniqueItems": true,
+              "items": {
+                "allOf": [
+                  { "$ref": "#/$defs/relativePath" },
+                  { "pattern": "^analysis/cppcheck/licenses/" }
+                ]
+              },
+              "allOf": [
+                { "contains": { "const": "analysis/cppcheck/licenses/COPYING" } },
+                { "contains": { "const": "analysis/cppcheck/licenses/simplecpp-LICENSE" } },
+                { "contains": { "const": "analysis/cppcheck/licenses/tinyxml2-LICENSE" } },
+                { "contains": { "const": "analysis/cppcheck/licenses/picojson-LICENSE" } }
+              ]
+            },
+            "dependencies": {
+              "type": "array",
+              "uniqueItems": true,
+              "items": {
+                "allOf": [
+                  { "$ref": "#/$defs/relativePath" },
+                  { "pattern": "^analysis/cppcheck/[^/]+\\.dll$(?![\\s\\S])" }
+                ]
+              }
+            },
+            "sbom_ref": { "type": "string", "const": "byo-analysis:cppcheck" }
+          }
+        },
+        "clangd": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["version", "executable", "resource_dir", "licenses", "dependencies", "sbom_ref"],
+          "properties": {
+            "version": { "$ref": "#/$defs/version" },
+            "executable": { "type": "string", "const": "analysis/clangd/bin/clangd.exe" },
+            "resource_dir": { "type": "string", "pattern": "^analysis/clangd/lib/clang/[1-9][0-9]*$(?![\\s\\S])" },
+            "licenses": {
+              "type": "array",
+              "minItems": 1,
+              "uniqueItems": true,
+              "items": {
+                "anyOf": [
+                  { "const": "analysis/clangd/LICENSE.TXT" },
+                  {
+                    "allOf": [
+                      { "$ref": "#/$defs/relativePath" },
+                      { "pattern": "^analysis/clangd/licenses/" }
+                    ]
+                  }
+                ]
+              },
+              "contains": { "const": "analysis/clangd/LICENSE.TXT" }
+            },
+            "dependencies": {
+              "type": "array",
+              "uniqueItems": true,
+              "items": {
+                "allOf": [
+                  { "$ref": "#/$defs/relativePath" },
+                  { "pattern": "^analysis/clangd/bin/[^/]+\\.dll$(?![\\s\\S])" }
+                ]
+              }
+            },
+            "sbom_ref": { "type": "string", "const": "byo-analysis:clangd" }
+          }
+        }
+      }
+    }
+  },
+  "$defs": {
+    "version": { "type": "string", "pattern": "^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)$(?![\\s\\S])" },
+    "relativePath": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "^(?!.*(?:^|/)\\.{1,2}(?:/|$))(?!.*[. ](?:/|$))[^/\\\\<>:\"|?*\\u0000-\\u001f]+(?:/[^/\\\\<>:\"|?*\\u0000-\\u001f]+)*$(?![\\s\\S])"
+    }
+  }
+}
