@@ -1,6 +1,6 @@
 # Firmware analysis implementation contract
 
-Contract revision: 2, 2026-10-08. Prepared in the `mcp-contracts` lane against
+Contract revision: 3, 2026-10-08. Prepared in the `mcp-contracts` lane against
 Firmware MCP commit `a5321d76fc980fa0577c9beb11dc216dc3e3a68f`.
 
 This is the server stage's contract for ROOT acceptance and subsequent lane
@@ -15,6 +15,11 @@ Revision 2 incorporates ROOT's native decisions on explicit Cppcheck
 `missingInclude` enablement and original ownership reservations, plus the
 Windows development smoke and its Unicode-path failure. Project JSON schema
 version remains 1. No native version or four-platform runtime is accepted.
+
+Revision 3 is ROOT's documentation-only integration correction for independent
+review findings R1/R2: explicit query-fallback preservation/labeling and the
+release-notes/migration handoff. The revision-2 verification record remains
+historical evidence; it does not claim validation of this correction.
 
 ## Authority and live repository evidence
 
@@ -467,7 +472,8 @@ Private dataclasses may stay in their owning module: no plugin framework or
 board-session abstraction is needed.
 
 1. One lazily started child per server/project/configuration. `status` and server
-   boot create no child. Serialize initialization/restart; different documents
+   boot create no persistent LSP/indexing child; bounded version probes are allowed.
+   Serialize initialization/restart; different documents
    share the transport and unique request IDs. Use `popen_owned` with explicit
    binary stdin/stdout/stderr pipes; continuously drain a bounded stderr tail.
    Never attach the persistent child to per-operation resources or MCP stdout.
@@ -534,6 +540,29 @@ database directory and forced diagnostics. The standard
 and [references](https://github.com/microsoft/language-server-protocol/blob/gh-pages/_specifications/lsp/3.17/language/references.md)
 contracts govern protocol semantics. Required version behavior and program
 compatibility must still be proven by smoke tests before a version is pinned.
+
+## Workspace query compatibility and release handoff
+
+Keep `bin/query` and `byo workflow tool query` available for text search, Kconfig,
+map symbols and environments without MCP. The Python `query_backend.py` and Rust
+`workflow.rs::tool_query` C/C++ definition/reference fallbacks must label their
+output as text search, never semantic proof. Preserve their command syntax and
+existing non-semantic uses. Authored `query-codebase` guidance prefers the clangd
+tools for semantic C/C++ definition/reference/hover questions and states their
+saved-file and selected-build limits; regenerate its projections through the
+existing workspace tooling. Independent tests check both runners' labels and
+retained uses alongside the semantic MCP tools.
+
+The packaging writer owns new installer `docs/code-analysis-release-notes.md`,
+allocated by ROOT after confirming no existing release-notes file in that
+repository. Prepare notes for the new candidate describing newly mandatory
+Cppcheck, configuration migration and on-disk-only clangd. Migration guidance
+explains how to export/select `compile_commands.json`, supply an explicit target
+platform and any supported library setup, and resolve missing-tool/configuration
+blockers; it must not imply that a local build override replaces static analysis.
+The independent installed tester and final reviewer check that the notes match
+the delivered behavior. Missing or inaccurate notes prevent final acceptance.
+Preparing this artifact does not publish a release or alter older releases.
 
 ## Availability and exclusions
 
