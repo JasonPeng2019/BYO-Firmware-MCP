@@ -30,6 +30,32 @@ A tool appearing in an MCP client does not mean the call is authorized. A
 client may also call a hidden name from stale schema data; the physical handler
 still applies its lock and refuses it.
 
+## C/C++ semantic tools
+
+All five analysis names are explicit `metadata` routes in family `code-analysis`,
+always visible/unlocked and independent of board state or monitoring profile.
+Their strict handlers produce JSON with `structured_output=False` and read-only,
+non-destructive, idempotent annotations. They are outside Layer 2 hardware routing.
+
+| Tool | Arguments | Operation data |
+| --- | --- | --- |
+| `get_code_analysis_status` | None | Executable/version/origin, configuration problems, session state, limitations |
+| `find_code_definition` | `file_path`, `line`, `column`, `timeout_seconds=30` | Normalized locations |
+| `find_code_references` | Position arguments, `include_declaration=false`, `max_results=100` | Locations and observed/returned/truncated counts |
+| `get_code_hover` | Position arguments | Markdown/plaintext contents and optional range |
+| `get_code_diagnostics` | `file_path`, `max_results=100`, `timeout_seconds=30` | Version-matched diagnostics, related locations and counts |
+
+The [server guide](../SERVER_GUIDE.md#cc-code-analysis) documents setup and exact
+coordinate/result conventions. Every envelope identifies selected database bytes;
+queries identify the saved revision. Unreadable/nonlocal location targets retain
+raw LSP ranges and encoding with unavailable mapping, without invented columns.
+Missing fresh diagnostics are incomplete, never empty clean evidence.
+
+The service parses project config every call and controls one lazy owned process.
+Status probes only the executable and leaves LSP/indexing stopped. Source launches
+use PATH; explicit managed context refuses unresolved manifest mapping without
+PATH substitution. Packaging/four-platform installed acceptance remains pending.
+
 ## 2. Major components
 
 ```text

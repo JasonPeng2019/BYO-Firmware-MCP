@@ -6,6 +6,8 @@ import contextlib
 import io
 import json
 import os
+import sys
+import types
 import tempfile
 import unittest
 from pathlib import Path
@@ -16,6 +18,48 @@ from pyocd_debug_mcp import sidecar
 
 
 class SidecarRuntimeTests(unittest.TestCase):
+    def test_serve_delivers_validated_analysis_context_before_server_import(self) -> None:
+        with tempfile.TemporaryDirectory() as raw_root:
+            root = Path(raw_root)
+            context = sidecar.RuntimeContext(
+                root, root, sidecar.RuntimeContract(__version__, 1, 1, 1, 1, 1), __version__
+            )
+            calls = []
+            server = types.ModuleType("pyocd_debug_mcp.server")
+            server.main = lambda: calls.append("server")
+            with (
+                patch.object(sidecar, "_install_runtime_context", return_value=context),
+                patch(
+                    "pyocd_debug_mcp.code_analysis_runtime.configure_analysis_runtime",
+                    side_effect=lambda value: calls.append(value),
+                ),
+                patch("pyocd_debug_mcp.adapters.swd_process.ProcessIsolatedSWDInterface"),
+                patch("pyocd_debug_mcp.services.target_control.configure_backend_for_runtime"),
+                patch.dict(sys.modules, {"pyocd_debug_mcp.server": server}),
+            ):
+                self.assertEqual(
+                    sidecar._serve(
+                        sidecar.build_parser().parse_args(
+                            [
+                                "serve",
+                                "--project-root",
+                                str(root),
+                                "--runtime-root",
+                                str(root),
+                                "--launcher-version",
+                                __version__,
+                                "--workflow-protocol",
+                                "1",
+                            ]
+                        )
+                    ),
+                    0,
+                )
+            self.assertEqual(calls[0].project_root, root.resolve())
+            self.assertEqual(calls[0].runtime_root, root.resolve())
+            self.assertTrue(calls[0].managed)
+            self.assertEqual(calls[1], "server")
+
     @staticmethod
     def _release_manifest() -> dict[str, object]:
         return {

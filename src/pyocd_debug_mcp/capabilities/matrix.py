@@ -47,6 +47,11 @@ def _routes() -> tuple[TierRoute, ...]:
         TierRoute("disconnect", "direct", "connection"),
         TierRoute("downgrade", "indirect", "downgrade"),
         TierRoute("find_symbol", "metadata"),
+        TierRoute("get_code_analysis_status", "metadata", "code-analysis"),
+        TierRoute("find_code_definition", "metadata", "code-analysis"),
+        TierRoute("find_code_references", "metadata", "code-analysis"),
+        TierRoute("get_code_hover", "metadata", "code-analysis"),
+        TierRoute("get_code_diagnostics", "metadata", "code-analysis"),
         TierRoute(
             "flash_application", "safe", "flash-application", "flash_raw", "flash_application", True
         ),

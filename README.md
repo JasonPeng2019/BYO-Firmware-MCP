@@ -15,6 +15,20 @@ The server is intentionally headless and client-neutral. It exposes its current
 tool surface through the MCP protocol; a visible tool is not, by itself,
 authorization for a guarded operation.
 
+## C/C++ code analysis
+
+Five C/C++ analysis tools are available without a board or setup:
+`get_code_analysis_status`, `find_code_definition`, `find_code_references`,
+`get_code_hover`, and `get_code_diagnostics`. They read saved files using one
+selected native build's `compile_commands.json`. Start with status; see
+[analysis setup and recovery](SERVER_GUIDE.md#cc-code-analysis).
+
+Source launches resolve clangd from development PATH. Managed launches require
+the accepted runtime manifest mapping; that packaging prerequisite is still
+unresolved, so they currently report `unavailable`. Queries never install tools,
+build firmware, or grant hardware permissions. No bundled-platform readiness is
+claimed by this server change.
+
 ## Run
 
 Install the locked environment:

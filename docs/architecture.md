@@ -29,6 +29,39 @@ safe for the current map, and still fresh. Discovery is guidance, not
 authorization: hidden tools remain registered so a stale direct call reaches a
 physical handler lock and receives the same prerequisite refusal.
 
+## Saved-file analysis ownership
+
+`code_analysis_config.py` owns strict shared project JSON and selected database
+identity/canonical commands. It leaves command text opaque and preserves original
+bytes. Applicable `.clangd` fragment conditions/precedence are validated without
+changing source or configuration. `code_analysis_runtime.py` owns explicit
+`AnalysisRuntimeContext` and bounded cached executable probes. The validated
+sidecar hands context over before server composition; the handshake cannot redirect it.
+Managed manifest mapping is intentionally unavailable pending packaging acceptance.
+
+`adapters/clangd.py` owns the persistent `popen_owned` child, binary LSP byte
+framing, serialized writes, routed request IDs, required server-request responses,
+position encoding and exact-version diagnostics waiters. MCP stdout never receives
+child protocol bytes. Edits and server commands are refused. Transport failure
+wakes waiters and terminates the owned generation; no reader callback restarts it.
+
+`services/code_analysis.py` owns saved snapshots, per-document synchronization/
+query serialization, monotonic versions, session generation changes, deadlines and
+result normalization. Different documents share the adapter. Input changes are
+rechecked before return; project header changes invalidate diagnostics. External
+headers/global background-index freshness remain explicitly unverified. Native
+clangd database representation limitations live in this backend boundary, not
+shared JSON syntax validation.
+
+`tools/code_analysis.py` owns five strict schemas and JSON serialization. Ordinary
+registry dispatch supplies monitoring/cancellation/deadlines without board locks.
+Its analysis JSON stays intact when a check-in prompt is appended separately.
+The four query budgets use the requested deadline plus existing cleanup grace.
+The actual FastMCP lifespan shields service shutdown; `server.main` also calls its
+idempotent cleanup before monitor delivery. clangd's graceful exit wait uses the
+existing process-group grace before hard owned termination, so background indexing
+cannot strand an idle child beyond stdio-client EOF escalation.
+
 ## Layers and ownership
 
 `server.py` is the composition root. It creates one process-local

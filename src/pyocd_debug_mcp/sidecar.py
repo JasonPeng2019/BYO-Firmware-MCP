@@ -235,6 +235,14 @@ def _install_runtime_context(args: argparse.Namespace, *, require_capsule: bool)
 
 def _serve(args: argparse.Namespace) -> int:
     context = _install_runtime_context(args, require_capsule=True)
+    from pyocd_debug_mcp.code_analysis_runtime import (
+        AnalysisRuntimeContext,
+        configure_analysis_runtime,
+    )
+
+    configure_analysis_runtime(
+        AnalysisRuntimeContext(context.project_root, context.runtime_root, managed=True)
+    )
     from pyocd_debug_mcp.adapters.swd_process import ProcessIsolatedSWDInterface
     from pyocd_debug_mcp.services.target_control import configure_backend_for_runtime
 

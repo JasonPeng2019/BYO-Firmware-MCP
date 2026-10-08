@@ -543,6 +543,12 @@ def operation_timeout_seconds(
     """Return the finite A-11 timeout budget for a tool invocation."""
 
     values = arguments or {}
+    if tool_name in {"find_code_definition", "find_code_references", "get_code_hover", "get_code_diagnostics"}:
+        try:
+            requested = _positive_finite_number(values.get("timeout_seconds", 30.0))
+        except OverflowError:
+            requested = None  # Strict service/SDK validation still receives the original value.
+        return (requested if requested is not None else 30.0) + ARGUMENT_TIMEOUT_GRACE_SECONDS
     finalizer_timeout: float | None = None
     finalizer_reaches_uart = False
     if "on_exit" in values:

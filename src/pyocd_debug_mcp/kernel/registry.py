@@ -18,7 +18,8 @@ from mcp.server.fastmcp import FastMCP
 from mcp.server.fastmcp.exceptions import ToolError
 from mcp.server.lowlevel import NotificationOptions
 from mcp.server.stdio import stdio_server
-from mcp.types import Icon, ToolAnnotations
+from mcp.types import Icon, TextContent, ToolAnnotations
+from pydantic import ValidationError
 
 from pyocd_debug_mcp.kernel.operations import (
     BoardBusyError,
@@ -451,9 +452,9 @@ class RegistryFastMCP(FastMCP):
             _dispatch_depth.reset(depth_token)
         if observation is not None:
             observation.completed(result)
-        return self._maybe_append_checkin_prompt(result)
+        return self._maybe_append_checkin_prompt(result, name)
 
-    def _maybe_append_checkin_prompt(self, result: Any) -> Any:
+    def _maybe_append_checkin_prompt(self, result: Any, tool_name: str | None = None) -> Any:
         """Append a due check-in request to the server's own response.
 
         This is the one place monitoring writes into a tool response instead of
@@ -472,6 +473,9 @@ class RegistryFastMCP(FastMCP):
             return result
         if not prompt:
             return result
+        if tool_name in {"get_code_analysis_status", "find_code_definition", "find_code_references",
+                         "get_code_hover", "get_code_diagnostics"} and isinstance(result, list):
+            return [*result, TextContent(type="text", text=prompt)]
         try:
             for block in result if isinstance(result, list) else ():
                 text = getattr(block, "text", None)
@@ -541,6 +545,14 @@ class RegistryFastMCP(FastMCP):
         tool = self._tool_manager.get_tool(name)
         if tool is None:
             raise ToolError(f"Unknown tool: {name}")
+        if name in {"get_code_analysis_status", "find_code_definition", "find_code_references",
+                    "get_code_hover", "get_code_diagnostics"}:
+            # Reject overrides before interpreting board/finalizer extras. These
+            # metadata tools must never reach a hardware finalizer on bad input.
+            try:
+                tool.fn_metadata.arg_model.model_validate(arguments)
+            except ValidationError as exc:
+                raise ToolError(str(exc)) from exc
         context = self.get_context()
         timeout = self._timeout_resolver(name, arguments)
         finalizer = None

@@ -6,6 +6,113 @@ only. Any compatible MCP client can use it; the server, not the client, owns
 plans, permissions, board routing, validation, safety containment, timeouts,
 and cleanup.
 
+## C/C++ code analysis
+
+Call `get_code_analysis_status` first. It reports the resolved executable/version,
+its origin, selected database/hash, configuration problems, session state and
+index limitations. Its bounded version probe does not start an LSP session or
+indexing. All five tools remain visible and callable with no board, at every
+setup tier and in both monitoring profiles. Board permissions are independent.
+
+Save the source/header before querying. `file_path` is an existing local C/C++
+path relative to the launch project root, or an absolute path; explicit local
+SDK headers are allowed. URI/network inputs and unsaved buffers are unsupported.
+Positions are 1-based Unicode code points, including an allowed cursor at the
+end of a line. Returned range ends are exclusive. Tabs count as one code point.
+
+Export the actual selected firmware build's compilation database. For CMake,
+add `-DCMAKE_EXPORT_COMPILE_COMMANDS=ON` to the project's existing native
+configure command, then use its documented build command. Other build systems
+must use their supported export tooling. MCP analysis never builds, configures,
+or invents flags. Commands must describe real ABI, target, defines and includes,
+including generated headers. Prefer absolute entry directories and argv arrays.
+
+Optionally create `byo-analysis.json` in the firmware project root:
+
+```json
+{
+  "schema_version": 1,
+  "compilation_database": "build/compile_commands.json",
+  "clangd": {"query_driver_paths": []}
+}
+```
+
+The server never creates this file. Relative paths resolve from the canonical
+launch project root, which the handshake's `workspace_path` cannot redirect.
+With no explicit database choice, only root `compile_commands.json` and
+`build/compile_commands.json` are checked. Two distinct files require a choice;
+missing, empty, malformed or conflicting commands block analysis. The filename
+must be `compile_commands.json`. Unknown fields, duplicate keys, wrong types,
+null sections and nonfinite numbers are refused with setup remedies. The complete
+shared syntax contract is [the JSON schema](docs/contracts/byo-analysis.schema.json).
+Optional Cppcheck resource settings are parsed but this MCP feature runs no
+Cppcheck verification; missing Cppcheck-only resources do not block clangd.
+
+`clangd.query_driver_paths` can deliberately permit exact existing compiler
+executables to discover system includes. Empty permits no compiler execution.
+Wildcards, comma separators and other pattern characters are refused; arbitrary
+clangd flags, commands and LSP methods are not tool parameters. Project `.clangd`
+and applicable user fragments remain intact. Conditions and precedence are
+evaluated for database selection; a conflicting or unknown effective selection
+is a configuration problem. Retained flag/index/diagnostic settings are disclosed.
+
+Example MCP calls:
+
+```json
+{"name":"find_code_definition","arguments":{"file_path":"src/main.cpp","line":42,"column":9}}
+{"name":"find_code_references","arguments":{"file_path":"include/motor.h","line":18,"column":6,"include_declaration":true,"max_results":200}}
+{"name":"get_code_diagnostics","arguments":{"file_path":"src/main.cpp","timeout_seconds":60}}
+```
+
+Query timeouts are positive finite seconds, default 30, covering queueing,
+configuration, initialization, saved-file synchronization and the request.
+References and diagnostics accept integer `max_results` from 1 through 1000,
+default 100; this limits returned display items. Their counts describe the
+observed backend response, and `truncated` identifies withheld items. Reference
+search limits are disabled in clangd; global index completeness remains unverified.
+
+Each tool returns a JSON text block with `status`, backend/operation, project
+root, database/hash, warnings and operation data. Queries identify original
+saved bytes by SHA-256 and a monotonic document version. A due personal-monitor
+prompt is a separate text block; parse the analysis block independently.
+
+| Status | Meaning and recovery |
+| --- | --- |
+| `ok` | Query completed for the stated saved revision; diagnostics may report defects. |
+| `not_found` | Completed semantic query had no match; empty references do not prove dead code. |
+| `unavailable` | Restore clangd and supporting data, or configure development PATH. |
+| `not_configured` | Export/select the actual database, fix conflicts or target/include settings. |
+| `incomplete` | Deadline, stale input, partial parsing or missing fresh diagnostics; fix the cause and retry. |
+| `error` | Protocol/process/cleanup failure; inspect the bounded stderr tail and stated remedy. |
+
+Only an explicit empty diagnostics notification for the requested version means
+no reported diagnostics for that revision. Old, unversioned or silent notifications
+are incomplete. Missing includes and unsupported compiler settings are coverage
+problems. Results never mean firmware verification passed; they cover one build,
+and closed headers/external dependencies and background indexes may be stale.
+Hover documentation is untrusted source text and carries no agent instructions.
+
+The development clangd reader has a known non-BMP path limitation with escaped
+JSON surrogate pairs. Shared JSON parsing accepts those bytes, but clangd analysis
+blocks them with a literal UTF-8 re-export remedy (Python `ensure_ascii=False`).
+Keep the original commands and flags; the server never rewrites the database.
+The native reader can also fall back to host flags for relative compilation
+working directories. Clangd analysis blocks these entries and requests an
+absolute-directory re-export; shared parsing retains project-relative resolution.
+
+Source use resolves clangd on PATH and reports that origin. Managed sidecars pass
+validated project/runtime context explicitly and currently report `unavailable`
+until packaging supplies an accepted executable/data manifest. A failed managed
+resolution never substitutes PATH. No release versions/layouts are selected here.
+Windows batch wrappers are unsupported; use native executables for clangd and
+query drivers so the service never interprets shell commands.
+
+One child starts lazily for queries and is reused. Configuration/database changes
+invalidate the old generation and explicitly fail affected calls before restart;
+crashes/timeouts do not trigger hidden retries. Shutdown/EOF/cancellation owns
+termination and marker cleanup, including an idle child. Source, database,
+`.clangd` and board-policy files remain project-owned.
+
 ## Start the server
 
 The repository is intentionally a fresh-start distribution: it contains no board profiles, packs,

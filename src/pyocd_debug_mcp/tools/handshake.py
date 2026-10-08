@@ -46,6 +46,14 @@ tool list is authoritative: never guess, request, or call an unlisted tool.
 Currently visible tools:
 {tool_index}
 
+C/C++ semantic analysis works without a board, setup, validation or hardware permissions.
+Start with get_code_analysis_status to inspect clangd and the selected compile_commands.json.
+Use find_code_definition, find_code_references, get_code_hover and get_code_diagnostics for
+saved files only, with 1-based Unicode code-point positions. Unsaved editor buffers are outside
+this contract. Analysis covers one selected build; index completeness is unverified, empty
+references do not prove dead code, and diagnostics are not firmware verification. The launch
+project root is fixed; workspace_path only labels activity and cannot redirect analysis.
+
 Guarded actions are exposed through a corresponding *-plan tool. A *-plan is an interactive
 two-step preparation gate, not the hardware action: first call with every parameter set to NULL, read the
 complete returned guide, then call the same *-plan with only its exact JSON plan object. If

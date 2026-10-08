@@ -24,15 +24,23 @@ import subprocess
 import threading
 import time
 import unicodedata
+from contextlib import asynccontextmanager
 from collections.abc import Callable, Mapping
 from dataclasses import asdict, replace
 from pathlib import Path
 from typing import Any, cast
 
+import anyio
+from anyio.to_thread import run_sync
+from mcp.types import ToolAnnotations
+
 from pyocd.target.pack.cmsis_pack import CmsisPack  # type: ignore[import-untyped]
 from elftools.common.exceptions import ELFError
 
 from pyocd_debug_mcp import __version__
+from pyocd_debug_mcp.code_analysis_runtime import analysis_runtime_context
+from pyocd_debug_mcp.services.code_analysis import CodeAnalysisService
+from pyocd_debug_mcp.tools.code_analysis import CodeAnalysisToolServices, build_code_analysis_handlers
 from pyocd_debug_mcp.adapters.swd_interface import TargetSessionHandle, session_metadata
 from pyocd_debug_mcp.board_config import (
     BoardConfig,
@@ -368,7 +376,39 @@ _project_root = (
     else Path.cwd().resolve()
 )
 
-mcp = RegistryFastMCP("pyocd-debug")
+_analysis_context = analysis_runtime_context(_project_root)
+_code_analysis_service = CodeAnalysisService(_analysis_context)
+_code_analysis_tool_services = CodeAnalysisToolServices(_code_analysis_service)
+
+
+@asynccontextmanager
+async def _server_lifespan(server: Any):
+    del server
+    try:
+        yield {}
+    finally:
+        with anyio.CancelScope(shield=True):
+            await run_sync(_code_analysis_service.shutdown)
+
+
+def configure_code_analysis_test_seams(*, program_resolver: Any = None,
+                                       adapter_factory: Any = None) -> CodeAnalysisService:
+    """Private hardware-free harness injection; launch root remains fixed."""
+    if os.environ.get("BYO_MCP_TEST_SEAMS") != "1":
+        raise RuntimeError("Code analysis test seams require BYO_MCP_TEST_SEAMS=1.")
+    global _code_analysis_service
+    _code_analysis_service.shutdown()
+    kwargs = {}
+    if program_resolver is not None:
+        kwargs["program_resolver"] = program_resolver
+    if adapter_factory is not None:
+        kwargs["adapter_factory"] = adapter_factory
+    _code_analysis_service = CodeAnalysisService(_analysis_context, **kwargs)
+    _code_analysis_tool_services.service = _code_analysis_service
+    return _code_analysis_service
+
+
+mcp = RegistryFastMCP("pyocd-debug", lifespan=_server_lifespan)
 mcp.set_server_version(__version__)
 tool_registry = mcp.registry
 server_run = create_server_run()
@@ -7736,6 +7776,15 @@ for _remote_probe_name, _remote_probe_handler in remote_probe_tool_handlers.item
     )
     forbid_unknown_tool_arguments(mcp, _remote_probe_name)
 
+code_analysis_tool_handlers = build_code_analysis_handlers(_code_analysis_tool_services)
+for _analysis_name, _analysis_handler in code_analysis_tool_handlers.items():
+    mcp.add_tool(
+        _analysis_handler, name=_analysis_name, description=_analysis_handler.__doc__,
+        structured_output=False,
+        annotations=ToolAnnotations(readOnlyHint=True, destructiveHint=False, idempotentHint=True),
+    )
+    forbid_unknown_tool_arguments(mcp, _analysis_name)
+
 for _setup_action in SETUP_GUARDED_ACTIONS:
     tool_registry.configure(
         _setup_action,
@@ -8162,9 +8211,12 @@ def main() -> None:
                 disconnect(_board_id)
             except Exception:
                 pass
-        plan_engine.close_run()
-        tool_registry.reset()
-        _monitor.closeout("signal" if shutdown.is_set() else "eof")
+        try:
+            _code_analysis_service.shutdown()
+        finally:
+            plan_engine.close_run()
+            tool_registry.reset()
+            _monitor.closeout("signal" if shutdown.is_set() else "eof")
 
 
 if __name__ == "__main__":
