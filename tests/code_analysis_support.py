@@ -21,6 +21,7 @@ import hashlib
 import importlib
 import json
 import os
+import re
 import shutil
 import stat
 import sys
@@ -474,15 +475,60 @@ class AnalysisProject:
             raw = json.dumps(entries, indent=2, ensure_ascii=escape_non_ascii)
         return self.write_text(relative, raw)
 
-    def tree_digest(self, *, ignore: Iterable[str] = (".firm",)) -> dict[str, str]:
-        ignored = tuple(ignore)
+    def tree_digest(self) -> dict[str, str]:
+        """Every file/directory under the root, relative POSIX path -> sha256."""
+
         digest: dict[str, str] = {}
         for path in sorted(self.root.rglob("*")):
             relative = path.relative_to(self.root).as_posix()
-            if relative.split("/")[0] in ignored:
-                continue
             digest[relative] = sha256_file(path) if path.is_file() else "<dir>"
         return digest
+
+
+# Contract "Local analysis writes" (ROOT clarification 8d18af22/cabf1a79): the
+# service's own reports/metadata live under ``.firm/code-analysis/``, and stock
+# clangd may keep its background index in
+# ``<selected-database-directory>/.cache/clangd/index/`` as a generated
+# ``.gitignore`` plus ``<basename>.<16 hex>.idx`` shards.  Nothing else may be
+# created, removed or changed.  The earlier strict "only .firm" oracle was an
+# overbroad expectation and stays recorded as a failed execution, not a pass.
+SERVICE_WRITE_ROOT = ".firm/code-analysis"
+_NATIVE_SHARD = re.compile(r"[^/]+\.[0-9A-Fa-f]{16}\.idx")
+
+
+def permitted_analysis_write(relative: str, database_directory: str) -> bool:
+    """Whether a project-relative POSIX path is a documented analysis write."""
+
+    service = SERVICE_WRITE_ROOT.split("/")
+    parts = relative.split("/")
+    if parts[: len(service)] == service or parts == service[: len(parts)]:
+        return True
+    base = [part for part in database_directory.split("/") if part not in ("", ".")]
+    cache = [*base, ".cache", "clangd", "index"]
+    if parts[: len(base)] == base and len(base) < len(parts) <= len(cache):
+        return parts == cache[: len(parts)]  # the cache directories themselves
+    if len(parts) != len(cache) + 1 or parts[: len(cache)] != cache:
+        return False
+    return parts[-1] == ".gitignore" or _NATIVE_SHARD.fullmatch(parts[-1]) is not None
+
+
+def unpermitted_tree_changes(
+    before: Mapping[str, str], after: Mapping[str, str], database_directory: str
+) -> list[str]:
+    """Created/removed/changed paths outside the documented analysis writes.
+
+    Protected inputs (sources, generated headers, database, ``.clangd``,
+    config, board policy, any other ``.firm`` content) must be byte-identical.
+    """
+
+    changes = []
+    for relative in sorted(set(before) | set(after)):
+        old, new = before.get(relative), after.get(relative)
+        if old == new or permitted_analysis_write(relative, database_directory):
+            continue
+        kind = "created" if old is None else "removed" if new is None else "changed"
+        changes.append(f"{kind}: {relative}")
+    return changes
 
 
 @contextlib.contextmanager

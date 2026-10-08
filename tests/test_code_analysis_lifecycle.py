@@ -111,18 +111,25 @@ class CrashHandling(FakeServiceCase):
                 },
             }
         )
+        # Work on one document is serialized, so the crash trigger must target
+        # a second document to be in flight while the hover waiter is pending.
+        other = self.project.write_text("src/other.c", self.source().read_bytes().decode("utf-8"))
+        self.project.write_database(
+            [self.project.entry("src/main.c"), self.project.entry("src/other.c")]
+        )
         line, column = self.position_of("helper")
-        arguments = {
-            "file_path": str(self.source()),
-            "line": line,
-            "column": column,
-            "timeout_seconds": 20.0,
-        }
-        hover = Call(self.service.hover, **arguments)
+        arguments = {"line": line, "column": column, "timeout_seconds": 20.0}
+        hover = Call(self.service.hover, file_path=str(self.source()), **arguments)
         self.fake.wait_received("textDocument/hover")
-        references = Call(self.service.references, **arguments)
+        references = Call(self.service.references, file_path=str(other), **arguments)
         crashed = references.join(10)
         waiter = hover.join(10)
+        self.assertEqual(
+            [event["method"] for event in self.fake.events("crash")],
+            ["textDocument/references"],
+            "the crash must be triggered by the concurrent references request",
+        )
+        self.assertEqual(len(self.fake.received("textDocument/hover")), 1)
         assert_failure(self, crashed, "references", "error", "analysis/child-exited")
         self.assertIn(
             CRASH_MARKER, json.dumps(crashed, ensure_ascii=False), "bounded stderr tail expected"

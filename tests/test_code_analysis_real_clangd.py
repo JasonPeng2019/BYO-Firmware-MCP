@@ -12,6 +12,7 @@ from __future__ import annotations
 import json
 import subprocess
 import unittest
+from functools import partial
 from pathlib import Path
 from typing import Any
 
@@ -33,6 +34,7 @@ from tests.code_analysis_support import (
     same_path,
     sha256_file,
     temporary_directory,
+    unpermitted_tree_changes,
     wait_pids_gone,
 )
 
@@ -57,6 +59,17 @@ UNICODE_SOURCE = (
     "static int target_symbol(int value) { return value + 1; }\r\n"
     "\r\n"
     'int main(void) { const char *s = "😀中é́";\t(void)s; return /* 😀 */ target_symbol(uni_value()); }\r\n'
+)
+PROTECTED_ARM_INPUTS = (
+    "byo-analysis.json",
+    "build/compile_commands.json",
+    "build/generated/build_config.h",
+    "config/arm32.xml",
+    "firmware.ld",
+    "include/firmware.h",
+    "src/main.c",
+    "src/heartbeat.cpp",
+    "src/startup.c",
 )
 
 
@@ -353,6 +366,70 @@ class UnicodeProject(RealClangdCase):
         assert_envelope(self, control, "definition", status="ok")
 
 
+class AnalysisWriteBoundaryOracle(unittest.TestCase):
+    """Hermetic proof that the ARM tree oracle rejects out-of-allowlist writes."""
+
+    SHARD = "main.c.0123456789ABCDEF.idx"
+    PROTECTED = (
+        "src/main.c",
+        "include/firmware.h",
+        "build/generated/build_config.h",
+        "build/compile_commands.json",
+        "byo-analysis.json",
+        ".clangd",
+        ".firm/board-policy.json",
+    )
+
+    def setUp(self) -> None:
+        directory = temporary_directory("byo-ca-oracle-")
+        self.project = AnalysisProject(directory.__enter__() / "project")
+        self.addCleanup(directory.__exit__, None, None, None)
+        for relative in self.PROTECTED:
+            self.project.write_text(relative, f"original {relative}\n")
+        self.before = self.project.tree_digest()
+
+    def changes(self) -> list[str]:
+        return unpermitted_tree_changes(self.before, self.project.tree_digest(), "build")
+
+    def test_documented_analysis_writes_are_permitted(self) -> None:
+        for relative in (
+            ".firm/code-analysis/reports/run-1/report.json",
+            "build/.cache/clangd/index/.gitignore",
+            f"build/.cache/clangd/index/{self.SHARD}",
+        ):
+            self.project.write_text(relative, "analysis data\n")
+        self.assertEqual(self.changes(), [])
+
+    def test_every_other_write_is_reported(self) -> None:
+        write = self.project.write_text
+        rewritten = [name for name in self.PROTECTED if name != "include/firmware.h"]
+        cases = {
+            **{f"changed: {name}": partial(write, name, "rewritten\n") for name in rewritten},
+            "removed: include/firmware.h": self.project.path("include/firmware.h").unlink,
+            "created: .firm/other/state.json": lambda: write(".firm/other/state.json", "{}"),
+            f"created: .cache/clangd/index/{self.SHARD}": lambda: write(
+                f".cache/clangd/index/{self.SHARD}", "wrong database directory"
+            ),
+            "created: build/.cache/clangd/index/notes.txt": lambda: write(
+                "build/.cache/clangd/index/notes.txt", "not a shard"
+            ),
+            f"created: build/.cache/clangd/index/{self.SHARD}.tmp": lambda: write(
+                f"build/.cache/clangd/index/{self.SHARD}.tmp", "not a shard"
+            ),
+            f"created: build/.cache/clangd/{self.SHARD}": lambda: write(
+                f"build/.cache/clangd/{self.SHARD}", "outside the index directory"
+            ),
+            f"created: build/.cache/clangd/index/nested/{self.SHARD}": lambda: write(
+                f"build/.cache/clangd/index/nested/{self.SHARD}", "nested"
+            ),
+            "created: build/firmware.o": lambda: write("build/firmware.o", "build output"),
+        }
+        for expected, mutate in cases.items():
+            with self.subTest(expected=expected):
+                mutate()
+                self.assertIn(expected, self.changes())
+
+
 class ArmFirmware(RealClangdCase):
     def setUp(self) -> None:
         super().setUp()
@@ -361,6 +438,8 @@ class ArmFirmware(RealClangdCase):
     def test_query_driver_gives_clean_target_analysis(self) -> None:
         project = materialize_arm_fixture(self.base / "arm", self.arm_root)
         before = project.tree_digest()
+        for protected in PROTECTED_ARM_INPUTS:
+            self.assertIn(protected, before, "the write oracle must cover every real input")
         analysis = self.service(project)
         for unit in ("src/main.c", "src/heartbeat.cpp"):
             with self.subTest(unit=unit):
@@ -405,8 +484,17 @@ class ArmFirmware(RealClangdCase):
             status="ok",
         )
         self.assertGreaterEqual(references["data"]["observed_count"], 2)
+        # Stop clangd first so a still-running background indexer cannot race
+        # the final snapshot; shutdown is idempotent with the cleanup call.
+        analysis.shutdown()
+        after = project.tree_digest()
+        created = sorted(set(after) - set(before))
+        print(f"\nARM analysis created {len(created)} permitted path(s): {created}")
         self.assertEqual(
-            project.tree_digest(), before, "analysis must not write outside .firm/code-analysis"
+            unpermitted_tree_changes(before, after, "build"),
+            [],
+            "only .firm/code-analysis/ and build/.cache/clangd/index/ shards/.gitignore "
+            "may be written; every other project file must be unchanged",
         )
 
     def test_empty_allowlist_still_analyzes_the_exact_database_command(self) -> None:
