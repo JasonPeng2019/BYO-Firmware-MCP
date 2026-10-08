@@ -1,0 +1,13 @@
+{
+  "schema_version": 1,
+  "compilation_database": "build/compile_commands.json",
+  "cppcheck": {
+    "platform_file": "config/arm32.xml"
+  },
+  "clangd": {
+    "query_driver_paths": [
+      "@ARM_GNU@/bin/arm-none-eabi-gcc.exe",
+      "@ARM_GNU@/bin/arm-none-eabi-g++.exe"
+    ]
+  }
+}
