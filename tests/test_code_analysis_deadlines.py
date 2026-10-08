@@ -67,6 +67,28 @@ class OuterTimeoutResolver(unittest.TestCase):
 
 
 class RequestTimeouts(FakeServiceCase):
+    def test_warmed_deadlines_deliver_cancellation_before_peer_termination(self) -> None:
+        from tests.code_analysis_support import make_service
+
+        for attempt in range(8):
+            with self.subTest(attempt=attempt):
+                self.service.shutdown()
+                self.service = make_service(self.project.root, fake=self.fake, testcase=self)
+                cancellation_count = len(self.fake.received("$/cancelRequest"))
+                self.fake.configure(responses={"textDocument/definition": {"never": True}})
+                assert_envelope(
+                    self,
+                    self.service.diagnostics(file_path=str(self.source()), timeout_seconds=5.0),
+                    "diagnostics",
+                    status="ok",
+                )
+                result = self.definition(timeout_seconds=0.2)
+                assert_failure(self, result, "definition", "incomplete", "analysis/timeout")
+                request = self.fake.received("textDocument/definition")[-1]
+                self.service.shutdown()
+                cancels = self.fake.received("$/cancelRequest")[cancellation_count:]
+                self.assertIn(request["id"], [m["params"]["id"] for m in cancels])
+
     def test_unanswered_request_is_incomplete_and_cancelled(self) -> None:
         self.fake.configure(responses={"textDocument/definition": {"never": True}})
         call = Call(self.definition, timeout_seconds=1.0)

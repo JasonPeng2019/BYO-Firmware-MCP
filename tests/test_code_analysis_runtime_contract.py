@@ -159,6 +159,17 @@ class ManagedRuntime(RuntimeCase):
 
 
 class BoundedProbes(RuntimeCase):
+    def test_expired_caller_budget_does_not_poison_an_independent_probe(self) -> None:
+        directory, fake = self.shim()
+        context = make_context(self.project.root)
+        with only_on_path(directory):
+            expired = resolve(context, budget=0.0)
+            self.assert_unavailable(expired)
+            retry = resolve(context, budget=10.0)
+        self.assertTrue(usable(retry), "caller deadline is not executable failure evidence")
+        self.assertEqual(len(fake.events("version_probe")), 1)
+        self.assertEqual(fake.starts(), [], "version probe must not initialize LSP")
+
     def test_nonzero_probe_is_unavailable(self) -> None:
         directory, fake = self.shim(
             scenario={"version": {"exit": 3, "banner": "clangd version 99"}}

@@ -616,6 +616,14 @@ class DefinitionShapes(FakeServiceCase):
 
 
 class ClangdConfigurationBoundary(FakeServiceCase):
+    def test_conditional_fragment_excluding_selected_sources_is_not_a_conflict(self) -> None:
+        fragment = "If:\n  PathExclude: src/.*\nCompileFlags:\n  CompilationDatabase: None\n"
+        config = self.project.write_text(".clangd", fragment)
+        before = config.read_bytes()
+        assert_envelope(self, self.service.status(), "status", status="ok")
+        assert_envelope(self, self.definition(), "definition", status="ok")
+        self.assertEqual(config.read_bytes(), before)
+
     def test_project_fragment_selecting_another_database_is_not_configured(self) -> None:
         for fragment in (
             "CompileFlags:\n  CompilationDatabase: other-build\n",
