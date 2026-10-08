@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import concurrent.futures
 import json
+import os
 import sys
 import tempfile
+import threading
 import time
 import unittest
 from unittest.mock import Mock, patch
@@ -22,6 +24,7 @@ from pyocd_debug_mcp.code_analysis_config import load_analysis_config
 from pyocd_debug_mcp.code_analysis_runtime import ResolvedAnalysisProgram
 from pyocd_debug_mcp import code_analysis_runtime as runtime
 from pyocd_debug_mcp.kernel.processes import ProcessMarkerStore
+from pyocd_debug_mcp.kernel.operations import ARGUMENT_TIMEOUT_GRACE_SECONDS
 
 
 PEER = r"""
@@ -53,6 +56,8 @@ while True:
         headers[key.lower()] = value.strip()
     data = sys.stdin.buffer.read(int(headers['content-length']))
     msg = json.loads(data)
+    with open(sys.argv[2], 'a', encoding='utf-8') as log:
+        log.write(json.dumps(msg, ensure_ascii=False) + '\n')
     method = msg.get('method')
     if method == 'initialize':
         result(msg, {'capabilities':{'positionEncoding':'utf-8','textDocumentSync':{'openClose':True,'change':1},
@@ -72,7 +77,9 @@ while True:
             time.sleep(request['params']['seconds'])
             result(request, request['params']['value'])
         threading.Thread(target=delayed,args=(msg,),daemon=True).start()
+    elif method == 'test/wedge': threading.Event().wait()
     elif method and method.startswith('textDocument/') and 'id' in msg:
+        if mode == 'never-definition' and method.endswith('definition'): continue
         if mode == 'delayed': time.sleep(.2)
         if method.endswith('hover'): result(msg, {'contents':{'kind':'markdown','value':'type café 😀'}})
         elif method.endswith('references'): result(msg, [])
@@ -105,7 +112,7 @@ def fake_factory(root: Path, mode: str = "normal"):
 
     class PeerAdapter(ClangdAdapter):
         def _argv(self) -> list[str]:
-            return [sys.executable, str(peer), mode]
+            return [sys.executable, str(peer), mode, str(root / "received.jsonl")]
 
     def factory(program, snapshot, marker_store=None):
         return PeerAdapter(program, snapshot, marker_store or ProcessMarkerStore(root / "markers"))
@@ -134,8 +141,45 @@ class PositionTests(unittest.TestCase):
         self.assertIsNone(local_uri_path("https://example.org/header.h"))
         self.assertIsNone(local_uri_path("file://remote/path/header.h"))
 
+    @unittest.skipUnless(os.name == "nt", "Windows drive URI semantics")
+    def test_encoded_lowercase_drive_colon_is_readable_without_double_decoding(self):
+        with tempfile.TemporaryDirectory(prefix="analysis drive é 😀 ") as directory:
+            path = Path(directory).resolve() / "percent%20.h"
+            path.write_text("/*😀*/ int value;\r\n", encoding="utf-8", newline="")
+            uri = path.as_uri()
+            prefix = "file:///" + path.drive
+            encoded = uri.replace(prefix, "file:///" + path.drive[0].lower() + "%3A", 1)
+            mapped = local_uri_path(encoded)
+            self.assertIsNotNone(mapped)
+            self.assertTrue(mapped.samefile(path))
+            self.assertEqual(mapped.name, "percent%20.h")
+            self.assertIsNone(local_uri_path("file:////server/share/header.h"))
+            self.assertIsNone(local_uri_path("file://localhost//server/share/header.h"))
+            self.assertIsNone(local_uri_path("file:///c%3A/dir/header.h?query"))
+
 
 class TransportTests(unittest.TestCase):
+    def test_wedged_stdin_bounds_cancellation_and_releases_other_waiter(self):
+        process = self.adapter.process
+        with concurrent.futures.ThreadPoolExecutor(2) as pool:
+            started = time.monotonic()
+            blocked = pool.submit(self.adapter.request, "test/wedge", {}, started + 0.3)
+            while not any(
+                json.loads(line).get("method") == "test/wedge"
+                for line in (self.root / "received.jsonl").read_text(encoding="utf-8").splitlines()
+            ):
+                self.assertLess(time.monotonic() - started, 0.3)
+                threading.Event().wait(0.005)
+            self.adapter.notify("test/payload", {"text": "x" * 1024 * 1024})
+            other = pool.submit(self.adapter.request, "test/delay", {}, started + 3)
+            with self.assertRaises(TimeoutError):
+                blocked.result(ARGUMENT_TIMEOUT_GRACE_SECONDS + 1)
+            with self.assertRaises(ClangdFailure):
+                other.result(ARGUMENT_TIMEOUT_GRACE_SECONDS)
+        self.assertLess(time.monotonic() - started, ARGUMENT_TIMEOUT_GRACE_SECONDS + 0.3)
+        self.assertIsNotNone(process.poll())
+        self.assertFalse(list((self.root / "markers").glob("*.json")))
+
     def test_unconfirmed_late_cleanup_retains_marker_and_blocks_another_spawn(self):
         store = ProcessMarkerStore(self.root / "unconfirmed-markers")
         store.root.mkdir(parents=True, exist_ok=True)

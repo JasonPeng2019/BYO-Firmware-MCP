@@ -92,13 +92,21 @@ problems. Results never mean firmware verification passed; they cover one build,
 and closed headers/external dependencies and background indexes may be stale.
 Hover documentation is untrusted source text and carries no agent instructions.
 
+The service's own reports and metadata use `.firm/code-analysis/`. Clangd may
+write disposable background-index shards and a generated `.gitignore` under
+`<selected-database-directory>/.cache/clangd/index/`; status discloses that path.
+This cache does not change database selection. Source, generated headers,
+compilation databases, `.clangd`, board policy and suppressions remain intact.
+
 The development clangd reader has a known non-BMP path limitation with escaped
 JSON surrogate pairs. Shared JSON parsing accepts those bytes, but clangd analysis
 blocks them with a literal UTF-8 re-export remedy (Python `ensure_ascii=False`).
 Keep the original commands and flags; the server never rewrites the database.
-The native reader can also fall back to host flags for relative compilation
-working directories. Clangd analysis blocks these entries and requests an
-absolute-directory re-export; shared parsing retains project-relative resolution.
+The native reader can fall back to host flags when both a compilation working
+directory and its source path are relative. Clangd analysis blocks that combination
+and requests an absolute-path re-export. Relative working directories with
+absolute source paths remain supported when the native target command is valid;
+shared parsing retains project-relative resolution and original database bytes.
 
 Source use resolves clangd on PATH and reports that origin. Managed sidecars pass
 validated project/runtime context explicitly and currently report `unavailable`

@@ -80,6 +80,30 @@ def remaining(deadline: float, cancellation: Cancellation | None = None) -> floa
     return value
 
 
+def _which_path_only(context: AnalysisRuntimeContext, name: str) -> str | None:
+    # Windows shutil.which(basename) can prepend cwd even with an explicit PATH.
+    # Search only deliberately listed directories, with complete candidate names
+    # so Python 3.10 and newer agree about PATHEXT and never insert cwd.
+    suffixes = [""]
+    if os.name == "nt":
+        suffixes += os.environ.get("PATHEXT", ".COM;.EXE;.BAT;.CMD").split(os.pathsep)
+    for entry in os.environ.get("PATH", "").split(os.pathsep):
+        if not entry:
+            continue
+        directory = Path(entry.strip('"') if os.name == "nt" else entry)
+        if not directory.is_absolute():
+            directory = context.project_root / directory
+        try:
+            directory = directory.resolve()
+        except (OSError, ValueError):
+            continue
+        for suffix in suffixes:
+            candidate = shutil.which(str(directory / (name + suffix)), path="")
+            if candidate is not None:
+                return candidate
+    return None
+
+
 def spawn_before_deadline(
     argv: list[str],
     deadline: float,
@@ -174,7 +198,7 @@ def resolve_analysis_program(
                 ),
             ),
         )
-    raw = shutil.which(name)
+    raw = _which_path_only(context, name)
     if raw is None:
         return ResolvedAnalysisProgram(
             name,
@@ -259,6 +283,11 @@ def resolve_analysis_program(
             return result
         finally:
             _probe_lock.release()
+    except TimeoutError:
+        # Caller deadline/cancellation is not executable-identity evidence.
+        # Let the service report the incomplete request; an independent call
+        # gets its own finite probe without any hidden retry here.
+        raise
     except (OSError, RuntimeError, subprocess.TimeoutExpired) as exc:
         result = ResolvedAnalysisProgram(
             name,

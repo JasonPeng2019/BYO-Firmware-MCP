@@ -24,6 +24,7 @@ def build_code_analysis_handlers(
         """Show clangd executable/version, selected database, problems and session/index limits.
 
         Start here for setup/debugging. Works without any board or setup. No arguments;
+        analysis reads saved files only; unsaved editor buffers are outside this scope.
         does not start indexing. Export/select compile_commands.json and configure
         development PATH or restore the supported runtime if unavailable/not_configured.
         """

@@ -65,12 +65,28 @@ def _pairs(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
     return result
 
 
-def _constant(value: str) -> None:
-    _fail("config-invalid", f"Non-JSON number {value}.", "Use a finite JSON number.")
+def _finite_json(value: Any, field: str = "") -> None:
+    if type(value) is float and not math.isfinite(value):
+        _fail(
+            "config-invalid",
+            f"Non-finite JSON number at {field or 'byo-analysis.json'}.",
+            "Use a finite JSON number.",
+            field or "byo-analysis.json",
+        )
+    if isinstance(value, dict):
+        for name, item in value.items():
+            _finite_json(item, f"{field}.{name}" if field else name)
+    elif isinstance(value, list):
+        for index, item in enumerate(value):
+            _finite_json(item, f"{field}[{index}]")
 
 
 def strict_json(data: bytes) -> Any:
-    return json.loads(data.decode("utf-8-sig"), object_pairs_hook=_pairs, parse_constant=_constant)
+    # Decode first to retain the offending field for NaN/Infinity and numeric
+    # overflow, then reject them before any consumer receives the parsed value.
+    value = json.loads(data.decode("utf-8-sig"), object_pairs_hook=_pairs)
+    _finite_json(value)
+    return value
 
 
 def _object(value: Any, label: str, names: set[str]) -> dict[str, Any]:
@@ -509,6 +525,6 @@ def load_analysis_config(project_root: str | Path) -> AnalysisConfigSnapshot:
                 "Fix the project JSON using schema_version 1.",
             )
         )
-    for source in {root / "__analysis_status__.cpp", *(entry.source for entry in snapshot.entries)}:
+    for source in {entry.source for entry in snapshot.entries}:
         validate_clangd_configuration(snapshot, source)
     return snapshot

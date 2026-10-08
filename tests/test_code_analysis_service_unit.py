@@ -6,6 +6,7 @@ import concurrent.futures
 import json
 import os
 import shutil
+import subprocess
 import sys
 import tempfile
 import threading
@@ -20,12 +21,16 @@ from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 
 from pyocd_debug_mcp.code_analysis_config import load_analysis_config, sha256_bytes
+from pyocd_debug_mcp import code_analysis_runtime as runtime
 from pyocd_debug_mcp.code_analysis_runtime import (
     AnalysisRuntimeContext,
     ResolvedAnalysisProgram,
     resolve_analysis_program,
 )
-from pyocd_debug_mcp.kernel.operations import operation_timeout_seconds
+from pyocd_debug_mcp.kernel.operations import (
+    ARGUMENT_TIMEOUT_GRACE_SECONDS,
+    operation_timeout_seconds,
+)
 from pyocd_debug_mcp.kernel.registry import RegistryFastMCP
 from pyocd_debug_mcp.services.code_analysis import CodeAnalysisService
 from pyocd_debug_mcp.tools.code_analysis import (
@@ -37,7 +42,30 @@ from pyocd_debug_mcp.tools.plans import forbid_unknown_tool_arguments
 from test_clangd_adapter_unit import fake_factory, make_project
 
 
+def record_regression(name, value):
+    destination = os.environ.get("BYO_TEST_ANALYSIS_EVIDENCE")
+    if destination:
+        directory = Path(destination)
+        directory.mkdir(parents=True, exist_ok=True)
+        (directory / (name + ".json")).write_text(
+            json.dumps(value, ensure_ascii=False, indent=2), encoding="utf-8"
+        )
+
+
 class ServiceTests(unittest.TestCase):
+    def test_regression_every_tool_description_discloses_saved_scope(self):
+        for name, handler in build_code_analysis_handlers(
+            CodeAnalysisToolServices(self.service)
+        ).items():
+            with self.subTest(tool=name):
+                self.assertIn("saved", handler.__doc__.lower())
+
+    def test_status_discloses_selected_database_native_cache_without_starting_session(self):
+        result = self.service.status()
+        self.assertEqual(result["status"], "ok", result)
+        self.assertIn(str(self.root / ".cache" / "clangd" / "index"), " ".join(result["warnings"]))
+        self.assertIsNone(self.service._adapter)
+
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory(prefix="analysis service é 😀 ")
         self.root = Path(self.temp.name).resolve()
@@ -55,17 +83,147 @@ class ServiceTests(unittest.TestCase):
         self.service.shutdown()
         self.temp.cleanup()
 
+    def test_regression_conditional_config_only_evaluates_actual_selected_paths(self):
+        (self.root / "src").mkdir()
+        self.source = self.source.rename(self.root / "src/main.cpp")
+        database = self.root / "compile_commands.json"
+        entries = json.loads(database.read_text(encoding="utf-8"))
+        entries[0]["file"] = str(self.source)
+        entries[0]["arguments"][-1] = str(self.source)
+        database.write_text(json.dumps(entries, ensure_ascii=False), encoding="utf-8")
+        config = self.root / ".clangd"
+        config.write_text(
+            "If:\n  PathExclude: src/.*\nCompileFlags:\n  CompilationDatabase: None\n",
+            encoding="utf-8",
+        )
+        before = config.read_bytes()
+        status = self.service.status()
+        query = self.service.hover("src/main.cpp", 1, 5)
+        record_regression("conditional-fake", {"status": status, "query": query})
+        self.assertEqual(status["status"], "ok", status)
+        self.assertEqual(status["data"]["session_state"], "not_started")
+        self.assertEqual(query["status"], "ok", query)
+        self.assertEqual(config.read_bytes(), before)
+        config.write_text(
+            "If:\n  PathMatch: src/.*\nCompileFlags:\n  CompilationDatabase: None\n",
+            encoding="utf-8",
+        )
+        self.assertEqual(self.service.status()["code"], "analysis/clangd-config-conflict")
+        self.assertEqual(self.service.hover("src/main.cpp", 1, 5)["status"], "not_configured")
+        # The same excluded fragment genuinely applies to a queried header.
+        config.write_bytes(before)
+        header = self.root / "outside.h"
+        header.write_text("int value;\n", encoding="utf-8")
+        self.assertEqual(
+            self.service.hover("outside.h", 1, 5)["code"], "analysis/clangd-config-conflict"
+        )
+
+    def test_regression_nonfinite_config_names_the_offending_field(self):
+        for number in ("NaN", "Infinity", "-Infinity", "1e999"):
+            with self.subTest(number=number):
+                (self.root / "byo-analysis.json").write_text(
+                    '{"schema_version":1,"cppcheck":{"timeout_seconds":' + number + "}}",
+                    encoding="utf-8",
+                )
+                problem = load_analysis_config(self.root).problems[0]
+                self.assertEqual(problem.code, "analysis/config-invalid")
+                self.assertEqual(problem.field, "cppcheck.timeout_seconds")
+                self.assertIn("timeout_seconds", problem.message)
+                self.assertTrue(problem.remedy)
+
+    @unittest.skipUnless(os.name == "nt", "Windows drive URI semantics")
+    def test_regression_encoded_drive_location_maps_codepoints_and_preserves_raw_missing_range(
+        self,
+    ):
+        target = self.root / "target é 😀 %20.h"
+        text = "/*😀*/ int value;\r\n"
+        target.write_text(text, encoding="utf-8", newline="")
+        uri = target.as_uri().replace(
+            "file:///" + target.drive, "file:///" + target.drive[0].lower() + "%3A", 1
+        )
+        raw_range = {"start": {"line": 0, "character": 6}, "end": {"line": 0, "character": 7}}
+        warnings = []
+        mapped = self.service._location(
+            {"uri": uri, "range": raw_range}, "utf-16", warnings, self.source, ""
+        )
+        record_regression("encoded-drive-mapped", mapped)
+        self.assertEqual(mapped["position_mapping"], "available", mapped)
+        self.assertEqual(mapped["range"]["start"], {"line": 1, "column": 6})
+        self.assertEqual(mapped["uri"], uri)
+        self.assertTrue(Path(mapped["path"]).samefile(target))
+        target.unlink()
+        unavailable = self.service._location(
+            {"uri": uri, "range": raw_range}, "utf-16", warnings, self.source, ""
+        )
+        self.assertEqual(unavailable["position_mapping"], "unavailable")
+        self.assertIsNone(unavailable["range"])
+        self.assertEqual(unavailable["raw_lsp_range"], raw_range)
+        self.assertEqual(unavailable["lsp_position_encoding"], "utf-16")
+
+    def test_regression_timeout_cancel_frames_reach_peer_before_owned_shutdown(self):
+        attempts = []
+        for index in range(8):
+            root = self.root / f"cancel-{index}"
+            root.mkdir()
+            make_project(root)
+            service = CodeAnalysisService(
+                AnalysisRuntimeContext(root),
+                fake_factory(root, "never-definition"),
+                program_resolver=lambda *args: self.program,
+            )
+            try:
+                self.assertEqual(service.diagnostics("main.cpp")["status"], "ok")
+                process = service._adapter.process
+                marker = json.loads(service._adapter.marker.read_text(encoding="utf-8"))
+                started = time.monotonic()
+                result = service.definition("main.cpp", 1, 5, timeout_seconds=0.1)
+                elapsed = time.monotonic() - started
+                service.shutdown()
+                received = [
+                    json.loads(line)
+                    for line in (root / "received.jsonl").read_text(encoding="utf-8").splitlines()
+                ]
+                attempts.append(
+                    {
+                        "result": result,
+                        "elapsed": elapsed,
+                        "received_frames": received,
+                        "owned_identity": marker,
+                        "exit_code": process.poll(),
+                        "remaining_markers": list(map(str, (root / "markers").glob("*.json"))),
+                    }
+                )
+            finally:
+                service.shutdown()
+        record_regression("cancel-delivery", attempts)
+        for attempt in attempts:
+            self.assertEqual(attempt["result"]["code"], "analysis/timeout", attempt)
+            requests = [
+                m["id"]
+                for m in attempt["received_frames"]
+                if m.get("method") == "textDocument/definition"
+            ]
+            cancellations = [
+                m["params"]["id"]
+                for m in attempt["received_frames"]
+                if m.get("method") == "$/cancelRequest"
+            ]
+            self.assertEqual(len(requests), 1, attempt)
+            self.assertTrue(set(requests) <= set(cancellations), attempt)
+            self.assertLess(attempt["elapsed"], ARGUMENT_TIMEOUT_GRACE_SECONDS + 0.1)
+            self.assertIsNotNone(attempt["exit_code"])
+            self.assertEqual(attempt["remaining_markers"], [])
+
     def test_saved_revision_counts_and_empty_versioned_diagnostics(self):
         first = self.service.diagnostics("main.cpp")
         self.assertEqual(first["status"], "ok", first)
         self.assertEqual(first["data"]["observed_count"], 0)
         second = self.service.diagnostics("main.cpp")
-        self.assertGreater(
-            second["source"]["document_version"], first["source"]["document_version"]
-        )
+        self.assertEqual(second["source"], first["source"])
         self.source.write_bytes(b"int value = 2;\r\n")
         hover = self.service.hover("main.cpp", 1, 5)
         self.assertEqual(hover["source"]["sha256"], sha256_bytes(self.source.read_bytes()))
+        self.assertGreater(hover["source"]["document_version"], first["source"]["document_version"])
         self.assertEqual(hover["status"], "ok", hover)
         self.assertEqual(self.service.references("main.cpp", 1, 5)["status"], "not_found")
 
@@ -73,7 +231,7 @@ class ServiceTests(unittest.TestCase):
         with concurrent.futures.ThreadPoolExecutor(2) as pool:
             results = list(pool.map(lambda _: self.service.diagnostics("main.cpp"), range(2)))
         self.assertTrue(all(r["status"] == "ok" for r in results), results)
-        self.assertEqual(len({r["source"]["document_version"] for r in results}), 2)
+        self.assertEqual(len({r["source"]["document_version"] for r in results}), 1)
         self.service.shutdown()
         self.service = CodeAnalysisService(
             AnalysisRuntimeContext(self.root),
@@ -270,6 +428,349 @@ class ServiceTests(unittest.TestCase):
     os.environ.get("BYO_TEST_CLANGD"), "Set explicit BYO_TEST_CLANGD private test fixture."
 )
 class RealClangdTests(unittest.TestCase):
+    def test_known_header_change_reopens_same_saved_bytes_for_fresh_native_diagnostics(self):
+        source = make_project(self.root)
+        header = self.root / "selected.h"
+        header.write_text("#define SELECTED 7\n", encoding="utf-8")
+        source.write_text(
+            '#include "selected.h"\nstatic_assert(SELECTED == 7);\nint value;\n', encoding="utf-8"
+        )
+        self.service = CodeAnalysisService(AnalysisRuntimeContext(self.root))
+        clean = self.service.diagnostics("main.cpp", timeout_seconds=5)
+        self.assertEqual(clean["status"], "ok", clean)
+        self.assertEqual(clean["data"]["observed_count"], 0)
+        header.write_text("#define SELECTED 9\n", encoding="utf-8")
+        defect = self.service.diagnostics("main.cpp", timeout_seconds=5)
+        self.assertEqual(defect["status"], "ok", defect)
+        self.assertEqual(defect["source"]["sha256"], clean["source"]["sha256"])
+        self.assertGreater(
+            defect["source"]["document_version"], clean["source"]["document_version"]
+        )
+        self.assertGreater(defect["data"]["observed_count"], 0)
+        header.write_text("#define SELECTED 7\n", encoding="utf-8")
+        restored = self.service.diagnostics("main.cpp", timeout_seconds=5)
+        self.assertEqual(restored["status"], "ok", restored)
+        self.assertGreater(
+            restored["source"]["document_version"], defect["source"]["document_version"]
+        )
+        self.assertEqual(restored["data"]["observed_count"], 0)
+        record_regression(
+            "header-revision-native", {"clean": clean, "defect": defect, "restored": restored}
+        )
+
+    def test_regression_relative_directory_with_absolute_source_preserves_arm_command(self):
+        source = self.root / "main.cpp"
+        source.write_text(
+            "static_assert(sizeof(void*) == 4);\nstatic_assert(SELECTED_BUILD == 7);\nint selected = SELECTED_BUILD;\n",
+            encoding="utf-8",
+        )
+        database = self.root / "compile_commands.json"
+        database.write_text(
+            json.dumps(
+                [
+                    {
+                        "directory": ".",
+                        "file": str(source),
+                        "arguments": [
+                            "clang++",
+                            "--target=arm-none-eabi",
+                            "-mcpu=cortex-m4",
+                            "-mthumb",
+                            "-std=c++17",
+                            "-DSELECTED_BUILD=7",
+                            "-c",
+                            str(source),
+                        ],
+                    }
+                ],
+                ensure_ascii=False,
+            ),
+            encoding="utf-8",
+        )
+        original_bytes = database.read_bytes()
+        from pyocd_debug_mcp.kernel.processes import run_owned
+
+        argv = [
+            str(self.executable),
+            "--enable-config",
+            "--check=" + str(source),
+            "--compile-commands-dir=" + str(self.root),
+            "--query-driver=",
+        ]
+        native = run_owned(argv, timeout=15, capture_output=True, text=True, cwd=self.root)
+        self.assertEqual(native.returncode, 0, native.stderr)
+        self.assertIn("thumbv7em", native.stderr)
+        self.assertFalse(load_analysis_config(self.root).problems)
+        self.service = CodeAnalysisService(AnalysisRuntimeContext(self.root))
+        result = self.service.diagnostics("main.cpp", timeout_seconds=5)
+        record_regression(
+            "relative-absolute-source",
+            {
+                "argv": argv,
+                "native_exit": native.returncode,
+                "native_stderr": native.stderr,
+                "result": result,
+            },
+        )
+        self.assertEqual(result["status"], "ok", result)
+        self.assertEqual(result["data"]["observed_count"], 0)
+        self.assertEqual(database.read_bytes(), original_bytes)
+
+    def test_regression_unchanged_saved_revision_has_explicit_diagnostics(self):
+        make_project(self.root)
+        self.service = CodeAnalysisService(AnalysisRuntimeContext(self.root))
+        definition = self.service.definition("main.cpp", 1, 5, timeout_seconds=5)
+        diagnostics = self.service.diagnostics("main.cpp", timeout_seconds=2)
+        record_regression(
+            "unchanged-native", {"definition": definition, "diagnostics": diagnostics}
+        )
+        self.assertEqual(definition["status"], "ok", definition)
+        self.assertEqual(diagnostics["status"], "ok", diagnostics)
+        self.assertEqual(diagnostics["source"]["sha256"], definition["source"]["sha256"])
+        self.assertEqual(diagnostics["data"]["observed_count"], 0)
+        again = self.service.diagnostics("main.cpp", timeout_seconds=2)
+        self.assertEqual(again["status"], "ok", again)
+        self.assertEqual(again["source"], diagnostics["source"])
+        source = self.root / "main.cpp"
+        source.write_text("int value = missing;\n", encoding="utf-8")
+        defect = self.service.diagnostics("main.cpp", timeout_seconds=5)
+        self.assertEqual(defect["status"], "ok", defect)
+        self.assertGreater(
+            defect["source"]["document_version"], diagnostics["source"]["document_version"]
+        )
+        self.assertGreater(defect["data"]["observed_count"], 0)
+        source.write_bytes(b"int value = 1;\r\n")
+        restored = self.service.diagnostics("main.cpp", timeout_seconds=5)
+        self.assertEqual(restored["status"], "ok", restored)
+        self.assertGreater(
+            restored["source"]["document_version"], defect["source"]["document_version"]
+        )
+        self.assertEqual(restored["data"]["observed_count"], 0)
+
+    def test_regression_background_cache_preserves_other_project_inputs(self):
+        # ROOT clarified the exact native cache exception at 8d18af229c3608be7c7a16be5ce79e328e7d06ff.
+        # The earlier strict oracle failure stays in retained red/green evidence.
+        make_project(self.root)
+        build = self.root / "build"
+        build.mkdir()
+        database = (self.root / "compile_commands.json").rename(build / "compile_commands.json")
+        (self.root / "byo-analysis.json").write_text(
+            json.dumps(
+                {"schema_version": 1, "compilation_database": "build/compile_commands.json"}
+            ),
+            encoding="utf-8",
+        )
+        protected = {
+            "include/generated.h": b"#define TARGET_VALUE 7\n",
+            ".clangd": b"# Project-owned clangd configuration.\n",
+            "policy/board.json": b'{"project_owned": true}\n',
+            "config/suppressions.txt": b"project_owned_suppression\n",
+            ".firm/policy.json": b'{"project_owned": true}\n',
+        }
+        for name, content in protected.items():
+            path = self.root / name
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(content)
+        native_cache = build / ".cache" / "clangd" / "index"
+        cache_directories = {build / ".cache", native_cache.parent, native_cache}
+
+        def tree():
+            return {
+                path.relative_to(self.root).as_posix(): sha256_bytes(path.read_bytes())
+                if path.is_file()
+                else "<dir>"
+                for path in self.root.rglob("*")
+                if not path.is_relative_to(self.root / ".firm" / "code-analysis")
+                and path != self.root / ".firm"
+                and path not in cache_directories
+                and not (
+                    path.is_file()
+                    and path.parent == native_cache
+                    and (path.name == ".gitignore" or path.suffix == ".idx")
+                )
+            }
+
+        before = tree()
+        self.service = CodeAnalysisService(AnalysisRuntimeContext(self.root))
+        result = self.service.diagnostics("main.cpp", timeout_seconds=5)
+        self.assertEqual(result["status"], "ok", result)
+        self.service.shutdown()
+        after = tree()
+        generated = [p.relative_to(self.root).as_posix() for p in native_cache.glob("*")]
+        record_regression(
+            "native-cache-boundary",
+            {
+                "contract_commit": "8d18af229c3608be7c7a16be5ce79e328e7d06ff",
+                "before": before,
+                "after": after,
+                "native_cache_files": generated,
+                "result": result,
+            },
+        )
+        self.assertTrue(generated, "native cache was not exercised")
+        self.assertEqual(before, after, "analysis changed protected project inputs")
+
+        # The exception must not mask protected inputs, the whole .firm tree,
+        # another cache root, nested cache data or arbitrary files in this cache.
+        for path in [database, self.root / "main.cpp", *(self.root / name for name in protected)]:
+            with self.subTest(protected=path.relative_to(self.root).as_posix()):
+                content = path.read_bytes()
+                try:
+                    path.write_bytes(content + b"unapproved mutation")
+                    self.assertNotEqual(before, tree())
+                finally:
+                    path.write_bytes(content)
+        for name in [
+            ".cache/clangd/index/wrong-root.idx",
+            "build/.cache/clangd/other.idx",
+            "build/.cache/clangd/index/arbitrary.txt",
+            "build/.cache/clangd/index/nested/other.idx",
+            ".firm/unapproved.txt",
+        ]:
+            with self.subTest(unapproved=name):
+                path = self.root / name
+                new_parents = []
+                parent = path.parent
+                while parent != self.root and not parent.exists():
+                    new_parents.append(parent)
+                    parent = parent.parent
+                path.parent.mkdir(parents=True, exist_ok=True)
+                try:
+                    path.write_bytes(b"unapproved write")
+                    self.assertNotEqual(before, tree())
+                finally:
+                    path.unlink()
+                    for parent in new_parents:
+                        parent.rmdir()
+                self.assertEqual(before, tree())
+
+    def test_regression_transient_version_deadlines_do_not_poison_independent_retry(self):
+        context = AnalysisRuntimeContext(self.root)
+        attempts = []
+        for scenario in ("expired", "short-probe", "cancelled-probe"):
+            with self.subTest(scenario=scenario), patch.object(runtime, "_probe_cache", {}):
+                event = threading.Event()
+                original = runtime.spawn_before_deadline
+                processes = []
+
+                def spawn(*args, **kwargs):
+                    process, marker = original(*args, **kwargs)
+                    processes.append((process, marker))
+
+                    def stalled(*args, **kwargs):
+                        if scenario == "cancelled-probe":
+                            event.set()
+                        raise subprocess.TimeoutExpired(process.args, kwargs["timeout"])
+
+                    process.communicate = stalled
+                    return process, marker
+
+                first = None
+                error = None
+                deadline = (
+                    time.monotonic() - 0.01 if scenario == "expired" else time.monotonic() + 1
+                )
+                with (
+                    patch.object(runtime, "spawn_before_deadline", side_effect=spawn),
+                    patch.object(
+                        runtime,
+                        "current_operation",
+                        return_value=SimpleNamespace(cancellation_requested=event),
+                    ),
+                ):
+                    try:
+                        first = resolve_analysis_program(context, "clangd", deadline)
+                    except TimeoutError as exc:
+                        error = str(exc)
+                retry = resolve_analysis_program(context, "clangd", time.monotonic() + 5)
+                attempts.append(
+                    {
+                        "scenario": scenario,
+                        "first_timeout": error,
+                        "first_result": [p.to_payload() for p in first.problems] if first else None,
+                        "retry_version": retry.version,
+                        "retry_problems": [p.to_payload() for p in retry.problems],
+                        "owned_exits": [p.poll() for p, _ in processes],
+                        "remaining_markers": [str(m) for _, m in processes if m and m.exists()],
+                    }
+                )
+        record_regression("transient-probe", attempts)
+        for attempt in attempts:
+            self.assertIsNotNone(attempt["first_timeout"], attempt)
+            self.assertFalse(attempt["retry_problems"], attempt)
+            self.assertIn("clangd", attempt["retry_version"])
+            self.assertTrue(all(code is not None for code in attempt["owned_exits"]))
+            self.assertEqual(attempt["remaining_markers"], [])
+
+    @unittest.skipUnless(os.name == "nt", "Windows implicit current-directory lookup")
+    def test_regression_program_resolution_uses_only_explicit_path(self):
+        shutil.copyfile(self.executable, self.root / "clangd.exe")
+        empty_path = self.root / "isolated-path"
+        empty_path.mkdir()
+        before = Path.cwd()
+        try:
+            os.chdir(self.root)
+            with (
+                patch.dict(os.environ, {"PATH": str(empty_path)}),
+                patch.object(runtime, "_probe_cache", {}),
+            ):
+                os.environ.pop("NoDefaultCurrentDirectoryInExePath", None)
+                result = resolve_analysis_program(
+                    AnalysisRuntimeContext(self.root), "clangd", time.monotonic() + 5
+                )
+        finally:
+            os.chdir(before)
+        record_regression(
+            "path-only",
+            {
+                "executable": str(result.executable),
+                "problems": [p.to_payload() for p in result.problems],
+            },
+        )
+        self.assertIsNone(result.executable, "incidental cwd executable was selected")
+        self.assertEqual(result.problems[0].code, "analysis/executable-unavailable")
+
+    def test_regression_conditional_config_matches_native_real_unit(self):
+        source = make_project(self.root)
+        (self.root / "src").mkdir()
+        source = source.rename(self.root / "src/main.cpp")
+        database = self.root / "compile_commands.json"
+        entries = json.loads(database.read_text(encoding="utf-8"))
+        entries[0]["file"] = str(source)
+        entries[0]["arguments"][-1] = str(source)
+        database.write_text(json.dumps(entries, ensure_ascii=False), encoding="utf-8")
+        (self.root / ".clangd").write_text(
+            "If:\n  PathExclude: src/.*\nCompileFlags:\n  CompilationDatabase: None\n",
+            encoding="utf-8",
+        )
+        argv = [
+            str(self.executable),
+            "--check=" + str(source),
+            "--compile-commands-dir=" + str(self.root),
+            "--enable-config",
+        ]
+        from pyocd_debug_mcp.kernel.processes import run_owned
+
+        native = run_owned(argv, timeout=15, capture_output=True, text=True, cwd=self.root)
+        self.assertEqual(native.returncode, 0, native.stderr)
+        self.service = CodeAnalysisService(AnalysisRuntimeContext(self.root))
+        status = self.service.status()
+        query = self.service.hover("src/main.cpp", 1, 5)
+        record_regression(
+            "conditional-native",
+            {
+                "argv": argv,
+                "exit": native.returncode,
+                "stdout": native.stdout,
+                "stderr": native.stderr,
+                "status": status,
+                "query": query,
+            },
+        )
+        self.assertEqual(status["status"], "ok", status)
+        self.assertEqual(status["data"]["session_state"], "not_started")
+        self.assertEqual(query["status"], "ok", query)
+
     def record_evidence(self, name, result):
         destination = os.environ.get("BYO_TEST_ANALYSIS_EVIDENCE")
         if not destination:
