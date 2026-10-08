@@ -14,9 +14,11 @@ that need CRLF, Unicode or other exact-byte input build it in code.
 ## ARM fixture notes
 
 - `include/firmware.h` asserts an ILP32 ABI (`sizeof(void*) == 4 && sizeof(long) == 4`).
-  When clangd uses the literal Arm GNU query driver, it gets the Cortex-M target and
-  the diagnostics notification is genuinely empty. Without the query driver on a
-  64-bit host, the same assertion fails. That provides the negative control.
+  The exported argv names `arm-none-eabi-gcc`/`g++`, so clangd infers the ARM target
+  from the driver name, and the toolchain headers arrive through explicit `-I`.
+  Native clangd 23.1.0 `--check` is therefore clean both with the literal query
+  driver and with an empty allowlist. The negative control replaces the driver
+  with a generic host `clang`: the ILP32 assertion then fails (`--check` exit 3).
 - The Arm compiler cannot build from Unicode paths. The ARM fixture is therefore
   materialized under an ASCII temporary path. The Unicode position and path tests
   for clangd use the host fixtures and in-code sources.
