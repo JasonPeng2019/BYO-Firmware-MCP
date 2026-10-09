@@ -671,6 +671,13 @@ class CodeAnalysisService:
                 or source.suffix.lower() not in SOURCE_SUFFIXES | HEADER_SUFFIXES
             ):
                 raise ValueError("file_path must name an existing C/C++ source/header file.")
+            # Installed Windows roots can carry the extended-length drive prefix,
+            # while the database uses ordinary paths. Verify the same existing
+            # file before unifying build matching, document locks and local URIs.
+            if os.name == "nt" and re.match(r"^\\\\\?\\[a-zA-Z]:\\", str(source)):
+                ordinary_source = Path(str(source)[4:]).resolve()
+                if source.samefile(ordinary_source):
+                    source = ordinary_source
             with self._document_guard:
                 lock = self._document_locks.setdefault(source, threading.Lock())
             _acquire(lock, deadline, operation_cancel)

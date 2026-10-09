@@ -10,11 +10,13 @@ from __future__ import annotations
 
 import json
 import math
+import os
 import unittest
 from pathlib import Path
 from typing import Any
 
 from tests.code_analysis_support import (
+    AnalysisProject,
     ERROR_CODES,
     FAKE_CLANGD,
     SESSION_STATES,
@@ -32,11 +34,14 @@ from tests.code_analysis_support import (
     mapped_range,
     query_params,
     raw_range,
+    real_clangd_or_skip,
     same_path,
     sha256_file,
     simple_project,
     temporary_directory,
 )
+
+from pyocd_debug_mcp.code_analysis_config import load_analysis_config
 
 ECHO = {"uri": "$request_uri", "range": {"start": "$request_position", "end": "$request_position"}}
 
@@ -108,6 +113,123 @@ class EnvelopeForEveryOperation(FakeServiceCase):
         )
         assert_envelope(self, envelope, "definition", status="ok")
         assert_source(self, envelope, self.source())
+
+
+@unittest.skipUnless(os.name == "nt", "Windows extended-length path regression")
+class WindowsExtendedRootPaths(unittest.TestCase):
+    """Real files and real clangd reproduce the installed launch-root spelling."""
+
+    def setUp(self) -> None:
+        executable = real_clangd_or_skip(self)
+        directory = temporary_directory("byo-ca-extended-")
+        base = directory.__enter__()
+        self.addCleanup(directory.__exit__, None, None, None)
+        self.project = AnalysisProject(base / "project café 中")
+        self.source = self.project.write_text(
+            "src/main.cpp",
+            "int selected_value() { return SELECTED_BUILD_VALUE; }\n"
+            "int main() { return selected_value(); }\n",
+        )
+        self.database = self.project.write_database(
+            [
+                self.project.entry(
+                    "src/main.cpp",
+                    arguments=[
+                        "clang++",
+                        "-std=c++17",
+                        "-DSELECTED_BUILD_VALUE=17",
+                        "-c",
+                        str(self.source),
+                    ],
+                )
+            ]
+        )
+        self.database_hash = sha256_file(self.database)
+        extended_root = Path("\\\\?\\" + str(self.project.root))
+        self.service = make_service(extended_root, executable=executable, testcase=self)
+        snapshot = load_analysis_config(self.service.context.project_root)
+        extended_source = (self.service.context.project_root / "src/main.cpp").resolve()
+        self.assertTrue(str(self.service.context.project_root).startswith("\\\\?\\"))
+        self.assertNotEqual(extended_source, snapshot.entries[0].source)
+        self.assertTrue(extended_source.samefile(snapshot.entries[0].source))
+        self.assertEqual(snapshot.entries[0].source, self.source)
+
+    def test_relative_and_absolute_queries_use_the_same_selected_build(self) -> None:
+        status = assert_envelope(self, self.service.status(), "status", status="ok")
+        self.assertEqual(status["data"]["session_state"], "not_started")
+        self.assertEqual(status["data"]["configuration_problems"], [])
+        queries = {
+            "definition": lambda path: self.service.definition(path, 2, 21, 30),
+            "hover": lambda path: self.service.hover(path, 1, 31, 30),
+            "diagnostics": lambda path: self.service.diagnostics(path, timeout_seconds=30),
+        }
+        for operation, query in queries.items():
+            absolute = assert_envelope(self, query(str(self.source)), operation, status="ok")
+            relative = query("src/main.cpp")
+            print(
+                "\nWindows path parity "
+                + json.dumps(
+                    {"operation": operation, "absolute": absolute, "relative": relative},
+                    ensure_ascii=False,
+                )
+            )
+            with self.subTest(operation=operation):
+                assert_envelope(self, relative, operation, status="ok")
+                self.assertTrue(Path(relative["source"]["path"]).samefile(self.source))
+                self.assertEqual(relative["source"]["sha256"], sha256_file(self.source))
+                self.assertEqual(relative["data"], absolute["data"])
+                self.assertEqual(
+                    relative["source"]["document_version"], absolute["source"]["document_version"]
+                )
+                for envelope in (absolute, relative):
+                    self.assertEqual(envelope["compilation_database_sha256"], self.database_hash)
+                if operation == "definition":
+                    location = first_location(self, relative)
+                    self.assertTrue(Path(location["path"]).samefile(self.source))
+                    self.assertEqual(location["range"], mapped_range((1, 5), (1, 19)))
+                elif operation == "hover":
+                    self.assertIn("17", relative["data"]["contents"]["value"])
+                else:
+                    self.assertEqual(relative["data"]["diagnostics"], [])
+        self.assertEqual(sha256_file(self.database), self.database_hash)
+        assert_envelope(self, self.service.status(), "status", status="ok")
+
+    def test_unselected_outside_and_unsupported_paths_are_refused(self) -> None:
+        saved = self.source.read_bytes()
+        unselected = self.project.write_bytes("src/unselected.cpp", saved)
+        outside = self.project.root.parent / "outside.cpp"
+        outside.write_bytes(saved)
+        for path in ("src/unselected.cpp", str(unselected), "../outside.cpp", str(outside)):
+            with self.subTest(path=path):
+                assert_failure(
+                    self,
+                    self.service.definition(path, 2, 21, 30),
+                    "definition",
+                    "not_configured",
+                    "analysis/compile-context-missing",
+                )
+        unsupported = self.project.write_bytes("src/main.txt", saved)
+        for path in (
+            "src/main.txt",
+            str(unsupported),
+            "src/missing.cpp",
+            self.source.as_uri(),
+            "https://example.invalid/main.cpp",
+            "\\\\server\\share\\main.cpp",
+            "//server/share/main.cpp",
+            "\\\\?\\" + str(self.source),
+        ):
+            with self.subTest(path=path):
+                assert_failure(
+                    self,
+                    self.service.definition(path, 2, 21, 30),
+                    "definition",
+                    "error",
+                    "analysis/invalid-argument",
+                )
+        status = assert_envelope(self, self.service.status(), "status", status="ok")
+        self.assertEqual(status["data"]["session_state"], "not_started")
+        self.assertEqual(sha256_file(self.database), self.database_hash)
 
 
 class StatusContract(unittest.TestCase):
