@@ -187,9 +187,9 @@ class CodeAnalysisService:
     def _invalidate_session(self, deadline: float, cancellation: Any) -> None:
         # Close admission before waiting for initialization/synchronization.
         self._generation.set()
+        self._state = "restarting"
         _acquire(self._session_guard, deadline, cancellation)
         try:
-            self._state = "restarting"
             if self._adapter is not None:
                 for path in self._documents:
                     self._adapter.clear_diagnostics(path.as_uri())
@@ -234,10 +234,44 @@ class CodeAnalysisService:
                 + "; service-owned reports/metadata use .firm/code-analysis/."
             )
         program = ResolvedAnalysisProgram("clangd", runtime_root=self.context.runtime_root)
+        clangd_problems = self._clangd_problems(snapshot)
+        integrity_failure: Exception | None = None
+        integrity_problems: list[AnalysisProblem] = []
         try:
             remaining(deadline, cancellation)
             program = self.program_resolver(self.context, "clangd", deadline)
             self._observe_runtime(program, deadline, cancellation)
+            if program.problems:
+                problem = program.problems[0]
+                self._failure(result, "unavailable", problem.code, problem.message, problem.remedy)
+            elif program.executable is None:
+                self._failure(
+                    result, "unavailable", "executable-unavailable", "No usable executable."
+                )
+            elif clangd_problems:
+                problem = clangd_problems[0]
+                self._failure(
+                    result, "not_configured", problem.code, problem.message, problem.remedy
+                )
+            else:
+                try:
+                    validate_analysis_program(program, deadline, cancellation)
+                except TimeoutError:
+                    raise
+                except (OSError, ValueError) as exc:
+                    # Bind the cause before draining: cleanup/lock failures must
+                    # preserve this evidence inside the same typed boundary.
+                    integrity_failure = exc
+                    problem = AnalysisProblem(
+                        "analysis/executable-unavailable",
+                        str(exc),
+                        "Restore/reinstall the supported runtime, then retry.",
+                    )
+                    integrity_problems.append(problem)
+                    self._invalidate_session(deadline, cancellation)
+                    self._failure(
+                        result, "unavailable", problem.code, problem.message, problem.remedy
+                    )
         except TimeoutError as exc:
             self._failure(
                 result,
@@ -248,12 +282,12 @@ class CodeAnalysisService:
         except ClangdFailure as exc:
             self._state = "failed"
             self._failure(result, exc.status, exc.code, str(exc))
-        clangd_problems = self._clangd_problems(snapshot)
         problems = [
             *program.problems,
             *program.runtime_problems,
             *clangd_problems,
             *[p for p in snapshot.problems if p.backend == "cppcheck"],
+            *integrity_problems,
         ]
         adapter = self._adapter
         if adapter is not None:
@@ -271,41 +305,9 @@ class CodeAnalysisService:
             "index_limitations": INDEX_LIMITATIONS,
             "required_data_locations": list(map(str, program.data_paths)),
         }
+        result["data"]["expected_identity"].update(getattr(integrity_failure, "expected", {}))
+        result["data"]["observed_identity"].update(getattr(integrity_failure, "observed", {}))
         result["warnings"].extend(program.warnings)
-        if result["status"] == "error":
-            return result
-        if program.problems or program.executable is None:
-            if program.problems:
-                p = program.problems[0]
-                return self._failure(result, "unavailable", p.code, p.message, p.remedy)
-            return (
-                result
-                if result["status"] != "ok"
-                else self._failure(
-                    result, "unavailable", "executable-unavailable", "No usable executable."
-                )
-            )
-        if clangd_problems:
-            p = clangd_problems[0]
-            return self._failure(result, "not_configured", p.code, p.message, p.remedy)
-        try:
-            validate_analysis_program(program, deadline, cancellation)
-        except TimeoutError as exc:
-            return self._failure(result, "incomplete", "timeout", str(exc))
-        except (OSError, ValueError) as exc:
-            self._invalidate_session(deadline, cancellation)
-            result["data"]["session_state"] = self._state
-            problem = AnalysisProblem(
-                "analysis/executable-unavailable",
-                str(exc),
-                "Restore/reinstall the supported runtime, then retry.",
-            )
-            result["data"]["configuration_problems"].append(problem.to_payload())
-            result["data"]["expected_identity"].update(getattr(exc, "expected", {}))
-            result["data"]["observed_identity"].update(getattr(exc, "observed", {}))
-            return self._failure(
-                result, "unavailable", problem.code, problem.message, problem.remedy
-            )
         return result
 
     def _session(
