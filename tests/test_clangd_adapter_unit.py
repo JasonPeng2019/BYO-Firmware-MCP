@@ -121,6 +121,25 @@ def fake_factory(root: Path, mode: str = "normal"):
 
 
 class PositionTests(unittest.TestCase):
+    def test_mapped_resource_argument_preserves_database_and_query_driver_arguments(self):
+        with tempfile.TemporaryDirectory(prefix="mapped resource ") as directory:
+            root = Path(directory).resolve()
+            make_project(root)
+            snapshot = load_analysis_config(root)
+            source = ResolvedAnalysisProgram("clangd", Path(sys.executable), origin="path")
+            original = ClangdAdapter(source, snapshot)._argv()
+            resource = root / "analysis/clangd/lib/clang/23"
+            managed = ResolvedAnalysisProgram(
+                "clangd",
+                Path(sys.executable),
+                origin="managed_runtime",
+                data_paths=(resource,),
+                runtime_root=root,
+            )
+            argv = ClangdAdapter(managed, snapshot)._argv()
+            self.assertEqual(argv, original + ["--resource-dir=" + str(resource)])
+            self.assertNotIn("--resource-dir=", " ".join(original))
+
     def test_round_trip_code_points_and_crlf(self):
         text = "é中😀e\u0301\tX\r\nlast\r\n"
         for encoding in ("utf-8", "utf-16", "utf-32"):

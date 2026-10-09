@@ -40,6 +40,7 @@ from pyocd_debug_mcp.tools.code_analysis import (
 from pyocd_debug_mcp.tools.plans import forbid_unknown_tool_arguments
 
 from test_clangd_adapter_unit import PEER, fake_factory, make_project
+from test_code_analysis_managed_runtime_unit import staged_runtime
 
 
 def record_regression(name, value):
@@ -53,6 +54,176 @@ def record_regression(name, value):
 
 
 class ServiceTests(unittest.TestCase):
+    def test_resolved_runtime_status_and_query_report_identity_without_fallback_warning(self):
+        from dataclasses import replace
+
+        self.service.context = AnalysisRuntimeContext(self.root, self.root)
+        self.program = replace(
+            self.program,
+            origin="managed_runtime",
+            runtime_root=self.root,
+            runtime_manifest_sha256="a" * 64,
+            analysis_mapping_sha256="b" * 64,
+            executable_sha256="c" * 64,
+            data_paths=(self.root / "resource",),
+        )
+        for result in (self.service.status(), self.service.hover("main.cpp", 1, 5)):
+            with self.subTest(operation=result["operation"]):
+                self.assertEqual(result["status"], "ok", result)
+                self.assertEqual(result["data"]["executable_origin"], "managed_runtime")
+                self.assertEqual(result["data"]["runtime_manifest_sha256"], "a" * 64)
+                self.assertEqual(result["data"]["analysis_mapping_sha256"], "b" * 64)
+                self.assertEqual(result["data"]["executable_sha256"], "c" * 64)
+                self.assertEqual(result["data"]["data_paths"], [str(self.root / "resource")])
+                self.assertNotIn("mapping is unavailable", " ".join(result["warnings"]))
+
+    def _managed_service(self, mode="normal"):
+        self.service.shutdown()
+        runtime_root = self.root / "runtime"
+        staged_runtime(runtime_root)
+        from pyocd_debug_mcp import code_analysis_manifest as manifest
+
+        self.enterContext(patch.object(manifest, "_metadata_cache", {}))
+        self.enterContext(patch.object(manifest, "_receipt_cache", {}))
+        self.enterContext(patch.object(runtime, "_probe_cache", {}))
+        # Version bytes are a deterministic unit seam. LSP uses the real owned
+        # framed peer, pipes, reader/writer threads and cleanup markers.
+        self.enterContext(patch.object(runtime, "_probe_program", side_effect=lambda p, *args: p))
+        self.service = CodeAnalysisService(
+            AnalysisRuntimeContext(self.root, runtime_root, managed=True),
+            fake_factory(self.root, mode),
+        )
+        return runtime_root / "analysis/clangd/lib/clang/23/include/stddef.h"
+
+    def test_resource_mutation_during_query_invalidates_result_and_drains_session(self):
+        header = self._managed_service()
+        initial = self.service.hover("main.cpp", 1, 5)
+        self.assertEqual(initial["status"], "ok", initial)
+        adapter = self.service._adapter
+        process = adapter.process
+        request = adapter.request
+
+        def mutate(method, *args, **kwargs):
+            response = request(method, *args, **kwargs)
+            if method == "textDocument/hover":
+                header.write_bytes(b"changed during query")
+            return response
+
+        with patch.object(adapter, "request", side_effect=mutate):
+            result = self.service.hover("main.cpp", 1, 5)
+        self.assertEqual(result["status"], "incomplete", result)
+        self.assertEqual(result["code"], "analysis/configuration-changed", result)
+        self.assertIsNone(self.service._adapter)
+        self.assertTrue(self.service._generation.is_set())
+        self.assertEqual(self.service._documents, {})
+        self.assertIsNone(
+            adapter.diagnostics_for(self.source.as_uri(), initial["source"]["document_version"])
+        )
+        self.assertIsNotNone(process.poll())
+        self.assertFalse(list((self.root / "markers").glob("*.json")))
+        self.assertTrue(all(not t.is_alive() for t in adapter._threads))
+
+    def test_status_detects_runtime_change_cancels_pending_query_and_closes_admission(self):
+        header = self._managed_service("never-definition")
+        self.assertEqual(self.service.hover("main.cpp", 1, 5)["status"], "ok")
+        adapter = self.service._adapter
+        process = adapter.process
+        admitted = threading.Event()
+        request = adapter.request
+
+        def observe(method, *args, **kwargs):
+            if method == "textDocument/definition":
+                admitted.set()
+            return request(method, *args, **kwargs)
+
+        with patch.object(adapter, "request", side_effect=observe):
+            with concurrent.futures.ThreadPoolExecutor(1) as pool:
+                pending = pool.submit(self.service.definition, "main.cpp", 1, 5, 3)
+                self.assertTrue(admitted.wait(1), "query was not admitted")
+                header.write_bytes(b"changed while pending")
+                status = self.service.status()
+                result = pending.result(2)
+        self.assertEqual(status["status"], "unavailable", status)
+        self.assertEqual(result["code"], "analysis/configuration-changed", result)
+        self.assertIsNone(self.service._adapter)
+        self.assertIsNotNone(process.poll())
+        self.assertFalse(self.service._documents)
+        self.assertFalse(list((self.root / "markers").glob("*.json")))
+        self.assertTrue(all(not t.is_alive() for t in adapter._threads))
+        self.assertEqual(self.service.hover("main.cpp", 1, 5)["status"], "unavailable")
+
+    def test_receipt_is_checked_again_at_session_admission(self):
+        header = self._managed_service()
+        resolve = self.service.program_resolver
+
+        def mutate_after_resolution(*args):
+            program = resolve(*args)
+            header.write_bytes(b"changed before session admission")
+            return program
+
+        with patch.object(self.service, "program_resolver", side_effect=mutate_after_resolution):
+            result = self.service.hover("main.cpp", 1, 5)
+        self.assertEqual(result["code"], "analysis/configuration-changed", result)
+        self.assertIsNone(self.service._adapter)
+        self.assertFalse((self.root / "received.jsonl").exists())
+
+    def test_status_checks_receipt_after_resolution_without_starting_lsp(self):
+        header = self._managed_service()
+        resolve = self.service.program_resolver
+
+        def mutate_after_resolution(*args):
+            program = resolve(*args)
+            header.write_bytes(b"changed before status return")
+            return program
+
+        with patch.object(self.service, "program_resolver", side_effect=mutate_after_resolution):
+            result = self.service.status()
+        self.assertEqual(result["status"], "unavailable", result)
+        self.assertTrue(result["data"]["expected_identity"])
+        self.assertTrue(result["data"]["observed_identity"])
+        self.assertIsNone(self.service._adapter)
+
+    def test_runtime_change_cancels_initialization_before_old_session_admission(self):
+        header = self._managed_service()
+        factory = self.service.adapter_factory
+        initializing = threading.Event()
+
+        def waiting_factory(*args):
+            adapter = factory(*args)
+
+            def wait_start(deadline, cancellation):
+                initializing.set()
+                self.assertTrue(self.service._generation.wait(2))
+                runtime.remaining(deadline, cancellation)
+
+            adapter.start = wait_start
+            return adapter
+
+        self.service.adapter_factory = waiting_factory
+        with concurrent.futures.ThreadPoolExecutor(1) as pool:
+            pending = pool.submit(self.service.hover, "main.cpp", 1, 5, 3)
+            self.assertTrue(initializing.wait(1))
+            header.write_bytes(b"changed during initialization")
+            status = self.service.status()
+            query = pending.result(2)
+        self.assertEqual(status["status"], "unavailable", status)
+        self.assertEqual(query["code"], "analysis/configuration-changed", query)
+        self.assertIsNone(self.service._adapter)
+        self.assertFalse((self.root / "received.jsonl").exists())
+
+    def test_explicit_development_fallback_keeps_runtime_problem_and_warning(self):
+        header = self._managed_service()
+        header.unlink()
+        self.service.context = AnalysisRuntimeContext(self.root, self.service.context.runtime_root)
+        with patch.object(runtime, "_which_path_only", return_value=sys.executable):
+            status = self.service.status()
+            query = self.service.hover("main.cpp", 1, 5)
+        for result in (status, query):
+            self.assertEqual(result["status"], "ok", result)
+            self.assertEqual(result["data"]["executable_origin"], "path")
+            self.assertIn("PATH fallback", " ".join(result["warnings"]))
+            self.assertTrue(result["data"]["configuration_problems"])
+
     def test_known_generated_header_invalidates_without_duplicate_walked_headers(self):
         generated = self.root / ".firm/build/generated/selected.h"
         generated.parent.mkdir(parents=True)

@@ -194,7 +194,7 @@ class ClangdAdapter:
         """Private subclass seam for a scriptable peer; no tool-call override."""
         if self.program.executable is None or self.config.database_path is None:
             raise ClangdFailure("executable-unavailable", "No resolved clangd/database.")
-        return [
+        argv = [
             str(self.program.executable),
             "--enable-config",
             "--background-index",
@@ -204,6 +204,9 @@ class ClangdAdapter:
             "--query-driver="
             + ",".join(str(p).replace("\\", "/") for p in self.config.query_driver_paths),
         ]
+        if self.program.origin == "managed_runtime" and self.program.data_paths:
+            argv.append("--resource-dir=" + str(self.program.data_paths[0]))
+        return argv
 
     def start(self, deadline: float, cancellation: Cancellation | None = None) -> None:
         argv = self._argv()

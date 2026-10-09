@@ -32,6 +32,7 @@ from pyocd_debug_mcp.code_analysis_runtime import (
     ResolvedAnalysisProgram,
     remaining,
     resolve_analysis_program,
+    validate_analysis_program,
 )
 from pyocd_debug_mcp.kernel.operations import DEFAULT_OPERATION_TIMEOUT_SECONDS, current_operation
 
@@ -155,15 +156,48 @@ class CodeAnalysisService:
             "compilation_database_sha256": snapshot.database_sha256 if snapshot else None,
             "index_completeness": "unverified",
             "data": {},
-            "warnings": (list(snapshot.warnings) if snapshot else [])
-            + (
-                [
-                    "Supplied runtime manifest mapping is unavailable; source/development resolution uses PATH."
-                ]
-                if self.context.runtime_root is not None and not self.context.managed
-                else []
-            ),
+            "warnings": list(snapshot.warnings) if snapshot else [],
         }
+
+    @staticmethod
+    def _program_report(program: ResolvedAnalysisProgram) -> dict[str, Any]:
+        return {
+            "executable": str(program.executable) if program.executable else None,
+            "version": program.version,
+            "executable_origin": program.origin,
+            "runtime_root": str(program.runtime_root) if program.runtime_root else None,
+            "runtime_manifest_sha256": program.runtime_manifest_sha256,
+            "analysis_mapping_sha256": program.analysis_mapping_sha256,
+            "executable_sha256": program.executable_sha256,
+            "data_paths": list(map(str, program.data_paths)),
+            "expected_identity": dict(program.expected_identity),
+            "observed_identity": dict(program.observed_identity),
+        }
+
+    def _observe_runtime(
+        self, program: ResolvedAnalysisProgram, deadline: float, cancellation: Any
+    ) -> None:
+        if (
+            self.context.runtime_root is not None
+            and self._identity is not None
+            and program.identity != self._identity[1]
+        ):
+            self._invalidate_session(deadline, cancellation)
+
+    def _invalidate_session(self, deadline: float, cancellation: Any) -> None:
+        # Close admission before waiting for initialization/synchronization.
+        self._generation.set()
+        _acquire(self._session_guard, deadline, cancellation)
+        try:
+            self._state = "restarting"
+            if self._adapter is not None:
+                for path in self._documents:
+                    self._adapter.clear_diagnostics(path.as_uri())
+                self._adapter.shutdown(time.monotonic() + 5, graceful=False)
+                self._adapter = None
+            self._documents.clear()
+        finally:
+            self._session_guard.release()
 
     @staticmethod
     def _failure(
@@ -199,20 +233,25 @@ class CodeAnalysisService:
                 + str(snapshot.database_path.parent / ".cache" / "clangd" / "index")
                 + "; service-owned reports/metadata use .firm/code-analysis/."
             )
+        program = ResolvedAnalysisProgram("clangd", runtime_root=self.context.runtime_root)
         try:
             remaining(deadline, cancellation)
             program = self.program_resolver(self.context, "clangd", deadline)
+            self._observe_runtime(program, deadline, cancellation)
         except TimeoutError as exc:
-            program = ResolvedAnalysisProgram("clangd")
             self._failure(
                 result,
                 "incomplete",
                 "timeout",
                 str(exc),
             )
+        except ClangdFailure as exc:
+            self._state = "failed"
+            self._failure(result, exc.status, exc.code, str(exc))
         clangd_problems = self._clangd_problems(snapshot)
         problems = [
             *program.problems,
+            *program.runtime_problems,
             *clangd_problems,
             *[p for p in snapshot.problems if p.backend == "cppcheck"],
         ]
@@ -226,15 +265,15 @@ class CodeAnalysisService:
                     self._state = "restarting"
         state = self._state
         result["data"] = {
-            "executable": str(program.executable) if program.executable else None,
-            "version": program.version,
-            "executable_origin": program.origin,
-            "runtime_root": str(self.context.runtime_root) if self.context.runtime_root else None,
+            **self._program_report(program),
             "configuration_problems": [p.to_payload() for p in problems],
             "session_state": state,
             "index_limitations": INDEX_LIMITATIONS,
             "required_data_locations": list(map(str, program.data_paths)),
         }
+        result["warnings"].extend(program.warnings)
+        if result["status"] == "error":
+            return result
         if program.problems or program.executable is None:
             if program.problems:
                 p = program.problems[0]
@@ -249,6 +288,24 @@ class CodeAnalysisService:
         if clangd_problems:
             p = clangd_problems[0]
             return self._failure(result, "not_configured", p.code, p.message, p.remedy)
+        try:
+            validate_analysis_program(program, deadline, cancellation)
+        except TimeoutError as exc:
+            return self._failure(result, "incomplete", "timeout", str(exc))
+        except (OSError, ValueError) as exc:
+            self._invalidate_session(deadline, cancellation)
+            result["data"]["session_state"] = self._state
+            problem = AnalysisProblem(
+                "analysis/executable-unavailable",
+                str(exc),
+                "Restore/reinstall the supported runtime, then retry.",
+            )
+            result["data"]["configuration_problems"].append(problem.to_payload())
+            result["data"]["expected_identity"].update(getattr(exc, "expected", {}))
+            result["data"]["observed_identity"].update(getattr(exc, "observed", {}))
+            return self._failure(
+                result, "unavailable", problem.code, problem.message, problem.remedy
+            )
         return result
 
     def _session(
@@ -263,6 +320,13 @@ class CodeAnalysisService:
         try:
             if self._closed:
                 raise ClangdFailure("child-exited", "Analysis service is closed.")
+            try:
+                validate_analysis_program(program, deadline, cancellation)
+            except TimeoutError:
+                raise
+            except (OSError, ValueError) as exc:
+                self._invalidate_session(deadline, cancellation)
+                raise ClangdFailure("configuration-changed", str(exc), status="incomplete") from exc
             if self._adapter is not None and (
                 identity != self._identity or self._adapter.failed or self._generation.is_set()
             ):
@@ -278,9 +342,15 @@ class CodeAnalysisService:
                 adapter = self.adapter_factory(program, snapshot, None)
                 self._adapter = adapter
                 try:
-                    adapter.start(deadline, cancellation)
-                except BaseException:
+                    adapter.start(deadline, _Cancellation(cancellation, self._generation))
+                except BaseException as exc:
                     self._state = "failed"
+                    if self._generation.is_set():
+                        raise ClangdFailure(
+                            "configuration-changed",
+                            "Runtime/configuration changed during session initialization.",
+                            status="incomplete",
+                        ) from exc
                     raise
                 self._state = "ready"
             return self._adapter, self._generation
@@ -615,6 +685,12 @@ class CodeAnalysisService:
             result.update(self._envelope(operation, snapshot))
             remaining(deadline, operation_cancel)
             program = self.program_resolver(self.context, "clangd", deadline)
+            result["data"].update(self._program_report(program))
+            result["data"]["configuration_problems"] = [
+                p.to_payload() for p in (*program.problems, *program.runtime_problems)
+            ]
+            result["warnings"].extend(program.warnings)
+            self._observe_runtime(program, deadline, operation_cancel)
             if (
                 self._adapter is not None
                 and (snapshot.identity, program.identity) != self._identity
@@ -730,6 +806,10 @@ class CodeAnalysisService:
                 )
             except (KeyError, TypeError, ValueError) as exc:
                 raise ClangdFailure("protocol-error", f"Invalid backend result: {exc}") from exc
+            result["data"].update(self._program_report(program))
+            result["data"]["configuration_problems"] = [
+                p.to_payload() for p in program.runtime_problems
+            ]
             if operation != "diagnostics":
                 diagnostic_evidence = adapter.diagnostics_for(source.as_uri(), version)
                 if diagnostic_evidence is None:
@@ -749,7 +829,19 @@ class CodeAnalysisService:
                 return self._failure(
                     result, "incomplete", "source-changed", "Saved source changed during analysis."
                 )
-            if self._dependency_identity(deadline, cancellation) != dependency_identity:
+            dependencies_changed = (
+                self._dependency_identity(deadline, cancellation) != dependency_identity
+            )
+            try:
+                validate_analysis_program(program, deadline, cancellation)
+            except TimeoutError:
+                raise
+            except (OSError, ValueError) as exc:
+                self._invalidate_session(deadline, operation_cancel)
+                result["data"]["expected_identity"].update(getattr(exc, "expected", {}))
+                result["data"]["observed_identity"].update(getattr(exc, "observed", {}))
+                return self._failure(result, "incomplete", "configuration-changed", str(exc))
+            if dependencies_changed:
                 adapter.clear_diagnostics(source.as_uri())
                 return self._failure(
                     result,

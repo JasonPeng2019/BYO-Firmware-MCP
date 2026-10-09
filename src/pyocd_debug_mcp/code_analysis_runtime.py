@@ -1,22 +1,23 @@
 """Explicit launch context and native-program resolution boundary.
 
-Managed manifest mapping is intentionally unresolved until packaging accepts
-versions, paths, digests and data. Never substitute PATH for a managed launch.
+The private launch context supplies runtime authority. Managed failures never
+substitute PATH; development fallback retains the runtime failure evidence.
 """
 
 from __future__ import annotations
 
 import shutil
 import os
+import re
 import subprocess
 import threading
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, Protocol
 
 
-from pyocd_debug_mcp.code_analysis_config import AnalysisProblem, sha256_bytes
+from pyocd_debug_mcp.code_analysis_config import AnalysisProblem
 from pyocd_debug_mcp.kernel.processes import (
     ProcessMarkerStore,
     popen_owned,
@@ -52,6 +53,15 @@ class ResolvedAnalysisProgram:
     identity: tuple[Any, ...] = ()
     data_paths: tuple[Path, ...] = ()
     problems: tuple[AnalysisProblem, ...] = ()
+    runtime_root: Path | None = None
+    runtime_manifest_sha256: str | None = None
+    analysis_mapping_sha256: str | None = None
+    executable_sha256: str | None = None
+    expected_identity: dict[str, Any] = field(default_factory=dict)
+    observed_identity: dict[str, Any] = field(default_factory=dict)
+    warnings: tuple[str, ...] = ()
+    runtime_problems: tuple[AnalysisProblem, ...] = ()
+    receipt: Any = field(default=None, repr=False, compare=False)
 
 
 _context: AnalysisRuntimeContext | None = None
@@ -187,20 +197,57 @@ def resolve_analysis_program(
 ) -> ResolvedAnalysisProgram:
     if name not in {"clangd", "cppcheck"}:
         raise ValueError("Unsupported analysis program.")
-    if context.managed:
-        return ResolvedAnalysisProgram(
-            name,
-            problems=(
-                AnalysisProblem(
-                    "analysis/executable-unavailable",
-                    "Managed analysis manifest mapping is unresolved.",
-                    "Restore a supported runtime with ROOT-accepted analysis executables/data manifest; packaging is still a prerequisite.",
-                ),
-            ),
+    operation = current_operation()
+    cancellation = operation.cancellation_requested if operation is not None else None
+    remaining(deadline, cancellation)
+    from pyocd_debug_mcp.code_analysis_manifest import payload_receipt, hash_file
+
+    runtime_failure = None
+    if context.runtime_root is not None:
+        candidate = ResolvedAnalysisProgram(
+            name, origin="managed_runtime", runtime_root=context.runtime_root
         )
+        try:
+            receipt = payload_receipt(context.runtime_root, name, deadline, cancellation)
+            candidate = _receipt_program(receipt)
+            result = _probe_program(
+                candidate, deadline, cancellation, receipt.metadata.programs[name]["version"]
+            )
+            validate_analysis_program(result, deadline, cancellation)
+            if not result.problems or context.managed:
+                return result
+            runtime_failure = result
+        except TimeoutError:
+            raise
+        except (OSError, ValueError) as exc:
+            _invalidate_probes(context.runtime_root, deadline, cancellation)
+            failed_receipt = getattr(exc, "receipt", None)
+            metadata = getattr(exc, "metadata", None)
+            if failed_receipt is not None:
+                candidate = _receipt_program(failed_receipt)
+            elif metadata is not None:
+                relative = metadata.programs[name]["executable"]
+                candidate = replace(
+                    candidate,
+                    executable=context.runtime_root / relative,
+                    runtime_manifest_sha256=metadata.hashes["release-manifest.json"],
+                    analysis_mapping_sha256=metadata.hashes["analysis/runtime.json"],
+                    executable_sha256=metadata.inventory.get(relative, {}).get("sha256"),
+                    data_paths=tuple(
+                        context.runtime_root / metadata.programs[name][k]
+                        for k in (
+                            ("resource_dir",) if name == "clangd" else ("cfg_dir", "platforms_dir")
+                        )
+                    ),
+                    expected_identity={"metadata_sha256": dict(metadata.hashes)},
+                )
+            runtime_failure = _runtime_failure(candidate, exc)
+        if context.managed:
+            assert runtime_failure is not None
+            return runtime_failure
     raw = _which_path_only(context, name)
     if raw is None:
-        return ResolvedAnalysisProgram(
+        return runtime_failure or ResolvedAnalysisProgram(
             name,
             problems=(
                 AnalysisProblem(
@@ -212,7 +259,7 @@ def resolve_analysis_program(
         )
     executable = Path(raw).resolve()
     if os.name == "nt" and executable.suffix.lower() in {".bat", ".cmd"}:
-        return ResolvedAnalysisProgram(
+        result = ResolvedAnalysisProgram(
             name,
             executable,
             origin="path",
@@ -224,30 +271,137 @@ def resolve_analysis_program(
                 ),
             ),
         )
-    identity: tuple[Any, ...] = ()
-    operation = current_operation()
-    cancellation = operation.cancellation_requested if operation is not None else None
+        return _development_fallback(result, runtime_failure)
     try:
-        stat = executable.stat()
-        identity = (
-            str(executable),
-            stat.st_dev,
-            stat.st_ino,
-            stat.st_size,
-            stat.st_mtime_ns,
-            sha256_bytes(executable.read_bytes()),
+        digest, _, observed = hash_file(executable, deadline, cancellation)
+        candidate = ResolvedAnalysisProgram(
+            name,
+            executable,
+            origin="path",
+            identity=(str(executable), *observed, digest),
+            executable_sha256=digest,
         )
-        remaining(deadline, cancellation)
-        while not _probe_lock.acquire(timeout=min(0.02, remaining(deadline, cancellation))):
-            pass
+        result = _probe_program(candidate, deadline, cancellation)
+    except TimeoutError:
+        raise
+    except (OSError, ValueError) as exc:
+        result = _runtime_failure(ResolvedAnalysisProgram(name, executable, origin="path"), exc)
+    return _development_fallback(result, runtime_failure)
+
+
+def _development_fallback(
+    result: ResolvedAnalysisProgram, failure: ResolvedAnalysisProgram | None
+) -> ResolvedAnalysisProgram:
+    if failure is None:
+        return result
+    return replace(
+        result,
+        runtime_root=failure.runtime_root,
+        runtime_manifest_sha256=failure.runtime_manifest_sha256,
+        analysis_mapping_sha256=failure.analysis_mapping_sha256,
+        runtime_problems=failure.problems,
+        expected_identity=failure.expected_identity,
+        observed_identity=failure.observed_identity,
+        warnings=(
+            "Supplied runtime is unusable; source/development resolution selected PATH fallback.",
+        ),
+    )
+
+
+def _receipt_program(receipt: Any) -> ResolvedAnalysisProgram:
+    metadata = receipt.metadata
+    relative = metadata.programs[receipt.name]["executable"]
+    return ResolvedAnalysisProgram(
+        receipt.name,
+        receipt.executable,
+        origin="managed_runtime",
+        identity=receipt.identity,
+        data_paths=receipt.data_paths,
+        runtime_root=metadata.root,
+        runtime_manifest_sha256=metadata.hashes["release-manifest.json"],
+        analysis_mapping_sha256=metadata.hashes["analysis/runtime.json"],
+        executable_sha256=metadata.inventory[relative]["sha256"],
+        expected_identity={
+            "metadata_sha256": dict(metadata.hashes),
+            "executable": metadata.inventory[relative],
+        },
+        observed_identity={"files": {str(p): i for p, i in receipt.identities.items()}},
+        receipt=receipt,
+    )
+
+
+def _runtime_failure(program: ResolvedAnalysisProgram, exc: Exception) -> ResolvedAnalysisProgram:
+    return replace(
+        program,
+        identity=(),
+        receipt=None,
+        expected_identity={**program.expected_identity, **getattr(exc, "expected", {})},
+        observed_identity={**program.observed_identity, **getattr(exc, "observed", {})},
+        problems=(
+            AnalysisProblem(
+                "analysis/executable-unavailable",
+                f"{program.name} runtime unusable: {exc}",
+                "Restore/reinstall the supported runtime and required data, then retry.",
+                getattr(exc, "path", None),
+                program.name,
+            ),
+        ),
+    )
+
+
+def _invalidate_probes(root: Path, deadline: float, cancellation: Cancellation | None) -> None:
+    while not _probe_lock.acquire(timeout=min(0.02, remaining(deadline, cancellation))):
+        pass
+    try:
+        for identity in list(_probe_cache):
+            if identity and identity[0] == str(root):
+                del _probe_cache[identity]
+    finally:
+        _probe_lock.release()
+
+
+def validate_analysis_program(
+    program: ResolvedAnalysisProgram,
+    deadline: float,
+    cancellation: Cancellation | None = None,
+) -> None:
+    """Check the receipt again before returning success, without rehash/retry."""
+    remaining(deadline, cancellation)
+    if program.receipt is not None:
+        from pyocd_debug_mcp.code_analysis_manifest import validate_receipt
+
         try:
-            cached = _probe_cache.get(identity)
-            if cached is not None:
-                return cached
-            probe_deadline = min(deadline, time.monotonic() + 5)
-            store = ProcessMarkerStore()
+            validate_receipt(program.receipt, deadline, cancellation)
+        except TimeoutError:
+            raise
+        except (OSError, ValueError):
+            assert program.runtime_root is not None
+            _invalidate_probes(program.runtime_root, deadline, cancellation)
+            raise
+
+
+def _probe_program(
+    candidate: ResolvedAnalysisProgram,
+    deadline: float,
+    cancellation: Cancellation | None,
+    expected_version: str | None = None,
+) -> ResolvedAnalysisProgram:
+    assert candidate.executable is not None
+    while not _probe_lock.acquire(timeout=min(0.02, remaining(deadline, cancellation))):
+        pass
+    try:
+        cached = _probe_cache.get(candidate.identity)
+        if cached is not None:
+            remaining(deadline, cancellation)
+            return cached
+        probe_deadline = min(deadline, time.monotonic() + 5)
+        store = ProcessMarkerStore()
+        output = b""
+        try:
+            # Admission/late-spawn expiry has no completed executable probe
+            # evidence. Preserve its transient TimeoutError and owned cleanup.
             process, marker = spawn_before_deadline(
-                [str(executable), "--version"],
+                [str(candidate.executable), "--version"],
                 probe_deadline,
                 cancellation,
                 store,
@@ -268,7 +422,24 @@ def resolve_analysis_program(
                     raise RuntimeError(
                         f"Version probe failed ({process.returncode}): {errors.decode('utf-8', errors='replace')[-4096:]}"
                     )
-                version = output.decode("utf-8", errors="replace").strip()
+                version = output.decode("utf-8", errors="replace")
+                if expected_version is not None:
+                    match = re.search(
+                        r"\b" + candidate.name + r"(?: version)?\s+(\d+\.\d+(?:\.\d+)?)(?![\d.])",
+                        version,
+                        re.IGNORECASE,
+                    )
+                    observed_version = match.group(1) if match else None
+                    # Cppcheck omits the trailing zero in its native banner.
+                    numeric = (
+                        observed_version + ".0"
+                        if observed_version and observed_version.count(".") == 1
+                        else observed_version
+                    )
+                    if numeric != expected_version:
+                        raise RuntimeError(
+                            f"Version mismatch: expected {expected_version}, observed {observed_version!r}."
+                        )
             except TimeoutError:
                 # Establish the cause before cleanup can consume the caller's
                 # remaining time. Only a started probe's own cap is executable
@@ -284,29 +455,27 @@ def resolve_analysis_program(
                         pipe.close()
                 if not cleaned:
                     raise RuntimeError("Version probe cleanup unconfirmed; marker retained.")
-            result = ResolvedAnalysisProgram(name, executable, version, "path", identity)
-            _probe_cache[identity] = result
-            return result
-        finally:
-            _probe_lock.release()
-    except TimeoutError:
-        # Caller deadline/cancellation is not executable-identity evidence.
-        # Let the service report the incomplete request; an independent call
-        # gets its own finite probe without any hidden retry here.
-        raise
-    except (OSError, RuntimeError, subprocess.TimeoutExpired) as exc:
-        result = ResolvedAnalysisProgram(
-            name,
-            executable,
-            origin="path",
-            problems=(
-                AnalysisProblem(
-                    "analysis/executable-unavailable",
-                    f"{name} version probe unusable: {exc}",
-                    "Restore an executable and its required data, then retry.",
+            result = replace(candidate, version=version)
+        except TimeoutError:
+            raise
+        except (OSError, RuntimeError, subprocess.TimeoutExpired) as exc:
+            result = replace(
+                candidate,
+                version=output.decode("utf-8", errors="replace") or None,
+                problems=(
+                    AnalysisProblem(
+                        "analysis/executable-unavailable",
+                        f"{candidate.name} version probe unusable: {exc}",
+                        "Restore an executable and its required data, then retry.",
+                    ),
                 ),
-            ),
-        )
-        if identity:
-            _probe_cache[identity] = result
+                expected_identity={**candidate.expected_identity, "version": expected_version},
+                observed_identity={
+                    **candidate.observed_identity,
+                    "version_stdout": output.decode("utf-8", errors="replace"),
+                },
+            )
+        _probe_cache[candidate.identity] = result
         return result
+    finally:
+        _probe_lock.release()
