@@ -282,6 +282,8 @@ class CodeAnalysisService:
         except ClangdFailure as exc:
             self._state = "failed"
             self._failure(result, exc.status, exc.code, str(exc))
+            if self._adapter is not None:
+                result["stderr_tail"] = self._adapter.stderr_tail
         problems = [
             *program.problems,
             *program.runtime_problems,

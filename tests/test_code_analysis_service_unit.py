@@ -237,6 +237,10 @@ class ServiceTests(unittest.TestCase):
         header, adapter, mutate = self._late_status_mutation()
         process, marker = adapter.process, adapter.marker
         marker_before = marker.read_bytes()
+        stderr_tail = "clangd: failed-drain diagnostic\n"
+        with adapter._guard:
+            adapter._stderr.extend(stderr_tail.encode("utf-8"))
+        self.assertEqual(adapter.stderr_tail, stderr_tail)
         with (
             patch.object(self.service, "program_resolver", side_effect=mutate) as resolver,
             patch.object(adapter, "shutdown", wraps=adapter.shutdown) as shutdown,
@@ -246,6 +250,7 @@ class ServiceTests(unittest.TestCase):
         self.assertEqual(result["status"], "error", result)
         self.assertEqual(result["code"], "analysis/cleanup-failed", result)
         self.assertEqual(result["data"]["session_state"], "failed")
+        self.assertEqual(result.get("stderr_tail"), stderr_tail)
         self._assert_status_integrity_cause(result, header)
         resolver.assert_called_once()
         shutdown.assert_called_once()
