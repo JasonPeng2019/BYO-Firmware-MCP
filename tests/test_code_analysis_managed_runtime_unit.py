@@ -13,6 +13,7 @@ import time
 import unittest
 import threading
 import subprocess
+import sys
 from types import SimpleNamespace
 from pathlib import Path
 from unittest.mock import Mock, patch
@@ -53,11 +54,12 @@ def staged_runtime(root: Path) -> dict:
             },
         },
     }
+    executable = Path(sys.executable).read_bytes()
     payload = {
-        "analysis/cppcheck/cppcheck.exe": (b"unit executable", "analysis-executable", True),
+        "analysis/cppcheck/cppcheck.exe": (executable, "analysis-executable", True),
         "analysis/cppcheck/cfg/std.cfg": (b"<def/>", "analysis-data", False),
         "analysis/cppcheck/platforms/test.xml": (b"<platform/>", "analysis-data", False),
-        "analysis/clangd/bin/clangd.exe": (b"unit executable", "analysis-executable", True),
+        "analysis/clangd/bin/clangd.exe": (executable, "analysis-executable", True),
         "analysis/clangd/lib/clang/23/include/stddef.h": (
             b"typedef int size_t;",
             "analysis-resource",
@@ -77,6 +79,10 @@ def staged_runtime(root: Path) -> dict:
                 "name": name,
                 "version": program["version"],
                 "licenses": [{"license": {"name": "Test fixture license"}}],
+                "properties": [
+                    {"name": "byo:analysis:upstream", "value": "Test-only Python PE fixture"},
+                    {"name": "byo:analysis:recipe", "value": "Test-only copy; mocked version seam"},
+                ],
             }
         )
         components.extend({"type": "file", "bom-ref": "file:" + p, "name": p} for p in leaves)
@@ -182,7 +188,9 @@ class ManagedRuntimeTests(unittest.TestCase):
         self.assertEqual(first.executable, self.root / "analysis/clangd/bin/clangd.exe")
         self.assertEqual(first.data_paths, (self.root / "analysis/clangd/lib/clang/23",))
         self.assertEqual(first.identity, second.identity)
-        self.assertEqual(first.executable_sha256, hashlib.sha256(b"unit executable").hexdigest())
+        self.assertEqual(
+            first.executable_sha256, hashlib.sha256(Path(sys.executable).read_bytes()).hexdigest()
+        )
         self.assertEqual(len(first.runtime_manifest_sha256), 64)
         self.assertEqual(len(first.analysis_mapping_sha256), 64)
         self.spawn.assert_called_once()
@@ -362,7 +370,18 @@ class ManagedRuntimeTests(unittest.TestCase):
     def test_sbom_application_licenses_versions_relationships_and_hashes_checked(self):
         path = self.root / "sbom.cdx.json"
         original = path.read_bytes()
-        for label in ("name", "version", "licenses", "missing-leaf", "dangling", "hash"):
+        for label in (
+            "name",
+            "version",
+            "licenses",
+            "missing-provenance",
+            "empty-provenance",
+            "typed-provenance",
+            "duplicate-provenance",
+            "missing-leaf",
+            "dangling",
+            "hash",
+        ):
             with self.subTest(case=label):
                 sbom = json.loads(original)
                 app = next(c for c in sbom["components"] if c["bom-ref"] == "byo-analysis:clangd")
@@ -371,6 +390,14 @@ class ManagedRuntimeTests(unittest.TestCase):
                     app[label] = "wrong"
                 elif label == "licenses":
                     app["licenses"] = []
+                elif label == "missing-provenance":
+                    app.pop("properties")
+                elif label == "empty-provenance":
+                    app["properties"][0]["value"] = " "
+                elif label == "typed-provenance":
+                    app["properties"][0]["value"] = 1
+                elif label == "duplicate-provenance":
+                    app["properties"].append(app["properties"][0])
                 elif label == "missing-leaf":
                     relation["dependsOn"].pop()
                 elif label == "dangling":
@@ -382,6 +409,23 @@ class ManagedRuntimeTests(unittest.TestCase):
                     leaf["hashes"] = [{"alg": "SHA-256", "content": "a" * 64}]
                 path.write_text(json.dumps(sbom), encoding="utf-8")
                 self.rewrite_inventory("sbom.cdx.json")
+                self.assertTrue(self.resolve().problems)
+        self.spawn.assert_not_called()
+
+    def test_selected_executable_requires_amd64_pe32_plus_before_probe(self):
+        path = self.root / "analysis/clangd/bin/clangd.exe"
+        original = path.read_bytes()
+        offset = int.from_bytes(original[60:64], "little")
+        for position, replacement in (
+            (0, b"NO"),
+            (offset + 4, b"\x64\xaa"),
+            (offset + 24, b"\x0b\x01"),
+        ):
+            with self.subTest(position=position):
+                data = bytearray(original)
+                data[position : position + 2] = replacement
+                path.write_bytes(data)
+                self.rewrite_inventory("analysis/clangd/bin/clangd.exe")
                 self.assertTrue(self.resolve().problems)
         self.spawn.assert_not_called()
 

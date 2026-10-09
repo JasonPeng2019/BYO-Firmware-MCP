@@ -147,6 +147,30 @@ def hash_file(
     return digest.hexdigest(), b"".join(chunks), after
 
 
+def _windows_executable(path: Path, deadline: float, cancellation: Cancellation | None) -> None:
+    # Check the selected executable's target before running it. Import closure
+    # and upstream distribution completeness remain release-validator work.
+    remaining(deadline, cancellation)
+    with path.open("rb") as stream:
+        dos = stream.read(64)
+        _require(len(dos) == 64 and dos[:2] == b"MZ", str(path), "requires Windows PE executable")
+        offset = int.from_bytes(dos[60:64], "little")
+        _require(offset >= 64, str(path), "invalid PE header offset")
+        remaining(deadline, cancellation)
+        stream.seek(offset)
+        header = stream.read(26)
+        _require(
+            len(header) == 26
+            and header[:4] == b"PE\0\0"
+            and int.from_bytes(header[4:6], "little") == 0x8664
+            and int.from_bytes(header[20:22], "little") >= 2
+            and int.from_bytes(header[24:26], "little") == 0x20B,
+            str(path),
+            "requires AMD64 architecture and PE32+ executable",
+        )
+    remaining(deadline, cancellation)
+
+
 def _decode(data: bytes, path: str, deadline: float, cancellation: Cancellation | None) -> Any:
     remaining(deadline, cancellation)
     try:
@@ -173,7 +197,7 @@ def _mapping(value: Any, deadline: float, cancellation: Cancellation | None) -> 
     )
     _require(
         os.name == "nt" and platform.machine().lower() in {"amd64", "x86_64"},
-        "host",
+        "host.architecture",
         "requires Windows x86_64 host",
     )
     programs = _object(value["programs"], {"clangd", "cppcheck"}, "programs")
@@ -220,20 +244,26 @@ def _mapping(value: Any, deadline: float, cancellation: Cancellation | None) -> 
             seen = set()
             for item in values:
                 remaining(deadline, cancellation)
-                path = _relative(item)
-                _require(path.casefold() not in seen, path, "duplicate/colliding reference")
+                field = f"programs.{name}.{key}"
+                try:
+                    path = _relative(item)
+                except RuntimeIntegrityError as exc:
+                    raise RuntimeIntegrityError(field, str(exc)) from exc
+                _require(
+                    path.casefold() not in seen, field, f"duplicate/colliding reference: {path}"
+                )
                 seen.add(path.casefold())
                 if key == "licenses":
                     _require(
                         path in licenses or path.startswith(f"analysis/{name}/licenses/"),
-                        path,
+                        field,
                         "notice outside license namespace",
                     )
                 else:
                     parent = f"analysis/{name}" + ("/bin" if name == "clangd" else "")
                     _require(
                         path.rsplit("/", 1)[0] == parent and path.endswith(".dll"),
-                        path,
+                        field,
                         "dependency must be an adjacent DLL",
                     )
             if key == "licenses":
@@ -536,6 +566,29 @@ def _sbom(
             reference,
             "invalid license reference",
         )
+    properties = application.get("properties")
+    _require(isinstance(properties, list), reference, "application provenance properties missing")
+    provenance = {}
+    for item in properties:
+        remaining(deadline, cancellation)
+        _require(
+            isinstance(item, dict)
+            and isinstance(item.get("name"), str)
+            and isinstance(item.get("value"), str),
+            reference,
+            "application properties require string names and values",
+        )
+        if item["name"] in {"byo:analysis:upstream", "byo:analysis:recipe"}:
+            _require(item["name"] not in provenance, reference, "duplicate provenance property")
+            provenance[item["name"]] = item["value"]
+    _require(
+        all(
+            provenance.get(key, "").strip()
+            for key in ("byo:analysis:upstream", "byo:analysis:recipe")
+        ),
+        reference,
+        "application upstream/recipe provenance properties missing",
+    )
     relationships = sbom.get("dependencies")
     _require(isinstance(relationships, list), "sbom.dependencies", "relationships missing")
     assert isinstance(relationships, list)
@@ -656,9 +709,14 @@ def _build(
         _require(
             identity == identities[root / relative], relative, "payload changed during validation"
         )
+        if kind == "analysis-executable":
+            _windows_executable(root / relative, deadline, cancellation)
     for relative in [program["executable"], *program["licenses"], *program["dependencies"]]:
         _require(relative in selected, relative, "mapped reference missing inventory leaf")
-    _sbom(metadata, name, set(selected), deadline, cancellation)
+    try:
+        _sbom(metadata, name, set(selected), deadline, cancellation)
+    except RuntimeIntegrityError as exc:
+        raise RuntimeIntegrityError(f"sbom.cdx.json:{exc.path}", str(exc)) from exc
     # Retain ancestors so replacing the namespace or analysis directory with a
     # junction cannot bypass later leaf metadata comparisons.
     for path in (root, root / "analysis"):
