@@ -213,7 +213,11 @@ def resolve_analysis_program(
             result = _probe_program(
                 candidate, deadline, cancellation, receipt.metadata.programs[name]["version"]
             )
-            validate_analysis_program(result, deadline, cancellation)
+            # Receipt metadata must be checked before success. A probe failure
+            # established while the caller lived retains its classification
+            # even when the separately bounded cleanup grace passes the deadline.
+            if not result.problems:
+                validate_analysis_program(result, deadline, cancellation)
             if not result.problems or context.managed:
                 return result
             runtime_failure = result
@@ -286,6 +290,8 @@ def resolve_analysis_program(
         raise
     except (OSError, ValueError) as exc:
         result = _runtime_failure(ResolvedAnalysisProgram(name, executable, origin="path"), exc)
+    if not result.problems:
+        remaining(deadline, cancellation)
     return _development_fallback(result, runtime_failure)
 
 

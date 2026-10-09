@@ -854,6 +854,11 @@ class CodeAnalysisService:
             return result
         except ClangdFailure as exc:
             failure = exc
+            if failure.code == "analysis/cleanup-failed":
+                self._state = "failed"
+                if adapter is not None:
+                    result["stderr_tail"] = adapter.stderr_tail
+                return self._failure(result, failure.status, failure.code, str(failure))
             if generation is not None and generation.is_set():
                 return self._failure(
                     result,

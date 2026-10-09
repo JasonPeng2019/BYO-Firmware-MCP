@@ -12,6 +12,7 @@ import tempfile
 import time
 import unittest
 import threading
+import subprocess
 from types import SimpleNamespace
 from pathlib import Path
 from unittest.mock import Mock, patch
@@ -441,6 +442,24 @@ class ManagedRuntimeTests(unittest.TestCase):
         self.assertIn("Version mismatch", result.problems[0].message)
         self.assertEqual(result.version, "clangd version 22.1.0\r\n")
         self.assertTrue(self.resolve().problems)
+        self.spawn.assert_called_once()
+
+    def test_managed_own_cap_classification_survives_bounded_cleanup_grace(self):
+        def hung(**kwargs):
+            time.sleep(kwargs["timeout"])
+            raise subprocess.TimeoutExpired("unit owned probe", kwargs["timeout"])
+
+        def cleanup(process):
+            time.sleep(1.1)
+            return True
+
+        self.process.communicate.side_effect = hung
+        with patch.object(runtime, "terminate_process_group", side_effect=cleanup):
+            result = self.resolve(budget=6)
+        self.assertTrue(result.problems)
+        self.assertIn("5-second", result.problems[0].message)
+        again = self.resolve()
+        self.assertEqual(result.problems, again.problems)
         self.spawn.assert_called_once()
 
     def test_mutation_during_probe_cannot_return_success(self):

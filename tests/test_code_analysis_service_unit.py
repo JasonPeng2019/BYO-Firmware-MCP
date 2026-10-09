@@ -224,6 +224,37 @@ class ServiceTests(unittest.TestCase):
             self.assertIn("PATH fallback", " ".join(result["warnings"]))
             self.assertTrue(result["data"]["configuration_problems"])
 
+    def test_runtime_change_retains_unconfirmed_cleanup_error(self):
+        from pyocd_debug_mcp.adapters.clangd import ClangdFailure
+
+        header = self._managed_service()
+        self.assertEqual(self.service.hover("main.cpp", 1, 5)["status"], "ok")
+        adapter = self.service._adapter
+        process = adapter.process
+        request = adapter.request
+
+        def mutate(method, *args, **kwargs):
+            result = request(method, *args, **kwargs)
+            if method == "textDocument/hover":
+                header.write_bytes(b"changed before unconfirmed cleanup")
+            return result
+
+        with (
+            patch.object(adapter, "request", side_effect=mutate),
+            patch.object(
+                adapter,
+                "shutdown",
+                side_effect=ClangdFailure("cleanup-failed", "unit cleanup unconfirmed"),
+            ),
+        ):
+            result = self.service.hover("main.cpp", 1, 5)
+        self.assertEqual(result["status"], "error", result)
+        self.assertEqual(result["code"], "analysis/cleanup-failed", result)
+        self.assertIs(self.service._adapter, adapter)
+        self.service.shutdown()
+        self.assertIsNotNone(process.poll())
+        self.assertFalse(list((self.root / "markers").glob("*.json")))
+
     def test_known_generated_header_invalidates_without_duplicate_walked_headers(self):
         generated = self.root / ".firm/build/generated/selected.h"
         generated.parent.mkdir(parents=True)
