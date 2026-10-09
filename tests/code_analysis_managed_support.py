@@ -25,7 +25,7 @@ from typing import Any
 from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[1]
-EVIDENCE = ROOT / ".agent-workspace" / "managed-runtime-evidence"
+EVIDENCE = ROOT / ".agent-workspace" / "managed-final-evidence"
 NATIVE_INPUT_ENV = "BYO_MANAGED_TEST_INPUT_RECORD"
 
 
@@ -575,8 +575,10 @@ def run_named_suite(modules: list[str], output: Path) -> int:
     write_json(
         output,
         {
-            "scope": "PREPARATION ONLY",
+            "scope": "Windows staged source validation; not installed release proof",
             "argv": sys.argv,
+            "cwd": str(Path.cwd()),
+            "python": sys.executable,
             "cases": records,
             "tests_run": result.testsRun,
             "failures": len(result.failures),

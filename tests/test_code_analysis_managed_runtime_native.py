@@ -52,6 +52,7 @@ class NativeCase(unittest.TestCase):
         cls.inputs = json.loads(path.read_bytes())
         cls.originals = {e["source"]: e["sha256"] for e in cls.inputs["payload"]}
         cls.originals.update(cls.inputs["protected_inputs"])
+        cls.originals.update(cls.inputs["frozen_arm_inputs"])
         for source, expected in cls.originals.items():
             assert digest(Path(source)) == expected, source
 
@@ -133,6 +134,7 @@ class NativeCase(unittest.TestCase):
         self.addCleanup(self.environment.stop)
         self.addCleanup(self.check_preservation)
         self.context = self.fixture.context(self.project.root)
+        self.native_adapters: list[Any] = []
 
     def check_preservation(self) -> None:
         project_after = tree_hashes(self.project.root)
@@ -166,12 +168,29 @@ class NativeCase(unittest.TestCase):
 
     def service(self, observed: OwnedSpawns) -> Any:
         adapter = production("adapters.clangd")
+
+        def factory(program: Any, config: Any, _: Any) -> Any:
+            instance = adapter.ClangdAdapter(program, config, observed.store)
+            self.native_adapters.append(instance)
+            return instance
+
         service = production("services.code_analysis").CodeAnalysisService(
             self.context,
-            adapter_factory=lambda p, s, _: adapter.ClangdAdapter(p, s, observed.store),
+            adapter_factory=factory,
         )
         self.addCleanup(service.shutdown)
+        self.addCleanup(self.check_readers, service)
         return service
+
+    def check_readers(self, service: Any) -> None:
+        service.shutdown()
+        threads = [t for adapter in self.native_adapters for t in adapter._threads]
+        remaining = [t.name for t in threads if t.is_alive()]
+        write_json(
+            self.base / "reader-cleanup.json",
+            {"threads": [t.name for t in threads], "alive": remaining},
+        )
+        self.assertEqual(remaining, [])
 
     def assert_ok(self, result: Any) -> None:
         self.assertEqual(result["status"], "ok", result)
@@ -194,7 +213,7 @@ class NativeManagedBinding(NativeCase):
                     self.assertIn(self.fixture.mapping["programs"][name]["version"], result.version)
             self.assertEqual(len(observed.calls), 2)
 
-    def test_all_five_queries_real_clangd_and_mapped_builtin_definition(self) -> None:
+    def test_all_five_queries_real_windows_clangd_and_msvc_size_t_control(self) -> None:
         with OwnedSpawns(self.base) as observed:
             service = self.service(observed)
             line, column = self.position("choose")
@@ -217,20 +236,39 @@ class NativeManagedBinding(NativeCase):
                         self.assertIn("choose", result["data"]["contents"]["value"])
                     elif operation == "diagnostics":
                         self.assertEqual(result["data"]["diagnostics"], [])
-            # This target must come from the actual relocated vendor resource.
+            # This MSVC target has valid size_t hover/diagnostics, but raw
+            # definition is empty. This is an input control, not proof
+            # that a declaration location comes from the mapped resource tree.
             line, column = self.position("size_t")
             builtin = service.definition(str(self.main), line, column, timeout_seconds=30)
             write_json(self.base / "builtin-definition.json", builtin)
-            with self.subTest(operation="builtin-definition"):
-                self.assert_ok(builtin)
-                include = self.fixture.root / "analysis/clangd/lib/clang/23/include"
-                self.assertTrue(
-                    any(
-                        Path(p["path"]).resolve().is_relative_to(include)
-                        for p in builtin["data"]["locations"]
-                    ),
-                    builtin,
+            with self.subTest(operation="msvc-size-t-input-control"):
+                self.assertEqual(builtin["status"], "not_found", builtin)
+                self.assertEqual(builtin["data"]["locations"], [])
+                hover = service.hover(str(self.main), line, column, timeout_seconds=30)
+                self.assert_ok(hover)
+                self.assertIn("size_t", hover["data"]["contents"]["value"])
+                adapter = service._adapter
+                params = {
+                    "textDocument": {"uri": self.main.as_uri()},
+                    "position": {"line": line - 1, "character": column - 1},
+                }
+                raw = adapter.request("textDocument/definition", params, time.monotonic() + 10)
+                write_json(
+                    self.base / "msvc-size-t-raw-control.json",
+                    {
+                        "raw": raw,
+                        "hover": hover,
+                        "target": "x86_64-pc-windows-msvc",
+                        "source": self.main.read_text(encoding="utf-8"),
+                        "vendor_declaration": (
+                            self.fixture.root
+                            / "analysis/clangd/lib/clang/23/include/__stddef_size_t.h"
+                        ).read_text(encoding="utf-8"),
+                        "stderr": adapter.stderr_tail,
+                    },
                 )
+                self.assertEqual(raw, [])
             lsp = [a for a in observed.calls if "--version" not in a]
             with self.subTest(operation="resource-argv"):
                 self.assertEqual(len(lsp), 1)
@@ -238,6 +276,95 @@ class NativeManagedBinding(NativeCase):
                     "--resource-dir=" + str(self.fixture.root / "analysis/clangd/lib/clang/23"),
                     lsp[0],
                 )
+            service.shutdown()
+
+    def test_built_arm_corpus_vendor_uint32_definition_uses_mapped_resources(self) -> None:
+        originals = self.inputs["frozen_arm_inputs"]
+        source_root = next(Path(p).parent for p in originals if p.endswith("README.txt"))
+        arm_root = self.project.root / "arm"
+        copied = {}
+        for source, expected in originals.items():
+            path = Path(source)
+            self.assertEqual(digest(path), expected)
+            target = arm_root / path.relative_to(source_root)
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(path.read_bytes())
+            copied[target.relative_to(arm_root).as_posix()] = digest(target)
+        # Preserve the genuinely built corpus bytes. A separate analysis DB
+        # relocates its project includes and selects the same ARM ABI using
+        # clang's freestanding builtin headers instead of GCC's supplied ones.
+        entries = []
+        original_db = json.loads((arm_root / "build/compile_commands.json").read_bytes())
+        for entry in original_db:
+            relative = Path(entry["file"]).relative_to(source_root).as_posix()
+            args = [
+                "clang++" if relative.endswith(".cpp") else "clang",
+                "--target=arm-none-eabi",
+                "-mcpu=cortex-m4",
+                "-mthumb",
+                "-mfloat-abi=soft",
+                "-ffreestanding",
+                "-nostdlibinc",
+                "-nostdinc++",
+                "-DBYO_TARGET_ARM=1",
+                "-I",
+                str(arm_root / "include"),
+                "-I",
+                str(arm_root / "build/generated"),
+                "-std=c++17" if relative.endswith(".cpp") else "-std=c11",
+                "-c",
+                str(arm_root / relative),
+            ]
+            entries.append(self.project.entry("arm/" + relative, arguments=args))
+        self.project.write_database(entries)
+        self.project_before = tree_hashes(self.project.root)
+        main = arm_root / "src/main.c"
+        with OwnedSpawns(self.base) as observed:
+            service = self.service(observed)
+            line, column = self.position("uint32_t", main)
+            results = {
+                "status": service.status(),
+                "diagnostics": service.diagnostics(str(main), timeout_seconds=30),
+                "definition": service.definition(str(main), line, column, timeout_seconds=30),
+                "hover": service.hover(str(main), line, column, timeout_seconds=30),
+            }
+            write_json(
+                self.base / "arm-builtin.json",
+                {"copied": copied, "entries": entries, "results": results},
+            )
+            for operation, result in results.items():
+                with self.subTest(operation=operation):
+                    self.assert_ok(result)
+                    self.assertEqual(result["data"]["executable_origin"], "managed_runtime")
+                    self.assertEqual(
+                        result["data"]["executable_sha256"],
+                        digest(self.fixture.root / "analysis/clangd/bin/clangd.exe"),
+                    )
+                    self.assertEqual(
+                        result["data"]["runtime_manifest_sha256"],
+                        digest(self.fixture.manifest_path),
+                    )
+                    self.assertEqual(
+                        result["data"]["analysis_mapping_sha256"], digest(self.fixture.mapping_path)
+                    )
+                    self.assertIn("23.1.0", result["data"]["version"])
+            self.assertEqual(results["diagnostics"]["data"]["diagnostics"], [])
+            include = self.fixture.root / "analysis/clangd/lib/clang/23/include"
+            locations = results["definition"]["data"]["locations"]
+            self.assertTrue(locations)
+            for location in locations:
+                target = Path(location["path"]).resolve()
+                self.assertTrue(target.is_relative_to(include), location)
+                self.assertEqual(target.name, "stdint.h")
+                relative = target.relative_to(self.fixture.root).as_posix()
+                approved = next(e for e in self.inputs["payload"] if e["runtime_path"] == relative)
+                self.assertEqual(digest(target), approved["sha256"])
+                self.assertIn("uint32_t", target.read_text(encoding="utf-8"))
+            lsp = [a for a in observed.calls if "--version" not in a]
+            self.assertEqual(len(lsp), 1)
+            self.assertEqual(lsp[0][0], str(self.fixture.root / "analysis/clangd/bin/clangd.exe"))
+            self.assertIn("--resource-dir=" + str(include.parent), lsp[0])
+            self.assertEqual(os.environ["PATH"], str(self.base / "no-analyzers-on-path"))
             service.shutdown()
 
     def test_saved_file_header_template_and_nonbmp_crlf_positions(self) -> None:
@@ -283,6 +410,14 @@ class NativeManagedBinding(NativeCase):
             service.shutdown()
 
     def test_actual_managed_mcp_stdio_status_lazy_and_idle_session_eof_cleanup(self) -> None:
+        for path, text in {
+            "byo-analysis.json": '{"schema_version": 1}\n',
+            ".clangd": "# protected user configuration\n",
+            "user-notes.txt": "Protected user content\n",
+            ".agent-workspace/boards/protected.json": '{"locked": true}\n',
+        }.items():
+            self.project.write_text(path, text)
+        self.project_before = tree_hashes(self.project.root)
         with ManagedStdio(self.base / "stdio", self.context) as server:
             self.assertIn(
                 "result",
@@ -296,6 +431,10 @@ class NativeManagedBinding(NativeCase):
                 ),
             )
             server.send({"jsonrpc": "2.0", "method": "notifications/initialized", "params": {}})
+            self.assert_safe_startup()
+            # Exact bytes now form the strict baseline through all five calls
+            # and EOF. No directory-wide permission-write exemption is used.
+            self.project_before = tree_hashes(self.project.root)
             names = server.request("tools/list", {})["result"]["tools"]
             for name in (
                 "get_code_analysis_status",
@@ -322,6 +461,33 @@ class NativeManagedBinding(NativeCase):
             )
             write_json(self.base / "mcp-definition.json", result)
             self.assert_ok(result)
+            for name, arguments in (
+                (
+                    "find_code_references",
+                    {
+                        "file_path": str(self.main),
+                        "line": line,
+                        "column": column,
+                        "include_declaration": True,
+                        "timeout_seconds": 30,
+                    },
+                ),
+                (
+                    "get_code_hover",
+                    {
+                        "file_path": str(self.main),
+                        "line": line,
+                        "column": column,
+                        "timeout_seconds": 30,
+                    },
+                ),
+                ("get_code_diagnostics", {"file_path": str(self.main), "timeout_seconds": 30}),
+            ):
+                with self.subTest(operation=name):
+                    response = server.tool(name, arguments)
+                    write_json(self.base / (name + ".json"), response)
+                    self.assert_ok(response)
+                    self.assert_permission_bytes_unchanged()
             markers = [json.loads(p.read_bytes()) for p in server.marker_root.glob("*.json")]
             self.assertEqual(len(markers), 1, "One actual idle LSP child must be owned")
             for marker in markers:
@@ -339,6 +505,61 @@ class NativeManagedBinding(NativeCase):
             self.assertLess(elapsed, 10)
             self.assertTrue(all(c["matches_after"] is False for c in cleanup))
             self.assertEqual(list(server.marker_root.glob("*.json")), [])
+            self.assert_permission_bytes_unchanged()
+
+    def assert_safe_startup(self) -> None:
+        prefix = ".agent-workspace/runtime/manual-permissions/"
+        expected = {
+            prefix + p
+            for p in ("epoch.json", "downgrade.json", "mass-erase.json", ".protocol.lock")
+        }
+        after = tree_hashes(self.project.root)
+        changes = {
+            p
+            for p in set(after) | set(self.project_before)
+            if after.get(p) != self.project_before.get(p)
+        }
+        write_json(
+            self.base / "startup-control.json",
+            {"before": self.project_before, "after": after, "changes": sorted(changes)},
+        )
+        self.assertEqual(changes, expected)
+        self.assertEqual({p for p in after if p.startswith(prefix)}, expected)
+        root = self.project.root / prefix
+        epoch = json.loads((root / "epoch.json").read_bytes())
+        self.assertEqual(set(epoch), {"schema_version", "server_run_id", "created_at"})
+        self.assertEqual(type(epoch["schema_version"]), int)
+        self.assertEqual(epoch["schema_version"], 1)
+        self.assertTrue(epoch["server_run_id"])
+        self.assertIsInstance(epoch["created_at"], str)
+        for action in ("downgrade", "mass-erase"):
+            record = json.loads((root / (action + ".json")).read_bytes())
+            self.assertEqual(
+                record,
+                {
+                    "schema_version": 1,
+                    "action": action,
+                    "state": "locked",
+                    "server_run_id": epoch["server_run_id"],
+                    "created_at": record["created_at"],
+                    "grant_id": None,
+                    "board_id": None,
+                    "policy_digest": None,
+                    "binding_digest": None,
+                    "claim_id": None,
+                },
+            )
+            self.assertIsInstance(record["created_at"], str)
+        self.assertEqual((root / ".protocol.lock").read_bytes(), b"\0")
+        self.permission_bytes = {p: (self.project.root / p).read_bytes() for p in expected}
+        write_json(
+            self.base / "permission-startup-bytes.json",
+            {p: b.hex() for p, b in self.permission_bytes.items()},
+        )
+
+    def assert_permission_bytes_unchanged(self) -> None:
+        after = {p: (self.project.root / p).read_bytes() for p in self.permission_bytes}
+        self.assertEqual(after, self.permission_bytes)
 
 
 class NativePayloadPreparationControl(NativeCase):
@@ -433,7 +654,7 @@ class NativePayloadPreparationControl(NativeCase):
 
 
 _BOOTSTRAP = """\
-import json, sys
+import json, sys, threading
 from pathlib import Path
 config = json.loads(Path(sys.argv[1]).read_bytes())
 from pyocd_debug_mcp.code_analysis_runtime import AnalysisRuntimeContext, configure_analysis_runtime
@@ -445,7 +666,16 @@ imports = {name: module.__file__ for name, module in sys.modules.items()
 assert all(Path(path).resolve().is_relative_to(Path(config["source"])) for path in imports.values())
 Path(config["imports"]).write_text(json.dumps(imports, indent=2), encoding="utf-8")
 sys.argv = [sys.argv[0]]
-server.main()
+try:
+    server.main()
+finally:
+    imports = {name: module.__file__ for name, module in sys.modules.items()
+               if name.startswith("pyocd_debug_mcp") and getattr(module, "__file__", None)}
+    assert all(Path(path).resolve().is_relative_to(Path(config["source"])) for path in imports.values())
+    Path(config["imports"]).write_text(json.dumps(imports, indent=2), encoding="utf-8")
+    readers = [t.name for t in threading.enumerate() if t.name.startswith("clangd-")]
+    Path(config["readers"]).write_text(json.dumps(readers), encoding="utf-8")
+    assert not readers, readers
 """
 
 
@@ -467,6 +697,7 @@ class ManagedStdio:
                 "runtime": str(context.runtime_root),
                 "source": str(ROOT / "src"),
                 "imports": str(root / "imports.json"),
+                "readers": str(root / "readers-after-eof.json"),
             },
         )
         self.marker_root = root / "runs/owned-processes"
@@ -477,7 +708,7 @@ class ManagedStdio:
                 "BYO_MCP_MONITOR_ROOT": str(root / "monitor"),
                 "PYOCD_MCP_RUNS_ROOT": str(root / "runs"),
                 "PYTHONUTF8": "1",
-                "PYTHONPATH": str(ROOT / "src") + os.pathsep + str(ROOT),
+                "PYTHONPATH": os.pathsep.join(str(p) for p in (ROOT / "src", ROOT / "tests", ROOT)),
             }
         )
         self.process = subprocess.Popen(
