@@ -25,7 +25,12 @@ from typing import Any
 from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[1]
-EVIDENCE = ROOT / ".agent-workspace" / "managed-R1-final-evidence"
+# Deep lane roots can push the staged clangd.exe past CreateProcess MAX_PATH;
+# runners may select a shorter owned evidence root.
+EVIDENCE = Path(
+    os.environ.get("BYO_MANAGED_TEST_EVIDENCE")
+    or ROOT / ".agent-workspace" / "managed-R1-final-evidence"
+)
 NATIVE_INPUT_ENV = "BYO_MANAGED_TEST_INPUT_RECORD"
 
 
