@@ -12,14 +12,17 @@ import copy
 import json
 import os
 import shutil
+import subprocess
 import threading
 import time
 import unittest
+import uuid
 from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
 
 from tests.code_analysis_managed_support import (
+    EVIDENCE,
     ManagedCase,
     RuntimeFixture,
     digest,
@@ -27,10 +30,99 @@ from tests.code_analysis_managed_support import (
     production,
     write_json,
 )
-from tests.code_analysis_support import Call
+from tests.code_analysis_support import AnalysisProject, Call
 
 RESOURCE = "analysis/clangd/lib/clang/23/include/stddef.h"
 EXECUTABLE = "analysis/clangd/bin/clangd.exe"
+
+
+class WindowsCanonicalDatabaseAlias(unittest.TestCase):
+    def test_directory_junction_root_and_build_select_same_canonical_database(self) -> None:
+        if os.name != "nt":
+            self.skipTest("Windows directory junction contract")
+        base = EVIDENCE / "j" / uuid.uuid4().hex[:6]
+        project = AnalysisProject(base / "project")
+        source = project.write_text("main.c", "int value(void) { return 7; }\n")
+        database = project.write_database([project.entry("main.c")])
+        original = database.read_bytes()
+        junction = project.root / "build"
+        argv = [
+            str(Path(os.environ["SystemRoot"]) / "System32/cmd.exe"),
+            "/d",
+            "/c",
+            "mklink",
+            "/J",
+            str(junction),
+            str(project.root),
+        ]
+        created = subprocess.run(argv, capture_output=True, check=False)
+        write_json(
+            base / "junction-create.json",
+            {
+                "argv": argv,
+                "exit": created.returncode,
+                "stdout": created.stdout.decode("utf-8", "replace"),
+                "stderr": created.stderr.decode("utf-8", "replace"),
+                "junction": str(junction),
+                "target": str(project.root),
+            },
+        )
+        self.assertEqual(created.returncode, 0, "Directory junction prerequisite failed")
+        observations = []
+        try:
+            alias = junction / "compile_commands.json"
+            self.assertEqual(junction.resolve(), project.root.resolve())
+            self.assertTrue(database.samefile(alias))
+            self.assertEqual(database.resolve(), alias.resolve())
+            for selected in (None, "compile_commands.json", "build/compile_commands.json"):
+                with self.subTest(selected=selected):
+                    if selected is not None:
+                        project.write_config(
+                            {"schema_version": 1, "compilation_database": selected}
+                        )
+                    snapshot = production("code_analysis_config").load_analysis_config(project.root)
+                    observations.append(
+                        {
+                            "selected": selected,
+                            "canonical_database": str(snapshot.database_path),
+                            "database_sha256": snapshot.database_sha256,
+                            "problems": [p.to_payload() for p in snapshot.problems],
+                        }
+                    )
+                    self.assertFalse(snapshot.problems, observations[-1])
+                    self.assertEqual(snapshot.database_path, database.resolve())
+                    self.assertEqual(snapshot.database_sha256, digest(database))
+                    self.assertEqual(len(snapshot.entries), 1)
+                    self.assertEqual(snapshot.entries[0].source, source.resolve())
+                    self.assertEqual(database.read_bytes(), original)
+                    self.assertEqual(alias.read_bytes(), original)
+        finally:
+            # rmdir removes precisely this owned junction, never its target tree.
+            self.assertEqual(junction.resolve(), project.root.resolve())
+            junction.rmdir()
+            write_json(
+                base / "junction-selection.json",
+                {
+                    "observations": observations,
+                    "junction_removed": not junction.exists(),
+                    "target_preserved": project.root.is_dir(),
+                    "database_preserved": database.read_bytes() == original,
+                    "file_symlink_credit": False,
+                },
+            )
+        self.assertFalse(junction.exists())
+        self.assertTrue(project.root.is_dir())
+        self.assertEqual(database.read_bytes(), original)
+        # Negative control: a distinct build/ database with the same bytes is
+        # ambiguous, so the alias result above came from file identity.
+        project.path("byo-analysis.json").unlink()
+        distinct = project.write_database([project.entry("main.c")], "build/compile_commands.json")
+        self.assertEqual(distinct.read_bytes(), original)
+        self.assertFalse(distinct.samefile(database))
+        snapshot = production("code_analysis_config").load_analysis_config(project.root)
+        codes = [p.code for p in snapshot.problems]
+        write_json(base / "distinct-build-control.json", {"problems": codes})
+        self.assertIn("analysis/database-ambiguous", codes)
 
 
 class ManagedSelection(ManagedCase):

@@ -9,6 +9,7 @@ success cannot make a managed service test pass.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import queue
@@ -19,6 +20,7 @@ import time
 import unittest
 import uuid
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 from unittest import mock
 
@@ -195,6 +197,163 @@ class NativeCase(unittest.TestCase):
     def assert_ok(self, result: Any) -> None:
         self.assertEqual(result["status"], "ok", result)
         self.assertEqual(result["index_completeness"], "unverified")
+
+
+class NativeStatusReceiptBoundary(NativeCase):
+    """R1: a late integrity change must survive real session cleanup boundaries."""
+
+    def check_late_status_change(self, boundary: str) -> None:
+        module = production("services.code_analysis")
+        target = self.fixture.root / "analysis/clangd/lib/clang/23/include/stddef.h"
+        original = target.read_bytes()
+        held, release = threading.Event(), threading.Event()
+        holder = None
+        with OwnedSpawns(self.base) as observed:
+            service = self.service(observed)
+            try:
+                lazy = service.status()
+                self.assert_ok(lazy)
+                self.assertEqual(lazy["data"]["session_state"], "not_started")
+                self.assertTrue(all(a[1:] == ["--version"] for a in observed.calls))
+                line, column = self.position("choose")
+                control = service.hover(str(self.main), line, column, timeout_seconds=30)
+                self.assert_ok(control)
+                self.assertIn("choose", str(control["data"]))
+                self.assert_ok(service.diagnostics(str(self.main), timeout_seconds=30))
+                adapter = self.native_adapters[-1]
+                process, marker = adapter.process, adapter.marker
+                self.assertIsNotNone(process)
+                self.assertIsNotNone(marker)
+                assert process is not None and marker is not None
+                creation = native_start_token(process.pid)
+                self.assertIsNotNone(creation)
+                self.assertTrue(marker.is_file())
+                before = len(observed.calls)
+                expected_stat = target.stat()
+                observe = service._observe_runtime
+                changes = []
+
+                def late_change(*args: Any) -> None:
+                    observe(*args)
+                    target.write_bytes(original + b"\n/* independent late receipt change */\n")
+                    changes.append(str(target))
+
+                with (
+                    mock.patch.object(service, "_observe_runtime", side_effect=late_change),
+                    contextlib.ExitStack() as stack,
+                ):
+                    if boundary == "failed-drain":
+                        stack.enter_context(
+                            mock.patch.object(
+                                production("adapters.clangd"),
+                                "terminate_process_group",
+                                return_value=False,
+                            )
+                        )
+                    elif boundary == "held-lock":
+
+                        def hold() -> None:
+                            with service._session_guard:
+                                held.set()
+                                release.wait()
+
+                        holder = threading.Thread(target=hold)
+                        holder.start()
+                        self.assertTrue(held.wait(5), "Owned holder did not acquire session guard")
+                        stack.enter_context(
+                            mock.patch.object(
+                                module,
+                                "current_operation",
+                                return_value=SimpleNamespace(
+                                    started_at=time.monotonic(),
+                                    timeout_seconds=0.5,
+                                    cancellation_requested=threading.Event(),
+                                ),
+                            )
+                        )
+                    result = service.status()
+                    observed_stat = target.stat()
+                    retained = {
+                        "same_adapter": service._adapter is adapter,
+                        "same_native_child": native_start_token(process.pid) == creation,
+                        "marker_exists": marker.is_file(),
+                        "generation_closed": service._generation.is_set(),
+                    }
+                    write_json(
+                        self.base / "r1-boundary.json",
+                        {
+                            "boundary": boundary,
+                            "lazy_control": lazy,
+                            "real_hover_control": control,
+                            "result": result,
+                            "mutations": changes,
+                            "ownership": retained,
+                            "native_creation": creation,
+                            "pid": process.pid,
+                            "marker": str(marker),
+                            "spawn_count_before": before,
+                            "spawn_count_after": len(observed.calls),
+                        },
+                    )
+                    expected = {
+                        "failed-drain": ("error", "analysis/cleanup-failed", "failed"),
+                        "held-lock": ("incomplete", "analysis/timeout", "restarting"),
+                        "successful-drain": (
+                            "unavailable",
+                            "analysis/executable-unavailable",
+                            "restarting",
+                        ),
+                    }[boundary]
+                    self.assertEqual(
+                        (result["status"], result["code"], result["data"]["session_state"]),
+                        expected,
+                        result,
+                    )
+                    self.assertEqual(changes, [str(target)])
+                    self.assertEqual(len(observed.calls), before, "Status restarted an analyzer")
+                    self.assertTrue(retained["generation_closed"])
+                    problems = result["data"]["configuration_problems"]
+                    integrity = [p for p in problems if str(target) in p["message"]]
+                    self.assertTrue(integrity, result)
+                    self.assertEqual(integrity[0]["code"], "analysis/executable-unavailable")
+                    self.assertTrue(integrity[0]["remedy"])
+                    self.assertIn("receipt invalidated", integrity[0]["message"])
+                    self.assertTrue(result["remedy"])
+                    identities = result["data"]
+                    expected_identity = identities["expected_identity"][str(target)]
+                    observed_identity = identities["observed_identity"][str(target)]["identity"]
+                    self.assertEqual(expected_identity[1], expected_stat.st_ino)
+                    self.assertEqual(expected_identity[3], len(original))
+                    self.assertEqual(observed_identity[1], observed_stat.st_ino)
+                    self.assertEqual(observed_identity[3], observed_stat.st_size)
+                    self.assertNotEqual(expected_identity, observed_identity)
+                    if boundary == "successful-drain":
+                        self.assertFalse(retained["same_adapter"])
+                        self.assertFalse(retained["same_native_child"])
+                        self.assertFalse(retained["marker_exists"])
+                        observed.check_cleanup()
+                    else:
+                        self.assertTrue(retained["same_adapter"])
+                        self.assertTrue(retained["same_native_child"])
+                        self.assertTrue(retained["marker_exists"])
+            finally:
+                release.set()
+                if holder is not None:
+                    holder.join(5)
+                    self.assertFalse(holder.is_alive(), "Owned lock holder remained")
+                service.shutdown()
+                target.write_bytes(original)
+            observed.check_cleanup()
+            self.check_readers(service)
+
+    def test_late_receipt_failed_drain_returns_typed_error_and_retains_ownership(self) -> None:
+        self.check_late_status_change("failed-drain")
+
+    def test_late_receipt_held_guard_returns_typed_timeout_and_retains_ownership(self) -> None:
+        self.check_late_status_change("held-lock")
+
+    def test_late_receipt_successful_drain_returns_unavailable_without_restart(self) -> None:
+        self.check_late_status_change("successful-drain")
 
 
 class NativeManagedBinding(NativeCase):
