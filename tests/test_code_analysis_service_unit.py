@@ -183,6 +183,144 @@ class ServiceTests(unittest.TestCase):
         self.assertTrue(result["data"]["observed_identity"])
         self.assertIsNone(self.service._adapter)
 
+    def _late_status_mutation(self):
+        header = self._managed_service()
+        warm = self.service.hover("main.cpp", 1, 5)
+        self.assertEqual(warm["status"], "ok", warm)
+        self.assertEqual(self.service.status()["status"], "ok")
+        adapter = self.service._adapter
+        resolve = self.service.program_resolver
+
+        def mutate_after_resolution(*args):
+            program = resolve(*args)
+            self.assertFalse(program.problems, program)
+            header.write_bytes(b"changed after valid status resolution")
+            return program
+
+        return header, adapter, mutate_after_resolution
+
+    def _assert_status_integrity_cause(self, result, header):
+        self.assertTrue(result["data"]["expected_identity"], result)
+        self.assertTrue(result["data"]["observed_identity"], result)
+        self.assertIn(str(header), result["data"]["expected_identity"])
+        self.assertIn(str(header), result["data"]["observed_identity"])
+        problem = result["data"]["configuration_problems"][-1]
+        self.assertEqual(problem["code"], "analysis/executable-unavailable", result)
+        self.assertIn("receipt invalidated", problem["message"])
+        self.assertIn(str(header), problem["message"])
+        self.assertTrue(problem["remedy"])
+        self.assertTrue(result["remedy"])
+
+    def test_status_late_integrity_change_successfully_drains_ready_session(self):
+        header, adapter, mutate = self._late_status_mutation()
+        process = adapter.process
+        with (
+            patch.object(self.service, "program_resolver", side_effect=mutate) as resolver,
+            patch.object(adapter, "shutdown", wraps=adapter.shutdown) as shutdown,
+        ):
+            result = self.service.status()
+        self.assertEqual(result["status"], "unavailable", result)
+        self.assertEqual(result["code"], "analysis/executable-unavailable", result)
+        self.assertEqual(result["data"]["session_state"], "restarting")
+        self._assert_status_integrity_cause(result, header)
+        resolver.assert_called_once()
+        shutdown.assert_called_once()
+        self.assertTrue(self.service._generation.is_set())
+        self.assertIsNone(self.service._adapter)
+        self.assertEqual(self.service._documents, {})
+        self.assertIsNotNone(process.poll())
+        self.assertFalse(list((self.root / "markers").glob("*.json")))
+        self.assertTrue(all(not thread.is_alive() for thread in adapter._threads))
+        record_regression("status-late-integrity-drained", result)
+
+    def test_status_late_integrity_change_retains_unconfirmed_drain_ownership(self):
+        header, adapter, mutate = self._late_status_mutation()
+        process, marker = adapter.process, adapter.marker
+        marker_before = marker.read_bytes()
+        with (
+            patch.object(self.service, "program_resolver", side_effect=mutate) as resolver,
+            patch.object(adapter, "shutdown", wraps=adapter.shutdown) as shutdown,
+            patch("pyocd_debug_mcp.adapters.clangd.terminate_process_group", return_value=False),
+        ):
+            result = self.service.status()
+        self.assertEqual(result["status"], "error", result)
+        self.assertEqual(result["code"], "analysis/cleanup-failed", result)
+        self.assertEqual(result["data"]["session_state"], "failed")
+        self._assert_status_integrity_cause(result, header)
+        resolver.assert_called_once()
+        shutdown.assert_called_once()
+        self.assertTrue(self.service._generation.is_set())
+        self.assertIs(self.service._adapter, adapter)
+        self.assertIs(adapter.process, process)
+        self.assertIsNone(process.poll())
+        self.assertEqual(marker.read_bytes(), marker_before)
+        self.assertIsNone(adapter.diagnostics_for(self.source.as_uri(), 1))
+        record_regression("status-late-integrity-drain-unconfirmed", result)
+        # Explicit teardown after restoring the terminator, not a status retry.
+        self.service.shutdown()
+        self.assertIsNotNone(process.poll())
+        self.assertFalse(marker.exists())
+
+    def test_status_late_integrity_change_lock_expiry_retains_closed_generation(self):
+        from pyocd_debug_mcp.services import code_analysis as service_module
+
+        header, adapter, mutate = self._late_status_mutation()
+        process, marker = adapter.process, adapter.marker
+        marker_before = marker.read_bytes()
+        held, release, waiting = threading.Event(), threading.Event(), threading.Event()
+
+        def hold_guard():
+            with self.service._session_guard:
+                held.set()
+                release.wait()
+
+        holder = threading.Thread(target=hold_guard)
+        holder.start()
+        self.assertTrue(held.wait(5))
+        clock = [time.monotonic()]
+        operation = SimpleNamespace(
+            started_at=clock[0], timeout_seconds=30, cancellation_requested=threading.Event()
+        )
+        acquire = service_module._acquire
+
+        def observe_wait(lock, deadline, cancellation):
+            if lock is self.service._session_guard:
+                waiting.set()
+            return acquire(lock, deadline, cancellation)
+
+        try:
+            with (
+                patch.object(self.service, "program_resolver", side_effect=mutate) as resolver,
+                patch.object(adapter, "shutdown", wraps=adapter.shutdown) as shutdown,
+                patch.object(service_module, "current_operation", return_value=operation),
+                patch.object(service_module, "_acquire", side_effect=observe_wait),
+                patch.object(runtime.time, "monotonic", side_effect=lambda: clock[0]),
+                concurrent.futures.ThreadPoolExecutor(1) as pool,
+            ):
+                pending = pool.submit(self.service.status)
+                self.assertTrue(waiting.wait(5), "status never attempted the held session guard")
+                clock[0] = operation.started_at + operation.timeout_seconds + 1
+                result = pending.result(5)
+                resolver.assert_called_once()
+                shutdown.assert_not_called()
+            self.assertEqual(result["status"], "incomplete", result)
+            self.assertEqual(result["code"], "analysis/timeout", result)
+            self.assertEqual(result["data"]["session_state"], "restarting")
+            self._assert_status_integrity_cause(result, header)
+            self.assertTrue(self.service._generation.is_set())
+            self.assertIs(self.service._adapter, adapter)
+            self.assertIs(adapter.process, process)
+            self.assertIsNone(process.poll())
+            self.assertEqual(marker.read_bytes(), marker_before)
+            record_regression("status-late-integrity-lock-expired", result)
+        finally:
+            release.set()
+            holder.join(5)
+            self.assertFalse(holder.is_alive())
+        self.service.shutdown()
+        self.assertIsNotNone(process.poll())
+        self.assertFalse(marker.exists())
+
     def test_runtime_change_cancels_initialization_before_old_session_admission(self):
         header = self._managed_service()
         factory = self.service.adapter_factory
@@ -555,9 +693,20 @@ class ServiceTests(unittest.TestCase):
             fake_factory(self.root, "unversioned"),
             program_resolver=lambda *args: self.program,
         )
+        # The 200 ms budget measures notification waiting, not Windows cold
+        # process startup. A completed hover observes initialization, didOpen,
+        # its unversioned notification and a synchronized document revision.
+        warm = self.service.hover("main.cpp", 1, 5, timeout_seconds=5)
+        self.assertEqual(warm["status"], "ok", warm)
+        self.assertEqual(self.service._state, "ready")
+        version = warm["source"]["document_version"]
+        self.assertIsInstance(version, int)
+        self.assertEqual(self.service._documents[self.source].version, version)
+        self.assertIn(self.source.as_uri(), self.service._adapter._unversioned)
         result = self.service.diagnostics("main.cpp", timeout_seconds=0.2)
         self.assertEqual(result["status"], "incomplete", result)
         self.assertEqual(result["code"], "analysis/diagnostics-unversioned", result)
+        record_regression("unversioned-diagnostics-ready", {"warm": warm, "result": result})
 
     def test_related_diagnostics_preserve_flat_coordinates_and_missing_target(self):
         text = "/*😀*/ int value;\r\n"
