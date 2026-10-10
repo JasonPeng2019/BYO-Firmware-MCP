@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 import hashlib
 import json
 import math
@@ -499,12 +500,27 @@ def popen_owned(
     store = marker_store or ProcessMarkerStore()
     job_handle: int | None = None
     marker: Path | None = None
+    analysis_setup_cleaned: bool | None = None
     try:
         if begin_analysis_ownership is not None:
             begin_analysis_ownership()
         # Establish recoverable identity before Windows Job assignment. The
         # leader is still suspended here and therefore cannot have descendants.
-        marker = store.create(process, validated)
+        try:
+            marker = store.create(process, validated)
+        except ProcessIdentityUnavailable:
+            if begin_analysis_ownership is not None and process.poll() is not None:
+                from pyocd_debug_mcp.kernel._analysis_posix import analysis_cleanup_scope_confirmed
+
+                # No invented recovery token: only an already-terminal analysis
+                # child can avoid a marker, after full scoped retirement/reap.
+                analysis_setup_cleaned = False
+                analysis_setup_cleaned = terminate_process_group(process)
+                if analysis_setup_cleaned and analysis_cleanup_scope_confirmed(
+                    getattr(process, "cleanup_receipt", None)
+                ):
+                    return process, None
+            raise
         if os.name == "nt":
             job_handle = _create_windows_kill_job(process)
             with _WINDOWS_JOB_GUARD:
@@ -515,10 +531,18 @@ def popen_owned(
             with _WINDOWS_JOB_GUARD:
                 _WINDOWS_JOB_HANDLES.setdefault(process.pid, job_handle)
         cleaned = (
-            _terminate_suspended_windows_leader(process)
-            if os.name == "nt" and job_handle is None
-            else terminate_process_group(process)
+            analysis_setup_cleaned
+            if analysis_setup_cleaned is not None
+            else (
+                _terminate_suspended_windows_leader(process)
+                if os.name == "nt" and job_handle is None
+                else terminate_process_group(process)
+            )
         )
+        if begin_analysis_ownership is not None:
+            setattr(
+                primary, "cleanup_receipt", copy.deepcopy(getattr(process, "cleanup_receipt", None))
+            )
         if cleaned:
             try:
                 store.remove(marker)

@@ -6,6 +6,7 @@ substitute PATH; development fallback retains the runtime failure evidence.
 
 from __future__ import annotations
 
+import copy
 import shutil
 import os
 import re
@@ -18,6 +19,7 @@ from typing import Any, Protocol
 
 
 from pyocd_debug_mcp.code_analysis_config import AnalysisProblem
+from pyocd_debug_mcp.kernel._analysis_posix import analysis_cleanup_scope_confirmed
 from pyocd_debug_mcp.kernel.processes import (
     ProcessMarkerStore,
     popen_owned,
@@ -62,6 +64,7 @@ class ResolvedAnalysisProgram:
     warnings: tuple[str, ...] = ()
     runtime_problems: tuple[AnalysisProblem, ...] = ()
     receipt: Any = field(default=None, repr=False, compare=False)
+    cleanup_receipt: dict[str, Any] | None = field(default=None, repr=False, compare=False)
 
 
 _context: AnalysisRuntimeContext | None = None
@@ -153,7 +156,13 @@ def spawn_before_deadline(
         try:
             if not isinstance(result, BaseException):
                 process, marker = result
-                if not terminate_process_group(process):
+                cleaned = terminate_process_group(process)
+                if not cleaned or (
+                    os.name != "nt"
+                    and not analysis_cleanup_scope_confirmed(
+                        getattr(process, "cleanup_receipt", None)
+                    )
+                ):
                     _spawn_cleanup_failure = (
                         "Late analysis child termination unconfirmed; recovery marker retained. "
                         "Restart the server after owned-process recovery before starting another child."
@@ -414,10 +423,26 @@ def _probe_program(
         cached = _probe_cache.get(candidate.identity)
         if cached is not None:
             remaining(deadline, cancellation)
+            if (
+                os.name != "nt"
+                and not cached.problems
+                and not analysis_cleanup_scope_confirmed(cached.cleanup_receipt)
+            ):
+                return replace(
+                    cached,
+                    problems=(
+                        AnalysisProblem(
+                            "analysis/executable-unavailable",
+                            "Cached version probe has no confirmed POSIX cleanup scope.",
+                            "Recover owned analysis processes and restart the server before retrying.",
+                        ),
+                    ),
+                )
             return cached
         probe_deadline = min(deadline, time.monotonic() + 5)
         store = ProcessMarkerStore()
         output = b""
+        cleanup_receipt: dict[str, Any] | None = None
         try:
             # Admission/late-spawn expiry has no completed executable probe
             # evidence. Preserve its transient TimeoutError and owned cleanup.
@@ -469,26 +494,39 @@ def _probe_program(
                 remaining(deadline, cancellation)
                 raise RuntimeError("Version probe exceeded its 5-second spawn/probe budget.")
             finally:
-                cleaned = terminate_process_group(process)
-                if cleaned:
+                try:
+                    cleaned = terminate_process_group(process)
+                finally:
+                    cleanup_receipt = copy.deepcopy(getattr(process, "cleanup_receipt", None))
+                scope_cleaned = cleaned and (
+                    os.name == "nt" or analysis_cleanup_scope_confirmed(cleanup_receipt)
+                )
+                if scope_cleaned:
                     store.remove(marker)
                 for pipe in (process.stdout, process.stderr):
                     if pipe is not None:
                         pipe.close()
-                if not cleaned:
-                    raise RuntimeError("Version probe cleanup unconfirmed; marker retained.")
-            result = replace(candidate, version=version)
-        except TimeoutError:
+                if not scope_cleaned:
+                    raise RuntimeError("Version probe cleanup scope unconfirmed; marker retained.")
+            result = replace(candidate, version=version, cleanup_receipt=cleanup_receipt)
+        except TimeoutError as exc:
+            setattr(
+                exc,
+                "cleanup_receipt",
+                cleanup_receipt or copy.deepcopy(getattr(exc, "cleanup_receipt", None)),
+            )
             raise
         except (OSError, RuntimeError, subprocess.TimeoutExpired) as exc:
             result = replace(
                 candidate,
+                cleanup_receipt=cleanup_receipt
+                or copy.deepcopy(getattr(exc, "cleanup_receipt", None)),
                 version=output.decode("utf-8", errors="replace") or None,
                 problems=(
                     AnalysisProblem(
                         "analysis/executable-unavailable",
                         f"{candidate.name} version probe unusable: {exc}",
-                        "Restore an executable and its required data, then retry.",
+                        "Restore the executable/data; if cleanup failed, recover owned processes and restart the server before retrying.",
                     ),
                 ),
                 expected_identity={**candidate.expected_identity, "version": expected_version},

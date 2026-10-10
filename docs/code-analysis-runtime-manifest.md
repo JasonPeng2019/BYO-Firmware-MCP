@@ -162,7 +162,8 @@ direct child's session before `begin_ownership`; child setup failures raise thro
 Popen's error pipe. Fresh retained-child waitid observations establish leader
 liveness/exit independently of live image or birth metadata. Missing OS birth
 metadata remains missing in the receipt and never grants detached PID authority.
-An observed exit before initial descendant observation remains a startup gap.
+An exit before initial descendant observation is recorded as coverage information
+(`early_direct_child_exit`), and alone does not invalidate scoped proof.
 Darwin's narrow libc bridge follows the public
 [wait definitions](https://raw.githubusercontent.com/apple-oss-distributions/xnu/main/bsd/sys/wait.h)
 and [siginfo layout](https://raw.githubusercontent.com/apple-oss-distributions/xnu/main/bsd/sys/signal.h);
@@ -198,14 +199,38 @@ records the terminal native membership proof. Failed cleanup logs its private
 receipt, including the first observation failure, for matching-host Actions diagnosis.
 It also records the last eight group signal operations, selected signals, results
 and errno values; no signal error alone establishes terminal group membership.
-The receipt explicitly scopes coverage to the retained group and captured
-descendants and labels unobserved detached descendants `not_proven`.
+The receipt names `coverage: retained_group_and_captured_descendants` and
+`scope_confirmed`. Its `confirmed` compatibility alias means only that same scope.
+Probe and clangd consumers require the named scope and successful retirement/reap;
+the compatibility boolean alone is insufficient. Unobserved detached descendants
+remain `not_proven`, including after scoped success. Version probes retain a
+private copy of their cleanup receipt on success/failure and in cached results;
+clangd retains its private last receipt before clearing ownership, including EOF,
+shutdown and failed cleanup. Transport threads must still complete before clangd
+clears its process. These receipts add no public tool result fields.
 
 A polling observer cannot establish ownership of an unobserved child that
-detaches/reparents before observation. A known startup gap or unavailable
-observation remains unconfirmed; no cached image or leader exit is fabricated
-as proof of descendant retirement. Independent native race/fast-detach tests
-must assess this limitation before production acceptance.
+detaches/reparents before observation. The committed ROOT decision in installer
+`docs/code-analysis-posix-lifecycle-scope.md` at
+`65a0ef8777bd6e2ab799b2e43685d2ba7d0b76f6`
+(accepted addendum SHA-256
+`539ee677c0a3249ab5ada75db43bd96faeb99c76a985c7c98b416beda721f222`)
+defines this scope for trusted analyzers and explicitly configured query drivers
+under the caller's existing permissions. It does not promise universal containment.
+Unknown observed ownership, a failure preventing proof of the original group or
+captured set, failed exact wait/reap, and inaccessible/truncated terminal membership
+remain unconfirmed. Independent native escape controls must retain `not_proven`;
+they cannot turn scoped retirement into proof that every possible descendant is gone.
+
+Recovery markers retain their schema-2 native birth identities. Missing birth
+metadata grants no detached PID or recovery signal authority. Analysis spawn first
+attempts the normal marker; a live/unknown child without recoverable identity fails
+setup honestly. An already-terminal exact direct child may return without a marker
+only after the covered group and captured set are proven retired and the child is
+reaped within the existing cleanup reserve. Its receipt remains available. Generic
+hardware marker behavior and Windows Jobs/records are unchanged. For unconfirmed
+cleanup, retain the process/evidence and any valid marker, recover only identities
+that still match, then restart the server before another analysis child is started.
 
 Resolution failures keep `analysis/executable-unavailable`, offending path/cause
 and restore/select-matching-runtime remedy. Cppcheck is blocked and full verify

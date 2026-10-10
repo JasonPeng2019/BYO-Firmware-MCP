@@ -3,8 +3,9 @@
 Normal Popen wait/communicate reaps the leader before callers clean descendants.
 Here waitid(WNOWAIT) retains the exact child as a group-number anchor until
 cleanup. Only observed PID/birth identities authorize detached-child signals.
-Polling cannot prove that a child detached before its first observation; an
-observed startup gap or inaccessible ownership observation stays unconfirmed.
+Polling cannot prove that a child detached before its first observation.
+Scoped proof covers the original group and exactly captured descendants;
+inaccessible observed ownership stays unconfirmed.
 """
 
 from __future__ import annotations
@@ -30,6 +31,20 @@ _LOG = logging.getLogger(__name__)
 
 class _ObservationDeadline(TimeoutError):
     """An incomplete internal phase, retriable within the total cleanup reserve."""
+
+
+def analysis_cleanup_scope_confirmed(receipt: object) -> bool:
+    """Validate the private POSIX analysis scope, never universal containment."""
+    return (
+        isinstance(receipt, dict)
+        and receipt.get("coverage") == "retained_group_and_captured_descendants"
+        and receipt.get("scope_confirmed") is True
+        and receipt.get("unobserved_detached_descendants") == "not_proven"
+        and receipt.get("leader_reaped") is True
+        and type(receipt.get("leader_exit")) is int
+        and receipt.get("uncertainties") == []
+        and receipt.get("wait_error") is None
+    )
 
 
 def _exit_status(pid: int) -> int | None:
@@ -190,6 +205,7 @@ class AnalysisPopen(subprocess.Popen[Any]):
         self._group_signal_operations: list[dict[str, Any]] = []
         self._incomplete_observation_count = 0
         self._last_incomplete_observation: str | None = None
+        self._early_direct_child_exit = False
         super().__init__(*args, **kwargs)
         # Successful Popen returned after its child setup/exec error pipe:
         # start_new_session=True performed setsid or construction raised. This
@@ -238,7 +254,7 @@ class AnalysisPopen(subprocess.Popen[Any]):
         if initial_state == "unknown":
             raise RuntimeError("Owned analysis direct-child observation unavailable")
         if initial_state == "zombie":
-            self._uncertainties.add("leader exited before initial descendant observation")
+            self._early_direct_child_exit = True
         try:
             process = psutil.Process(self.pid)
             self._leader_token = f"psutil:{process.create_time():.9f}"
@@ -253,7 +269,7 @@ class AnalysisPopen(subprocess.Popen[Any]):
         if before_observation == "unknown":
             raise RuntimeError("Owned analysis direct-child observation unavailable")
         if before_observation == "zombie":
-            self._uncertainties.add("leader exited before initial descendant observation")
+            self._early_direct_child_exit = True
         self._capture(time.monotonic() + 0.5)
 
         def observe() -> None:
@@ -544,7 +560,7 @@ class AnalysisPopen(subprocess.Popen[Any]):
             return False
         try:
             if self._reaped:
-                return bool(self.cleanup_receipt.get("confirmed"))
+                return analysis_cleanup_scope_confirmed(self.cleanup_receipt)
             self._capture(deadline)
             for selected_signal in (signal.SIGTERM, signal.SIGKILL):
                 self._signal_owned(selected_signal, deadline)
@@ -605,7 +621,7 @@ class AnalysisPopen(subprocess.Popen[Any]):
                     self._uncertainties.add(
                         "leader reap unavailable: " + errno.errorcode.get(exc.errno or 0, "unknown")
                     )
-            confirmed = (
+            scope_confirmed = (
                 retired and self._reaped and not self._uncertainties and self._wait_error is None
             )
             self.cleanup_receipt = {
@@ -628,9 +644,11 @@ class AnalysisPopen(subprocess.Popen[Any]):
                 "leader_identity_source": "successful-new-session-spawn-and-retained-waitid",
                 "spawn_parent_pid": self._spawn_parent_pid,
                 "new_session_spawn_succeeded": self._spawn_succeeded and self._session_established,
-                "confirmed": confirmed,
+                "scope_confirmed": scope_confirmed,
+                "confirmed": scope_confirmed,  # Compatibility alias for this scope only.
                 "coverage": "retained_group_and_captured_descendants",
                 "unobserved_detached_descendants": "not_proven",
+                "early_direct_child_exit": self._early_direct_child_exit,
                 "uncertainties": sorted(self._uncertainties.copy()),
                 "wait_error": self._wait_error,
                 "first_observation_failure": self._first_observation_failure,
@@ -641,11 +659,11 @@ class AnalysisPopen(subprocess.Popen[Any]):
                 "elapsed_seconds": time.monotonic() - started,
                 "budget_seconds": 3 * grace_seconds,
             }
-            if confirmed:
+            if scope_confirmed:
                 with _RETAINED_GUARD:
                     _RETAINED.pop(self.pid, None)
             else:
                 _LOG.warning("Analysis ownership cleanup unconfirmed: %s", self.cleanup_receipt)
-            return confirmed
+            return scope_confirmed
         finally:
             self._cleanup_guard.release()

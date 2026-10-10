@@ -7,6 +7,7 @@ request owns only a waiter, never the shared subprocess.
 from __future__ import annotations
 
 import json
+import copy
 import os
 import queue
 import subprocess
@@ -22,6 +23,7 @@ from pyocd_debug_mcp.code_analysis_runtime import (
     Cancellation,
     ResolvedAnalysisProgram,
     analysis_child_environment,
+    analysis_cleanup_scope_confirmed,
     remaining,
     spawn_before_deadline,
 )
@@ -157,6 +159,7 @@ class ClangdAdapter:
         self.position_encoding = "utf-16"
         self.process: subprocess.Popen[Any] | None = None
         self.marker: Path | None = None
+        self._last_cleanup_receipt: dict[str, Any] | None = None
         self._guard = threading.Condition(threading.RLock())
         self._shutdown_guard = threading.Lock()
         self._pending: dict[int, _Pending] = {}
@@ -286,6 +289,8 @@ class ClangdAdapter:
                 )
             self.notify("initialized", {})
         except BaseException as exc:
+            if self.process is None:
+                self._last_cleanup_receipt = copy.deepcopy(getattr(exc, "cleanup_receipt", None))
             if not self._closing:
                 self.shutdown(time.monotonic() + 5, graceful=False)
             if isinstance(exc, (ClangdFailure, TimeoutError, KeyboardInterrupt, SystemExit)):
@@ -586,8 +591,16 @@ class ClangdAdapter:
                             ),
                         )
                     )
-            cleaned = terminate_process_group(process)
-            if cleaned:
+            try:
+                cleaned = terminate_process_group(process)
+            finally:
+                self._last_cleanup_receipt = copy.deepcopy(
+                    getattr(process, "cleanup_receipt", None)
+                )
+            scope_cleaned = cleaned and (
+                os.name == "nt" or analysis_cleanup_scope_confirmed(self._last_cleanup_receipt)
+            )
+            if scope_cleaned:
                 for thread in self._threads:
                     if thread is not threading.current_thread():
                         thread.join(timeout=max(0, deadline - time.monotonic()))
