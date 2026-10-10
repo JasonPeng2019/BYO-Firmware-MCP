@@ -1,295 +1,212 @@
-# Windows analysis runtime mapping
+# Native analysis runtime mapping
 
-Revision 1, 2026-10-08; contract candidate for ROOT's independent critique.
-This supplies the physical mapping missing from the accepted
-[analysis contract](code-analysis-contract.md) and
-[ownership plan](code-analysis-implementation-plan.md). It changes neither
-`byo-analysis.json` schema version 1 nor verify/MCP command syntax. Acceptance
-for this run is Windows x86_64; preserve other platform implementations and run
-no Linux, macOS or Docker checks. This document establishes no installed or
-shipping acceptance and authorizes no publication.
+Revision 2, 2026-10-10. The accepted portability contract broadens mapping
+schema **1** to the four existing product targets. It supersedes the previous
+Windows-only implementation boundary and preserves the
+[analysis behavior contract](code-analysis-contract.md), project configuration
+version 1, public tool parameters and result formats. This source document
+establishes no native build, installed, baseline, signing or publication acceptance.
 
-## One mapping, one digest inventory
+The accepted contract is `accepted-portability-contract.md`, committed as
+`c5d048f`, SHA-256
+`e648242e4032b251de922c2cc3f86241315833d28e15aea59ac21004590f219a`.
+Installer source reference is `a5d8cf575207f619f71e04c48e1a3498ddd8854f`;
+ROOT owns matched final source pins and integration. No consumer selects inputs
+from a mutable installer checkout or copies its dependency implementation.
 
-Use **`R/analysis/runtime.json`**, where `R` is the canonical active immutable
-runtime. Its exact closed syntax is
+## Targets and closed mapping
+
+`R/analysis/runtime.json` resolves only from the explicitly supplied canonical
+immutable runtime root `R`. Its closed syntax is
 [byo-analysis-runtime.schema.json](contracts/byo-analysis-runtime.schema.json).
-Do not add a top-level analysis field to `release-manifest.json`.
-Frozen Rust `ReleaseManifest` and its nested records deny unknown fields;
-`ReleaseFile.kind` is an unrestricted string in both Rust and the existing
-release schema. An inventoried metadata file therefore fits those interfaces
-without a release-manifest extension or schema relaxation.
 
-`R/release-manifest.json.files` remains the sole payload inventory: every leaf
-has its existing `path`, SHA-256, byte `size`, `kind` and `executable` fields.
-The mapping contains references, not another digest list. The existing
-`R/sbom.cdx.json` owns component provenance, licenses and dependency relationships;
-any SBOM file hashes are generated from `files`, never independent resolver input.
-The existing builder must deliberately stage and classify analysis payloads before
-SBOM/inventory generation; its current default classification is insufficient.
-Compute payload digests once, emit their SBOM representation, then inventory the
-SBOM itself; do not create a circular SBOM self-hash.
+| Target | Mapping platform / architecture | Native executable format |
+| --- | --- | --- |
+| `windows-x86_64` | `windows` / `x86_64` | AMD64 PE32+ |
+| `macos-aarch64` | `macos` / `aarch64` | Thin little-endian Mach-O 64, CPU `0x0100000c`, executable type 2 |
+| `macos-x86_64` | `macos` / `x86_64` | Thin little-endian Mach-O 64, CPU `0x01000007`, executable type 2 |
+| `linux-x86_64` | `linux` / `x86_64` | ELF64 little-endian, machine 62, executable/PIE type 2 or 3 |
 
-All mapping fields are required, with **no implicit defaults**. Reject duplicate
-JSON keys, unknown fields, wrong types, unsupported versions and nulls. JSON
-integer `schema_version` is exactly `1`; `platform` is `"windows"` and
-`architecture` is `"x86_64"`, matching the enclosing release and actual host.
-`programs` has exactly the IDs `cppcheck` and `clangd`. Each `version` is a
-three-part numeric string, checked against the owned version probe.
-Typed decoding must reject boolean/float coercion of `schema_version`; JSON
-Schema's integer numeric equivalence alone cannot reject a `1.0` token.
-An incompatible mapping change requires a new mapping schema version, leaving
-project configuration version 1 and older runtime bytes intact.
+Host OS `Windows/Darwin/Linux` normalizes to `windows/macos/linux`; machine
+`AMD64/x86_64` to `x86_64`, and `arm64/aarch64` to `aarch64`. Require the
+host, release manifest and analysis mapping to agree. Mapping tokens remain
+canonical. `linux-x86_64-glibc-2.28` is a release verifier/CI target alias,
+not a mapping platform or architecture value. macOS 12+ and Linux glibc 2.28+
+remain the accepted baselines; translated processes do not establish native
+build-host architecture evidence. No additional product target is introduced.
 
-| Field / payload | Exact runtime-relative location and meaning |
+All fields are required, without defaults: exact integer-token
+`schema_version: 1`, `platform`, `architecture`, exactly two programs
+`cppcheck` and `clangd`, and each program's three-part numeric `version`,
+`executable`, `licenses`, `dependencies`, `sbom_ref` and data directories.
+Reject duplicate JSON keys, unknown fields, nulls and type coercion, including
+`true` and `1.0` as schema version. JSON Schema numeric equivalence alone does
+not enforce the integer-token rule; the runtime's strict decoder does.
+
+| Field | Exact runtime-relative layout |
 | --- | --- |
-| `cppcheck.executable` | `analysis/cppcheck/cppcheck.exe` |
-| `cppcheck.cfg_dir` | `analysis/cppcheck/cfg`; vendor library models, including `std.cfg` |
-| `cppcheck.platforms_dir` | `analysis/cppcheck/platforms`; vendor platform XML data |
-| `clangd.executable` | `analysis/clangd/bin/clangd.exe` |
-| `clangd.resource_dir` | `analysis/clangd/lib/clang/<major>`; `<major>` equals the first component of `clangd.version`; required vendor headers are underneath `include/` |
-| `licenses` | Explicit unique list of license file paths; Cppcheck's four recorded notices and clangd's `analysis/clangd/LICENSE.TXT` are mandatory; additional dependency notices stay in the program's license namespace |
-| `dependencies` | Explicit unique list of bundled DLL paths adjacent to that program's executable; `[]` means no bundled non-OS DLLs, not absence of Windows imports |
-| `sbom_ref` | Existing SBOM application component ID, exactly `byo-analysis:cppcheck` or `byo-analysis:clangd` |
+| Cppcheck executable | Windows: `analysis/cppcheck/cppcheck.exe`; POSIX: `analysis/cppcheck/cppcheck` |
+| Cppcheck data | `cfg_dir: analysis/cppcheck/cfg`; `platforms_dir: analysis/cppcheck/platforms` |
+| clangd executable | Windows: `analysis/clangd/bin/clangd.exe`; POSIX: `analysis/clangd/bin/clangd` |
+| clangd resource directory | `analysis/clangd/lib/clang/<major>`, matching the first version component |
+| Windows dependencies | Adjacent regular basename `*.dll` files: Cppcheck root or clangd `bin/` |
+| macOS dependencies | Regular basename `*.dylib` files under `analysis/<program>/lib/`, native CPU and Mach-O dylib type 6 |
+| Linux dependencies | Regular basename `*.so` or `*.so.<numeric-components>` files under `analysis/<program>/lib/`, ELF64 LE machine 62 and shared-library type 3 |
+| SBOM application IDs | Exactly `byo-analysis:cppcheck` and `byo-analysis:clangd` |
 
-Paths use `/`, are case-sensitive inventory spellings and resolve only from `R`.
-Reject absolute/drive/UNC paths, backslashes, empty/dot/parent components, invalid
-Windows names, case collisions and symlink/reparse traversal. Canonical resolved
-files and data directories must remain beneath `R`. These checks catch a wrong
-or escaped payload; schema validation alone cannot establish filesystem identity.
+License/dependency arrays are explicit and unique, including under case folding.
+`[]` means no bundled non-OS shared libraries, not absence of native imports.
+Cppcheck notices `analysis/cppcheck/licenses/{COPYING,simplecpp-LICENSE,
+tinyxml2-LICENSE,picojson-LICENSE}` and clangd's `analysis/clangd/LICENSE.TXT`
+remain mandatory. Additional notices stay under `analysis/<program>/licenses/`.
+The accepted Linux static GCC runtime recipe also requires Cppcheck's
+`GCC-COPYING3` and `GCC-COPYING.RUNTIME` there. Their actual compiler input
+notice bytes and provenance must be recorded; no digest is manufactured.
 
-Complete mapping example for the recorded **development candidates**:
+Paths use `/`, exact case-sensitive inventory spelling and the shared portable
+Windows-safe name subset on every host. Reject absolute/drive/UNC paths,
+backslashes, empty/dot/parent components, reserved names, trailing dots/spaces,
+case-fold collisions, symlinks/reparse points, hard-linked POSIX leaves and
+special files. Inspect every ancestor and leaf without following links;
+resolved paths stay within `R`. Unreferenced files and empty directories in a
+selected program's namespace fail validation.
 
-```json
-{
-  "schema_version": 1,
-  "platform": "windows",
-  "architecture": "x86_64",
-  "programs": {
-    "cppcheck": {
-      "version": "2.22.0",
-      "executable": "analysis/cppcheck/cppcheck.exe",
-      "cfg_dir": "analysis/cppcheck/cfg",
-      "platforms_dir": "analysis/cppcheck/platforms",
-      "licenses": [
-        "analysis/cppcheck/licenses/COPYING",
-        "analysis/cppcheck/licenses/simplecpp-LICENSE",
-        "analysis/cppcheck/licenses/tinyxml2-LICENSE",
-        "analysis/cppcheck/licenses/picojson-LICENSE"
-      ],
-      "dependencies": [],
-      "sbom_ref": "byo-analysis:cppcheck"
-    },
-    "clangd": {
-      "version": "23.1.0",
-      "executable": "analysis/clangd/bin/clangd.exe",
-      "resource_dir": "analysis/clangd/lib/clang/23",
-      "licenses": ["analysis/clangd/LICENSE.TXT"],
-      "dependencies": [],
-      "sbom_ref": "byo-analysis:clangd"
-    }
-  }
-}
-```
+## Inventory, SBOM and native identity
 
-This is a complete valid mapping object, not a fabricated release inventory.
-Runtime validity additionally requires the inventory/SBOM/files below. Known
-pre-packaging executable identities binding this example are:
+`R/release-manifest.json.files` remains the sole digest inventory: each closed
+entry has `path`, SHA-256, integer byte `size`, `kind` and boolean `executable`.
+The release manifest's existing closed syntax and protocol versions are retained.
+The mapping contains references, never a second executable/data digest list.
+Hash final payloads, emit their SBOM components/relationships, then inventory
+`sbom.cdx.json` itself. No SBOM self-hash.
 
-| Candidate | Observed executable SHA-256 |
+| Payload | Kind / executable |
 | --- | --- |
-| Cppcheck 2.22.0 | `bd85657e81f80597c63f4380c2e5f91f6a840e0b12cce159df9812e76bb147cb` |
-| clangd 23.1.0 | `dbd52c13d21ef9d284f4f0627efe76c81adf2fe0998f230127f554a54fc9dde7` |
+| `analysis/runtime.json` | `metadata` / false |
+| `sbom.cdx.json` | `sbom` / false |
+| Analyzer executable | `analysis-executable` / true |
+| Cppcheck cfg/platform XML | `analysis-data` / false |
+| clangd resources | `analysis-resource` / false |
+| Bundled native private library | `analysis-dependency` / false |
+| Notices | `license` / false |
 
-Their shipped `files` entries must contain the actual final-byte hashes/sizes.
-Signing, stripping or rebuilding changes that identity and requires new affected
-exact-byte tests. No unrecorded data or clangd archive digests are invented here.
+Require exact selected namespace membership, classifications, sizes, hashes,
+mapping references and SBOM ownership. `cfg/std.cfg`, platform XML and resource
+`include/stddef.h` are required. A nonempty data directory or a version probe
+does not prove upstream completeness. Release validation owns the locked
+vendor selection, including clangd's native include/share resources.
 
-## Payload and provenance handoff
+Application name/version, license references and string provenance properties
+`byo:analysis:upstream` and `byo:analysis:recipe` are required. Preserve other
+explicitly recorded properties and static third-party/GCC runtime identities.
+Reachable file components must cover every selected executable, resource, private
+library and notice exactly; dangling/duplicate relationships or another
+analyzer's file namespace fail. Any recorded SHA-256 must agree with the sole
+release inventory. Missing compiler/static-input provenance blocks packaging
+acceptance; the runtime does not synthesize or replace it.
 
-Stage only accepted vendor data: Cppcheck's source `cfg/*.cfg` and
-`platforms/*.xml` sets, preserving names; clangd's required vendor
-`lib/clang/23/include/` tree, preserving relative layout. The packager compares
-these sets and bytes with the exact accepted upstream inputs before generating
-`files`; a nonempty directory alone does not prove completeness. Cppcheck's
-`COPYING` and `externals/{simplecpp,tinyxml2,picojson}/LICENSE` become the four
-license paths shown above. Preserve notice bytes; review additional attribution
-and distribution/source obligations against the final artifacts. These observed
-notices are not a legal-compliance conclusion.
+Before probes, check native headers of the selected executable and all its
+mapped private dependencies. Preserve Windows PE signature, AMD64 machine and
+PE32+ checks. POSIX checks require complete Mach-O/ELF headers, matching CPU,
+class/endian/type and bounded header/load-command tables; reject scripts,
+Windows wrappers, wrong architecture, truncation and fat runtime Mach-O.
+Release validation separately proves ordinary/delay imports, Mach-O load
+commands/minimum OS/install names/private resolution, and ELF interpreter,
+DT_NEEDED, RPATH/RUNPATH, imported symbol versions and recursive closure.
+Only baseline OS libraries or inventoried private dependencies are allowed.
 
-The recorded Cppcheck source commit is
-`a436ca35ed1887bee789765122b65ed2d7a7e045`; archive SHA-256 is
-`68ed9efb7aad635b7f4c121662689b2377d1d745dc9e76227566516a9617f343`.
-That hash was observed on an official codeload download, not independently
-published. The recipe uses Visual Studio 17 2022/x64, Release, static MSVC
-`MultiThreaded`, empty `FILESDIR`, no core/shared DLL, GUI, tests, Boost or
-matchcompiler, and embeds UTF-8 `activeCodePage` at link. Its patch, options and
-manifest digests and exact argv are in the verified ROOT recipe record below.
-ROOT must transfer the actual matching patch/manifest bytes and recipe inputs;
-the packager records compiler/CMake/linker versions and portable input paths.
-Use deterministic input selection and staging; recipe identity alone does not
-prove bit-reproducible output. Never copy build output addons or source wholesale.
+POSIX staging modes are 0755 for executables/directories and 0644 for data,
+notices/private libraries, without set-ID bits. Installation normalizes to
+owner-only 0700 executables/directories and 0600 data. Executables must retain
+execute permission and be executable by the effective caller. Receipts bind
+device/inode, full mode, owner/group, link count, size, nanosecond mtime/ctime,
+and effective readable/executable access. Windows file identities/attributes
+retain their existing semantics. Cache reuse rechecks those observations;
+matching hashes do not repair lost permissions.
 
-For each application component, require matching name/version, license references
-and SBOM relationships to every delivered executable, data file, DLL and notice.
-Use SBOM `properties` string values `byo:analysis:upstream` (origin URL/reference,
-artifact revision/hash and observed/published hash basis) and
-`byo:analysis:recipe` (exact repack/build procedure, input references/digests,
-patch/UTF-8 manifest, toolchain versions and byte transformations). File components
-identify runtime paths and their upstream relative paths. Record static linked
-third-party components as well as the ordinary/delay-import dependency closure
-and tested Windows OS build. Missing exact clangd distribution digest, dependency
-evidence or source/build inputs blocks packaging input acceptance. The input's
-OS-only dependency observation does not establish every Windows version supported.
+## Resolution and lifetime
 
-## Resolution, integrity and lifetime
+Launcher verification/leases select `R`. The private pre-server-import
+`AnalysisRuntimeContext` is the authority boundary; cwd, environment overrides
+and handshake labels cannot select a managed runtime. Managed failures never
+fall back to PATH. Explicit unmanaged source use retains its development PATH
+behavior, runtime failure evidence and fallback warning.
 
-1. The Rust launcher obtains `R` through existing `load_current`/`active_runtime`:
-   current.json's manifest hash, version-directory containment, existing
-   signature/development policy and full `verify_runtime` inventory checks remain
-   authoritative. Retain the existing runtime lease. No installer-directory or
-   cwd guessing. Load and validate the mapping from those already verified bytes;
-   do not hash the whole runtime again in the Rust static step.
-2. The private sidecar receives the launcher's canonical project/runtime roots.
-   Its existing pre-server-import `AnalysisRuntimeContext(..., managed=True)`
-   remains the authority boundary. Its current protocol checks are **not** payload
-   digest verification. The Python resolver binds the release-manifest byte hash,
-   validates mapping/SBOM relationships and hashes the mapping, SBOM and selected
-   program's inventoried payload once before any executable probe/spawn. It need
-   not rehash unrelated sidecar/workflow files already checked by the launcher.
-   A standalone trusted development caller supplying `R` uses the same checks.
-3. Validate closed syntax, target/version agreement, exact file references and
-   all inventoried data members, nonempty required data directories, `cfg/std.cfg`
-   and resource `include/stddef.h`; upstream set completeness belongs to the
-   release validator, not a second runtime list. All referenced leaves must be
-   readable regular files with matching inventory size/hash. The program's
-   namespace must contain precisely its approved inventory payload. Record required directory
-   and leaf identities/size/mtime with the validated manifest/mapping hashes.
-   Cache per process and immutable runtime identity; compare those metadata
-   identities on subsequent resolution, re-enumerating changed directories.
-   Changed/missing files invalidate the receipt and version cache; revalidation
-   happens only on a later independent call. No disk trust cache or repair loop.
-4. Owned `--version` probes consume at most 5 seconds **within** the caller's
-   remaining deadline, including spawn; cache only by validated program identity.
-   Compare the reported numeric version with the mapping and retain raw output.
-   A matching version does not prove analysis compatibility. Mapping work,
-   hashing, lock waits, probe and query/static execution share the existing one
-   deadline and cancellation; cleanup uses its existing bounded grace. Caller
-   expiry is `incomplete` for MCP or `execution_error` for static verification,
-   not permanent executable-failure evidence. Status never initializes LSP.
-5. Cppcheck executes the mapped absolute executable with project cwd; this
-   explicitly contracted adjacent cfg/platforms layout serves its empty-FILESDIR
-   candidate. Library models are available, not automatically selected or proof
-   of vendor support. Keep the explicit project target XML requirement. The
-   clangd adapter passes `--resource-dir=<canonical mapped resource_dir>` alongside
-   its existing database/driver arguments; installed proof must verify that data
-   is actually used. No executable, runtime, command or flag override enters MCP.
+Process-local receipts bind release-manifest, mapping, SBOM and the selected
+namespace before execution. Recheck metadata, required directories and leaves
+on reuse; directory changes invalidate the receipt and probes/sessions.
+Expected and observed identities remain separate. No disk trust cache,
+automatic repair or hidden retry is added. Payload/probe failures affect the
+selected analyzer; mapping/target failures affect both.
 
-Python source verification integrates at the existing workspace
-`resolve_tool_path` seam, with focused analysis resolution before its development
-fallback; it cannot retain that helper's unlabelled managed PATH behavior.
-Rust packaged verification uses its active `Runtime`, with no hidden workspace
-Python. Server binding stays in `code_analysis_runtime.py`, not tool handlers.
-In managed mode, failure never falls back to PATH. Only an explicitly unmanaged
-source/development launch may use PATH after an unusable supplied runtime, with
-the runtime problem and fallback warning retained. Unrelated helper callers stay
-unchanged; Windows source lookup must not implicitly search cwd or accept shell
-wrappers as native analyzers.
+Managed version probes and clangd sessions remove inherited `LD_*` and `DYLD_*`
+loader injection/search overrides. `analysis_child_environment` applies only
+to actual `origin: managed_runtime`; development environments remain inherited.
+Explicit project/runtime context and query-driver arguments retain their meaning.
+clangd always receives the absolute mapped `--resource-dir`. Cppcheck retains
+empty FILESDIR, adjacent data and explicit firmware target-platform XML; the
+host architecture is never the firmware ABI.
 
-Doctor, status and report evidence retain existing origin `managed_runtime` or
-`path`, executable/version and configuration problems. Add `runtime_root`,
-`runtime_manifest_sha256`, `analysis_mapping_sha256`, `executable_sha256` and
-`data_paths` (canonical required directories); unresolved values are null.
-Keep expected/observed identities distinct on failure. Updates choose a new
-immutable runtime: running leased services keep their launch context; a fresh
-launch selects the update. Detected in-place changes close old-session admission,
-cancel/drain affected work with `analysis/configuration-changed`, and invalidate
-diagnostics; never return an old successful result for new runtime bytes.
+Hash/probe/spawn/query work shares the existing deadline/cancellation. Owned
+version probes have a maximum five-second phase within that budget. Status
+does not initialize LSP or indexing. All five tools remain board-independent
+and available at every existing tier/profile, with unchanged public results.
 
-| Concrete invalid example | Outcome and recovery |
-| --- | --- |
-| Add `programs.clangd.command`, omit `cfg_dir`, or set `schema_version` to `true` | Syntax rejected with field name; regenerate a supported mapping. |
-| Delete `analysis/runtime.json` or omit a program | Unavailable/blocked; restore the complete supported runtime. Older releases do not acquire support by PATH substitution. |
-| Set `resource_dir` to `analysis/clangd/lib/clang/22` with version 23.1.0, report a different probe version, or use an ARM64 release/PE | Incompatible; select/package matching validated Windows x86_64 bytes. The resource mismatch needs semantic validation beyond schema. |
-| Replace a referenced path with `../clangd.exe`, `C:/tools/clangd.exe`, or an escaping junction | Reject path/containment; restore the prescribed runtime layout. |
-| Correct executable, but missing `cfg/std.cfg`, vendor platform XML, `include/stddef.h`, required notice, DLL, or its `files` entry | Incomplete payload; restore the accepted vendor set and inventory. A passing version probe cannot repair it. |
-| Change executable/data bytes without matching the accepted inventory | Integrity failure; restore/reinstall the supported runtime, then relaunch. |
+Only analysis calls opt into `popen_owned(..., analysis_ownership=True)` on
+POSIX. `kernel/_analysis_posix.py` is their single private ownership home;
+Windows Jobs and hardware subprocess callers retain their existing behavior.
+It observes leader exit with `waitid(WNOWAIT)`, preserving an unreaped exact
+child/PGID anchor through normal exit, deadline, cancellation and setup failure.
+Darwin's narrow libc bridge follows the public
+[wait definitions](https://raw.githubusercontent.com/apple-oss-distributions/xnu/main/bsd/sys/wait.h)
+and [siginfo layout](https://raw.githubusercontent.com/apple-oss-distributions/xnu/main/bsd/sys/signal.h);
+its actual ABI execution remains a matching-host Actions gate.
+An observer captures group members and descendants with PID/birth identities;
+detached children are signaled only after fresh identity checks. Group signals
+require the retained exact anchor. Live/unknown children prevent confirmation;
+zombies are distinguished from live children. A bounded cleanup receipt records
+captured states, leader exit/reap, uncertainties and the existing three-grace
+reserve. Unconfirmed cleanup retains its marker and evidence.
+The receipt explicitly scopes coverage to the retained group and captured
+descendants and labels unobserved detached descendants `not_proven`.
 
-Runtime-resolution failures use existing `analysis/executable-unavailable` with
-program, offending field/path, cause and remedy. Cppcheck is `blocked`, full verify
-is FAIL; clangd is `unavailable`. Preserve discovery of all five tools. Existing
-launcher integrity gates may refuse a corrupt runtime before server startup;
-doctor must explain that refusal. Mapping syntax/target errors affect both
-programs; payload/probe errors affect the selected program. No failure/skip
-becomes full verify PASS.
+A polling observer cannot establish ownership of an unobserved child that
+detaches/reparents before observation. A known startup gap or unavailable
+observation remains unconfirmed; no cached image or leader exit is fabricated
+as proof of descendant retirement. Independent native race/fast-detach tests
+must assess this limitation before production acceptance.
 
-## Ordered implementation and Windows acceptance
+Resolution failures keep `analysis/executable-unavailable`, offending path/cause
+and restore/select-matching-runtime remedy. Cppcheck is blocked and full verify
+fails; clangd is unavailable. Missing required data/notices/dependencies,
+corruption, wrong target/type, links, lost access/modes and in-place changes
+cannot become success or managed PATH substitution.
 
-ROOT first accepts independent contract critique, exact upstream/build inputs,
-parity corpus and native repository contexts. The existing packaging draft cannot
-launch on this document alone; do not retarget the live harness.
+## Pending independent GitHub Actions gates
 
-| Slice / sole owner | Handoff and gate |
-| --- | --- |
-| Python Cppcheck owner, authored workspace | Parser/static step and visible resolution via `internal/verify_backend.py`, focused analysis helper and existing `internal/agent_workspace.py` seam; ROOT must allocate `internal/agent_workspace.py` and confirm the proposed helper path before editing. Deliver target/library setup and common fixture identities to Rust owner. |
-| Rust Cppcheck owner, installer | `launcher/src/workflow.rs`, focused `code_analysis.rs`, parity corpus; owns `main.rs` module registration through stage acceptance. Same required static analysis after normal/local builds. |
-| Server managed binding owner, MCP | After separate frozen-candidate review/testing, ROOT supplies an accepted integration base for `code_analysis_runtime.py` and necessary adapter/sidecar changes. Do not edit frozen review bytes in place. |
-| Installer packaging owner | After accepted inputs and explicit `main.rs` transfer: existing builder, SBOM/inventory, doctor/status and archive validator. ROOT allocates `verify_build_output.py`, any installer schema copy, and any `manifest.rs` helper edits explicitly; no hidden ReleaseManifest changes. Packaging never takes `workflow.rs` ownership. |
-| Independent installed tester and reviewer | Separate native Windows contexts, exact combined commit/archive/digest/fixture handoff; their existing reserved files and read-only reviewer roles remain. Findings return to each production owner. |
+ROOT owns remote execution on exact integrated commits. Local source-only
+lint/format/AST inspection establishes no native acceptance. Tester-owned
+portable fixtures must execute on all four hosts; Windows-only skips are not
+macOS/Linux proof. Required gates include:
 
-Use `kind=metadata` for the mapping; `analysis-executable`/true for both EXEs,
-`analysis-data`/false for cfg/platforms, `analysis-resource`/false for resource
-headers, `analysis-dependency`/false for DLLs, and `license`/false for notices.
-Inventory and SBOM cover **every** delivered analysis leaf. Extend Windows PE
-machine checks to both analysis EXEs and all bundled native dependencies:
-AMD64 `0x8664`, PE32+; check ordinary/delay-import closure against the recorded
-tested-OS dependencies and inventoried DLLs, with no PATH DLL dependency.
+1. Closed JSON/target/header/dependency/namespace/SBOM/mode negatives and Windows
+   process/hardware regressions, using the independent server tests.
+2. Matching native build and pinned Cppcheck 2.22.0 / clangd 23.1.0 staging,
+   final dependency/OS-baseline checks, real version/data probes, archive modes
+   and installed permissions. GCC compiler/static library/notices provenance,
+   Linux clangd RUNPATH removal and macOS native thinning remain build gates.
+3. Both runners' authoritative ARM clean/defect/restored cases and all five MCP
+   tools, saved-file freshness, query-driver/resource consumption, poisoned PATH
+   and loader environment, no-board/tier/profile behavior and natural EOF.
+4. Descendants surviving leader exit, observed detachment, startup/fast-detach
+   races, PID reuse, timeout/cancellation/setup failure/idle shutdown, bounded
+   honest cleanup receipts and an unaffected unrelated peer; update/uninstall
+   and prior runtime lease preservation.
 
-The archive validator's forbidden-source rule gets exactly one narrow exception:
-selected vendor `.h` resource headers under the mapped `resource_dir/include/`,
-with `analysis-resource` inventory entries, clangd SBOM ownership and byte/path
-agreement against the accepted digest-pinned vendor distribution. A prefix or
-suffix alone never grants admission. Keep arbitrary source, addons, build output,
-project caches/reports (including `.firm` and `.cache`) and unlisted payloads rejected; inspect the archive's actual
-bytes against the inventory. Preserve existing leak/signature checks. Any required
-additional vendor resource format needs explicit input review, not a blanket source
-exception. Preserve other-platform packaging without claiming validation.
-
-Installed acceptance requires Windows x86_64 with clangd/Cppcheck absent from PATH
-and a relocated runtime/project using spaces and Unicode:
-target-aware, genuinely built ARM clean/defect/restore results **0/1/0**, Python/Rust
-parity including local override/header scope, missing-data/corruption/version
-blockers; real overloaded/template definitions, cross-file references/hover,
-non-BMP/CRLF positions, fresh saved-file and explicit empty diagnostics; actual
-MCP stdio EOF/idle shutdown leaving no owned child or waiter. Doctor and reports
-must identify bundled data/bytes. Bind results to final archive/runtime hashes,
-provenance, actual argv/exit/logs and tested OS. Update/uninstall preserves
-project `byo-analysis.json`, `.clangd` and user files. Installed failures or skips
-are incomplete gates; current source/development tests are not installed proof.
-Required migration/release notes and independent review remain acceptance gates.
-
-## Frozen evidence and documentation checks
-
-Inputs: installer `258dd15a8d82705cae442566bce4db21064ea269`, authored workspace
-`94fc8eca4a8900287ad2766c8cbcb37a13bce12d`, server/base
-`e0f8f4a9bfd02a965f61bc4c5b79c4ac27b866d6`. The literal context manifest is
-`C:\Users\Jason\Documents\Jason\FirmCLI_Sentry\harness\harness-single\local-config\cppcheck-clangd-20261008T174059Z\context\windows-runtime-contract-20261008T2247Z\manifest.json`,
-SHA-256 `5fbbd86b82dff26a0295fa985df7d43dd6ea78670f003301cdc607bd0edf0d74`.
-All 12 snapshot SHA-256 and Git blob hashes were checked before use. The literal
-ROOT recipe is
-`C:\Users\Jason\Documents\Jason\FirmCLI_Sentry\harness\harness-single\local-config\cppcheck-clangd-20261008T174059Z\cppcheck-source-build-candidate.json`,
-SHA-256 `c02629e1ede8ed92eec7354a5326e58728566012b71dbb03558a3f8d3200bfcb`.
-It records relocated Unicode/actually built ARM 0/1/0 development evidence;
-this lane did not rerun it or inspect its referenced build directories.
-Frozen installer `release/source-lock.json` still pins MCP
-`595075fc8004e1d4f1282541888447e803ab07ee`. That pin is not acceptance of this run;
-ROOT must supply accepted integrated source pins before packaging.
-
-Lane-local `.agent-workspace/contract-evidence/` retains exact input paths/hashes,
-documentation-check commands/results and before/after Git blobs. Checks are JSON
-parsing, existing-tool schema/example validation and frozen-source compatibility
-inspection only. No runtime test, build, download or installed proof is claimed.
-`python .agent-workspace/contract-evidence/check_contract.py` exited 0 using
-existing jsonschema 4.26.0: schema and one complete example validated, 31 negative
-schema examples and two strict-JSON cases rejected, and frozen compatibility
-assertions passed. Filesystem/probe/installed semantic gates remain unrun.
+In ROOT's provisioned matching GitHub checkout/environment, execute
+`uv run --locked python -m unittest discover -s tests -p 'test_code_analysis_*.py'`
+and focused clangd/process cleanup tests through the reserved portability
+workflow. Native analyzer fixtures require the tester's measured inputs.
+Integrated build/archive/install/core-smoke commands and required hash-bound
+ARM compiler fixture are defined in the accepted portability contract. Missing
+prerequisites, required skips and unexecuted checks remain pending.

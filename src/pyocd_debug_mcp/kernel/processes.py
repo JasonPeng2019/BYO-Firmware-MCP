@@ -350,6 +350,11 @@ def terminate_process_group(
             return False
         return process.returncode is not None
 
+    from pyocd_debug_mcp.kernel._analysis_posix import AnalysisPopen
+
+    if isinstance(process, AnalysisPopen):
+        return process.cleanup(grace_seconds)
+
     process_group = process.pid
     try:
         os.killpg(process_group, signal.SIGTERM)
@@ -428,6 +433,12 @@ def terminate_marked_group(pid: int, start_token: str) -> bool:
             if completed.returncode != 0:
                 return False
         else:
+            if (
+                not identity_matches(pid, start_token)
+                or os.getpgid(pid) != pid
+                or os.getsid(pid) != pid
+            ):
+                return False
             os.killpg(pid, signal.SIGTERM)
         deadline = time.monotonic() + 0.5
         while time.monotonic() < deadline:
@@ -442,6 +453,15 @@ def terminate_marked_group(pid: int, start_token: str) -> bool:
         if os.name == "nt" and not identity_matches(pid, start_token):
             return True
         if os.name != "nt":
+            # Recovery has no retained Popen anchor. Recheck exact leader birth
+            # and session/group before escalating; a reaped/recycled group
+            # number cannot authorize SIGKILL of an unrelated process.
+            if (
+                not identity_matches(pid, start_token)
+                or os.getpgid(pid) != pid
+                or os.getsid(pid) != pid
+            ):
+                return False
             os.killpg(pid, signal.SIGKILL)
             deadline = time.monotonic() + 0.5
             while time.monotonic() < deadline:
@@ -453,7 +473,7 @@ def terminate_marked_group(pid: int, start_token: str) -> bool:
         return False
     except ProcessLookupError:
         return False
-    except (AttributeError, OSError):
+    except (AttributeError, OSError, ProcessIdentityUnavailable):
         return False
 
 
@@ -461,17 +481,26 @@ def popen_owned(
     argv: Sequence[str],
     *,
     marker_store: ProcessMarkerStore | None = None,
+    analysis_ownership: bool = False,
     **kwargs: Any,
 ) -> tuple[subprocess.Popen[Any], Path | None]:
     validated = validate_argv(argv)
     if kwargs.get("shell"):
         raise ValueError("shell execution is forbidden; pass explicit argv")
     kwargs.update(process_group_options())
-    process = subprocess.Popen(validated, **kwargs)
+    if analysis_ownership and os.name != "nt":
+        from pyocd_debug_mcp.kernel._analysis_posix import AnalysisPopen
+
+        process = AnalysisPopen(validated, **kwargs)
+    else:
+        process = subprocess.Popen(validated, **kwargs)
     store = marker_store or ProcessMarkerStore()
     job_handle: int | None = None
     marker: Path | None = None
     try:
+        if analysis_ownership and os.name != "nt":
+            if isinstance(process, AnalysisPopen):
+                process.begin_ownership()
         # Establish recoverable identity before Windows Job assignment. The
         # leader is still suspended here and therefore cannot have descendants.
         marker = store.create(process, validated)

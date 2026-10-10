@@ -90,6 +90,21 @@ def remaining(deadline: float, cancellation: Cancellation | None = None) -> floa
     return value
 
 
+def analysis_child_environment(program: ResolvedAnalysisProgram) -> dict[str, str] | None:
+    """Managed loaders receive no inherited injection/search overrides.
+
+    Explicit project context and query-driver arguments keep their existing
+    meaning. Development PATH programs retain their inherited environment.
+    """
+    if program.origin != "managed_runtime":
+        return None
+    return {
+        key: value
+        for key, value in os.environ.items()
+        if not key.upper().startswith(("LD_", "DYLD_"))
+    }
+
+
 def _which_path_only(context: AnalysisRuntimeContext, name: str) -> str | None:
     # Windows shutil.which(basename) can prepend cwd even with an explicit PATH.
     # Search only deliberately listed directories, with complete candidate names
@@ -158,7 +173,7 @@ def spawn_before_deadline(
     def spawn() -> None:
         nonlocal abandoned
         try:
-            result = popen_owned(argv, marker_store=marker_store, **kwargs)
+            result = popen_owned(argv, marker_store=marker_store, analysis_ownership=True, **kwargs)
         except BaseException as exc:
             result = exc
         with guard:
@@ -411,6 +426,7 @@ def _probe_program(
                 probe_deadline,
                 cancellation,
                 store,
+                env=analysis_child_environment(candidate),
                 stdin=subprocess.DEVNULL,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,

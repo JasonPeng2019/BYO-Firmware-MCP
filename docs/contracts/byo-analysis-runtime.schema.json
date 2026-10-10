@@ -1,14 +1,14 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "title": "BYO Windows analysis runtime mapping, schema version 1",
-  "description": "Closed syntax for analysis/runtime.json. Release files is the sole payload digest inventory. Filesystem containment, inventory/SBOM completeness, resource major/version agreement, PE/dependency identity and version probes require the semantic checks in ../code-analysis-runtime-manifest.md. There are no implicit defaults.",
+  "title": "BYO native analysis runtime mapping, schema version 1",
+  "description": "Closed four-target syntax for analysis/runtime.json. Release files is the sole payload digest inventory. Strict JSON integer tokens, filesystem containment, exact case, modes/caller access, inventory/SBOM completeness, resource major/version agreement, native header identity and version probes require the semantic checks in ../code-analysis-runtime-manifest.md. There are no implicit defaults.",
   "type": "object",
   "additionalProperties": false,
   "required": ["schema_version", "platform", "architecture", "programs"],
   "properties": {
     "schema_version": { "type": "integer", "const": 1 },
-    "platform": { "type": "string", "const": "windows" },
-    "architecture": { "type": "string", "const": "x86_64" },
+    "platform": { "type": "string", "enum": ["windows", "macos", "linux"] },
+    "architecture": { "type": "string", "enum": ["x86_64", "aarch64"] },
     "programs": {
       "type": "object",
       "additionalProperties": false,
@@ -20,7 +20,7 @@
           "required": ["version", "executable", "cfg_dir", "platforms_dir", "licenses", "dependencies", "sbom_ref"],
           "properties": {
             "version": { "$ref": "#/$defs/version" },
-            "executable": { "type": "string", "const": "analysis/cppcheck/cppcheck.exe" },
+            "executable": { "type": "string", "enum": ["analysis/cppcheck/cppcheck.exe", "analysis/cppcheck/cppcheck"] },
             "cfg_dir": { "type": "string", "const": "analysis/cppcheck/cfg" },
             "platforms_dir": { "type": "string", "const": "analysis/cppcheck/platforms" },
             "licenses": {
@@ -46,7 +46,7 @@
               "items": {
                 "allOf": [
                   { "$ref": "#/$defs/relativePath" },
-                  { "pattern": "^analysis/cppcheck/[^/]+\\.dll$(?![\\s\\S])" }
+                  { "pattern": "^analysis/cppcheck/" }
                 ]
               }
             },
@@ -59,7 +59,7 @@
           "required": ["version", "executable", "resource_dir", "licenses", "dependencies", "sbom_ref"],
           "properties": {
             "version": { "$ref": "#/$defs/version" },
-            "executable": { "type": "string", "const": "analysis/clangd/bin/clangd.exe" },
+            "executable": { "type": "string", "enum": ["analysis/clangd/bin/clangd.exe", "analysis/clangd/bin/clangd"] },
             "resource_dir": { "type": "string", "pattern": "^analysis/clangd/lib/clang/[1-9][0-9]*$(?![\\s\\S])" },
             "licenses": {
               "type": "array",
@@ -84,7 +84,7 @@
               "items": {
                 "allOf": [
                   { "$ref": "#/$defs/relativePath" },
-                  { "pattern": "^analysis/clangd/bin/[^/]+\\.dll$(?![\\s\\S])" }
+                  { "pattern": "^analysis/clangd/" }
                 ]
               }
             },
@@ -94,6 +94,60 @@
       }
     }
   },
+  "allOf": [
+    {
+      "oneOf": [
+        { "properties": { "platform": { "const": "windows" }, "architecture": { "const": "x86_64" } } },
+        { "properties": { "platform": { "const": "macos" }, "architecture": { "enum": ["x86_64", "aarch64"] } } },
+        { "properties": { "platform": { "const": "linux" }, "architecture": { "const": "x86_64" } } }
+      ]
+    },
+    {
+      "if": { "properties": { "platform": { "const": "windows" } } },
+      "then": {
+        "properties": { "programs": { "properties": {
+          "cppcheck": { "properties": {
+            "executable": { "const": "analysis/cppcheck/cppcheck.exe" },
+            "dependencies": { "items": { "pattern": "^analysis/cppcheck/[^/]+\\.dll$(?![\\s\\S])" } }
+          } },
+          "clangd": { "properties": {
+            "executable": { "const": "analysis/clangd/bin/clangd.exe" },
+            "dependencies": { "items": { "pattern": "^analysis/clangd/bin/[^/]+\\.dll$(?![\\s\\S])" } }
+          } }
+        } } }
+      },
+      "else": {
+        "properties": { "programs": { "properties": {
+          "cppcheck": { "properties": { "executable": { "const": "analysis/cppcheck/cppcheck" } } },
+          "clangd": { "properties": { "executable": { "const": "analysis/clangd/bin/clangd" } } }
+        } } }
+      }
+    },
+    {
+      "if": { "properties": { "platform": { "const": "macos" } } },
+      "then": {
+        "properties": { "programs": { "properties": {
+          "cppcheck": { "properties": { "dependencies": { "items": { "pattern": "^analysis/cppcheck/lib/[^/]+\\.dylib$(?![\\s\\S])" } } } },
+          "clangd": { "properties": { "dependencies": { "items": { "pattern": "^analysis/clangd/lib/[^/]+\\.dylib$(?![\\s\\S])" } } } }
+        } } }
+      }
+    },
+    {
+      "if": { "properties": { "platform": { "const": "linux" } } },
+      "then": {
+        "properties": { "programs": { "properties": {
+          "cppcheck": { "properties": {
+            "dependencies": { "items": { "pattern": "^analysis/cppcheck/lib/[^/]+\\.so(?:\\.[0-9]+)*$(?![\\s\\S])" } },
+            "licenses": { "allOf": [
+              { "contains": { "const": "analysis/cppcheck/licenses/GCC-COPYING3" } },
+              { "contains": { "const": "analysis/cppcheck/licenses/GCC-COPYING.RUNTIME" } }
+            ] }
+          } },
+          "clangd": { "properties": { "dependencies": { "items": { "pattern": "^analysis/clangd/lib/[^/]+\\.so(?:\\.[0-9]+)*$(?![\\s\\S])" } } } }
+        } } }
+      }
+    }
+  ],
   "$defs": {
     "version": { "type": "string", "pattern": "^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)$(?![\\s\\S])" },
     "relativePath": {

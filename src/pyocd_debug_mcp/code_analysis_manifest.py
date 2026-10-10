@@ -1,4 +1,4 @@
-"""Strict Windows mapping, sole release inventory and process-local receipts.
+"""Strict native mapping, sole release inventory and process-local receipts.
 
 The launcher owns release trust and whole-runtime verification. This module binds
 its supplied immutable root to the selected analyzer's bytes and SBOM references.
@@ -22,6 +22,7 @@ from pyocd_debug_mcp.code_analysis_runtime import Cancellation, remaining
 
 _VERSION = re.compile(r"(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)")
 _HASH = re.compile(r"[0-9a-f]{64}")
+_TARGETS = {("windows", "x86_64"), ("macos", "aarch64"), ("macos", "x86_64"), ("linux", "x86_64")}
 _lock = threading.Lock()
 
 
@@ -76,6 +77,35 @@ def _relative(value: Any) -> str:
     return value
 
 
+def _host_target() -> tuple[str, str]:
+    system = platform.system().lower()
+    machine = platform.machine().lower()
+    return (
+        {"windows": "windows", "darwin": "macos", "linux": "linux"}.get(system, system),
+        {"amd64": "x86_64", "arm64": "aarch64"}.get(machine, machine),
+    )
+
+
+def _target(value: dict[str, Any], path: str) -> tuple[str, str]:
+    system, machine = value["platform"], value["architecture"]
+    _require(
+        isinstance(system, str) and isinstance(machine, str) and (system, machine) in _TARGETS,
+        path,
+        "requires a supported windows/x86_64, macos/aarch64, macos/x86_64 or linux/x86_64 target",
+    )
+    _require(
+        (system, machine) == _host_target(), "host.architecture", "host and runtime target differ"
+    )
+    return system, machine
+
+
+def _caller_access(path: Path, mode: int) -> bool:
+    # Installed roots can use owner-only modes. Test the effective caller rather
+    # than treating a single owner/group/other mode bit as execution authority.
+    options = {"effective_ids": True} if os.access in os.supports_effective_ids else {}
+    return os.access(path, mode, **options)
+
+
 def _identity(path: Path, deadline: float, cancellation: Cancellation | None) -> tuple[Any, ...]:
     remaining(deadline, cancellation)
     info = path.lstat()
@@ -84,7 +114,7 @@ def _identity(path: Path, deadline: float, cancellation: Cancellation | None) ->
         str(path),
         "symlink/reparse traversal is forbidden",
     )
-    return (
+    identity = (
         info.st_dev,
         info.st_ino,
         info.st_mode,
@@ -93,6 +123,21 @@ def _identity(path: Path, deadline: float, cancellation: Cancellation | None) ->
         info.st_ctime_ns,
         getattr(info, "st_file_attributes", 0),
     )
+    if os.name != "nt":
+        _require(
+            not info.st_mode & (stat.S_ISUID | stat.S_ISGID), str(path), "set-ID mode forbidden"
+        )
+        if stat.S_ISREG(info.st_mode):
+            _require(info.st_nlink == 1, str(path), "hard-linked payload forbidden")
+        identity += (
+            info.st_uid,
+            info.st_gid,
+            info.st_nlink,
+            _caller_access(path, os.R_OK),
+            _caller_access(path, os.X_OK),
+        )
+    remaining(deadline, cancellation)
+    return identity
 
 
 def _path(
@@ -104,8 +149,17 @@ def _path(
     exact: bool = False,
 ) -> Path:
     path = root
-    _identity(path, deadline, cancellation)
+    _require(
+        stat.S_ISDIR(_identity(path, deadline, cancellation)[2]),
+        str(root),
+        "root must be a directory",
+    )
     for part in relative.split("/"):
+        _require(
+            stat.S_ISDIR(_identity(path, deadline, cancellation)[2]),
+            relative,
+            "ancestor must be a directory",
+        )
         if exact:
             found = False
             with os.scandir(path) as entries:
@@ -128,6 +182,8 @@ def hash_file(
 ) -> tuple[str, bytes, tuple[Any, ...]]:
     before = _identity(path, deadline, cancellation)
     _require(stat.S_ISREG(before[2]), str(path), "must be a readable regular file")
+    if os.name != "nt":
+        _require(before[-2], str(path), "payload not readable by effective caller")
     digest = hashlib.sha256()
     chunks = []
     with path.open("rb") as stream:
@@ -190,16 +246,7 @@ def _mapping(value: Any, deadline: float, cancellation: Cancellation | None) -> 
         "schema_version",
         "must be JSON integer 1",
     )
-    _require(
-        value["platform"] == "windows" and value["architecture"] == "x86_64",
-        "platform/architecture",
-        "requires windows/x86_64",
-    )
-    _require(
-        os.name == "nt" and platform.machine().lower() in {"amd64", "x86_64"},
-        "host.architecture",
-        "requires Windows x86_64 host",
-    )
+    system, _ = _target(value, "platform/architecture")
     programs = _object(value["programs"], {"clangd", "cppcheck"}, "programs")
     for name, program in programs.items():
         remaining(deadline, cancellation)
@@ -217,7 +264,8 @@ def _mapping(value: Any, deadline: float, cancellation: Cancellation | None) -> 
         )
         expected = {
             "executable": f"analysis/{name}/"
-            + ("bin/clangd.exe" if name == "clangd" else "cppcheck.exe")
+            + ("bin/clangd" if name == "clangd" else "cppcheck")
+            + (".exe" if system == "windows" else "")
         }
         if name == "clangd":
             major = version.split(".")[0]
@@ -232,6 +280,11 @@ def _mapping(value: Any, deadline: float, cancellation: Cancellation | None) -> 
                 "analysis/cppcheck/licenses/" + p
                 for p in ("COPYING", "simplecpp-LICENSE", "tinyxml2-LICENSE", "picojson-LICENSE")
             }
+            if system == "linux":
+                licenses |= {
+                    "analysis/cppcheck/licenses/GCC-COPYING3",
+                    "analysis/cppcheck/licenses/GCC-COPYING.RUNTIME",
+                }
         for key, spelling in expected.items():
             _require(
                 program[key] == spelling, f"programs.{name}.{key}", f"must be exactly {spelling}"
@@ -260,11 +313,17 @@ def _mapping(value: Any, deadline: float, cancellation: Cancellation | None) -> 
                         "notice outside license namespace",
                     )
                 else:
-                    parent = f"analysis/{name}" + ("/bin" if name == "clangd" else "")
+                    if system == "windows":
+                        parent = f"analysis/{name}" + ("/bin" if name == "clangd" else "")
+                        suffix = r"[^/]+\.dll"
+                    else:
+                        parent = f"analysis/{name}/lib"
+                        suffix = r"[^/]+\.dylib" if system == "macos" else r"[^/]+\.so(?:\.[0-9]+)*"
                     _require(
-                        path.rsplit("/", 1)[0] == parent and path.endswith(".dll"),
+                        path.rsplit("/", 1)[0] == parent
+                        and re.fullmatch(suffix, path.rsplit("/", 1)[-1]) is not None,
                         field,
-                        "dependency must be an adjacent DLL",
+                        "dependency must use the target's private native-library layout",
                     )
             if key == "licenses":
                 _require(
@@ -288,6 +347,8 @@ class _Metadata:
     sbom: dict[str, Any]
     hashes: dict[str, str]
     identities: dict[Path, tuple[Any, ...]]
+    platform: str
+    architecture: str
 
 
 @dataclass
@@ -343,11 +404,7 @@ def _inventory(
         "release-manifest.json.schema",
         "requires schema 1",
     )
-    _require(
-        manifest.get("platform") == "windows" and manifest.get("architecture") == "x86_64",
-        "release-manifest.json.platform/architecture",
-        "mapping and release target must agree",
-    )
+    _target(manifest, "release-manifest.json.platform/architecture")
     _require(
         isinstance(manifest.get("version"), str) and bool(manifest["version"]),
         "release-manifest.json.version",
@@ -452,16 +509,15 @@ def _load(root: Path, deadline: float, cancellation: Cancellation | None) -> _Me
     digest, data, identity = hash_file(manifest_path, deadline, cancellation, collect=True)
     hashes["release-manifest.json"] = digest
     identities[manifest_path] = identity
-    inventory = _inventory(
-        _decode(data, "release-manifest.json", deadline, cancellation), deadline, cancellation
-    )
+    manifest = _decode(data, "release-manifest.json", deadline, cancellation)
+    inventory = _inventory(manifest, deadline, cancellation)
     decoded = {}
     for relative in ("analysis/runtime.json", "sbom.cdx.json"):
         _require(relative in inventory, relative, "metadata missing from release inventory")
         entry = inventory[relative]
         _require(
             not entry["executable"]
-            and (relative != "analysis/runtime.json" or entry["kind"] == "metadata"),
+            and entry["kind"] == ("metadata" if relative == "analysis/runtime.json" else "sbom"),
             relative,
             "invalid metadata inventory classification",
         )
@@ -472,13 +528,29 @@ def _load(root: Path, deadline: float, cancellation: Cancellation | None) -> _Me
         identities[path] = identity
         decoded[relative] = _decode(data, relative, deadline, cancellation)
     programs = _mapping(decoded["analysis/runtime.json"], deadline, cancellation)
+    mapping = decoded["analysis/runtime.json"]
+    _require(
+        (mapping["platform"], mapping["architecture"])
+        == (manifest["platform"], manifest["architecture"]),
+        "analysis/runtime.json.platform/architecture",
+        "mapping and release target must agree",
+    )
     sbom = decoded["sbom.cdx.json"]
     _require(
         isinstance(sbom, dict) and sbom.get("bomFormat") == "CycloneDX",
         "sbom.cdx.json",
         "requires CycloneDX object",
     )
-    return _Metadata(root, programs, inventory, sbom, hashes, identities)
+    return _Metadata(
+        root,
+        programs,
+        inventory,
+        sbom,
+        hashes,
+        identities,
+        mapping["platform"],
+        mapping["architecture"],
+    )
 
 
 def _scan(
@@ -609,6 +681,11 @@ def _sbom(
             item["ref"],
             "invalid dependency reference",
         )
+        _require(
+            len(item["dependsOn"]) == len(set(item["dependsOn"])),
+            item["ref"],
+            "duplicate dependency reference",
+        )
         graph[item["ref"]] = item["dependsOn"]
     pending = [reference]
     visited = set()
@@ -627,6 +704,11 @@ def _sbom(
                 isinstance(path, str) and path in metadata.inventory,
                 ref,
                 "file component references missing inventory leaf",
+            )
+            _require(
+                not path.startswith("analysis/") or path.startswith(f"analysis/{name}/"),
+                ref,
+                "analysis file belongs to a different application namespace",
             )
             if isinstance(path, str) and path.startswith(f"analysis/{name}/"):
                 _require(path not in delivered, path, "duplicate file component")
@@ -678,6 +760,15 @@ def _build(
         else program["cfg_dir"] + "/std.cfg"
     )
     _require(required in selected, required, "required data leaf missing")
+    if name == "cppcheck":
+        _require(
+            any(
+                p.startswith(program["platforms_dir"] + "/") and p.endswith(".xml")
+                for p in selected
+            ),
+            program["platforms_dir"],
+            "required platform XML missing",
+        )
     for path in data_paths:
         _require(
             path in directories
@@ -709,8 +800,29 @@ def _build(
         _require(
             identity == identities[root / relative], relative, "payload changed during validation"
         )
-        if kind == "analysis-executable":
-            _windows_executable(root / relative, deadline, cancellation)
+        if kind in {"analysis-executable", "analysis-dependency"}:
+            if metadata.platform == "windows":
+                _windows_executable(root / relative, deadline, cancellation)
+            else:
+                from pyocd_debug_mcp._analysis_native import validate_native
+
+                if kind == "analysis-executable":
+                    _require(
+                        bool(identity[2] & 0o111) and identity[-1],
+                        relative,
+                        "analyzer must be executable by effective caller",
+                    )
+                try:
+                    validate_native(
+                        root / relative,
+                        metadata.platform,
+                        metadata.architecture,
+                        dependency=kind == "analysis-dependency",
+                        check_budget=lambda: remaining(deadline, cancellation),
+                    )
+                except ValueError as exc:
+                    raise RuntimeIntegrityError(relative, str(exc)) from exc
+                remaining(deadline, cancellation)
     for relative in [program["executable"], *program["licenses"], *program["dependencies"]]:
         _require(relative in selected, relative, "mapped reference missing inventory leaf")
     try:

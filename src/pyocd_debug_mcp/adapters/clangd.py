@@ -21,6 +21,7 @@ from pyocd_debug_mcp.code_analysis_config import AnalysisConfigSnapshot
 from pyocd_debug_mcp.code_analysis_runtime import (
     Cancellation,
     ResolvedAnalysisProgram,
+    analysis_child_environment,
     remaining,
     spawn_before_deadline,
 )
@@ -217,6 +218,7 @@ class ClangdAdapter:
                 deadline,
                 cancellation,
                 self.marker_store,
+                env=analysis_child_environment(self.program),
                 cwd=self.config.project_root,
                 stdin=subprocess.PIPE,
                 stdout=subprocess.PIPE,
