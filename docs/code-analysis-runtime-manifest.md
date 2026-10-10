@@ -200,11 +200,15 @@ receipt, including the first observation failure, for matching-host Actions diag
 It also records the last eight group signal operations, selected signals, results
 and errno values; no signal error alone establishes terminal group membership.
 If Darwin's group signal returns `EPERM` after the pre-signal check, cleanup
-rechecks exact retained-child exit and complete terminal membership within the
-same deadline. Only that positive proof can classify the exit-between-check-and-
-signal race as terminal. The diagnostic keeps the original failed `killpg`/errno
+retries exact retained-child exit and complete terminal membership within the
+existing signal phase and total three-grace deadline. Only positive proof can
+classify the race between the check and signal as terminal. The diagnostic keeps
+the original failed `killpg`/errno
 and a separate terminal-proof operation. Prior observation failures remain
 failures; Linux/Windows permission errors receive no such classification.
+An unsuccessful immediate check can wait for the healthy child to become
+terminal within that phase; unknown identities, changed membership, prior errors
+and exhaustion remain failures. The phase is not extended by this retry.
 The receipt names `coverage: retained_group_and_captured_descendants` and
 `scope_confirmed`. Its `confirmed` compatibility alias means only that same scope.
 Probe and clangd consumers require the named scope and successful retirement/reap;
@@ -237,6 +241,11 @@ reaped within the existing cleanup reserve. Its receipt remains available. Gener
 hardware marker behavior and Windows Jobs/records are unchanged. For unconfirmed
 cleanup, retain the process/evidence and any valid marker, recover only identities
 that still match, then restart the server before another analysis child is started.
+Timely and abandoned POSIX analysis setup exceptions also inspect their actual
+cleanup receipts before releasing spawn admission. Unconfirmed scoped cleanup
+latches the existing restart/refusal state and retains a private receipt copy.
+Pre-spawn failures without an actual receipt and positively retired setup failures
+remain retryable; Windows behavior is unchanged.
 
 Resolution failures keep `analysis/executable-unavailable`, offending path/cause
 and restore/select-matching-runtime remedy. Cppcheck is blocked and full verify

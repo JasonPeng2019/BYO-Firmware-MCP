@@ -466,12 +466,20 @@ class AnalysisPopen(subprocess.Popen[Any]):
                     )
                 else:
                     token = f"psutil:{psutil.Process(pid).create_time():.9f}"
-                    if _process_state(pid, token) != "zombie":
+                    state = _process_state(pid, token)
+                    if state == "unknown":
+                        self._uncertainties.add(
+                            "Darwin terminal member identity/liveness unavailable"
+                        )
+                    if state in {"gone", "reused"}:
+                        self._uncertainties.add("Darwin terminal member identity changed")
+                    if state != "zombie":
                         return None
                     terminal.append({"pid": pid, "start_token": token, "state": "zombie"})
             # Reject membership changes/PID recycling between list and identity
             # reads. All exact remaining members are terminal and cannot fork.
             if _darwin_group_members(self.pid, deadline) != members:
+                self._uncertainties.add("Darwin terminal group membership changed")
                 return None
             if not self._anchor_matches():
                 return None
@@ -481,6 +489,10 @@ class AnalysisPopen(subprocess.Popen[Any]):
                     if member["pid"] == self.pid
                     else _process_state(member["pid"], member["start_token"])
                 )
+                if state == "unknown":
+                    self._uncertainties.add("Darwin terminal member identity/liveness unavailable")
+                if state in {"gone", "reused"}:
+                    self._uncertainties.add("Darwin terminal member identity changed")
                 if time.monotonic() >= deadline or state != "zombie":
                     return None
             return terminal
@@ -536,11 +548,23 @@ class AnalysisPopen(subprocess.Popen[Any]):
                     # The exact child can exit after the pre-signal proof check.
                     # Darwin's EPERM then needs fresh positive terminal proof,
                     # inside this same deadline, never an errno-only waiver.
-                    terminal = (
-                        self._darwin_terminal_group(deadline)
-                        if sys.platform == "darwin" and exc.errno == errno.EPERM
-                        else None
-                    )
+                    terminal = None
+                    if sys.platform == "darwin" and exc.errno == errno.EPERM:
+                        while (
+                            time.monotonic() < deadline
+                            and not self._uncertainties
+                            and self._first_observation_failure is None
+                            and self._wait_error is None
+                            and self._anchor_matches()
+                        ):
+                            terminal = self._darwin_terminal_group(deadline)
+                            if (
+                                terminal is not None
+                                or self._uncertainties
+                                or self._first_observation_failure is not None
+                            ):
+                                break
+                            time.sleep(min(0.005, max(0, deadline - time.monotonic())))
                     if terminal is not None and self._first_observation_failure is None:
                         self._terminal_group_receipt = terminal
                         self._record_group_signal(
@@ -582,8 +606,8 @@ class AnalysisPopen(subprocess.Popen[Any]):
                 return analysis_cleanup_scope_confirmed(self.cleanup_receipt)
             self._capture(deadline)
             for selected_signal in (signal.SIGTERM, signal.SIGKILL):
-                self._signal_owned(selected_signal, deadline)
                 phase_end = min(deadline, time.monotonic() + grace_seconds)
+                self._signal_owned(selected_signal, phase_end)
                 while time.monotonic() < phase_end:
                     self._capture(phase_end)
                     states = self._states(phase_end)

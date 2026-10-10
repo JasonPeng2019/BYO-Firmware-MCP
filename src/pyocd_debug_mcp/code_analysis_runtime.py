@@ -72,6 +72,28 @@ _probe_cache: dict[tuple[Any, ...], ResolvedAnalysisProgram] = {}
 _probe_lock = threading.Lock()
 _spawn_admission = threading.Lock()
 _spawn_cleanup_failure: str | None = None
+_spawn_cleanup_receipt: dict[str, Any] | None = None
+
+
+def _retain_setup_cleanup_failure(failure: BaseException) -> None:
+    """Latch actual POSIX analysis setup evidence before admission opens."""
+    global _spawn_cleanup_failure, _spawn_cleanup_receipt
+    receipt = getattr(failure, "cleanup_receipt", None)
+    if (
+        os.name != "nt"
+        and isinstance(receipt, dict)
+        and receipt.get("coverage") == "retained_group_and_captured_descendants"
+        and receipt.get("leader_identity_source")
+        == "successful-new-session-spawn-and-retained-waitid"
+        and receipt.get("new_session_spawn_succeeded") is True
+        and type(receipt.get("pid")) is int
+        and not analysis_cleanup_scope_confirmed(receipt)
+    ):
+        _spawn_cleanup_receipt = copy.deepcopy(receipt)
+        _spawn_cleanup_failure = (
+            "Analysis setup child cleanup unconfirmed; owned process and recovery evidence retained. "
+            "Restart the server after owned-process recovery before starting another child."
+        )
 
 
 def configure_analysis_runtime(context: AnalysisRuntimeContext) -> None:
@@ -145,7 +167,10 @@ def spawn_before_deadline(
         pass
     if _spawn_cleanup_failure is not None:
         _spawn_admission.release()
-        raise RuntimeError(_spawn_cleanup_failure)
+        failure = RuntimeError(_spawn_cleanup_failure)
+        if _spawn_cleanup_receipt is not None:
+            setattr(failure, "cleanup_receipt", copy.deepcopy(_spawn_cleanup_receipt))
+        raise failure
     guard = threading.Lock()
     ready = threading.Event()
     outcome: list[Any] = []
@@ -154,6 +179,9 @@ def spawn_before_deadline(
     def clean_abandoned(result: Any) -> None:
         global _spawn_cleanup_failure
         try:
+            if isinstance(result, BaseException):
+                _retain_setup_cleanup_failure(result)
+                return
             if not isinstance(result, BaseException):
                 process, marker = result
                 cleaned = terminate_process_group(process)
@@ -210,9 +238,13 @@ def spawn_before_deadline(
             clean_abandoned(completed)
         raise
     result = outcome[0]
-    _spawn_admission.release()
     if isinstance(result, BaseException):
+        try:
+            _retain_setup_cleanup_failure(result)
+        finally:
+            _spawn_admission.release()
         raise result
+    _spawn_admission.release()
     return result
 
 
