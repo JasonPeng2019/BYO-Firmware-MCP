@@ -68,6 +68,8 @@ jobs:
           tests/test_code_analysis_managed_runtime_contract.py
           tests/test_code_analysis_portability.py
           tests/test_code_analysis_posix_ownership.py
+          tests/test_code_analysis_runtime_contract.py
+          tests/test_clangd_adapter_unit.py
 
       - name: Type check analysis runtime
         if: (success() || failure()) && steps.dependencies.outcome == 'success'
