@@ -82,7 +82,7 @@ jobs:
 
       - name: All analysis unit, protocol and native lifecycle contracts
         if: (success() || failure()) && steps.dependencies.outcome == 'success'
-        run: uv run python -m unittest discover -s tests -t . -p "test_code_analysis*.py" -v
+        run: uv run python -m unittest discover -s tests -p "test_code_analysis*.py" -v
 
       - name: Clangd adapter and process cleanup regressions
         if: (success() || failure()) && steps.dependencies.outcome == 'success'
