@@ -575,12 +575,47 @@ class PayloadIntegrity(ManagedCase):
                     self.assert_rejected_without_spawn(observed, "sbom")
 
     def test_mapped_dll_must_be_inventoried_owned_and_present(self) -> None:
+        from tests.code_analysis_managed_support import native_header
+
+        target = host_target()
+        dependency = (
+            "analysis/clangd/bin/vendor.dll"
+            if target.startswith("windows-")
+            else "analysis/clangd/lib/libvendor.dylib"
+            if target.startswith("macos-")
+            else "analysis/clangd/lib/libvendor.so"
+        )
         with self.observer() as observed:
-            self.require_valid_control(observed)
-            mapping = copy.deepcopy(self.fixture.mapping)
-            mapping["programs"]["clangd"]["dependencies"] = ["analysis/clangd/bin/vendor.dll"]
-            self.fixture.replace_mapping(mapping)
-            self.assert_rejected_without_spawn(observed, "vendor.dll")
+            for case in ("missing-inventory", "missing-ownership", "missing-file"):
+                with self.subTest(case=case):
+                    self.fixture = RuntimeFixture(self.base / ("dep-" + uuid.uuid4().hex[:6]))
+                    self.context = self.fixture.context(self.project)
+                    self.fixture.mapping["programs"]["clangd"]["dependencies"] = [dependency]
+                    path = self.fixture.put(dependency, native_header(target, library=True))
+                    self.fixture.seal()
+                    entry = self.fixture.inventory_entry(dependency)
+                    self.assertEqual(entry["kind"], "analysis-dependency")
+                    self.assertIs(entry["executable"], False)
+                    with mock.patch.object(
+                        observed, "redirect", protocol_redirect(self.fixture, self.fake)
+                    ):
+                        before = len(observed.calls)
+                        self.assert_usable(self.resolve())
+                        self.assertEqual(len(observed.calls), before + 1)
+                        if case == "missing-inventory":
+                            self.fixture.inventory.remove(entry)
+                            self.fixture.save_manifest()
+                        elif case == "missing-ownership":
+                            relation = next(
+                                item
+                                for item in self.fixture.sbom["dependencies"]
+                                if item["ref"] == "byo-analysis:clangd"
+                            )
+                            relation["dependsOn"].remove("byo-native:" + dependency)
+                            self.fixture.save_sbom()
+                        else:
+                            path.unlink()
+                        self.assert_rejected_without_spawn(observed, Path(dependency).name)
 
 
 class PathIdentity(ManagedCase):

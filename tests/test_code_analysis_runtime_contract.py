@@ -281,11 +281,31 @@ class BoundedProbes(RuntimeCase):
             with self.assertRaises(TimeoutError):
                 resolve(context, budget=0.0)
             self.assertEqual(fake.events("version_probe"), [], "an expired caller probed")
+            self.assertEqual(fake.starts(), [], "an expired resolver started LSP")
             retry = resolve(context, budget=10.0)
             self.assertTrue(usable(retry), "caller deadline is not executable failure evidence")
+            self.assertEqual(len(fake.events("version_probe")), 1)
+            self.assertEqual(fake.starts(), [], "version probe must not initialize LSP")
+            # The public definition control may reach its legitimate transport
+            # startup through the cached successful probe before caller expiry.
             self.assert_public_caller_expiry_is_incomplete_timeout()
+            self.assertTrue(usable(resolve(context, budget=10.0)))
         self.assertEqual(len(fake.events("version_probe")), 1)
-        self.assertEqual(fake.starts(), [], "version probe must not initialize LSP")
+        starts = fake.starts()
+        self.assertLessEqual(len(starts), 1, "Only the public definition may start one transport")
+        for start in starts:
+            self.assertEqual(
+                start["argv"],
+                [
+                    "--enable-config",
+                    "--background-index",
+                    "--limit-references=0",
+                    "--limit-results=0",
+                    "--compile-commands-dir=" + str(self.project.root),
+                    "--query-driver=",
+                ],
+            )
+            self.assertTrue(same_path(Path(start["cwd"]), self.project.root))
 
     def test_nonzero_probe_is_unavailable(self) -> None:
         directory, fake = self.shim(
