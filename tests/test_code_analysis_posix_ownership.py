@@ -19,6 +19,8 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
+import psutil
+
 from tests.code_analysis_managed_support import posix_process_identity, production
 
 
@@ -92,6 +94,15 @@ class NativePosixOwnership(unittest.TestCase):
                 process.wait(timeout=2)
             except subprocess.TimeoutExpired:
                 pass
+            # Negative contracts intentionally leave a native anchor retained.
+            # Reap only this fixture's exact direct child after the independent
+            # oracle observes its exit; never upgrade its production receipt.
+            token = self.observed.get(process.pid)
+            if token and posix_process_identity(process.pid) == (token, "Z"):
+                try:
+                    os.waitpid(process.pid, os.WNOHANG)
+                except ChildProcessError:
+                    pass
             for stream in (process.stdin, process.stdout, process.stderr):
                 if stream is not None:
                     stream.close()
@@ -210,23 +221,30 @@ class NativePosixOwnership(unittest.TestCase):
         self.assertTrue(self.is_owned_live(peer.pid, peer_token))
 
     def test_natural_eof_retains_exact_exit_proof_until_owned_cleanup(self) -> None:
-        gate = self.base / "eof-release"
-        process, marker = self.spawn(
-            [
-                sys.executable,
-                "-c",
-                "import pathlib,sys,time; gate=pathlib.Path(sys.argv[1]);\nwhile not gate.exists(): time.sleep(.01)\nprint('natural eof')",
-                str(gate),
-            ]
-        )
-        token = self.observed[process.pid]
-        gate.touch()
-        output, errors = process.communicate(timeout=5)
-        self.assertEqual(output, b"natural eof\n")
-        self.assertEqual(errors, b"")
-        self.assertFalse(self.is_owned_live(process.pid, token))
-        self.confirm_cleanup(process, marker, [process.pid])
-        self.assertEqual(process.cleanup_receipt["leader_exit"], 0)
+        for exit_code in (0, 23):
+            with self.subTest(exit_code=exit_code):
+                gate = self.base / ("eof-release-" + str(exit_code))
+                process, marker = self.spawn(
+                    [
+                        sys.executable,
+                        "-c",
+                        "import pathlib,sys,time; gate=pathlib.Path(sys.argv[1]);\nwhile not gate.exists(): time.sleep(.01)\nprint('natural eof'); sys.exit(int(sys.argv[2]))",
+                        str(gate),
+                        str(exit_code),
+                    ]
+                )
+                token = self.observed[process.pid]
+                gate.touch()
+                output, errors = process.communicate(timeout=5)
+                self.assertEqual(output, b"natural eof\n")
+                self.assertEqual(errors, b"")
+                self.assertEqual(process.returncode, exit_code)
+                # Exit observation must keep the exact native child available as
+                # an unreaped group anchor until the real cleanup proof completes.
+                retained = posix_process_identity(process.pid)
+                self.assertEqual(retained, (token, "Z"))
+                self.confirm_cleanup(process, marker, [process.pid])
+                self.assertEqual(process.cleanup_receipt["leader_exit"], exit_code)
 
     def test_deadline_and_cancellation_of_actual_version_probe_retire_exact_owned_process(
         self,
@@ -323,6 +341,70 @@ class NativePosixOwnership(unittest.TestCase):
                 self.assertFalse(self.is_owned_live(process.pid, self.observed[process.pid]))
                 self.assertIsNone(self.runtime._spawn_cleanup_failure)
                 self.assertIs(process.cleanup_receipt["confirmed"], True)
+                following, following_marker = self.spawn(
+                    [sys.executable, "-c", "import time; time.sleep(60)"]
+                )
+                self.assertIsNot(following, process)
+                self.confirm_cleanup(following, following_marker, [following.pid])
+        finally:
+            release.set()
+
+    def test_actual_unconfirmed_late_cleanup_retains_marker_and_refuses_new_spawn(self) -> None:
+        entered, release, completed = threading.Event(), threading.Event(), threading.Event()
+        actual = self.runtime.popen_owned
+        spawned = []
+
+        def delayed(argv, **kwargs):
+            entered.set()
+            self.assertTrue(release.wait(5))
+            result = actual(argv, **kwargs)
+            self.owned.append(result)
+            self.observe(result[0].pid)
+            spawned.append(result)
+            completed.set()
+            return result
+
+        original_killpg = os.killpg
+
+        def unavailable_group_signal(group, sig):
+            if spawned and group == spawned[0][0].pid and sig:
+                raise PermissionError("injected owned group signal denial")
+            return original_killpg(group, sig)
+
+        try:
+            with (
+                mock.patch.object(self.runtime, "popen_owned", side_effect=delayed) as spawn,
+                mock.patch.object(os, "killpg", side_effect=unavailable_group_signal),
+            ):
+                with self.assertRaises(TimeoutError):
+                    self.runtime.spawn_before_deadline(
+                        [sys.executable, "-c", "import time; time.sleep(60)"],
+                        time.monotonic() + 0.15,
+                        None,
+                        self.store,
+                        stdin=subprocess.DEVNULL,
+                        stdout=subprocess.DEVNULL,
+                        stderr=subprocess.DEVNULL,
+                    )
+                self.assertTrue(entered.is_set())
+                release.set()
+                self.assertTrue(completed.wait(5))
+                self.until(lambda: self.runtime._spawn_cleanup_failure is not None)
+                process, marker = spawned[0]
+                self.assertIs(process.cleanup_receipt["confirmed"], False)
+                self.assertTrue(process.cleanup_receipt["uncertainties"])
+                self.assertTrue(marker.exists())
+                saved = json.loads(marker.read_bytes())
+                self.assertEqual(saved["pid"], process.pid)
+                self.assertEqual(saved["start_token"], process.cleanup_receipt["start_token"])
+                with self.assertRaisesRegex(RuntimeError, "termination unconfirmed"):
+                    self.runtime.spawn_before_deadline(
+                        [sys.executable, "-c", "raise SystemExit('must not spawn')"],
+                        time.monotonic() + 2,
+                        None,
+                        self.store,
+                    )
+                self.assertEqual(spawn.call_count, 1)
         finally:
             release.set()
 
@@ -351,21 +433,55 @@ class NativePosixOwnership(unittest.TestCase):
                 pid_signal.assert_not_called()
                 self.assertTrue(self.is_owned_live(peer.pid, peer_token))
 
-    def test_terminal_group_permission_error_is_unconfirmed_and_marker_retained(self) -> None:
-        process, marker, directory, ready = self.tree()
+    def test_owned_group_signal_permission_error_is_unconfirmed_and_marker_retained(self) -> None:
+        # A clean native control must confirm before fault injection. Cleanup
+        # uses actual group signals; an unused killpg(group, 0) mock proved nothing.
+        control, control_marker = self.spawn([sys.executable, "-c", "import time; time.sleep(60)"])
+        self.confirm_cleanup(control, control_marker, [control.pid])
+        process, marker, _, ready = self.tree()
         actual = os.killpg
+        denied = []
+        self.assertTrue(self.is_owned_live(ready["child"], self.observed[ready["child"]]))
 
-        def unknown_terminal(group, sig):
-            if group == process.pid and sig == 0:
-                raise PermissionError("native terminal group proof unavailable")
+        def unavailable_owned_signal(group, sig):
+            if group == process.pid:
+                denied.append(sig)
+                raise PermissionError("owned group signal unavailable")
             return actual(group, sig)
 
-        with mock.patch.object(os, "killpg", side_effect=unknown_terminal):
+        with mock.patch.object(os, "killpg", side_effect=unavailable_owned_signal):
             self.assertFalse(self.processes.terminate_process_group(process, grace_seconds=0.2))
-        self.assertTrue(marker.exists(), "Unknown group identity must retain recovery ownership")
+        self.assertTrue(denied, "The actual owned signal phase must reach the injected denial")
+        self.assertTrue(marker.exists(), "Unconfirmed signaling must retain recovery ownership")
         self.assertIs(process.cleanup_receipt["confirmed"], False)
         self.assertTrue(process.cleanup_receipt["uncertainties"])
-        self.confirm_cleanup(process, marker, [ready["leader"], ready["child"]])
+
+    def test_captured_detached_live_child_with_unavailable_birth_stays_unconfirmed(self) -> None:
+        process, marker, _, ready = self.tree(detach=True)
+        child, token = ready["child"], self.observed[ready["child"]]
+        self.assertTrue(self.is_owned_live(child, token))
+        original = psutil.Process.create_time
+        denied = []
+
+        def inaccessible_birth(candidate):
+            if candidate.pid == child:
+                denied.append(candidate.pid)
+                raise psutil.AccessDenied(candidate.pid)
+            return original(candidate)
+
+        # Fault only the real observed descendant's birth observation, after it
+        # leaves the session. The independent native oracle remains available.
+        with mock.patch.object(psutil.Process, "create_time", inaccessible_birth):
+            self.assertFalse(self.processes.terminate_process_group(process, grace_seconds=0.2))
+        self.assertTrue(denied, "Actual descendant identity observation must reach the fault")
+        self.assertTrue(self.is_owned_live(child, token))
+        self.assertTrue(marker.exists())
+        receipt = process.cleanup_receipt
+        self.assertIs(receipt["confirmed"], False)
+        self.assertTrue(receipt["uncertainties"])
+        captured = {entry["pid"]: entry for entry in receipt["captured"]}
+        self.assertIn(child, captured)
+        self.assertEqual(captured[child]["state"], "unknown")
 
     def test_recovery_requires_exact_session_group_and_rechecks_birth_before_escalation(
         self,

@@ -108,9 +108,18 @@ class WindowsProcessCleanupTests(unittest.TestCase):
         store = Mock()
         store.create.return_value = marker
         primary = OSError("Job assignment failed")
+        # This fixture models a suspended Windows spawn on every test host.
+        # POSIX subprocess omits these constants; the real group-options helper
+        # has its own contract, so keep this mock focused on failed Job setup.
+        creationflags = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0x00000200) | getattr(
+            subprocess, "CREATE_SUSPENDED", 0x00000004
+        )
         with (
             patch.object(processes.os, "name", "nt"),
-            patch.object(processes.subprocess, "Popen", return_value=process),
+            patch.object(
+                processes, "process_group_options", return_value={"creationflags": creationflags}
+            ) as group_options,
+            patch.object(processes.subprocess, "Popen", return_value=process) as popen,
             patch.object(processes, "_create_windows_kill_job", side_effect=primary),
             patch.object(
                 processes,
@@ -125,6 +134,8 @@ class WindowsProcessCleanupTests(unittest.TestCase):
         self.assertIsInstance(raised.exception.__cause__, RuntimeError)
         self.assertIn("recovery marker retained", str(raised.exception.__cause__))
         terminate.assert_called_once_with(process)
+        group_options.assert_called_once_with()
+        popen.assert_called_once_with(("python",), creationflags=creationflags)
         store.create.assert_called_once()
         store.remove.assert_not_called()
 

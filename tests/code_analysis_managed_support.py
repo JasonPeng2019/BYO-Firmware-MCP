@@ -117,6 +117,15 @@ def default_mapping(target: str | None = None) -> dict[str, Any]:
     target = target or host_target()
     system, architecture, _, _ = TARGETS[target]
     suffix = ".exe" if system == "windows" else ""
+    cppcheck_notices = (
+        "COPYING",
+        "simplecpp-LICENSE",
+        "tinyxml2-LICENSE",
+        "picojson-LICENSE",
+    )
+    if system == "linux":
+        # Accepted Linux static GCC runtime recipe requires these extra notices.
+        cppcheck_notices += ("GCC-COPYING3", "GCC-COPYING.RUNTIME")
     return {
         "schema_version": 1,
         "platform": system,
@@ -127,15 +136,7 @@ def default_mapping(target: str | None = None) -> dict[str, Any]:
                 "executable": "analysis/cppcheck/cppcheck" + suffix,
                 "cfg_dir": "analysis/cppcheck/cfg",
                 "platforms_dir": "analysis/cppcheck/platforms",
-                "licenses": [
-                    "analysis/cppcheck/licenses/" + n
-                    for n in (
-                        "COPYING",
-                        "simplecpp-LICENSE",
-                        "tinyxml2-LICENSE",
-                        "picojson-LICENSE",
-                    )
-                ],
+                "licenses": ["analysis/cppcheck/licenses/" + n for n in cppcheck_notices],
                 "dependencies": [],
                 "sbom_ref": "byo-analysis:cppcheck",
             },

@@ -93,6 +93,41 @@ class ReceiptCase(unittest.TestCase):
 
 
 class PortableReceipts(ReceiptCase):
+    def test_linux_gcc_notices_require_mapping_bytes_inventory_and_sbom_ownership(self) -> None:
+        target = "linux-x86_64"
+        with self.host(target):
+            self.receipt(self.fixture(target), "cppcheck")
+            for notice in ("GCC-COPYING3", "GCC-COPYING.RUNTIME"):
+                relative = "analysis/cppcheck/licenses/" + notice
+                for mutation in (
+                    "mapping",
+                    "inventory",
+                    "missing-leaf",
+                    "changed-bytes",
+                    "sbom-owner",
+                ):
+                    with self.subTest(notice=notice, mutation=mutation):
+                        fixture = self.fixture(target)
+                        if mutation == "mapping":
+                            fixture.mapping["programs"]["cppcheck"]["licenses"].remove(relative)
+                            fixture.replace_mapping(fixture.mapping)
+                        elif mutation == "inventory":
+                            fixture.inventory.remove(fixture.inventory_entry(relative))
+                            fixture.save_manifest()
+                        elif mutation == "missing-leaf":
+                            (fixture.root / relative).unlink()
+                        elif mutation == "changed-bytes":
+                            fixture.put(relative, b"unmeasured replacement notice")
+                        else:
+                            relation = next(
+                                entry
+                                for entry in fixture.sbom["dependencies"]
+                                if entry["ref"] == "byo-analysis:cppcheck"
+                            )
+                            relation["dependsOn"].remove("byo-native:" + relative)
+                            fixture.save_sbom()
+                        self.reject(fixture, "cppcheck")
+
     def test_release_closed_objects_integer_tokens_and_inventory_digest_types(self) -> None:
         for target in TARGETS:
             with self.subTest(target=target), self.host(target):
