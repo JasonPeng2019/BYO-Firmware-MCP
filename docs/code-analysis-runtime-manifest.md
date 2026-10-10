@@ -210,7 +210,11 @@ An unsuccessful immediate check can wait for the healthy child to become
 terminal within that phase. A reaped terminal member can shrink the group:
 reject the unstable snapshot, freshly prove each removed exact identity nonlive
 or absent, and require a new complete stable membership pair within the same
-deadline. Unknown identities, unsafe additions or reuse, denied or unavailable
+deadline. The proof snapshots acquired identities under the bounded ownership
+guard and reuses an unambiguous exact captured token if a listed terminal member
+disappears before its birth metadata can be read. Fresh absence and the stable
+remaining pair are still required; a first-time missing birth is not accepted.
+Unknown or ambiguous identities, unsafe additions or reuse, denied or unavailable
 membership, prior errors and exhaustion remain failures. No unrelated uncertainty
 is cleared, and the phase is not extended by either retry.
 The receipt names `coverage: retained_group_and_captured_descendants` and

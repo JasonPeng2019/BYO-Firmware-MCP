@@ -454,8 +454,31 @@ class AnalysisPopen(subprocess.Popen[Any]):
         try:
             if _exit_status(self.pid) is None:
                 return None
-            members = _darwin_group_members(self.pid, deadline)
+            if not self._ownership_guard.acquire(timeout=max(0, deadline - time.monotonic())):
+                self._note_incomplete_observation(
+                    "terminal identity snapshot exceeded bounded phase"
+                )
+                return None
             tokens: dict[int, str] = {}
+            ambiguous: set[int] = set()
+            try:
+                # Reuse only an exact acquired identity, copied under the same
+                # bounded guard as the observer. A terminal member may already
+                # be absent when the listed PID's birth metadata is read.
+                for pid, token in self._captured:
+                    if time.monotonic() >= deadline:
+                        self._note_incomplete_observation(
+                            "terminal identity snapshot exceeded bounded phase"
+                        )
+                        return None
+                    if tokens.setdefault(pid, token) != token:
+                        ambiguous.add(pid)
+            finally:
+                self._ownership_guard.release()
+            members = _darwin_group_members(self.pid, deadline)
+            if ambiguous.intersection(members):
+                self._uncertainties.add("Darwin terminal member captured identity ambiguous")
+                return None
             while time.monotonic() < deadline:
                 terminal = []
                 absent: set[int] = set()
