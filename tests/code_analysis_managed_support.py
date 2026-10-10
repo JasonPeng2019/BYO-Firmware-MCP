@@ -425,7 +425,8 @@ def posix_process_identity(pid: int) -> tuple[str, str] | None:
         lib.proc_pidinfo.restype = ctypes.c_int
         info = BSDInfo()
         ctypes.set_errno(0)
-        size = lib.proc_pidinfo(pid, 3, 0, ctypes.byref(info), ctypes.sizeof(info))
+        # xnu proc_info.c: nonzero arg includes retained zombies for this flavor.
+        size = lib.proc_pidinfo(pid, 3, 1, ctypes.byref(info), ctypes.sizeof(info))
         if size == 0 and ctypes.get_errno() == 3:  # ESRCH
             return None
         if size != ctypes.sizeof(info):
@@ -498,38 +499,77 @@ class OwnedSpawns:
         actual = self.redirect(requested) if self.redirect else requested
         kwargs["marker_store"] = self.store
         process, marker = self.original(actual, **kwargs)
-        token = native_start_token(process.pid)
-        if token is None and os.name == "posix":
-            # AnalysisPopen retains an exited leader until group cleanup. A fast
-            # version peer may already be a zombie; its exact start is still native.
-            observation = posix_process_identity(process.pid)
-            token = observation[0] if observation else None
-        assert token is not None, "Spawn returned without an observable creation identity"
         record = {
             "requested_argv": requested,
             "actual_argv": actual,
             "pid": process.pid,
-            "native_creation": token,
-            "marker": json.loads(marker.read_bytes()) if marker else None,
+            "native_creation": None,
+            "marker": None,
             "cwd": str(kwargs.get("cwd")),
             "spawn_at": time.monotonic(),
         }
         with self.lock:
             self.calls.append(requested)
             self.children.append((process, marker, record))
+        # Retain the actual child for emergency cleanup even if an oracle fails.
+        record["marker"] = json.loads(marker.read_bytes()) if marker else None
+        token = native_start_token(process.pid)
+        if token is None and os.name == "posix":
+            # A fast version peer may already be a retained zombie with a real birth.
+            observation = posix_process_identity(process.pid)
+            token = observation[0] if observation else None
+        record["native_creation"] = token
+        if marker is None and os.name == "posix":
+            # The accepted early-terminal boundary returns only after scoped reap.
+            # check_cleanup requires native ECHILD and the full receipt, not poll alone.
+            assert type(process.returncode) is int, record
+            assert posix_process_identity(process.pid) is None, record
+            self.check_cleanup(child=process)
+        else:
+            assert token is not None, "Spawn returned without an observable creation identity"
         return process, marker
 
-    def check_cleanup(self) -> None:
+    def check_cleanup(self, *, child: Any = None) -> None:
         for process, marker, record in self.children:
+            if child is not None and process is not child:
+                continue
             record["exit_code"] = process.poll()
+            if os.name == "posix":
+                receipt = getattr(process, "cleanup_receipt", None)
+                record["cleanup_receipt"] = receipt
+            current = native_start_token(process.pid)
             record["identity_matches_after"] = (
-                native_start_token(process.pid) == record["native_creation"]
+                current == record["native_creation"]
+                if record["native_creation"]
+                else current is not None
             )
-            record["marker_exists_after"] = marker.exists() if marker else None
+            record["marker_exists_after"] = (
+                marker.exists() if marker else (False if os.name == "posix" else None)
+            )
             assert record["exit_code"] is not None, record
             assert record["identity_matches_after"] is False, record
             assert record["marker_exists_after"] is False, record
-        assert not list(self.store.root.glob("*.json")), "Owned recovery marker remains"
+            if os.name == "posix":
+                from tests.test_code_analysis_posix_ownership import native_retained_exit
+
+                assert isinstance(receipt, dict), record
+                assert receipt.get("coverage") == "retained_group_and_captured_descendants", record
+                assert receipt.get("scope_confirmed") is True, record
+                assert receipt.get("unobserved_detached_descendants") == "not_proven", record
+                assert receipt.get("leader_reaped") is True, record
+                assert type(receipt.get("leader_exit")) is int, record
+                assert receipt["leader_exit"] == record["exit_code"], record
+                assert receipt.get("uncertainties") == [], record
+                assert receipt.get("wait_error") is None, record
+                try:
+                    retained = native_retained_exit(process.pid)
+                except ChildProcessError:
+                    record["native_reaped"] = True
+                else:
+                    record["native_reaped"] = False
+                    raise AssertionError(("Owned child not independently reaped", retained, record))
+        if child is None:
+            assert not list(self.store.root.glob("*.json")), "Owned recovery marker remains"
 
     def __exit__(self, *exc: Any) -> None:
         # Preserve an unclean observation before emergency cleanup of only these children.

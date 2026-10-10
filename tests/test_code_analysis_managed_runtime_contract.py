@@ -1016,10 +1016,13 @@ class SharedDeadline(ManagedCase):
                     release.set()
                 deadline = time.monotonic() + 4
                 while time.monotonic() < deadline:
-                    if observed.children and all(
-                        p.poll() is not None for p, _, _ in observed.children
-                    ):
-                        break
+                    if observed.children:
+                        try:
+                            observed.check_cleanup()
+                        except AssertionError:
+                            pass
+                        else:
+                            break
                     time.sleep(0.02)
                 self.assertEqual(
                     len(observed.children), 1, "Late actual owned spawn must be observed"
