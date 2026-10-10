@@ -207,8 +207,12 @@ the original failed `killpg`/errno
 and a separate terminal-proof operation. Prior observation failures remain
 failures; Linux/Windows permission errors receive no such classification.
 An unsuccessful immediate check can wait for the healthy child to become
-terminal within that phase; unknown identities, changed membership, prior errors
-and exhaustion remain failures. The phase is not extended by this retry.
+terminal within that phase. A reaped terminal member can shrink the group:
+reject the unstable snapshot, freshly prove each removed exact identity nonlive
+or absent, and require a new complete stable membership pair within the same
+deadline. Unknown identities, unsafe additions or reuse, denied or unavailable
+membership, prior errors and exhaustion remain failures. No unrelated uncertainty
+is cleared, and the phase is not extended by either retry.
 The receipt names `coverage: retained_group_and_captured_descendants` and
 `scope_confirmed`. Its `confirmed` compatibility alias means only that same scope.
 Probe and clangd consumers require the named scope and successful retirement/reap;

@@ -443,59 +443,100 @@ class AnalysisPopen(subprocess.Popen[Any]):
 
     def _darwin_terminal_group(self, deadline: float) -> list[dict[str, Any]] | None:
         """Positive exact membership/exit proof, independent of signal errno."""
-        if sys.platform != "darwin" or not self._anchor_matches():
+        if (
+            sys.platform != "darwin"
+            or not self._anchor_matches()
+            or self._uncertainties
+            or self._first_observation_failure is not None
+            or self._wait_error is not None
+        ):
             return None
         try:
             if _exit_status(self.pid) is None:
                 return None
             members = _darwin_group_members(self.pid, deadline)
-            terminal = []
-            for pid in sorted(members):
-                if time.monotonic() >= deadline:
-                    return None
-                if pid == self.pid:
-                    if self._leader_state() != "zombie":
+            tokens: dict[int, str] = {}
+            while time.monotonic() < deadline:
+                terminal = []
+                absent: set[int] = set()
+                for pid in sorted(members):
+                    if time.monotonic() >= deadline:
                         return None
-                    terminal.append(
-                        {
-                            "pid": pid,
-                            "start_token": self._leader_token,
-                            "state": "zombie",
-                            "identity_source": "retained-direct-child",
-                        }
+                    if pid == self.pid:
+                        if self._leader_state() != "zombie":
+                            return None
+                        terminal.append(
+                            {
+                                "pid": pid,
+                                "start_token": self._leader_token,
+                                "state": "zombie",
+                                "identity_source": "retained-direct-child",
+                            }
+                        )
+                    else:
+                        if pid not in tokens:
+                            tokens[pid] = f"psutil:{psutil.Process(pid).create_time():.9f}"
+                        state = _process_state(pid, tokens[pid])
+                        if state == "gone":
+                            absent.add(pid)
+                            continue
+                        if state in {"unknown", "reused"}:
+                            self._uncertainties.add(
+                                "Darwin terminal member identity/liveness unavailable"
+                            )
+                        if state != "zombie":
+                            return None
+                        terminal.append({"pid": pid, "start_token": tokens[pid], "state": "zombie"})
+                following = _darwin_group_members(self.pid, deadline)
+                if not following.issubset(members):
+                    self._uncertainties.add("Darwin terminal group gained unproven membership")
+                    return None
+                for member in terminal:
+                    state = (
+                        self._leader_state()
+                        if member["pid"] == self.pid
+                        else _process_state(member["pid"], member["start_token"])
                     )
-                else:
-                    token = f"psutil:{psutil.Process(pid).create_time():.9f}"
-                    state = _process_state(pid, token)
-                    if state == "unknown":
+                    if time.monotonic() >= deadline:
+                        return None
+                    if state == "gone":
+                        absent.add(member["pid"])
+                    elif state in {"unknown", "reused"}:
                         self._uncertainties.add(
                             "Darwin terminal member identity/liveness unavailable"
                         )
-                    if state in {"gone", "reused"}:
-                        self._uncertainties.add("Darwin terminal member identity changed")
-                    if state != "zombie":
                         return None
-                    terminal.append({"pid": pid, "start_token": token, "state": "zombie"})
-            # Reject membership changes/PID recycling between list and identity
-            # reads. All exact remaining members are terminal and cannot fork.
-            if _darwin_group_members(self.pid, deadline) != members:
-                self._uncertainties.add("Darwin terminal group membership changed")
-                return None
-            if not self._anchor_matches():
-                return None
-            for member in terminal:
-                state = (
-                    self._leader_state()
-                    if member["pid"] == self.pid
-                    else _process_state(member["pid"], member["start_token"])
-                )
-                if state == "unknown":
-                    self._uncertainties.add("Darwin terminal member identity/liveness unavailable")
-                if state in {"gone", "reused"}:
-                    self._uncertainties.add("Darwin terminal member identity changed")
-                if time.monotonic() >= deadline or state != "zombie":
+                    elif state != "zombie":
+                        return None
+                if following != members or absent:
+                    # A reaper can remove an exact terminal orphan. Reject this
+                    # unstable proof, verify every removed identity freshly,
+                    # then require a new complete stable snapshot pair.
+                    previous = following
+                    following = _darwin_group_members(self.pid, deadline)
+                    if not following.issubset(previous) or absent.intersection(following):
+                        self._uncertainties.add("Darwin terminal group membership inconsistent")
+                        return None
+                    for pid in members - following:
+                        if time.monotonic() >= deadline:
+                            return None
+                        if pid == self.pid or _process_state(pid, tokens[pid]) not in {
+                            "gone",
+                            "zombie",
+                        }:
+                            self._uncertainties.add(
+                                "Darwin removed terminal member retirement unavailable"
+                            )
+                            return None
+                    self._note_incomplete_observation(
+                        "positively terminal Darwin group shrink; retry"
+                    )
+                    members = following
+                    continue
+                if not self._anchor_matches() or time.monotonic() >= deadline:
                     return None
-            return terminal
+                return terminal
+            return None
         except _ObservationDeadline as exc:
             self._note_incomplete_observation(str(exc))
             return None
