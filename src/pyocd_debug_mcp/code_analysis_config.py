@@ -120,6 +120,23 @@ def resolve_path(root: Path, value: Any, label: str) -> Path:
     return (path if path.is_absolute() else root / path).resolve()
 
 
+def _compiler_executable(path: Path) -> bool:
+    if not path.is_file() or not os.access(path, os.X_OK):
+        return False
+    if os.name == "nt":
+        # Windows X_OK alone also accepts ordinary text files. Check the native
+        # image without running a user-supplied compiler during config loading.
+        import ctypes
+        from ctypes import wintypes
+
+        binary_type = ctypes.WinDLL("kernel32", use_last_error=True).GetBinaryTypeW
+        binary_type.argtypes = (wintypes.LPCWSTR, ctypes.POINTER(wintypes.DWORD))
+        binary_type.restype = wintypes.BOOL
+        kind = wintypes.DWORD()
+        return bool(binary_type(str(path), ctypes.byref(kind))) and kind.value in {0, 6}
+    return True
+
+
 @dataclass(frozen=True)
 class CompilationEntry:
     source: Path
@@ -496,12 +513,26 @@ def load_analysis_config(project_root: str | Path) -> AnalysisConfigSnapshot:
         for index, raw in enumerate(drivers):
             label = f"clangd.query_driver_paths[{index}]"
             path = resolve_path(root, raw, label)
-            # clangd uses comma-separated globs; these cannot represent literal paths.
+            executable = path
+            spelling = str(path)
             if (
-                any(c in str(path) for c in "*?[],{}")
-                or (os.name == "nt" and path.suffix.lower() in {".bat", ".cmd"})
-                or not path.is_file()
-                or not os.access(path, os.X_OK)
+                os.name == "nt"
+                and spelling.startswith("\\\\?\\")
+                and len(spelling) >= 7
+                and spelling[4].isalpha()
+                and spelling[5:7] == ":\\"
+            ):
+                # A canonical project root can supply this prefix. clangd's
+                # glob parser needs the ordinary drive spelling of the same file.
+                executable = Path(spelling[4:])
+            # clangd uses comma-separated globs; these cannot represent literal paths.
+            # Check raw input too: resolving '..' must not erase a user pattern.
+            if (
+                any(c in raw for c in "*?[],{}")
+                or any(c in str(executable) for c in "*?[],{}")
+                or (os.name == "nt" and executable.suffix.lower() in {".bat", ".cmd"})
+                or not _compiler_executable(executable)
+                or not executable.samefile(path)
             ):
                 snapshot.problems.append(
                     AnalysisProblem(
@@ -512,7 +543,7 @@ def load_analysis_config(project_root: str | Path) -> AnalysisConfigSnapshot:
                     )
                 )
             else:
-                resolved.append(path)
+                resolved.append(executable)
         snapshot.query_driver_paths = tuple(resolved)
         _database(snapshot, settings)
     except AnalysisConfigError as exc:

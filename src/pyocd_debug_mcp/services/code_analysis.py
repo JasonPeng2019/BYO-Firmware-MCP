@@ -193,7 +193,7 @@ class CodeAnalysisService:
             if self._adapter is not None:
                 for path in self._documents:
                     self._adapter.clear_diagnostics(path.as_uri())
-                self._adapter.shutdown(time.monotonic() + 5, graceful=False)
+                self._adapter.shutdown(time.monotonic() + 5)
                 self._adapter = None
             self._documents.clear()
         finally:
@@ -336,7 +336,9 @@ class CodeAnalysisService:
             ):
                 self._state = "restarting"
                 self._generation.set()
-                self._adapter.shutdown(time.monotonic() + 5, graceful=False)
+                # Retire a responsive generation through shutdown/exit before
+                # native termination; admission is already closed above.
+                self._adapter.shutdown(time.monotonic() + 5)
                 self._adapter = None
                 self._documents.clear()
             if self._adapter is None:

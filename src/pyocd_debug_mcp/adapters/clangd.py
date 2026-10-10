@@ -376,20 +376,25 @@ class ClangdAdapter:
             ) from exc
 
     def _write(self) -> None:
+        stream = None
         try:
             assert self.process is not None and self.process.stdin is not None
+            stream = self.process.stdin
             while True:
                 data = self._outgoing.get()
                 if data is None:
                     return
                 view = memoryview(data)
                 while view:
-                    written = self.process.stdin.write(view)
+                    written = stream.write(view)
                     if not written:
                         raise OSError("clangd stdin closed")
                     view = view[written:]
         except (OSError, ValueError) as exc:
             self._fail(ClangdFailure("protocol-error", f"LSP write failed: {exc}"))
+        finally:
+            if stream is not None:
+                stream.close()
 
     def _read(self) -> None:
         try:
@@ -549,16 +554,39 @@ class ClangdAdapter:
                     pass
             self._fail(ClangdFailure("child-exited", "Analysis session closed."))
             self._outgoing.put(None)
+            # Only the writer closes stdin: closing it from here can block on
+            # a synchronous WriteFile to a wedged peer. Let a writable pipe
+            # deliver EOF before native termination; a blocked writer is freed
+            # by termination within the existing cleanup budget.
+            for thread in self._threads:
+                if thread.name == "clangd-writer" and thread is not threading.current_thread():
+                    thread.join(
+                        timeout=max(
+                            0,
+                            min(
+                                DEFAULT_PROCESS_GROUP_CLEANUP_GRACE_SECONDS,
+                                deadline - MAX_OWNED_PROCESS_CLEANUP_SECONDS - time.monotonic(),
+                            ),
+                        )
+                    )
             cleaned = terminate_process_group(process)
             if cleaned:
-                self.marker_store.remove(self.marker)
-                self.marker = None
+                for thread in self._threads:
+                    if thread is not threading.current_thread():
+                        thread.join(timeout=max(0, deadline - time.monotonic()))
+                if any(
+                    thread is not threading.current_thread() and thread.is_alive()
+                    for thread in self._threads
+                ):
+                    raise ClangdFailure(
+                        "cleanup-failed",
+                        "clangd transport still blocked; recovery marker retained.",
+                    )
                 for pipe in (process.stdin, process.stdout, process.stderr):
                     if pipe is not None:
                         pipe.close()
-                for thread in self._threads:
-                    if thread is not threading.current_thread():
-                        thread.join(timeout=max(0, min(0.2, deadline - time.monotonic())))
+                self.marker_store.remove(self.marker)
+                self.marker = None
                 self.process = None
             else:
                 raise ClangdFailure(
