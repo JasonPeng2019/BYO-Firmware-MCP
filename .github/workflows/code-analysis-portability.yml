@@ -84,6 +84,8 @@ jobs:
           src/pyocd_debug_mcp/kernel/processes.py
 
       - name: Focused portability and cleanup regression gate
+        env:
+          PYTHONPATH: tests
         run: >-
           uv run python -m unittest -v
           tests.test_code_analysis_managed_runtime_unit
