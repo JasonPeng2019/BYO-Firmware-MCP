@@ -28,6 +28,10 @@ _RETAINED_GUARD = threading.Lock()
 _LOG = logging.getLogger(__name__)
 
 
+class _ObservationDeadline(TimeoutError):
+    """An incomplete internal phase, retriable within the total cleanup reserve."""
+
+
 def _exit_status(pid: int) -> int | None:
     """Observe exact exit without releasing the child's PID/PGID anchor."""
     if sys.platform == "darwin":
@@ -112,7 +116,9 @@ def _darwin_group_members(group: int, deadline: float) -> set[int]:
                 raise RuntimeError("Darwin group snapshot lacks retained leader")
             return members
         capacity *= 2  # A full buffer may have omitted members; retry boundedly.
-    raise TimeoutError("Darwin complete group snapshot exceeded bounded phase")
+    if time.monotonic() >= deadline:
+        raise _ObservationDeadline("Darwin complete group snapshot exceeded bounded phase")
+    raise RuntimeError("Darwin complete group snapshot exceeded member limit")
 
 
 def _descendant_chain(
@@ -123,7 +129,7 @@ def _descendant_chain(
     current = candidate
     while current != parent[0]:
         if time.monotonic() >= deadline:
-            raise TimeoutError("Exact descendant ancestry exceeded bounded phase")
+            raise _ObservationDeadline("Exact descendant ancestry exceeded bounded phase")
         if current <= 1 or current in chain:
             return set()  # Stale PPID proposal or ancestry outside this owner.
         process = psutil.Process(current)
@@ -143,7 +149,7 @@ def _descendant_chain(
         raise RuntimeError("Owned parent identity lost during ancestry acquisition")
     for pid, (token, ppid) in chain.items():
         if time.monotonic() >= deadline:
-            raise TimeoutError("Exact descendant ancestry exceeded bounded phase")
+            raise _ObservationDeadline("Exact descendant ancestry exceeded bounded phase")
         process = psutil.Process(pid)
         if (
             f"psutil:{process.create_time():.9f}" != token
@@ -182,6 +188,8 @@ class AnalysisPopen(subprocess.Popen[Any]):
         self.cleanup_receipt: dict[str, Any] = {}
         self._terminal_group_receipt: list[dict[str, Any]] | None = None
         self._group_signal_operations: list[dict[str, Any]] = []
+        self._incomplete_observation_count = 0
+        self._last_incomplete_observation: str | None = None
         super().__init__(*args, **kwargs)
         # Successful Popen returned after its child setup/exec error pipe:
         # start_new_session=True performed setsid or construction raised. This
@@ -296,17 +304,21 @@ class AnalysisPopen(subprocess.Popen[Any]):
         # authority without requiring live-only getpgid/getsid or image data.
         return self._leader_state() in {"live", "zombie"}
 
+    def _note_incomplete_observation(self, operation: str) -> None:
+        self._incomplete_observation_count += 1
+        self._last_incomplete_observation = operation
+
     def _capture(self, deadline: float) -> bool:
         if sys.platform == "win32":
             return False
         if not self._ownership_guard.acquire(timeout=max(0, deadline - time.monotonic())):
-            self._uncertainties.add("ownership observer exceeded its bounded phase")
+            self._note_incomplete_observation("ownership observer exceeded its bounded phase")
             return False
+        candidates: set[tuple[int, str]] = set()
         try:
             if not self._anchor_matches():
                 self._uncertainties.add("retained group anchor unavailable")
                 return False
-            candidates: set[tuple[int, str]] = set()
             group_candidates = (
                 _darwin_group_members(self.pid, deadline)
                 if sys.platform == "darwin"
@@ -314,7 +326,9 @@ class AnalysisPopen(subprocess.Popen[Any]):
             )
             for pid in group_candidates:
                 if time.monotonic() >= deadline:
-                    self._uncertainties.add("group observation exceeded its bounded phase")
+                    self._note_incomplete_observation(
+                        "group observation exceeded its bounded phase"
+                    )
                     return False
                 try:
                     if pid == self.pid:
@@ -343,54 +357,70 @@ class AnalysisPopen(subprocess.Popen[Any]):
                         }
             for pid, token in tuple(self._captured):
                 if time.monotonic() >= deadline:
-                    self._uncertainties.add("descendant observation exceeded its bounded phase")
+                    self._note_incomplete_observation(
+                        "descendant observation exceeded its bounded phase"
+                    )
                     return False
                 state = self._leader_state() if pid == self.pid else _process_state(pid, token)
+                if state == "unknown":
+                    self._uncertainties.add("owned process liveness unavailable")
                 if state != "live":
                     continue
                 try:
                     parent = psutil.Process(pid)
                     if f"psutil:{parent.create_time():.9f}" != token:
                         continue
-                    children: set[tuple[int, str]] = set()
                     for child in parent.children(recursive=True):
-                        children.update(_descendant_chain(child.pid, (pid, token), deadline))
-                    if _process_state(pid, token) in {"live", "zombie"}:
-                        candidates.update(children)
-                    else:
+                        # Each returned chain already rechecked every exact
+                        # birth/PPID edge and its parent. Retain that acquisition
+                        # even if a later proposal exceeds this phase.
+                        candidates.update(_descendant_chain(child.pid, (pid, token), deadline))
+                    if _process_state(pid, token) not in {"live", "zombie"}:
                         self._uncertainties.add(
                             "parent identity lost during descendant observation"
                         )
                 except psutil.NoSuchProcess:
                     continue
+                except _ObservationDeadline:
+                    raise
                 except (psutil.AccessDenied, OSError):
                     self._uncertainties.add("descendant identities unavailable")
-            # Retain the identity observed with membership/ancestry, never a
-            # later birth token fetched from a possibly recycled candidate PID.
-            self._captured.update(candidates)
             return True
+        except _ObservationDeadline as exc:
+            self._note_incomplete_observation(str(exc))
+            return False
         except (psutil.Error, OSError, RuntimeError) as exc:
             self._uncertainties.add(f"ownership observation failed: {type(exc).__name__}")
             return False
         finally:
+            # Preserve only acquisitions already completed with exact proof;
+            # never replace their token after a partial snapshot or PID reuse.
+            self._captured.update(candidates)
             self._ownership_guard.release()
 
     def _states(self, deadline: float) -> dict[tuple[int, str], str]:
         if not self._ownership_guard.acquire(timeout=max(0, deadline - time.monotonic())):
-            self._uncertainties.add("owned states unavailable within cleanup reserve")
+            self._note_incomplete_observation("owned states unavailable within bounded phase")
             return {(self.pid, self._leader_token or "unobserved"): "unknown"}
         try:
             states = {}
             for identity in self._captured:
                 if identity[0] != self.pid:
-                    states[identity] = (
-                        _process_state(*identity) if time.monotonic() < deadline else "unknown"
-                    )
+                    if time.monotonic() < deadline:
+                        states[identity] = _process_state(*identity)
+                        if states[identity] == "unknown":
+                            self._uncertainties.add("owned process liveness unavailable")
+                    else:
+                        states[identity] = "unknown"
+                        self._note_incomplete_observation("owned state exceeded bounded phase")
             # A missing OS birth token is kept missing. This private key labels
             # actual direct-child spawn evidence; it is never a recovery token.
-            states[(self.pid, self._leader_token or "retained-direct-child")] = (
-                self._leader_state() if time.monotonic() < deadline else "unknown"
-            )
+            if time.monotonic() < deadline:
+                leader_state = self._leader_state()
+            else:
+                leader_state = "unknown"
+                self._note_incomplete_observation("leader state exceeded bounded phase")
+            states[(self.pid, self._leader_token or "retained-direct-child")] = leader_state
             return states
         finally:
             self._ownership_guard.release()
@@ -438,6 +468,9 @@ class AnalysisPopen(subprocess.Popen[Any]):
                 if time.monotonic() >= deadline or state != "zombie":
                     return None
             return terminal
+        except _ObservationDeadline as exc:
+            self._note_incomplete_observation(str(exc))
+            return None
         except (psutil.Error, OSError, RuntimeError) as exc:
             if self._first_observation_failure is None:
                 self._first_observation_failure = {
@@ -533,6 +566,10 @@ class AnalysisPopen(subprocess.Popen[Any]):
                     )
             complete_snapshot = self._capture(deadline)
             states = self._states(deadline)
+            if not complete_snapshot:
+                self._uncertainties.add("final complete ownership snapshot unavailable")
+            if any(state == "unknown" for state in states.values()):
+                self._uncertainties.add("final owned process states unavailable")
             native_terminal = True
             if sys.platform == "darwin":
                 self._terminal_group_receipt = self._darwin_terminal_group(deadline)
@@ -599,6 +636,8 @@ class AnalysisPopen(subprocess.Popen[Any]):
                 "first_observation_failure": self._first_observation_failure,
                 "native_terminal_group": self._terminal_group_receipt,
                 "group_signal_operations": list(self._group_signal_operations),
+                "incomplete_observation_count": self._incomplete_observation_count,
+                "last_incomplete_observation": self._last_incomplete_observation,
                 "elapsed_seconds": time.monotonic() - started,
                 "budget_seconds": 3 * grace_seconds,
             }

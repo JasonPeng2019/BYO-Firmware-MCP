@@ -176,6 +176,13 @@ require the retained exact anchor. Live/unknown children prevent confirmation;
 zombies are distinguished from live children. A bounded cleanup receipt records
 captured states, leader exit/reap, uncertainties and the existing three-grace
 reserve. Unconfirmed cleanup retains its marker and evidence.
+An internal observation phase that runs out of time records an incomplete
+snapshot and can retry within that same reserve. Fully validated identities
+acquired before interruption remain captured. The receipt records an incomplete
+observation count and the last incomplete operation; these interim deadlines
+do not replace final proof. A complete final snapshot and known terminal states
+are required before confirmation. Actual inaccessible or unknown identities,
+observation errors and signal permission failures remain persistent uncertainties.
 Darwin's `getpgid`/`getsid` use a live-only kernel lookup. The successful new-session
 spawn and fresh exact retained-child proof keep the leader anchor usable after
 exit without querying its unavailable live image. Unknown retained-child
