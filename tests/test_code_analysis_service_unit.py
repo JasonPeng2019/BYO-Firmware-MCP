@@ -257,10 +257,23 @@ class ServiceTests(unittest.TestCase):
         self.assertTrue(self.service._generation.is_set())
         self.assertIs(self.service._adapter, adapter)
         self.assertIs(adapter.process, process)
-        self.assertIsNone(process.poll())
+        # Graceful drain delivers shutdown/exit and writer-owned stdin EOF, so a
+        # responsive leader may legitimately exit 0 by itself. Its liveness is
+        # not the contract: unconfirmed native cleanup (of the leader's group)
+        # must stay visible and retain the exact process object and marker for
+        # recovery whether or not the leader already exited.
+        received = [
+            json.loads(line).get("method")
+            for line in (self.root / "received.jsonl").read_text(encoding="utf-8").splitlines()
+        ]
+        self.assertIn("shutdown", received)
+        self.assertIn(process.poll(), (None, 0))
         self.assertEqual(marker.read_bytes(), marker_before)
         self.assertIsNone(adapter.diagnostics_for(self.source.as_uri(), 1))
-        record_regression("status-late-integrity-drain-unconfirmed", result)
+        record_regression(
+            "status-late-integrity-drain-unconfirmed",
+            {"result": result, "leader_poll": process.poll(), "received": received},
+        )
         # Explicit teardown after restoring the terminator, not a status retry.
         self.service.shutdown()
         self.assertIsNotNone(process.poll())
