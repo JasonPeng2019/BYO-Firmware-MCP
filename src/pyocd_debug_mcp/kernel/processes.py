@@ -15,7 +15,7 @@ import uuid
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, IO, Sequence
+from typing import Any, Callable, IO, Sequence
 
 import psutil
 
@@ -66,7 +66,7 @@ def process_group_options(platform: str | None = None) -> dict[str, object]:
     selected = platform or os.name
     if selected == "nt":
         suspended = getattr(subprocess, "CREATE_SUSPENDED", 0x00000004)
-        return {"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP | suspended}
+        return {"creationflags": getattr(subprocess, "CREATE_NEW_PROCESS_GROUP") | suspended}
     return {"start_new_session": True}
 
 
@@ -107,18 +107,18 @@ def _create_windows_kill_job(process: subprocess.Popen[Any]) -> int:
             ("PeakJobMemoryUsed", ctypes.c_size_t),
         ]
 
-    kernel32 = ctypes.windll.kernel32
+    kernel32 = getattr(ctypes, "windll").kernel32
     kernel32.CreateJobObjectW.restype = wintypes.HANDLE
     job = kernel32.CreateJobObjectW(None, None)
     if not job:
-        raise OSError(ctypes.get_last_error(), "CreateJobObjectW failed")
+        raise OSError(getattr(ctypes, "get_last_error")(), "CreateJobObjectW failed")
     information = EXTENDED_LIMIT_INFORMATION()
     information.BasicLimitInformation.LimitFlags = 0x00002000
     process_handle = wintypes.HANDLE(int(getattr(process, "_handle")))
     if not kernel32.SetInformationJobObject(
         job, 9, ctypes.byref(information), ctypes.sizeof(information)
     ) or not kernel32.AssignProcessToJobObject(job, process_handle):
-        error = ctypes.get_last_error()
+        error = getattr(ctypes, "get_last_error")()
         kernel32.CloseHandle(job)
         raise OSError(error, "Unable to assign owned subprocess to a kill-on-close job")
     return int(job)
@@ -128,7 +128,7 @@ def _resume_windows_process(process: subprocess.Popen[Any]) -> None:
     import ctypes
     from ctypes import wintypes
 
-    resume = ctypes.windll.ntdll.NtResumeProcess
+    resume = getattr(ctypes, "windll").ntdll.NtResumeProcess
     resume.argtypes = (wintypes.HANDLE,)
     resume.restype = ctypes.c_long
     status = resume(wintypes.HANDLE(int(getattr(process, "_handle"))))
@@ -152,7 +152,7 @@ def _close_windows_job(pid: int, handle: int, *, terminate: bool, deadline: floa
             ("TotalTerminatedProcesses", wintypes.DWORD),
         ]
 
-    kernel32 = ctypes.windll.kernel32
+    kernel32 = getattr(ctypes, "windll").kernel32
     if terminate and not kernel32.TerminateJobObject(wintypes.HANDLE(handle), 1):
         return False
     while True:
@@ -190,7 +190,7 @@ def _windows_start_token(pid: int, kernel32: Any | None = None) -> str | None:
         import ctypes
         from ctypes import wintypes
 
-        selected = ctypes.windll.kernel32 if kernel32 is None else kernel32
+        selected = getattr(ctypes, "windll").kernel32 if kernel32 is None else kernel32
         open_process = selected.OpenProcess
         if kernel32 is None:
             open_process.argtypes = (wintypes.DWORD, wintypes.BOOL, wintypes.DWORD)
@@ -488,19 +488,20 @@ def popen_owned(
     if kwargs.get("shell"):
         raise ValueError("shell execution is forbidden; pass explicit argv")
     kwargs.update(process_group_options())
+    begin_analysis_ownership: Callable[[], None] | None = None
     if analysis_ownership and os.name != "nt":
         from pyocd_debug_mcp.kernel._analysis_posix import AnalysisPopen
 
         process = AnalysisPopen(validated, **kwargs)
+        begin_analysis_ownership = process.begin_ownership
     else:
         process = subprocess.Popen(validated, **kwargs)
     store = marker_store or ProcessMarkerStore()
     job_handle: int | None = None
     marker: Path | None = None
     try:
-        if analysis_ownership and os.name != "nt":
-            if isinstance(process, AnalysisPopen):
-                process.begin_ownership()
+        if begin_analysis_ownership is not None:
+            begin_analysis_ownership()
         # Establish recoverable identity before Windows Job assignment. The
         # leader is still suspended here and therefore cannot have descendants.
         marker = store.create(process, validated)

@@ -11,18 +11,21 @@ from __future__ import annotations
 
 import ctypes
 import errno
+import logging
 import os
 import signal
 import subprocess
 import sys
 import threading
 import time
+from _thread import LockType
 from typing import Any
 
 import psutil
 
 _RETAINED: dict[int, AnalysisPopen] = {}
 _RETAINED_GUARD = threading.Lock()
+_LOG = logging.getLogger(__name__)
 
 
 def _exit_status(pid: int) -> int | None:
@@ -53,11 +56,13 @@ def _exit_status(pid: int) -> int | None:
             error = ctypes.get_errno()
             raise OSError(error, os.strerror(error))
         observed_pid, code, status = result.pid, result.code, result.status
-    else:
+    elif sys.platform != "win32":
         result = os.waitid(os.P_PID, pid, os.WEXITED | os.WNOHANG | os.WNOWAIT)
         if result is None:
             return None
         observed_pid, code, status = result.si_pid, result.si_code, result.si_status
+    else:
+        raise RuntimeError("Retained analysis ownership requires POSIX waitid")
     if observed_pid == 0:
         return None
     if observed_pid != pid or code not in {1, 2, 3}:
@@ -86,14 +91,20 @@ def _process_state(pid: int, token: str) -> str:
 class AnalysisPopen(subprocess.Popen[Any]):
     """Popen-compatible analysis child; wait observes, cleanup finally reaps."""
 
+    # CPython Popen initializes this real lock before its POSIX child spawn.
+    # It is private and therefore absent from the public subprocess stub.
+    _waitpid_lock: LockType
+
     def __init__(self, *args: Any, **kwargs: Any) -> None:
         self._ownership_guard = threading.Lock()
         self._cleanup_guard = threading.Lock()
         self._stop_observer = threading.Event()
         self._observer: threading.Thread | None = None
         self._leader_token: str | None = None
+        self._session_established = False
         self._captured: set[tuple[int, str]] = set()
         self._uncertainties: set[str] = set()
+        self._first_observation_failure: dict[str, Any] | None = None
         self._wait_error: str | None = None
         self._reaped = False
         self.cleanup_receipt: dict[str, Any] = {}
@@ -126,7 +137,7 @@ class AnalysisPopen(subprocess.Popen[Any]):
                 return result
             if self._wait_error is not None:
                 raise RuntimeError("Owned child exit observation unavailable: " + self._wait_error)
-            if deadline is not None and time.monotonic() >= deadline:
+            if timeout is not None and deadline is not None and time.monotonic() >= deadline:
                 raise subprocess.TimeoutExpired(self.args, timeout)
             time.sleep(
                 0.005 if deadline is None else min(0.005, max(0, deadline - time.monotonic()))
@@ -134,6 +145,8 @@ class AnalysisPopen(subprocess.Popen[Any]):
 
     def begin_ownership(self) -> None:
         """Called inside popen_owned's setup/cleanup boundary before markers."""
+        if sys.platform == "win32":
+            raise RuntimeError("AnalysisPopen requires POSIX process ownership")
         try:
             process = psutil.Process(self.pid)
             self._leader_token = f"psutil:{process.create_time():.9f}"
@@ -141,6 +154,7 @@ class AnalysisPopen(subprocess.Popen[Any]):
             raise RuntimeError("Owned analysis birth identity unavailable") from exc
         if os.getpgid(self.pid) != self.pid or os.getsid(self.pid) != self.pid:
             raise RuntimeError("Analysis child did not establish its owned session/group")
+        self._session_established = True
         self._captured.add((self.pid, self._leader_token))
         if self.poll() is not None:
             self._uncertainties.add("leader exited before initial descendant observation")
@@ -155,20 +169,49 @@ class AnalysisPopen(subprocess.Popen[Any]):
         self._observer = observer
 
     def _anchor_matches(self) -> bool:
-        if self._reaped or self._leader_token is None or self._wait_error is not None:
+        if sys.platform == "win32":
+            return False
+        if (
+            self._reaped
+            or not self._session_established
+            or self._leader_token is None
+            or self._wait_error is not None
+        ):
             return False
         state = _process_state(self.pid, self._leader_token)
         if state not in {"live", "zombie"}:
+            if self._first_observation_failure is None:
+                self._first_observation_failure = {
+                    "operation": "anchor birth/liveness",
+                    "pid": self.pid,
+                    "state": state,
+                }
             return False
         try:
             # WNOWAIT verifies the retained parent/child relationship as well as
             # the birth token. The still-unreaped child prevents numeric reuse.
-            _exit_status(self.pid)
+            exited = _exit_status(self.pid)
+            if exited is not None:
+                # Darwin getpgid/getsid use proc_find, which excludes exited
+                # processes (XNU kern_exit.c / kern_prot.c). Their ESRCH is
+                # not loss of this exact unreaped child. A verified session
+                # leader cannot move to another session/group before exiting;
+                # fresh birth identity plus WNOWAIT retain its numeric anchor.
+                return True
             return os.getpgid(self.pid) == self.pid and os.getsid(self.pid) == self.pid
-        except (OSError, RuntimeError):
+        except (OSError, RuntimeError) as exc:
+            if self._first_observation_failure is None:
+                self._first_observation_failure = {
+                    "operation": "anchor waitid/session/group",
+                    "pid": self.pid,
+                    "error": type(exc).__name__,
+                    "errno": getattr(exc, "errno", None),
+                }
             return False
 
     def _capture(self, deadline: float) -> bool:
+        if sys.platform == "win32":
+            return False
         if not self._ownership_guard.acquire(timeout=max(0, deadline - time.monotonic())):
             self._uncertainties.add("ownership observer exceeded its bounded phase")
             return False
@@ -195,8 +238,15 @@ class AnalysisPopen(subprocess.Popen[Any]):
                     continue
                 except psutil.NoSuchProcess:
                     continue
-                except (psutil.AccessDenied, OSError):
+                except (psutil.AccessDenied, OSError) as exc:
                     self._uncertainties.add("process group membership unavailable")
+                    if self._first_observation_failure is None:
+                        self._first_observation_failure = {
+                            "operation": "enumerated process group/birth/liveness",
+                            "pid": pid,
+                            "error": type(exc).__name__,
+                            "errno": getattr(exc, "errno", None),
+                        }
             for pid, token in tuple(self._captured):
                 if time.monotonic() >= deadline:
                     self._uncertainties.add("descendant observation exceeded its bounded phase")
@@ -246,6 +296,8 @@ class AnalysisPopen(subprocess.Popen[Any]):
             self._ownership_guard.release()
 
     def _signal_owned(self, selected_signal: int, deadline: float) -> None:
+        if sys.platform == "win32":
+            raise RuntimeError("AnalysisPopen cannot signal Windows processes")
         if time.monotonic() >= deadline:
             self._uncertainties.add("owned signal phase exceeded cleanup reserve")
             return
@@ -275,6 +327,8 @@ class AnalysisPopen(subprocess.Popen[Any]):
                 self._uncertainties.add("owned descendant signal unavailable")
 
     def cleanup(self, grace_seconds: float) -> bool:
+        if sys.platform == "win32":
+            return False
         started = time.monotonic()
         deadline = started + 3 * grace_seconds
         if not self._cleanup_guard.acquire(timeout=max(0, deadline - time.monotonic())):
@@ -349,12 +403,15 @@ class AnalysisPopen(subprocess.Popen[Any]):
                 "unobserved_detached_descendants": "not_proven",
                 "uncertainties": sorted(self._uncertainties.copy()),
                 "wait_error": self._wait_error,
+                "first_observation_failure": self._first_observation_failure,
                 "elapsed_seconds": time.monotonic() - started,
                 "budget_seconds": 3 * grace_seconds,
             }
             if confirmed:
                 with _RETAINED_GUARD:
                     _RETAINED.pop(self.pid, None)
+            else:
+                _LOG.warning("Analysis ownership cleanup unconfirmed: %s", self.cleanup_receipt)
             return confirmed
         finally:
             self._cleanup_guard.release()

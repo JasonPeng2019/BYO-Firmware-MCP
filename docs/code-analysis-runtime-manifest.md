@@ -167,6 +167,12 @@ require the retained exact anchor. Live/unknown children prevent confirmation;
 zombies are distinguished from live children. A bounded cleanup receipt records
 captured states, leader exit/reap, uncertainties and the existing three-grace
 reserve. Unconfirmed cleanup retains its marker and evidence.
+Darwin's `getpgid`/`getsid` use a live-only kernel lookup. After exact retained
+exit proof, ownership keeps the previously verified session-leader anchor;
+it still requires fresh matching birth identity and never treats unknown
+liveness as retirement. Group TERM/KILL permission failures and lost observation
+coverage keep cleanup unconfirmed. Failed cleanup logs its private receipt, including the first
+observation failure, for matching-host Actions diagnosis.
 The receipt explicitly scopes coverage to the retained group and captured
 descendants and labels unobserved detached descendants `not_proven`.
 
