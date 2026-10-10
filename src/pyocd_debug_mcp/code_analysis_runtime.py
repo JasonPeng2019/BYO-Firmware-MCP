@@ -237,6 +237,9 @@ def resolve_analysis_program(
             result = _probe_program(
                 candidate, deadline, cancellation, receipt.metadata.programs[name]["version"]
             )
+            # Keep the completed probe's private evidence if subsequent payload
+            # validation rejects this resolution and invalidates its cache.
+            candidate = replace(candidate, cleanup_receipt=result.cleanup_receipt)
             # Receipt metadata must be checked before success. A probe failure
             # established while the caller lived retains its classification
             # even when the separately bounded cleanup grace passes the deadline.
@@ -252,7 +255,9 @@ def resolve_analysis_program(
             failed_receipt = getattr(exc, "receipt", None)
             metadata = getattr(exc, "metadata", None)
             if failed_receipt is not None:
-                candidate = _receipt_program(failed_receipt)
+                candidate = replace(
+                    _receipt_program(failed_receipt), cleanup_receipt=candidate.cleanup_receipt
+                )
             elif metadata is not None:
                 relative = metadata.programs[name]["executable"]
                 candidate = replace(
