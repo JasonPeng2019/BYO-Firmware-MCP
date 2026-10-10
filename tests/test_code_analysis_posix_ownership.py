@@ -376,11 +376,21 @@ class NativePosixOwnership(unittest.TestCase):
                 process, marker, gate = self.gated_exit(
                     exit_code, f"unknown-exit-{exit_code}-{native_error}", release=False
                 )
+                # Drain any live-state observation before releasing this actual
+                # child; a check-then-wait injection can race to a truthful exit.
+                process._stop_observer.set()
+                observer = process._observer
+                self.assertIsNotNone(observer)
+                observer.join(timeout=0.5)
+                self.assertFalse(observer.is_alive())
+                self.assertIsNone(
+                    process.returncode, "Gated live child has no cached terminal status"
+                )
                 saved_marker = marker.read_bytes()
                 denied = []
 
                 def unavailable_exit(pid):
-                    if pid == process.pid and native_retained_exit(pid) is not None:
+                    if pid == process.pid:
                         denied.append(pid)
                         raise OSError(native_error, "exact retained exit unavailable")
                     return actual_exit(pid)
