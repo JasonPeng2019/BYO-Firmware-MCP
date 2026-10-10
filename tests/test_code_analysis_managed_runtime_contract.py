@@ -585,14 +585,19 @@ class PayloadIntegrity(ManagedCase):
             if target.startswith("macos-")
             else "analysis/clangd/lib/libvendor.so"
         )
+
+        def fresh_dependency():
+            self.fixture = RuntimeFixture(self.base / ("dep-" + uuid.uuid4().hex[:6]))
+            self.context = self.fixture.context(self.project)
+            self.fixture.mapping["programs"]["clangd"]["dependencies"] = [dependency]
+            path = self.fixture.put(dependency, native_header(target, library=True))
+            self.fixture.seal()
+            return path
+
         with self.observer() as observed:
             for case in ("missing-inventory", "missing-ownership", "missing-file"):
                 with self.subTest(case=case):
-                    self.fixture = RuntimeFixture(self.base / ("dep-" + uuid.uuid4().hex[:6]))
-                    self.context = self.fixture.context(self.project)
-                    self.fixture.mapping["programs"]["clangd"]["dependencies"] = [dependency]
-                    path = self.fixture.put(dependency, native_header(target, library=True))
-                    self.fixture.seal()
+                    fresh_dependency()
                     entry = self.fixture.inventory_entry(dependency)
                     self.assertEqual(entry["kind"], "analysis-dependency")
                     self.assertIs(entry["executable"], False)
@@ -602,6 +607,13 @@ class PayloadIntegrity(ManagedCase):
                         before = len(observed.calls)
                         self.assert_usable(self.resolve())
                         self.assertEqual(len(observed.calls), before + 1)
+                    # An unseen independent root reaches the intended missing
+                    # inventory/ownership check, rather than receipt invalidation.
+                    path = fresh_dependency()
+                    entry = self.fixture.inventory_entry(dependency)
+                    with mock.patch.object(
+                        observed, "redirect", protocol_redirect(self.fixture, self.fake)
+                    ):
                         if case == "missing-inventory":
                             self.fixture.inventory.remove(entry)
                             self.fixture.save_manifest()
