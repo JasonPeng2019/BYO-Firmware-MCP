@@ -430,11 +430,10 @@ class ClangdAdapter:
         except (OSError, ValueError, KeyError, TypeError) as exc:
             self._fail(ClangdFailure("protocol-error", f"Invalid LSP transport: {exc}"))
         finally:
-            if not self._closing:
-                try:
-                    self.shutdown(time.monotonic() + 5, graceful=False)
-                except ClangdFailure as exc:
-                    self._fail(exc)
+            try:
+                self._shutdown(time.monotonic() + 5, graceful=False, wait_for_owner=False)
+            except ClangdFailure as exc:
+                self._fail(exc)
 
     def _route(self, message: dict[str, Any]) -> None:
         if "method" in message:
@@ -518,7 +517,23 @@ class ClangdAdapter:
     def shutdown(
         self, deadline: float, *, graceful: bool = True, failure: ClangdFailure | None = None
     ) -> None:
-        with self._shutdown_guard:
+        self._shutdown(deadline, graceful=graceful, failure=failure, wait_for_owner=True)
+
+    def _shutdown(
+        self,
+        deadline: float,
+        *,
+        wait_for_owner: bool,
+        graceful: bool = True,
+        failure: ClangdFailure | None = None,
+    ) -> None:
+        # Reader cleanup must yield to an owner that may be joining the reader.
+        # Other callers wait for that owner's confirmed cleanup or recovery.
+        if not self._shutdown_guard.acquire(blocking=wait_for_owner):
+            return
+        try:
+            if not wait_for_owner and self._closing:
+                return  # A previous owner retains any failed cleanup for recovery.
             process = self.process
             if process is None:
                 return
@@ -592,3 +607,9 @@ class ClangdAdapter:
                 raise ClangdFailure(
                     "cleanup-failed", "clangd termination unconfirmed; recovery marker retained."
                 )
+        except OSError as exc:
+            raise ClangdFailure(
+                "cleanup-failed", f"clangd cleanup failed: {exc}; recovery marker retained."
+            ) from exc
+        finally:
+            self._shutdown_guard.release()
