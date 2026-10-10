@@ -365,7 +365,10 @@ class NativeStatusReceiptBoundary(NativeCase):
                             # The graceful drain lets a responsive leader exit
                             # normally. That does not prove group cleanup, so the
                             # unconfirmed failure and its ownership stay visible.
+                            # An exited leader has no live identity: an unknown or
+                            # different live observation fails at this boundary.
                             self.assertEqual(retained["leader_poll"], 0, retained)
+                            self.assertIsNone(retained["observed_native_token"], retained)
                 if boundary == "failed-drain":
                     # Explicit later recovery with real termination releases
                     # exactly the retained process and marker.
