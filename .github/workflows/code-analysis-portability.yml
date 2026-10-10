@@ -59,6 +59,8 @@ jobs:
           uv run ruff format --check
           src/pyocd_debug_mcp/code_analysis_manifest.py
           src/pyocd_debug_mcp/code_analysis_runtime.py
+          src/pyocd_debug_mcp/_analysis_native.py
+          src/pyocd_debug_mcp/kernel/_analysis_posix.py
           src/pyocd_debug_mcp/adapters/clangd.py
           src/pyocd_debug_mcp/kernel/processes.py
           tests/code_analysis_managed_support.py
@@ -73,6 +75,8 @@ jobs:
           uv run pyright
           src/pyocd_debug_mcp/code_analysis_manifest.py
           src/pyocd_debug_mcp/code_analysis_runtime.py
+          src/pyocd_debug_mcp/_analysis_native.py
+          src/pyocd_debug_mcp/kernel/_analysis_posix.py
           src/pyocd_debug_mcp/adapters/clangd.py
           src/pyocd_debug_mcp/kernel/processes.py
 
