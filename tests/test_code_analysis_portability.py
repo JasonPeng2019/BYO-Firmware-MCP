@@ -330,6 +330,7 @@ class PortableReceipts(ReceiptCase):
                     "undeclared",
                     "missing",
                     "wrong-header",
+                    "wrong-architecture",
                     "executable-type",
                     "wrong-classification",
                     "wrong-digest",
@@ -350,6 +351,20 @@ class PortableReceipts(ReceiptCase):
                                 dependency,
                                 b"script" if case == "wrong-header" else native_header(target),
                             )
+                        elif case == "wrong-architecture":
+                            payload = bytearray(native_header(target, library=True))
+                            if target.startswith("windows"):
+                                struct.pack_into("<H", payload, 132, 0xAA64)
+                            elif target.startswith("macos"):
+                                struct.pack_into(
+                                    "<I",
+                                    payload,
+                                    4,
+                                    0x01000007 if target.endswith("aarch64") else 0x0100000C,
+                                )
+                            else:
+                                struct.pack_into("<H", payload, 18, 183)
+                            fixture.put(dependency, bytes(payload))
                         fixture.seal()
                         if case == "wrong-classification":
                             fixture.inventory_entry(dependency)["kind"] = "analysis-resource"
@@ -388,6 +403,7 @@ class PosixReceiptIdentity(ReceiptCase):
         self.receipt(fixture)
         path = fixture.root / fixture.mapping["programs"]["clangd"]["executable"]
         path.chmod(0o644)
+        self.assertFalse(os.access(path, os.X_OK), "Actual caller must lack executable access")
         self.reject(fixture)
         fixture = self.fixture(host_target())
         executable = fixture.root / fixture.mapping["programs"]["clangd"]["executable"]

@@ -159,9 +159,24 @@ class NativePosixOwnership(unittest.TestCase):
             time.monotonic() - before, self.processes.MAX_OWNED_PROCESS_CLEANUP_SECONDS + 2
         )
         self.assertTrue(confirmed, getattr(process, "cleanup_receipt", None))
-        self.assertIsNotNone(
-            process.cleanup_receipt, "Analysis-only cleanup must retain its receipt"
-        )
+        receipt = process.cleanup_receipt
+        self.assertIsInstance(receipt, dict)
+        self.assertEqual(receipt["pid"], process.pid)
+        self.assertEqual(receipt["group"], process.pid)
+        self.assertEqual(receipt["start_token"], json.loads(marker.read_bytes())["start_token"])
+        self.assertIs(receipt["confirmed"], True)
+        self.assertIs(receipt["leader_reaped"], True)
+        self.assertIsNotNone(receipt["leader_exit"])
+        self.assertEqual(receipt["uncertainties"], [])
+        self.assertAlmostEqual(receipt["budget_seconds"], 3 * 0.5)
+        self.assertLessEqual(receipt["elapsed_seconds"], receipt["budget_seconds"] + 0.2)
+        captured = {entry["pid"]: entry for entry in receipt["captured"]}
+        for pid in pids:
+            if pid == process.pid:
+                continue
+            self.assertIn(pid, captured, "An observed owned descendant must remain in the receipt")
+            self.assertTrue(captured[pid]["start_token"])
+            self.assertIn(captured[pid]["state"], {"gone", "zombie", "reused"})
         self.assertIsNotNone(process.poll(), "Leader must be reaped separately from group proof")
         for pid in pids:
             self.assertFalse(
@@ -179,6 +194,7 @@ class NativePosixOwnership(unittest.TestCase):
         # The child inherits stdout, so group cleanup must happen before EOF.
         self.until(lambda: (identity := posix_process_identity(process.pid)) and identity[1] == "Z")
         self.confirm_cleanup(process, marker, [ready["leader"], ready["child"]])
+        self.assertEqual(process.cleanup_receipt["leader_exit"], 0)
         output, errors = process.communicate(timeout=2)
         self.assertIn(b"native-fixture-complete", output)
         self.assertEqual(errors, b"")
@@ -190,6 +206,7 @@ class NativePosixOwnership(unittest.TestCase):
         (directory / "exit").touch()
         self.until(lambda: (identity := posix_process_identity(process.pid)) and identity[1] == "Z")
         self.confirm_cleanup(process, marker, [ready["leader"], ready["child"]])
+        self.assertEqual(process.cleanup_receipt["leader_exit"], 0)
         self.assertTrue(self.is_owned_live(peer.pid, peer_token))
 
     def test_natural_eof_retains_exact_exit_proof_until_owned_cleanup(self) -> None:
@@ -209,6 +226,7 @@ class NativePosixOwnership(unittest.TestCase):
         self.assertEqual(errors, b"")
         self.assertFalse(self.is_owned_live(process.pid, token))
         self.confirm_cleanup(process, marker, [process.pid])
+        self.assertEqual(process.cleanup_receipt["leader_exit"], 0)
 
     def test_deadline_and_cancellation_of_actual_version_probe_retire_exact_owned_process(
         self,
@@ -266,6 +284,8 @@ class NativePosixOwnership(unittest.TestCase):
                 self.assertIsNotNone(process.poll())
                 self.assertFalse(self.is_owned_live(process.pid, self.observed[process.pid]))
                 self.assertFalse(marker.exists())
+                self.assertIs(process.cleanup_receipt["confirmed"], True)
+                self.assertIs(process.cleanup_receipt["leader_reaped"], True)
                 self.assertFalse(self.runtime._probe_cache)
 
     def test_late_spawn_is_cleaned_after_caller_abandons_admission(self) -> None:
@@ -302,6 +322,7 @@ class NativePosixOwnership(unittest.TestCase):
                 self.until(lambda: process.poll() is not None and not marker.exists())
                 self.assertFalse(self.is_owned_live(process.pid, self.observed[process.pid]))
                 self.assertIsNone(self.runtime._spawn_cleanup_failure)
+                self.assertIs(process.cleanup_receipt["confirmed"], True)
         finally:
             release.set()
 
@@ -342,5 +363,46 @@ class NativePosixOwnership(unittest.TestCase):
         with mock.patch.object(os, "killpg", side_effect=unknown_terminal):
             self.assertFalse(self.processes.terminate_process_group(process, grace_seconds=0.2))
         self.assertTrue(marker.exists(), "Unknown group identity must retain recovery ownership")
-        self.assertIsNotNone(process.cleanup_receipt)
+        self.assertIs(process.cleanup_receipt["confirmed"], False)
+        self.assertTrue(process.cleanup_receipt["uncertainties"])
         self.confirm_cleanup(process, marker, [ready["leader"], ready["child"]])
+
+    def test_recovery_requires_exact_session_group_and_rechecks_birth_before_escalation(
+        self,
+    ) -> None:
+        peer, peer_token = self.peer()
+        for wrong in ("group", "session"):
+            with (
+                self.subTest(wrong=wrong),
+                mock.patch.object(self.processes, "_start_token", return_value="expected-birth"),
+                mock.patch.object(os, "getpgid", return_value=peer.pid + (wrong == "group")),
+                mock.patch.object(os, "getsid", return_value=peer.pid + (wrong == "session")),
+                mock.patch.object(os, "killpg") as group_signal,
+                mock.patch.object(os, "kill") as pid_signal,
+            ):
+                self.assertFalse(self.processes.terminate_marked_group(peer.pid, "expected-birth"))
+                group_signal.assert_not_called()
+                pid_signal.assert_not_called()
+        signaled = False
+
+        def birth(pid):
+            return "recycled-birth" if signaled else "expected-birth"
+
+        def signal_group(group, sig):
+            nonlocal signaled
+            if sig:
+                self.assertEqual(sig, signal.SIGTERM, "Reused PID must never receive SIGKILL")
+                signaled = True
+
+        with (
+            mock.patch.object(self.processes, "_start_token", side_effect=birth),
+            mock.patch.object(os, "getpgid", return_value=peer.pid),
+            mock.patch.object(os, "getsid", return_value=peer.pid),
+            mock.patch.object(os, "killpg", side_effect=signal_group) as group_signal,
+        ):
+            self.assertFalse(self.processes.terminate_marked_group(peer.pid, "expected-birth"))
+        self.assertTrue(signaled, "A matching initial identity is the positive signal control")
+        self.assertEqual(
+            [call.args[1] for call in group_signal.call_args_list if call.args[1]], [signal.SIGTERM]
+        )
+        self.assertTrue(self.is_owned_live(peer.pid, peer_token))
