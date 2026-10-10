@@ -574,14 +574,56 @@ class OwnedSpawns:
     def __exit__(self, *exc: Any) -> None:
         # Preserve an unclean observation before emergency cleanup of only these children.
         self.directory.mkdir(parents=True, exist_ok=True)
+        if os.name == "nt":
+            try:
+                self.check_cleanup()
+            finally:
+                write_json(self.directory / "processes.json", [r for _, _, r in self.children])
+                for process, marker, _ in self.children:
+                    if process.poll() is None and self.processes.terminate_process_group(process):
+                        self.store.remove(marker)
+                self.stack.close()
+            return
         try:
             self.check_cleanup()
+        except Exception:
+            # A body/observer failure is the first failure; keep its identity.
+            if not exc or exc[0] is None:
+                raise
         finally:
-            write_json(self.directory / "processes.json", [r for _, _, r in self.children])
-            for process, marker, _ in self.children:
-                if process.poll() is None and self.processes.terminate_process_group(process):
-                    self.store.remove(marker)
-            self.stack.close()
+            try:
+                write_json(self.directory / "processes.json", [r for _, _, r in self.children])
+                for process, marker, _ in self.children:
+                    try:
+                        if os.name == "posix":
+                            posix = production("kernel._analysis_posix")
+                            if isinstance(process, posix.AnalysisPopen):
+                                # Non-None poll still retains this direct child's
+                                # wait anchor. Retire scope before removing evidence.
+                                cleaned = self.processes.terminate_process_group(process)
+                                if not cleaned or not posix.analysis_cleanup_scope_confirmed(
+                                    getattr(process, "cleanup_receipt", None)
+                                ):
+                                    continue
+                                from tests.test_code_analysis_posix_ownership import (
+                                    native_retained_exit,
+                                )
+
+                                try:
+                                    native_retained_exit(process.pid)
+                                except ChildProcessError:
+                                    self.store.remove(marker)
+                                continue
+                        if process.poll() is None and self.processes.terminate_process_group(
+                            process
+                        ):
+                            self.store.remove(marker)
+                    except Exception:
+                        # Preserve the already persisted failing observation and
+                        # its marker if emergency retirement itself is unavailable.
+                        continue
+            finally:
+                self.stack.close()
 
 
 def protocol_redirect(fixture: RuntimeFixture, fake: Any) -> Any:

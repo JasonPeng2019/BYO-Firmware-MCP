@@ -1498,6 +1498,171 @@ class NativePosixOwnership(unittest.TestCase):
                         self.runtime._spawn_cleanup_failure = None
                         self.runtime._spawn_cleanup_receipt = None
 
+    @unittest.skipUnless(sys.platform == "darwin", "Native Darwin terminal group shrink")
+    def test_terminal_group_shrink_by_actual_parent_reap_requires_fresh_stable_native_proof(self):
+        peer, peer_token = self.peer()
+        posix = production("kernel._analysis_posix")
+        directory = self.base / "terminal-shrink"
+        directory.mkdir()
+        script = r"""
+import json, os, pathlib, sys, time
+base = pathlib.Path(sys.argv[1])
+def gate(name):
+    while not (base / name).exists(): time.sleep(.005)
+reaper = os.fork()
+if reaper == 0:
+    member = os.fork()
+    if member == 0:
+        gate('member-exit')
+        os._exit(0)
+    os.setpgid(0, 0)
+    (base / 'ready.tmp').write_text(json.dumps({'reaper': os.getpid(), 'member': member}))
+    os.replace(base / 'ready.tmp', base / 'ready')
+    gate('reap-member')
+    pid, status = os.waitpid(member, 0)
+    (base / 'reaped.tmp').write_text(json.dumps({'pid': pid, 'exit': os.waitstatus_to_exitcode(status)}))
+    os.replace(base / 'reaped.tmp', base / 'reaped')
+    os._exit(0)
+gate('leader-exit')
+os._exit(0)
+"""
+        process, marker = self.spawn([sys.executable, "-c", script, str(directory)])
+        self.until(lambda: (directory / "ready").exists())
+        ready = json.loads((directory / "ready").read_text())
+        member, reaper = ready["member"], ready["reaper"]
+        member_token = self.observe(member)
+        reaper_token = self.observe(reaper)
+        self.assertEqual(os.getpgid(member), process.pid)
+        self.assertEqual(os.getpgid(reaper), reaper)
+        self.assertTrue(process._capture(time.monotonic() + 0.5))
+        (directory / "member-exit").touch()
+        self.until(lambda: posix_process_identity(member) == (member_token, "Z"))
+        (directory / "leader-exit").touch()
+        self.assertEqual(self.until(lambda: native_retained_exit(process.pid)), (process.pid, 1, 0))
+        actual_members = posix._darwin_group_members
+        snapshots = []
+
+        def reap_between_complete_snapshots(group, deadline):
+            if group == process.pid and len(snapshots) == 1:
+                self.assertEqual(posix_process_identity(member), (member_token, "Z"))
+                (directory / "reap-member").touch()
+                self.until(lambda: (directory / "reaped").exists(), budget=0.2)
+                self.assertEqual(
+                    json.loads((directory / "reaped").read_text()), {"pid": member, "exit": 0}
+                )
+                self.assertIsNone(posix_process_identity(member))
+                self.until(lambda: not self.is_owned_live(reaper, reaper_token), budget=0.2)
+            result = actual_members(group, deadline)
+            if group == process.pid:
+                snapshots.append(set(result))
+            return result
+
+        with mock.patch.object(
+            posix, "_darwin_group_members", side_effect=reap_between_complete_snapshots
+        ):
+            self.confirm_cleanup(process, marker, [process.pid, member, reaper])
+        self.assertEqual(snapshots[0], {process.pid, member})
+        self.assertEqual(snapshots[1], {process.pid})
+        self.assertGreaterEqual(
+            len(snapshots), 4, "A fresh stable native snapshot pair is required"
+        )
+        self.assertTrue(all(snapshot == {process.pid} for snapshot in snapshots[1:]))
+        self.assertEqual(native_group_members(process.pid), set())
+        self.assertFalse(self.is_owned_live(member, member_token))
+        self.assertFalse(self.is_owned_live(reaper, reaper_token))
+        self.assertTrue(self.is_owned_live(peer.pid, peer_token))
+
+    def test_registered_terminal_child_observer_failure_is_retired_without_rewriting_failure(self):
+        from tests import code_analysis_managed_support as support
+
+        peer, peer_token = self.peer()
+        posix = production("kernel._analysis_posix")
+        actual_token = support.native_start_token
+        for case in ("healthy", "unavailable-wait"):
+            with self.subTest(case=case):
+                gate = self.base / ("observer-exit-" + case)
+                observed = support.OwnedSpawns(self.base / ("observer-failure-" + case))
+                captured = []
+                with ExitStack() as faults:
+
+                    def fail_after_registration(pid):
+                        if not captured and observed.children:
+                            process, marker, record = observed.children[0]
+                            self.assertEqual(process.pid, pid)
+                            captured.append((process, marker))
+                            self.owned.append((process, marker))
+                            self.observe(pid)
+                            self.assertTrue(marker.exists())
+                            gate.touch()
+                            self.assertEqual(
+                                self.until(lambda: native_retained_exit(pid)), (pid, 1, 0)
+                            )
+                            self.assertEqual(process.poll(), 0)
+                            if case == "unavailable-wait":
+                                faults.enter_context(
+                                    mock.patch.object(
+                                        posix,
+                                        "_exit_status",
+                                        side_effect=PermissionError(
+                                            errno.EPERM, "authoritative wait unavailable"
+                                        ),
+                                    )
+                                )
+                            raise OSError("independent observer failed after registration")
+                        return actual_token(pid)
+
+                    faults.enter_context(
+                        mock.patch.object(
+                            support, "native_start_token", side_effect=fail_after_registration
+                        )
+                    )
+                    before = time.monotonic()
+                    with self.assertRaisesRegex(OSError, "independent observer failed"):
+                        with observed:
+                            observed.spawn(
+                                [
+                                    sys.executable,
+                                    "-c",
+                                    "import pathlib,sys,time; gate=pathlib.Path(sys.argv[1]);\nwhile not gate.exists(): time.sleep(.005)\nsys.exit(0)",
+                                    str(gate),
+                                ],
+                                analysis_ownership=True,
+                                stdin=subprocess.DEVNULL,
+                                stdout=subprocess.DEVNULL,
+                                stderr=subprocess.DEVNULL,
+                            )
+                    self.assertLess(time.monotonic() - before, 2)
+                self.assertEqual(len(captured), 1)
+                process, marker = captured[0]
+                persisted = json.loads((observed.directory / "processes.json").read_text())[0]
+                self.assertEqual(persisted["pid"], process.pid)
+                self.assertEqual(persisted["exit_code"], 0)
+                self.assertIs(persisted["marker_exists_after"], True)
+                self.assertIsNone(
+                    persisted["cleanup_receipt"], "Keep original pre-cleanup failure evidence"
+                )
+                self.assertTrue(process._stop_observer.is_set())
+                self.assertFalse(process._observer.is_alive())
+                receipt = process.cleanup_receipt
+                if case == "healthy":
+                    self.assert_scoped_receipt(receipt)
+                    self.assertEqual(receipt["leader_exit"], 0)
+                    with self.assertRaises(ChildProcessError):
+                        native_retained_exit(process.pid)
+                    self.assertFalse(marker.exists())
+                    self.assertEqual(native_group_members(process.pid), set())
+                else:
+                    self.assertIs(receipt["scope_confirmed"], False)
+                    self.assertIs(receipt["leader_reaped"], False)
+                    self.assertTrue(marker.exists())
+                    self.assertEqual(native_retained_exit(process.pid), (process.pid, 1, 0))
+                    waited, status = os.waitpid(process.pid, os.WNOHANG)
+                    self.assertEqual(waited, process.pid)
+                    self.assertEqual(os.waitstatus_to_exitcode(status), 0)
+                    self.assertIs(receipt["scope_confirmed"], False)
+                    observed.store.remove(marker)
+                self.assertTrue(self.is_owned_live(peer.pid, peer_token))
+
     def test_marker_exact_start_mismatch_or_unknown_identity_never_signals_peer(self) -> None:
         peer, peer_token = self.peer()
         for observation in (
