@@ -230,7 +230,7 @@ class ManagedRuntimeTests(unittest.TestCase):
 
         with (
             patch.object(Path, "open", return_value=SlowStream()),
-            patch.object(self.manifest.time, "monotonic", side_effect=lambda: clock[0]),
+            patch.object(runtime.time, "monotonic", side_effect=lambda: clock[0]),
         ):
             with self.assertRaises(TimeoutError):
                 self.manifest.hash_file(path, deadline, None)
