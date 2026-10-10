@@ -794,6 +794,89 @@ class NativePosixOwnership(unittest.TestCase):
                 self.assertTrue(self.is_owned_live(peer.pid, peer_token))
 
     @unittest.skipUnless(sys.platform == "darwin", "Darwin terminal signal failure controls")
+    def test_darwin_eperm_retries_temporarily_incomplete_terminal_proof_in_same_reserve(self):
+        peer, peer_token = self.peer()
+        actual_killpg = os.killpg
+        for exit_code in (0, 23):
+            with self.subTest(exit_code=exit_code):
+                process, marker, gate = self.gated_exit(
+                    exit_code, f"darwin-delayed-proof-{exit_code}", release=False
+                )
+                actual_terminal = process._darwin_terminal_group
+                denied, incomplete, complete = [], [], []
+                proof_ready = threading.Event()
+                before = time.monotonic()
+
+                def terminal_group(deadline):
+                    if denied and not proof_ready.is_set():
+                        # Withhold one complete positive observation at the real
+                        # post-error seam; never supply a synthetic success.
+                        self.assertEqual(
+                            native_retained_exit(process.pid), (process.pid, 1, exit_code)
+                        )
+                        self.assertEqual(native_group_members(process.pid), {process.pid})
+                        incomplete.append((deadline, time.monotonic()))
+                        proof_ready.set()
+                        return None
+                    terminal = actual_terminal(deadline)
+                    if not denied:
+                        self.assertIsNone(terminal)
+                        self.assertIsNone(native_retained_exit(process.pid))
+                    elif terminal is not None:
+                        complete.append((deadline, time.monotonic()))
+                    return terminal
+
+                def race_at_term(group, selected_signal):
+                    if group == process.pid and selected_signal == signal.SIGTERM:
+                        gate.touch()
+                        self.assertEqual(
+                            self.until(lambda: native_retained_exit(process.pid), budget=0.25),
+                            (process.pid, 1, exit_code),
+                        )
+                        denied.append((group, selected_signal))
+                        raise PermissionError(errno.EPERM, "Darwin delayed terminal proof")
+                    return actual_killpg(group, selected_signal)
+
+                with (
+                    mock.patch.object(
+                        process, "_darwin_terminal_group", side_effect=terminal_group
+                    ),
+                    mock.patch.object(os, "killpg", side_effect=race_at_term),
+                ):
+                    self.confirm_cleanup(process, marker, [process.pid])
+                self.assertEqual(denied, [(process.pid, signal.SIGTERM)])
+                self.assertEqual(len(incomplete), 1)
+                self.assertTrue(complete)
+                self.assertLess(complete[0][1], incomplete[0][0])
+                self.assertLessEqual(complete[0][0], incomplete[0][0])
+                receipt = process.cleanup_receipt
+                self.assertEqual(receipt["budget_seconds"], 1.5)
+                self.assertLess(time.monotonic() - before, 1.7)
+                self.assertEqual(receipt["leader_exit"], exit_code)
+                operations = receipt["group_signal_operations"]
+                self.assertTrue(
+                    any(
+                        op["operation"] == "killpg"
+                        and op["result"] == "unavailable"
+                        and op["signal"] == signal.SIGTERM
+                        and op["errno"] == errno.EPERM
+                        for op in operations
+                    ),
+                    receipt,
+                )
+                self.assertTrue(
+                    any(
+                        op["operation"] == "terminal-group-proof"
+                        and op["result"] == "terminal-membership-after-eperm"
+                        and op["signal"] == signal.SIGTERM
+                        for op in operations
+                    ),
+                    receipt,
+                )
+                self.assertEqual(native_group_members(process.pid), set())
+                self.assertTrue(self.is_owned_live(peer.pid, peer_token))
+
+    @unittest.skipUnless(sys.platform == "darwin", "Darwin terminal signal failure controls")
     def test_darwin_term_eperm_cannot_confirm_live_or_unavailable_terminal_membership(self) -> None:
         peer, peer_token = self.peer()
         posix = production("kernel._analysis_posix")
@@ -1219,6 +1302,201 @@ class NativePosixOwnership(unittest.TestCase):
                 self.assertEqual(spawn.call_count, 1)
         finally:
             release.set()
+
+    def test_actual_setup_exception_admission_depends_on_cleanup_for_timely_and_abandoned_callers(
+        self,
+    ):
+        self.addCleanup(setattr, self.runtime, "_spawn_cleanup_failure", None)
+        self.addCleanup(setattr, self.runtime, "_spawn_cleanup_receipt", None)
+        peer, peer_token = self.peer()
+        actual_spawn, actual_create = self.runtime.popen_owned, self.store.create
+        actual_killpg = os.killpg
+        for outcome in ("unconfirmed", "confirmed", "pre-spawn"):
+            for abandoned in (False, True):
+                with self.subTest(outcome=outcome, abandoned=abandoned):
+                    entered, release, completed = (
+                        threading.Event(),
+                        threading.Event(),
+                        threading.Event(),
+                    )
+                    children, markers, errors, signals = [], [], [], []
+                    self.runtime._spawn_cleanup_failure = None
+                    self.runtime._spawn_cleanup_receipt = None
+
+                    def fail_initial_marker(process, argv):
+                        if not children:
+                            # Record the actual Popen before any fallible identity assertion.
+                            children.append(process)
+                            self.owned.append((process, None))
+                            token = self.observe(process.pid)
+                            self.assertEqual(os.getsid(process.pid), process.pid)
+                            self.assertEqual(os.getpgid(process.pid), process.pid)
+                            self.assertIsNone(native_retained_exit(process.pid))
+                            self.assertTrue(self.is_owned_live(process.pid, token))
+                            raise OSError("actual analysis marker setup failed")
+                        self.assertIs(process, children[0])
+                        marker = actual_create(process, argv)
+                        markers.append(marker)
+                        return marker
+
+                    def setup_exception(argv, **kwargs):
+                        entered.set()
+                        try:
+                            if abandoned:
+                                self.assertTrue(release.wait(5))
+                            if outcome == "pre-spawn":
+                                raise OSError("ordinary pre-spawn failure")
+                            return actual_spawn(argv, **kwargs)
+                        except BaseException as exc:
+                            errors.append(exc)
+                            raise
+                        finally:
+                            completed.set()
+
+                    def denied_cleanup(group, selected_signal):
+                        if outcome == "unconfirmed" and children and group == children[0].pid:
+                            signals.append((group, selected_signal))
+                            raise PermissionError(errno.EPERM, "actual owned setup cleanup denied")
+                        return actual_killpg(group, selected_signal)
+
+                    try:
+                        with (
+                            mock.patch.object(
+                                self.store, "create", side_effect=fail_initial_marker
+                            ),
+                            mock.patch.object(
+                                self.runtime, "popen_owned", side_effect=setup_exception
+                            ) as spawn,
+                            mock.patch.object(os, "killpg", side_effect=denied_cleanup),
+                        ):
+                            expected = TimeoutError if abandoned else OSError
+                            with self.assertRaises(expected) as delivered:
+                                self.runtime.spawn_before_deadline(
+                                    [sys.executable, "-c", "import time; time.sleep(60)"],
+                                    time.monotonic() + (0.15 if abandoned else 5),
+                                    None,
+                                    self.store,
+                                    stdin=subprocess.DEVNULL,
+                                    stdout=subprocess.DEVNULL,
+                                    stderr=subprocess.DEVNULL,
+                                )
+                            self.assertTrue(entered.is_set())
+                            release.set()
+                            self.assertTrue(completed.wait(5))
+                            self.until(lambda: not self.runtime._spawn_admission.locked())
+                            self.assertEqual(len(errors), 1)
+                            primary = errors[0]
+                            self.assertIsInstance(primary, OSError)
+                            if not abandoned:
+                                self.assertIs(delivered.exception, primary)
+                            if outcome == "pre-spawn":
+                                self.assertFalse(children)
+                                self.assertFalse(hasattr(primary, "cleanup_receipt"))
+                            else:
+                                self.assertEqual(len(children), 1)
+                                process = children[0]
+                                receipt = primary.cleanup_receipt
+                                self.assertEqual(receipt, process.cleanup_receipt)
+                                self.assertEqual(receipt["pid"], process.pid)
+                                self.assertEqual(receipt["group"], process.pid)
+                                self.assertEqual(
+                                    receipt["coverage"], "retained_group_and_captured_descendants"
+                                )
+                                self.assertEqual(
+                                    receipt["unobserved_detached_descendants"], "not_proven"
+                                )
+                                if outcome == "unconfirmed":
+                                    self.assertIs(receipt["scope_confirmed"], False)
+                                    self.assertIs(receipt["leader_reaped"], False)
+                                    self.assertTrue(receipt["uncertainties"])
+                                    self.assertTrue(signals)
+                                    self.assertIsNone(native_retained_exit(process.pid))
+                                    self.assertTrue(
+                                        self.is_owned_live(process.pid, self.observed[process.pid])
+                                    )
+                                    self.assertEqual(len(markers), 1)
+                                    saved = json.loads(markers[0].read_bytes())
+                                    self.assertEqual(saved["pid"], process.pid)
+                                    self.assertEqual(saved["start_token"], receipt["start_token"])
+                                else:
+                                    self.assert_scoped_receipt(receipt)
+                                    self.assertEqual(receipt["leader_exit"], -signal.SIGTERM)
+                                    self.assertIsNone(receipt["wait_error"])
+                                    with self.assertRaises(ChildProcessError):
+                                        native_retained_exit(process.pid)
+                                    self.assertFalse(
+                                        self.is_owned_live(process.pid, self.observed[process.pid])
+                                    )
+                                    self.assertFalse(markers)
+                            if outcome == "unconfirmed":
+                                self.assertIsNotNone(
+                                    self.runtime._spawn_cleanup_failure, primary.cleanup_receipt
+                                )
+                                retained = self.runtime._spawn_cleanup_receipt
+                                self.assertEqual(retained, primary.cleanup_receipt)
+                                self.assertIsNot(retained, primary.cleanup_receipt)
+                                self.assertIsNot(
+                                    retained["uncertainties"],
+                                    primary.cleanup_receipt["uncertainties"],
+                                )
+                                with self.assertRaises(RuntimeError) as refused:
+                                    self.runtime.spawn_before_deadline(
+                                        [
+                                            sys.executable,
+                                            "-c",
+                                            "raise SystemExit('must not spawn')",
+                                        ],
+                                        time.monotonic() + 2,
+                                        None,
+                                        self.store,
+                                    )
+                                self.assertEqual(refused.exception.cleanup_receipt, retained)
+                                self.assertIsNot(refused.exception.cleanup_receipt, retained)
+                                self.assertEqual(
+                                    spawn.call_count, 1, "Refuse before another actual Popen"
+                                )
+                            else:
+                                self.assertIsNone(self.runtime._spawn_cleanup_failure)
+                                self.assertIsNone(self.runtime._spawn_cleanup_receipt)
+                            self.assertTrue(self.is_owned_live(peer.pid, peer_token))
+                        if outcome != "unconfirmed":
+                            following, marker = self.spawn(
+                                [sys.executable, "-c", "import time; time.sleep(60)"]
+                            )
+                            self.confirm_cleanup(following, marker, [following.pid])
+                            self.assertTrue(self.is_owned_live(peer.pid, peer_token))
+                    finally:
+                        # Restore fault seams before exact-identity fixture cleanup.
+                        release.set()
+                        self.assertTrue(completed.wait(5))
+                        for process in children:
+                            token = self.observed.get(process.pid)
+                            killed = False
+                            if token and self.is_owned_live(process.pid, token):
+                                os.kill(process.pid, signal.SIGKILL)
+                                killed = True
+                                self.assertEqual(
+                                    self.until(lambda: native_retained_exit(process.pid)),
+                                    (process.pid, 2, signal.SIGKILL),
+                                )
+                            try:
+                                retained_exit = native_retained_exit(process.pid)
+                            except ChildProcessError:
+                                retained_exit = None
+                            else:
+                                self.assertIsNotNone(
+                                    retained_exit, "Do not retire a live/unknown fixture marker"
+                                )
+                                waited, status = os.waitpid(process.pid, 0)
+                                self.assertEqual(waited, process.pid)
+                                if killed:
+                                    self.assertEqual(
+                                        os.waitstatus_to_exitcode(status), -signal.SIGKILL
+                                    )
+                            for marker in markers:
+                                self.store.remove(marker)
+                        self.runtime._spawn_cleanup_failure = None
+                        self.runtime._spawn_cleanup_receipt = None
 
     def test_marker_exact_start_mismatch_or_unknown_identity_never_signals_peer(self) -> None:
         peer, peer_token = self.peer()
