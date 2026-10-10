@@ -24,10 +24,6 @@ jobs:
             target: macos-x86_64
     runs-on: ${{ matrix.os }}
     timeout-minutes: 40
-    env:
-      BYO_MANAGED_TEST_EVIDENCE: ${{ runner.temp }}/managed-analysis-contracts
-      BYO_WINDOWS_REGRESSION_EVIDENCE: ${{ runner.temp }}/windows-analysis-regressions
-      BYO_WINDOWS_ACCEPTANCE_EVIDENCE: ${{ runner.temp }}/windows-analysis-acceptance
     steps:
       - name: Check out exact server candidate
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
@@ -38,9 +34,13 @@ jobs:
           python-version: '3.12'
 
       - name: Record source and native host
+        shell: bash
         run: |
           git rev-parse HEAD
           python -c "import platform, sys; print(sys.version); print(platform.platform()); print(platform.machine())"
+          echo "BYO_MANAGED_TEST_EVIDENCE=$RUNNER_TEMP/managed-analysis-contracts" >> "$GITHUB_ENV"
+          echo "BYO_WINDOWS_REGRESSION_EVIDENCE=$RUNNER_TEMP/windows-analysis-regressions" >> "$GITHUB_ENV"
+          echo "BYO_WINDOWS_ACCEPTANCE_EVIDENCE=$RUNNER_TEMP/windows-analysis-acceptance" >> "$GITHUB_ENV"
 
       - name: Install uv
         uses: astral-sh/setup-uv@94527f2e458b27549849d47d273a16bec83a01e9 # v7
