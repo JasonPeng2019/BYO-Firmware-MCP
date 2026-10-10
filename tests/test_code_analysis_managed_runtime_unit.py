@@ -1,4 +1,4 @@
-"""Owner checks for accepted Windows mapping and selected-payload receipts.
+"""Owner checks for accepted native mapping and selected-payload receipts.
 
 Synthetic inventories are test fixtures, never release provenance. Only the owned
 version-spawn seam is replaced; all mapping, inventory and filesystem work is real.
@@ -13,133 +13,16 @@ import time
 import unittest
 import threading
 import subprocess
-import sys
 from types import SimpleNamespace
 from pathlib import Path
 from unittest.mock import Mock, patch
 
 from pyocd_debug_mcp import code_analysis_runtime as runtime
+from tests.code_analysis_managed_support import RuntimeFixture, host_target
 
 
 def staged_runtime(root: Path) -> dict:
-    mapping = {
-        "schema_version": 1,
-        "platform": "windows",
-        "architecture": "x86_64",
-        "programs": {
-            "cppcheck": {
-                "version": "2.22.0",
-                "executable": "analysis/cppcheck/cppcheck.exe",
-                "cfg_dir": "analysis/cppcheck/cfg",
-                "platforms_dir": "analysis/cppcheck/platforms",
-                "licenses": [
-                    "analysis/cppcheck/licenses/" + name
-                    for name in (
-                        "COPYING",
-                        "simplecpp-LICENSE",
-                        "tinyxml2-LICENSE",
-                        "picojson-LICENSE",
-                    )
-                ],
-                "dependencies": [],
-                "sbom_ref": "byo-analysis:cppcheck",
-            },
-            "clangd": {
-                "version": "23.1.0",
-                "executable": "analysis/clangd/bin/clangd.exe",
-                "resource_dir": "analysis/clangd/lib/clang/23",
-                "licenses": ["analysis/clangd/LICENSE.TXT"],
-                "dependencies": [],
-                "sbom_ref": "byo-analysis:clangd",
-            },
-        },
-    }
-    executable = Path(sys.executable).read_bytes()
-    payload = {
-        "analysis/cppcheck/cppcheck.exe": (executable, "analysis-executable", True),
-        "analysis/cppcheck/cfg/std.cfg": (b"<def/>", "analysis-data", False),
-        "analysis/cppcheck/platforms/test.xml": (b"<platform/>", "analysis-data", False),
-        "analysis/clangd/bin/clangd.exe": (executable, "analysis-executable", True),
-        "analysis/clangd/lib/clang/23/include/stddef.h": (
-            b"typedef int size_t;",
-            "analysis-resource",
-            False,
-        ),
-    }
-    components = []
-    dependencies = []
-    for name, program in mapping["programs"].items():
-        for notice in program["licenses"]:
-            payload[notice] = (b"unit notice", "license", False)
-        leaves = [p for p in payload if p.startswith(f"analysis/{name}/")]
-        components.append(
-            {
-                "type": "application",
-                "bom-ref": program["sbom_ref"],
-                "name": name,
-                "version": program["version"],
-                "licenses": [{"license": {"name": "Test fixture license"}}],
-                "properties": [
-                    {"name": "byo:analysis:upstream", "value": "Test-only Python PE fixture"},
-                    {"name": "byo:analysis:recipe", "value": "Test-only copy; mocked version seam"},
-                ],
-            }
-        )
-        components.extend({"type": "file", "bom-ref": "file:" + p, "name": p} for p in leaves)
-        dependencies.append(
-            {"ref": program["sbom_ref"], "dependsOn": ["file:" + p for p in leaves]}
-        )
-    sbom = {
-        "bomFormat": "CycloneDX",
-        "specVersion": "1.6",
-        "version": 1,
-        "components": components,
-        "dependencies": dependencies,
-    }
-    payload["analysis/runtime.json"] = (json.dumps(mapping).encode(), "metadata", False)
-    payload["sbom.cdx.json"] = (json.dumps(sbom).encode(), "sbom", False)
-    inventory = []
-    for relative, (data, kind, executable) in payload.items():
-        path = root / relative
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_bytes(data)
-        inventory.append(
-            {
-                "path": relative,
-                "sha256": hashlib.sha256(data).hexdigest(),
-                "size": len(data),
-                "kind": kind,
-                "executable": executable,
-            }
-        )
-    manifest = {
-        "schema": 1,
-        "product": "byo",
-        "version": "1.0.0",
-        "channel": "test",
-        "platform": "windows",
-        "architecture": "x86_64",
-        **{
-            k: 1
-            for k in (
-                "launcher_protocol",
-                "sidecar_protocol",
-                "worker_protocol",
-                "workflow_protocol",
-                "capsule_schema",
-                "project_state_schema",
-            )
-        },
-        "development_unsigned": True,
-        "source": {
-            k: {"repository": "unit", "commit": "a" * 40}
-            for k in ("installer", "agent_workspace", "firmware_mcp")
-        },
-        "toolchain": {k: "unit" for k in ("rustc", "cargo", "python", "nuitka")},
-        "files": inventory,
-    }
-    (root / "release-manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
-    return mapping
+    return RuntimeFixture(root).mapping
 
 
 class ManagedRuntimeTests(unittest.TestCase):
@@ -148,6 +31,7 @@ class ManagedRuntimeTests(unittest.TestCase):
         self.addCleanup(self.temp.cleanup)
         self.root = Path(self.temp.name).resolve()
         self.mapping = staged_runtime(self.root)
+        self.executable = self.mapping["programs"]["clangd"]["executable"]
         self.context = runtime.AnalysisRuntimeContext(self.root, self.root, managed=True)
         from pyocd_debug_mcp import code_analysis_manifest as manifest
 
@@ -185,11 +69,12 @@ class ManagedRuntimeTests(unittest.TestCase):
         self.assertFalse(first.problems, first)
         self.assertEqual(first.origin, "managed_runtime")
         self.assertEqual(first.version, "clangd version 23.1.0\r\n")
-        self.assertEqual(first.executable, self.root / "analysis/clangd/bin/clangd.exe")
+        self.assertEqual(first.executable, self.root / self.executable)
         self.assertEqual(first.data_paths, (self.root / "analysis/clangd/lib/clang/23",))
         self.assertEqual(first.identity, second.identity)
         self.assertEqual(
-            first.executable_sha256, hashlib.sha256(Path(sys.executable).read_bytes()).hexdigest()
+            first.executable_sha256,
+            hashlib.sha256((self.root / self.executable).read_bytes()).hexdigest(),
         )
         self.assertEqual(len(first.runtime_manifest_sha256), 64)
         self.assertEqual(len(first.analysis_mapping_sha256), 64)
@@ -413,7 +298,11 @@ class ManagedRuntimeTests(unittest.TestCase):
         self.spawn.assert_not_called()
 
     def test_selected_executable_requires_amd64_pe32_plus_before_probe(self):
-        path = self.root / "analysis/clangd/bin/clangd.exe"
+        if host_target() != "windows-x86_64":
+            self.skipTest(
+                "Original Windows PE input checks; neutral format cases are in portability"
+            )
+        path = self.root / self.executable
         original = path.read_bytes()
         offset = int.from_bytes(original[60:64], "little")
         for position, replacement in (
@@ -425,7 +314,7 @@ class ManagedRuntimeTests(unittest.TestCase):
                 data = bytearray(original)
                 data[position : position + 2] = replacement
                 path.write_bytes(data)
-                self.rewrite_inventory("analysis/clangd/bin/clangd.exe")
+                self.rewrite_inventory(self.executable)
                 self.assertTrue(self.resolve().problems)
         self.spawn.assert_not_called()
 
@@ -523,7 +412,7 @@ class ManagedRuntimeTests(unittest.TestCase):
         self.assertTrue(self.resolve().problems)
         self.path.assert_not_called()
         self.context = runtime.AnalysisRuntimeContext(self.root, self.root, managed=False)
-        self.path.return_value = str(self.root / "analysis/clangd/bin/clangd.exe")
+        self.path.return_value = str(self.root / self.executable)
         result = self.resolve()
         self.assertFalse(result.problems, result)
         self.assertEqual(result.origin, "path")
@@ -567,11 +456,17 @@ class ManagedRuntimeTests(unittest.TestCase):
         self.spawn.assert_not_called()
 
     def test_host_and_release_architecture_agreement(self):
-        with patch.object(self.manifest.platform, "machine", return_value="ARM64"):
+        with patch.object(
+            self.manifest.platform,
+            "machine",
+            return_value="x86_64" if self.mapping["architecture"] == "aarch64" else "ARM64",
+        ):
             self.assertTrue(self.resolve().problems)
         path = self.root / "release-manifest.json"
         manifest = json.loads(path.read_text(encoding="utf-8"))
-        manifest["architecture"] = "aarch64"
+        manifest["architecture"] = (
+            "x86_64" if self.mapping["architecture"] == "aarch64" else "aarch64"
+        )
         path.write_text(json.dumps(manifest), encoding="utf-8")
         self.assertTrue(self.resolve().problems)
         self.spawn.assert_not_called()

@@ -1,4 +1,4 @@
-"""Behavior contracts from the accepted Windows runtime mapping, independently.
+"""Behavior contracts from the accepted target runtime mapping, independently.
 
 Resolve through the production launch context, never a replacement resolver.
 Valid controls precede failures to prevent an unresolved stub passing rejection
@@ -26,6 +26,8 @@ from tests.code_analysis_managed_support import (
     ManagedCase,
     RuntimeFixture,
     digest,
+    default_mapping,
+    host_target,
     protocol_redirect,
     production,
     write_json,
@@ -33,7 +35,8 @@ from tests.code_analysis_managed_support import (
 from tests.code_analysis_support import AnalysisProject, Call
 
 RESOURCE = "analysis/clangd/lib/clang/23/include/stddef.h"
-EXECUTABLE = "analysis/clangd/bin/clangd.exe"
+EXECUTABLE = default_mapping()["programs"]["clangd"]["executable"]
+PATH_CLANGD = "clangd.exe" if os.name == "nt" else "clangd"
 
 
 class WindowsCanonicalDatabaseAlias(unittest.TestCase):
@@ -154,7 +157,7 @@ class ManagedSelection(ManagedCase):
     def test_managed_failure_cannot_substitute_visible_path(self) -> None:
         path_bin = self.base / "path-bin"
         path_bin.mkdir()
-        shutil.copyfile(self.fixture.root / EXECUTABLE, path_bin / "clangd.exe")
+        shutil.copy2(self.fixture.root / EXECUTABLE, path_bin / PATH_CLANGD)
         self.fixture.mapping_path.unlink()
         with self.observer() as observed, mock.patch.dict(os.environ, {"PATH": str(path_bin)}):
             self.assert_rejected_without_spawn(observed, "runtime.json")
@@ -162,14 +165,14 @@ class ManagedSelection(ManagedCase):
     def test_unmanaged_supplied_runtime_failure_retains_cause_and_fallback_warning(self) -> None:
         path_bin = self.base / "path-bin"
         path_bin.mkdir()
-        shutil.copyfile(self.fixture.root / EXECUTABLE, path_bin / "clangd.exe")
+        shutil.copy2(self.fixture.root / EXECUTABLE, path_bin / PATH_CLANGD)
         self.fixture.mapping_path.unlink()
         context = self.fixture.context(self.project, managed=False)
         with self.observer() as observed, mock.patch.dict(os.environ, {"PATH": str(path_bin)}):
             original = observed.redirect
 
             def redirect(argv):
-                if Path(argv[0]).resolve() == (path_bin / "clangd.exe").resolve():
+                if Path(argv[0]).resolve() == (path_bin / PATH_CLANGD).resolve():
                     from tests.code_analysis_support import FAKE_CLANGD
                     import sys
 
@@ -192,7 +195,7 @@ class ManagedSelection(ManagedCase):
             self.assertEqual(status["status"], "ok", status)
             self.assertEqual(status["data"]["executable_origin"], "path")
             self.assertEqual(
-                Path(status["data"]["executable"]).resolve(), (path_bin / "clangd.exe").resolve()
+                Path(status["data"]["executable"]).resolve(), (path_bin / PATH_CLANGD).resolve()
             )
             self.assertTrue(
                 any(
@@ -328,10 +331,26 @@ class TargetAndVersion(ManagedCase):
     def test_mapping_release_and_actual_host_must_agree(self) -> None:
         with self.observer() as observed:
             for where, field, value in [
-                ("mapping", "platform", "linux"),
-                ("mapping", "architecture", "aarch64"),
-                ("release", "platform", "linux"),
-                ("release", "architecture", "aarch64"),
+                (
+                    "mapping",
+                    "platform",
+                    "windows" if self.fixture.mapping["platform"] != "windows" else "linux",
+                ),
+                (
+                    "mapping",
+                    "architecture",
+                    "x86_64" if self.fixture.mapping["architecture"] == "aarch64" else "aarch64",
+                ),
+                (
+                    "release",
+                    "platform",
+                    "windows" if self.fixture.mapping["platform"] != "windows" else "linux",
+                ),
+                (
+                    "release",
+                    "architecture",
+                    "x86_64" if self.fixture.mapping["architecture"] == "aarch64" else "aarch64",
+                ),
             ]:
                 with self.subTest(where=where, field=field):
                     self.require_valid_control(observed)
@@ -343,13 +362,21 @@ class TargetAndVersion(ManagedCase):
                         self.fixture.manifest[field] = value
                         self.fixture.save_manifest()
                     self.assert_rejected_without_spawn(observed, field)
-                    self.fixture.manifest.update(platform="windows", architecture="x86_64")
+                    self.fixture.manifest.update(
+                        platform=self.fixture.mapping["platform"],
+                        architecture=self.fixture.mapping["architecture"],
+                    )
                     self.fixture.replace_mapping(self.fixture.mapping)
 
     def test_arm64_host_rejects_x86_64_mapping_before_spawn(self) -> None:
         with self.observer() as observed:
             self.require_valid_control(observed)
-            with mock.patch("platform.machine", return_value="ARM64"):
+            with mock.patch(
+                "platform.machine",
+                return_value="x86_64"
+                if self.fixture.mapping["architecture"] == "aarch64"
+                else "ARM64",
+            ):
                 self.assert_rejected_without_spawn(observed, "architecture")
 
     def test_resource_major_must_equal_numeric_clangd_version(self) -> None:
@@ -376,6 +403,10 @@ class TargetAndVersion(ManagedCase):
             self.assertEqual(len(observed.calls), before + 1)
 
     def test_wrong_pe_machine_is_rejected_before_probe(self) -> None:
+        if host_target() != "windows-x86_64":
+            self.skipTest(
+                "Original Windows PE input checks; neutral format cases are in portability"
+            )
         with self.observer() as observed:
             self.require_valid_control(observed)
             executable = self.fixture.root / EXECUTABLE
@@ -584,12 +615,18 @@ class PathIdentity(ManagedCase):
             self.assertTrue(outside.resolve().is_relative_to(self.base.resolve()))
             directory.rename(outside)
             # Native Windows junction creation requires no symlink privilege.
-            result = subprocess_junction(directory, outside)
-            self.assertEqual(result.returncode, 0, result.stderr)
+            if os.name == "nt":
+                result = subprocess_junction(directory, outside)
+                self.assertEqual(result.returncode, 0, result.stderr)
+            else:
+                directory.symlink_to(outside, target_is_directory=True)
             try:
                 self.assert_rejected_without_spawn(observed, "include")
             finally:
-                directory.rmdir()  # remove just the task-owned junction
+                if os.name == "nt":
+                    directory.rmdir()  # remove just the task-owned junction
+                else:
+                    directory.unlink()
 
 
 def subprocess_junction(directory: Path, target: Path):

@@ -1,4 +1,4 @@
-"""Independent Windows runtime fixtures, owned spawn observations and evidence.
+"""Independent target runtime fixtures, owned spawn observations and evidence.
 
 These are generated development test bundles, never installed release evidence.
 The fixture writes the existing ReleaseManifest shape and CycloneDX ownership;
@@ -14,6 +14,8 @@ import hashlib
 import importlib
 import json
 import os
+import platform
+import struct
 import sys
 import threading
 import time
@@ -65,15 +67,64 @@ def tree_hashes(root: Path) -> dict[str, str]:
     return {p.relative_to(root).as_posix(): digest(p) for p in root.rglob("*") if p.is_file()}
 
 
-def default_mapping() -> dict[str, Any]:
+TARGETS = {
+    "windows-x86_64": ("windows", "x86_64", "Windows", "AMD64"),
+    "macos-aarch64": ("macos", "aarch64", "Darwin", "arm64"),
+    "macos-x86_64": ("macos", "x86_64", "Darwin", "x86_64"),
+    "linux-x86_64": ("linux", "x86_64", "Linux", "x86_64"),
+}
+
+
+def host_target() -> str:
+    system = {"Windows": "windows", "Darwin": "macos", "Linux": "linux"}[platform.system()]
+    machine = platform.machine().lower()
+    architecture = {
+        "amd64": "x86_64",
+        "x86_64": "x86_64",
+        "arm64": "aarch64",
+        "aarch64": "aarch64",
+    }[machine]
+    target = system + "-" + architecture
+    if target not in TARGETS:
+        raise AssertionError("Unsupported test host: " + target)
+    return target
+
+
+def native_header(target: str, *, library: bool = False) -> bytes:
+    """Specification bytes for validation only; these must never be executed."""
+    if target == "windows-x86_64":
+        data = bytearray(512)
+        data[:2] = b"MZ"
+        struct.pack_into("<I", data, 60, 128)
+        data[128:132] = b"PE\0\0"
+        struct.pack_into(
+            "<HHIIIHH", data, 132, 0x8664, 0, 0, 0, 0, 240, 0x2022 if library else 0x22
+        )
+        struct.pack_into("<H", data, 152, 0x20B)
+        return bytes(data)
+    if target.startswith("macos-"):
+        cpu = 0x0100000C if target.endswith("aarch64") else 0x01000007
+        return struct.pack("<8I", 0xFEEDFACF, cpu, 0, 6 if library else 2, 0, 0, 0, 0)
+    if target == "linux-x86_64":
+        ident = b"\x7fELF\x02\x01\x01" + b"\0" * 9
+        return ident + struct.pack(
+            "<HHIQQQIHHHHHH", 3 if library else 2, 62, 1, 0, 0, 0, 0, 64, 56, 0, 64, 0, 0
+        )
+    raise AssertionError(target)
+
+
+def default_mapping(target: str | None = None) -> dict[str, Any]:
+    target = target or host_target()
+    system, architecture, _, _ = TARGETS[target]
+    suffix = ".exe" if system == "windows" else ""
     return {
         "schema_version": 1,
-        "platform": "windows",
-        "architecture": "x86_64",
+        "platform": system,
+        "architecture": architecture,
         "programs": {
             "cppcheck": {
                 "version": "2.22.0",
-                "executable": "analysis/cppcheck/cppcheck.exe",
+                "executable": "analysis/cppcheck/cppcheck" + suffix,
                 "cfg_dir": "analysis/cppcheck/cfg",
                 "platforms_dir": "analysis/cppcheck/platforms",
                 "licenses": [
@@ -90,7 +141,7 @@ def default_mapping() -> dict[str, Any]:
             },
             "clangd": {
                 "version": "23.1.0",
-                "executable": "analysis/clangd/bin/clangd.exe",
+                "executable": "analysis/clangd/bin/clangd" + suffix,
                 "resource_dir": "analysis/clangd/lib/clang/23",
                 "licenses": ["analysis/clangd/LICENSE.TXT"],
                 "dependencies": [],
@@ -108,19 +159,33 @@ class RuntimeFixture:
     without prescribing another file-reference vocabulary.
     """
 
-    def __init__(self, root: Path, native: dict[str, Any] | None = None) -> None:
+    def __init__(
+        self,
+        root: Path,
+        native: dict[str, Any] | None = None,
+        *,
+        target: str | None = None,
+        synthetic_headers: bool = False,
+    ) -> None:
         self.root = root.resolve()
-        self.mapping = default_mapping()
+        # Existing native input records are Windows contracts.
+        self.target = target or ("windows-x86_64" if native else host_target())
+        self.mapping = default_mapping(self.target)
         self.mapping_path = self.root / "analysis/runtime.json"
         self.manifest_path = self.root / "release-manifest.json"
         self.sbom_path = self.root / "sbom.cdx.json"
         self.root.mkdir(parents=True, exist_ok=True)
         self.native = native
         if native is None:
-            # A real AMD64 PE header, deliberately not an analyzer implementation.
-            # Only redirected protocol/version tests execute this synthetic case.
+            # Preserve the original real Windows Python input. POSIX specification
+            # headers are validation fixtures; protocol/version spawns redirect.
             for program in self.mapping["programs"].values():
-                self.put(program["executable"], Path(sys.executable).read_bytes())
+                payload = (
+                    Path(sys.executable).read_bytes()
+                    if self.target == "windows-x86_64" and not synthetic_headers
+                    else native_header(self.target)
+                )
+                self.put(program["executable"], payload)
                 for license_path in program["licenses"]:
                     self.put(license_path, b"Synthetic unit-test notice; not vendor provenance.\n")
             self.put("analysis/cppcheck/cfg/std.cfg", b'<def format="2"/>\n')
@@ -141,13 +206,20 @@ class RuntimeFixture:
         path = self.root / relative
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_bytes(data)
+        if self.mapping["platform"] != "windows" and relative in {
+            p["executable"] for p in self.mapping["programs"].values()
+        }:
+            path.chmod(0o755)
         return path
 
     @staticmethod
     def kind(path: str) -> tuple[str, bool]:
-        if path.endswith(".exe"):
+        if path.endswith(".exe") or path in {
+            "analysis/cppcheck/cppcheck",
+            "analysis/clangd/bin/clangd",
+        }:
             return "analysis-executable", True
-        if path.endswith(".dll"):
+        if path.endswith((".dll", ".dylib", ".so")) or ".so." in path:
             return "analysis-dependency", False
         if "/licenses/" in path or path.endswith("LICENSE.TXT"):
             return "license", False
@@ -261,8 +333,8 @@ class RuntimeFixture:
             "product": "byo",
             "version": "0.1.0",
             "channel": "development",
-            "platform": "windows",
-            "architecture": "x86_64",
+            "platform": self.mapping["platform"],
+            "architecture": self.mapping["architecture"],
             "launcher_protocol": 1,
             "sidecar_protocol": 1,
             "worker_protocol": 1,
@@ -305,8 +377,70 @@ class RuntimeFixture:
         )
 
 
+def posix_process_identity(pid: int) -> tuple[str, str] | None:
+    """Native PID/start observation independent of the production psutil token."""
+    if sys.platform.startswith("linux"):
+        try:
+            data = Path(f"/proc/{pid}/stat").read_text()
+        except FileNotFoundError:
+            return None
+        fields = data[data.rfind(")") + 2 :].split()
+        return f"linux:{fields[19]}", fields[0]
+    if sys.platform == "darwin":
+
+        class BSDInfo(ctypes.Structure):
+            _fields_ = (
+                [
+                    (n, ctypes.c_uint32)
+                    for n in (
+                        "flags",
+                        "status",
+                        "xstatus",
+                        "pid",
+                        "ppid",
+                        "uid",
+                        "gid",
+                        "ruid",
+                        "rgid",
+                        "svuid",
+                        "svgid",
+                        "rfu",
+                    )
+                ]
+                + [("comm", ctypes.c_char * 16), ("name", ctypes.c_char * 32)]
+                + [
+                    (n, ctypes.c_uint32)
+                    for n in ("nfiles", "pgid", "pjobc", "tdev", "tpgid", "nice")
+                ]
+                + [("start_sec", ctypes.c_uint64), ("start_usec", ctypes.c_uint64)]
+            )
+
+        lib = ctypes.CDLL("/usr/lib/libproc.dylib", use_errno=True)
+        lib.proc_pidinfo.argtypes = [
+            ctypes.c_int,
+            ctypes.c_int,
+            ctypes.c_uint64,
+            ctypes.c_void_p,
+            ctypes.c_int,
+        ]
+        lib.proc_pidinfo.restype = ctypes.c_int
+        info = BSDInfo()
+        size = lib.proc_pidinfo(pid, 3, 0, ctypes.byref(info), ctypes.sizeof(info))
+        if size == 0 and ctypes.get_errno() == 3:  # ESRCH
+            return None
+        if size != ctypes.sizeof(info):
+            raise OSError(
+                ctypes.get_errno(), "Cannot observe exact native process identity", str(pid)
+            )
+        return f"macos:{info.start_sec}:{info.start_usec}", "Z" if info.status == 5 else "live"
+    raise AssertionError("POSIX identity oracle requires a supported native host")
+
+
 def native_start_token(pid: int) -> str | None:
     """Independent GetProcessTimes observation; unknown access is an error."""
+    if os.name != "nt":
+        observed = posix_process_identity(pid)
+        return observed[0] if observed and observed[1] != "Z" else None
     from ctypes import wintypes
 
     kernel = ctypes.WinDLL("kernel32", use_last_error=True)
@@ -363,6 +497,11 @@ class OwnedSpawns:
         kwargs["marker_store"] = self.store
         process, marker = self.original(actual, **kwargs)
         token = native_start_token(process.pid)
+        if token is None and os.name == "posix":
+            # AnalysisPopen retains an exited leader until group cleanup. A fast
+            # version peer may already be a zombie; its exact start is still native.
+            observation = posix_process_identity(process.pid)
+            token = observation[0] if observation else None
         assert token is not None, "Spawn returned without an observable creation identity"
         record = {
             "requested_argv": requested,
@@ -423,8 +562,6 @@ def protocol_redirect(fixture: RuntimeFixture, fake: Any) -> Any:
 
 class ManagedCase(unittest.TestCase):
     def setUp(self) -> None:
-        if os.name != "nt":
-            self.skipTest("Windows x86_64 only; other platforms are outside this assignment")
         # Keep native CreateProcess cwd below MAX_PATH despite long lane roots.
         # Every case has a unique retained directory and explicit identity.
         self.base = EVIDENCE / "c" / uuid.uuid4().hex[:6]
