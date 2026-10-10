@@ -87,14 +87,29 @@ class RuntimeCase(unittest.TestCase):
             original = runtime.popen_owned
 
             def launch(argv, *args, **kwargs):
-                self.assertEqual(argv, [str(executable.resolve()), "--version"])
+                self.assertEqual(argv[0], str(executable.resolve()))
+                if argv[1:] != ["--version"]:
+                    # The public deadline control can reach LSP startup after a
+                    # cached probe. Recognize that exact transport separately;
+                    # unexpected executable/arguments must still fail.
+                    self.assertEqual(
+                        argv[1:],
+                        [
+                            "--enable-config",
+                            "--background-index",
+                            "--limit-references=0",
+                            "--limit-results=0",
+                            "--compile-commands-dir=" + str(self.project.root),
+                            "--query-driver=",
+                        ],
+                    )
                 return original(
                     [
                         sys.executable,
                         str(FAKE_CLANGD),
                         "--scenario",
                         str(fake.scenario_path),
-                        "--version",
+                        *argv[1:],
                     ],
                     *args,
                     **kwargs,
