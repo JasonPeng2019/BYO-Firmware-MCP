@@ -971,9 +971,8 @@ class NativePosixOwnership(unittest.TestCase):
         self.assertIs(receipt["leader_reaped"], False)
         self.assertTrue(receipt["uncertainties"])
         self.assertEqual(receipt["leader_exit"], 0)
-        self.assertEqual(
-            {entry["pid"] for entry in receipt["native_terminal_group"]}, {process.pid}
-        )
+        self.assertIsNone(receipt["native_terminal_group"])
+        self.assertEqual(native_group_members(process.pid), {process.pid})
         captured = {entry["pid"]: entry for entry in receipt["captured"]}
         self.assertEqual(captured[child]["state"], "unknown")
         self.assertTrue(self.is_owned_live(child, token))
@@ -1502,8 +1501,6 @@ class NativePosixOwnership(unittest.TestCase):
     def test_terminal_group_shrink_by_actual_parent_reap_requires_fresh_stable_native_proof(self):
         peer, peer_token = self.peer()
         posix = production("kernel._analysis_posix")
-        directory = self.base / "terminal-shrink"
-        directory.mkdir()
         script = r"""
 import json, os, pathlib, sys, time
 base = pathlib.Path(sys.argv[1])
@@ -1526,51 +1523,103 @@ if reaper == 0:
 gate('leader-exit')
 os._exit(0)
 """
-        process, marker = self.spawn([sys.executable, "-c", script, str(directory)])
-        self.until(lambda: (directory / "ready").exists())
-        ready = json.loads((directory / "ready").read_text())
-        member, reaper = ready["member"], ready["reaper"]
-        member_token = self.observe(member)
-        reaper_token = self.observe(reaper)
-        self.assertEqual(os.getpgid(member), process.pid)
-        self.assertEqual(os.getpgid(reaper), reaper)
-        self.assertTrue(process._capture(time.monotonic() + 0.5))
-        (directory / "member-exit").touch()
-        self.until(lambda: posix_process_identity(member) == (member_token, "Z"))
-        (directory / "leader-exit").touch()
-        self.assertEqual(self.until(lambda: native_retained_exit(process.pid)), (process.pid, 1, 0))
-        actual_members = posix._darwin_group_members
-        snapshots = []
-
-        def reap_between_complete_snapshots(group, deadline):
-            if group == process.pid and len(snapshots) == 1:
-                self.assertEqual(posix_process_identity(member), (member_token, "Z"))
-                (directory / "reap-member").touch()
-                self.until(lambda: (directory / "reaped").exists(), budget=0.2)
-                self.assertEqual(
-                    json.loads((directory / "reaped").read_text()), {"pid": member, "exit": 0}
+        for seam in ("between-lists", "before-birth"):
+            with self.subTest(seam=seam):
+                directory = self.base / ("terminal-shrink-" + seam)
+                directory.mkdir()
+                process, marker = self.spawn([sys.executable, "-c", script, str(directory)])
+                self.until(lambda: (directory / "ready").exists())
+                ready = json.loads((directory / "ready").read_text())
+                member, reaper = ready["member"], ready["reaper"]
+                member_token = self.observe(member)
+                reaper_token = self.observe(reaper)
+                self.assertEqual(os.getpgid(member), process.pid)
+                self.assertEqual(os.getpgid(reaper), reaper)
+                process._stop_observer.set()
+                process._observer.join(0.5)
+                self.assertFalse(
+                    process._observer.is_alive(), "Isolate the actual proof invocation"
                 )
-                self.assertIsNone(posix_process_identity(member))
-                self.until(lambda: not self.is_owned_live(reaper, reaper_token), budget=0.2)
-            result = actual_members(group, deadline)
-            if group == process.pid:
-                snapshots.append(set(result))
-            return result
+                self.assertTrue(process._capture(time.monotonic() + 0.5))
+                captured_tokens = [token for pid, token in process._captured if pid == member]
+                self.assertEqual(
+                    len(captured_tokens), 1, "Unambiguous existing exact member identity"
+                )
+                self.assertTrue(captured_tokens[0])
+                (directory / "member-exit").touch()
+                self.until(lambda: posix_process_identity(member) == (member_token, "Z"))
+                (directory / "leader-exit").touch()
+                self.assertEqual(
+                    self.until(lambda: native_retained_exit(process.pid)), (process.pid, 1, 0)
+                )
+                actual_members = posix._darwin_group_members
+                snapshots, invocations = [], []
+                proof_thread = threading.get_ident()
+                proof_deadline = time.monotonic() + 0.5
+                armed = False
 
-        with mock.patch.object(
-            posix, "_darwin_group_members", side_effect=reap_between_complete_snapshots
-        ):
-            self.confirm_cleanup(process, marker, [process.pid, member, reaper])
-        self.assertEqual(snapshots[0], {process.pid, member})
-        self.assertEqual(snapshots[1], {process.pid})
-        self.assertGreaterEqual(
-            len(snapshots), 4, "A fresh stable native snapshot pair is required"
-        )
-        self.assertTrue(all(snapshot == {process.pid} for snapshot in snapshots[1:]))
-        self.assertEqual(native_group_members(process.pid), set())
-        self.assertFalse(self.is_owned_live(member, member_token))
-        self.assertFalse(self.is_owned_live(reaper, reaper_token))
-        self.assertTrue(self.is_owned_live(peer.pid, peer_token))
+                def reap_exact_terminal_member():
+                    self.assertEqual(posix_process_identity(member), (member_token, "Z"))
+                    (directory / "reap-member").touch()
+                    self.until(
+                        lambda: (directory / "reaped").exists(),
+                        budget=min(0.2, max(0, proof_deadline - time.monotonic())),
+                    )
+                    self.assertEqual(
+                        json.loads((directory / "reaped").read_text()), {"pid": member, "exit": 0}
+                    )
+                    self.assertIsNone(posix_process_identity(member))
+                    self.until(
+                        lambda: not self.is_owned_live(reaper, reaper_token),
+                        budget=min(0.2, max(0, proof_deadline - time.monotonic())),
+                    )
+
+                def membership_inside_one_proof(group, deadline):
+                    if not armed or group != process.pid or threading.get_ident() != proof_thread:
+                        return actual_members(group, deadline)
+                    self.assertEqual(deadline, proof_deadline)
+                    self.assertLess(time.monotonic(), deadline)
+                    if seam == "between-lists" and len(snapshots) == 1:
+                        reap_exact_terminal_member()
+                    result = actual_members(group, deadline)
+                    snapshots.append(set(result))
+                    invocations.append((threading.get_ident(), group, deadline))
+                    if seam == "before-birth" and len(snapshots) == 1:
+                        # Return this actual complete list only after the real
+                        # parent reaps; the following identity read must use the
+                        # already captured exact birth, never invent a new one.
+                        reap_exact_terminal_member()
+                    return result
+
+                with mock.patch.object(
+                    posix, "_darwin_group_members", side_effect=membership_inside_one_proof
+                ):
+                    armed = True
+                    try:
+                        terminal = process._darwin_terminal_group(proof_deadline)
+                    finally:
+                        armed = False
+                self.assertIsNotNone(terminal)
+                self.assertEqual({entry["pid"] for entry in terminal}, {process.pid})
+                self.assertTrue(all(entry["state"] == "zombie" for entry in terminal))
+                self.assertEqual(snapshots[0], {process.pid, member})
+                self.assertEqual(snapshots[1], {process.pid})
+                self.assertGreaterEqual(
+                    len(snapshots), 4, "Fresh stable native pair inside this proof"
+                )
+                self.assertTrue(all(snapshot == {process.pid} for snapshot in snapshots[1:]))
+                self.assertTrue(
+                    all(call == (proof_thread, process.pid, proof_deadline) for call in invocations)
+                )
+                self.assertLess(time.monotonic(), proof_deadline)
+                self.assertEqual(native_group_members(process.pid), {process.pid})
+                self.assertEqual(native_retained_exit(process.pid), (process.pid, 1, 0))
+                self.assertTrue(marker.exists())
+                self.confirm_cleanup(process, marker, [process.pid, member, reaper])
+                self.assertEqual(native_group_members(process.pid), set())
+                self.assertFalse(self.is_owned_live(member, member_token))
+                self.assertFalse(self.is_owned_live(reaper, reaper_token))
+                self.assertTrue(self.is_owned_live(peer.pid, peer_token))
 
     def test_registered_terminal_child_observer_failure_is_retired_without_rewriting_failure(self):
         from tests import code_analysis_managed_support as support
@@ -1589,6 +1638,9 @@ os._exit(0)
                         if not captured and observed.children:
                             process, marker, record = observed.children[0]
                             self.assertEqual(process.pid, pid)
+                            original_receipt = json.loads(json.dumps(process.cleanup_receipt))
+                            self.assertEqual(original_receipt, {})
+                            record["original_cleanup_receipt"] = original_receipt
                             captured.append((process, marker))
                             self.owned.append((process, marker))
                             self.observe(pid)
@@ -1638,8 +1690,11 @@ os._exit(0)
                 self.assertEqual(persisted["pid"], process.pid)
                 self.assertEqual(persisted["exit_code"], 0)
                 self.assertIs(persisted["marker_exists_after"], True)
-                self.assertIsNone(
-                    persisted["cleanup_receipt"], "Keep original pre-cleanup failure evidence"
+                self.assertEqual(persisted["cleanup_receipt"], {})
+                self.assertEqual(
+                    persisted["cleanup_receipt"],
+                    persisted["original_cleanup_receipt"],
+                    "Keep original pre-cleanup failure evidence",
                 )
                 self.assertTrue(process._stop_observer.is_set())
                 self.assertFalse(process._observer.is_alive())
