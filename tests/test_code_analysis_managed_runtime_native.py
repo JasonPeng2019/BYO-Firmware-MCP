@@ -228,6 +228,11 @@ class NativeStatusReceiptBoundary(NativeCase):
                 creation = native_start_token(process.pid)
                 self.assertIsNotNone(creation)
                 self.assertTrue(marker.is_file())
+                marker_bytes = marker.read_bytes()
+                marker_record = json.loads(marker_bytes)
+                self.assertEqual(
+                    (marker_record["pid"], marker_record["start_token"]), (process.pid, creation)
+                )
                 before = len(observed.calls)
                 expected_stat = target.stat()
                 observe = service._observe_runtime
@@ -273,10 +278,23 @@ class NativeStatusReceiptBoundary(NativeCase):
                         )
                     result = service.status()
                     observed_stat = target.stat()
+                    # The leader's own exit state and the currently observed
+                    # native identity are recorded separately from ownership.
+                    leader_poll = process.poll()
+                    try:
+                        observed_token = native_start_token(process.pid)
+                    except OSError as exc:
+                        observed_token = f"unknown: {exc}"
                     retained = {
                         "same_adapter": service._adapter is adapter,
-                        "same_native_child": native_start_token(process.pid) == creation,
+                        "same_process_object": adapter.process is process,
+                        "same_marker_path": adapter.marker == marker,
                         "marker_exists": marker.is_file(),
+                        "marker_bytes_unchanged": marker.is_file()
+                        and marker.read_bytes() == marker_bytes,
+                        "leader_poll": leader_poll,
+                        "observed_native_token": observed_token,
+                        "same_native_child": observed_token == creation,
                         "generation_closed": service._generation.is_set(),
                     }
                     write_json(
@@ -333,9 +351,51 @@ class NativeStatusReceiptBoundary(NativeCase):
                         self.assertFalse(retained["marker_exists"])
                         observed.check_cleanup()
                     else:
-                        self.assertTrue(retained["same_adapter"])
-                        self.assertTrue(retained["same_native_child"])
-                        self.assertTrue(retained["marker_exists"])
+                        self.assertTrue(retained["same_adapter"], retained)
+                        self.assertTrue(retained["same_process_object"], retained)
+                        self.assertTrue(retained["same_marker_path"], retained)
+                        self.assertTrue(retained["marker_exists"], retained)
+                        self.assertTrue(retained["marker_bytes_unchanged"], retained)
+                        if boundary == "held-lock" or retained["leader_poll"] is None:
+                            # Shutdown has not run (held lock), or the leader is
+                            # still live: it must be the identical native child.
+                            self.assertIsNone(retained["leader_poll"], retained)
+                            self.assertTrue(retained["same_native_child"], retained)
+                        else:
+                            # The graceful drain lets a responsive leader exit
+                            # normally. That does not prove group cleanup, so the
+                            # unconfirmed failure and its ownership stay visible.
+                            self.assertEqual(retained["leader_poll"], 0, retained)
+                if boundary == "failed-drain":
+                    # Explicit later recovery with real termination releases
+                    # exactly the retained process and marker.
+                    service.shutdown()
+                    recovery = {
+                        "adapter_released": service._adapter is None,
+                        "process_released": adapter.process is None,
+                        "marker_released": adapter.marker is None,
+                        "marker_exists": marker.exists(),
+                        "leader_exited": process.poll() is not None,
+                        "spawn_count": len(observed.calls),
+                    }
+                    write_json(
+                        self.base / "r1-recovery.json",
+                        {**recovery, "leader_exit": process.poll()},
+                    )
+                    self.assertEqual(
+                        recovery,
+                        {
+                            "adapter_released": True,
+                            "process_released": True,
+                            "marker_released": True,
+                            "marker_exists": False,
+                            "leader_exited": True,
+                            "spawn_count": before,
+                        },
+                    )
+                    if retained["leader_poll"] is not None:
+                        self.assertEqual(process.poll(), retained["leader_poll"])
+                    observed.check_cleanup()
             finally:
                 release.set()
                 if holder is not None:
