@@ -387,7 +387,7 @@ def posix_process_identity(pid: int) -> tuple[str, str] | None:
         fields = data[data.rfind(")") + 2 :].split()
         return f"linux:{fields[19]}", fields[0]
     if sys.platform == "darwin":
-
+        # Apple public ABI: xnu/bsd/sys/proc_info.h, proc_bsdinfo + PROC_PIDTBSDINFO.
         class BSDInfo(ctypes.Structure):
             _fields_ = (
                 [
@@ -408,10 +408,8 @@ def posix_process_identity(pid: int) -> tuple[str, str] | None:
                     )
                 ]
                 + [("comm", ctypes.c_char * 16), ("name", ctypes.c_char * 32)]
-                + [
-                    (n, ctypes.c_uint32)
-                    for n in ("nfiles", "pgid", "pjobc", "tdev", "tpgid", "nice")
-                ]
+                + [(n, ctypes.c_uint32) for n in ("nfiles", "pgid", "pjobc", "tdev", "tpgid")]
+                + [("nice", ctypes.c_int32)]
                 + [("start_sec", ctypes.c_uint64), ("start_usec", ctypes.c_uint64)]
             )
 
@@ -425,6 +423,7 @@ def posix_process_identity(pid: int) -> tuple[str, str] | None:
         ]
         lib.proc_pidinfo.restype = ctypes.c_int
         info = BSDInfo()
+        ctypes.set_errno(0)
         size = lib.proc_pidinfo(pid, 3, 0, ctypes.byref(info), ctypes.sizeof(info))
         if size == 0 and ctypes.get_errno() == 3:  # ESRCH
             return None
@@ -432,6 +431,8 @@ def posix_process_identity(pid: int) -> tuple[str, str] | None:
             raise OSError(
                 ctypes.get_errno(), "Cannot observe exact native process identity", str(pid)
             )
+        if info.pid != pid or info.start_sec == 0:
+            raise OSError("Native process identity did not bind the requested PID/start")
         return f"macos:{info.start_sec}:{info.start_usec}", "Z" if info.status == 5 else "live"
     raise AssertionError("POSIX identity oracle requires a supported native host")
 

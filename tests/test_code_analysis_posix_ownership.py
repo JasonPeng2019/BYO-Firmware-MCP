@@ -159,6 +159,9 @@ class NativePosixOwnership(unittest.TestCase):
             time.monotonic() - before, self.processes.MAX_OWNED_PROCESS_CLEANUP_SECONDS + 2
         )
         self.assertTrue(confirmed, getattr(process, "cleanup_receipt", None))
+        self.assertIsNotNone(
+            process.cleanup_receipt, "Analysis-only cleanup must retain its receipt"
+        )
         self.assertIsNotNone(process.poll(), "Leader must be reaped separately from group proof")
         for pid in pids:
             self.assertFalse(
@@ -339,4 +342,5 @@ class NativePosixOwnership(unittest.TestCase):
         with mock.patch.object(os, "killpg", side_effect=unknown_terminal):
             self.assertFalse(self.processes.terminate_process_group(process, grace_seconds=0.2))
         self.assertTrue(marker.exists(), "Unknown group identity must retain recovery ownership")
+        self.assertIsNotNone(process.cleanup_receipt)
         self.confirm_cleanup(process, marker, [ready["leader"], ready["child"]])
