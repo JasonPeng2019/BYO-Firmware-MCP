@@ -497,10 +497,12 @@ class AnalysisPopen(subprocess.Popen[Any]):
                 }
             return None
 
-    def _record_group_signal(self, selected_signal: int, result: str, error: int | None) -> None:
+    def _record_group_signal(
+        self, selected_signal: int, result: str, error: int | None, *, operation: str = "killpg"
+    ) -> None:
         self._group_signal_operations.append(
             {
-                "operation": "killpg",
+                "operation": operation,
                 "group": self.pid,
                 "signal": int(selected_signal),
                 "result": result,
@@ -531,7 +533,24 @@ class AnalysisPopen(subprocess.Popen[Any]):
                     self._record_group_signal(selected_signal, "group-absent", exc.errno)
                 except OSError as exc:
                     self._record_group_signal(selected_signal, "unavailable", exc.errno)
-                    self._uncertainties.add("owned group signal unavailable")
+                    # The exact child can exit after the pre-signal proof check.
+                    # Darwin's EPERM then needs fresh positive terminal proof,
+                    # inside this same deadline, never an errno-only waiver.
+                    terminal = (
+                        self._darwin_terminal_group(deadline)
+                        if sys.platform == "darwin" and exc.errno == errno.EPERM
+                        else None
+                    )
+                    if terminal is not None and self._first_observation_failure is None:
+                        self._terminal_group_receipt = terminal
+                        self._record_group_signal(
+                            selected_signal,
+                            "terminal-membership-after-eperm",
+                            exc.errno,
+                            operation="terminal-group-proof",
+                        )
+                    else:
+                        self._uncertainties.add("owned group signal unavailable")
         else:
             self._uncertainties.add("group signal refused without retained exact anchor")
             self._record_group_signal(selected_signal, "refused-anchor", None)

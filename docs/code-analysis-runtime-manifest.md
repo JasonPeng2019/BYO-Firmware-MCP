@@ -199,6 +199,12 @@ records the terminal native membership proof. Failed cleanup logs its private
 receipt, including the first observation failure, for matching-host Actions diagnosis.
 It also records the last eight group signal operations, selected signals, results
 and errno values; no signal error alone establishes terminal group membership.
+If Darwin's group signal returns `EPERM` after the pre-signal check, cleanup
+rechecks exact retained-child exit and complete terminal membership within the
+same deadline. Only that positive proof can classify the exit-between-check-and-
+signal race as terminal. The diagnostic keeps the original failed `killpg`/errno
+and a separate terminal-proof operation. Prior observation failures remain
+failures; Linux/Windows permission errors receive no such classification.
 The receipt names `coverage: retained_group_and_captured_descendants` and
 `scope_confirmed`. Its `confirmed` compatibility alias means only that same scope.
 Probe and clangd consumers require the named scope and successful retirement/reap;
