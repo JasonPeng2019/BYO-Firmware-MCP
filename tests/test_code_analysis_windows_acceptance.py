@@ -642,6 +642,9 @@ class RealCleanupFailureRecovery(unittest.TestCase):
                 )
                 # The child is natively gone, but unconfirmed bookkeeping is not success.
                 self.assertNotEqual(failed["status"], "ok", data)
+                # A native unlink failure is a cleanup failure, not a protocol one.
+                self.assertEqual(failed["code"], "analysis/cleanup-failed", data)
+                self.assertIn("WinError 32", failed["message"], data)
                 self.assertFalse(held[0].alive(), data)
                 self.assertTrue(marker.exists(), data)
                 self.assertEqual(
@@ -930,10 +933,22 @@ class CallerOwnedGuard:
     def __init__(self, inner: Any, caller_owns: threading.Event) -> None:
         self._inner = inner
         self._caller_owns = caller_owns
+        self.reader_attempts: list[dict[str, Any]] = []
 
     def acquire(self, *args: Any, **kwargs: Any) -> bool:
+        reader = threading.current_thread().name == "clangd-reader"
+        caller_owned = self._caller_owns.is_set()
         acquired = self._inner.acquire(*args, **kwargs)
-        if acquired and threading.current_thread().name != "clangd-reader":
+        if reader:
+            self.reader_attempts.append(
+                {
+                    "args": list(args),
+                    "kwargs": kwargs,
+                    "caller_owned": caller_owned,
+                    "acquired": acquired,
+                }
+            )
+        elif acquired:
             self._caller_owns.set()
         return acquired
 
@@ -959,18 +974,37 @@ class ContendedShutdown:
     forced = False
     reader_entered: threading.Event
     caller_owns: threading.Event
+    reader_boundary: str | None = None
 
-    def shutdown(self, deadline: float, **kwargs: Any) -> None:
-        if self.forced and threading.current_thread().name == "clangd-reader":
+    def _hold_reader(self, boundary: str) -> None:
+        # The reader has committed to its own EOF cleanup but has not yet
+        # touched the shutdown guard; release it only once a caller owns it.
+        if (
+            self.forced
+            and threading.current_thread().name == "clangd-reader"
+            and not self.reader_entered.is_set()
+        ):
+            self.reader_boundary = boundary
             self.reader_entered.set()
             self.caller_owns.wait(10)
+
+    # The reader's cleanup entrypoint is private and may move; gate whichever
+    # boundary it reaches first (public shutdown before, _shutdown after the
+    # ownership correction) so the forced interleaving is never silently lost.
+    def shutdown(self, deadline: float, **kwargs: Any) -> None:
+        self._hold_reader("shutdown")
         super().shutdown(deadline, **kwargs)  # type: ignore[misc]
+
+    def _shutdown(self, deadline: float, **kwargs: Any) -> None:
+        self._hold_reader("_shutdown")
+        super()._shutdown(deadline, **kwargs)  # type: ignore[misc]
 
     def force_contention(self) -> None:
         self.forced = True
         self.reader_entered = threading.Event()
         self.caller_owns = threading.Event()
-        self._shutdown_guard = CallerOwnedGuard(self._shutdown_guard, self.caller_owns)  # type: ignore[attr-defined]
+        self.probe = CallerOwnedGuard(self._shutdown_guard, self.caller_owns)  # type: ignore[attr-defined]
+        self._shutdown_guard = self.probe
 
 
 class ContendedFakeAdapter(ContendedShutdown, UnreadStdinAdapter):
@@ -1039,9 +1073,19 @@ class ReaderCallerCleanupContention(unittest.TestCase):
             )
             if forced:
                 data["caller_owned_guard"] = adapter.caller_owns.is_set()
+                data["reader_boundary"] = adapter.reader_boundary
+                data["reader_guard_attempts"] = adapter.probe.reader_attempts
         finally:
             data["emergency_cleanup"] = identity.release()
         return data
+
+    def assert_forced(self, data: dict) -> None:
+        # The interleaving really happened: the reader reached its cleanup
+        # boundary first, and met the real guard only while the caller owned it.
+        self.assertTrue(data["reader_entered_cleanup"], data)
+        self.assertTrue(data["caller_owned_guard"], data)
+        self.assertTrue(data["reader_guard_attempts"], data)
+        self.assertTrue(data["reader_guard_attempts"][0]["caller_owned"], data)
 
     def assert_clean(self, data: dict) -> None:
         # A caller that owns cleanup after the child died must succeed promptly,
@@ -1063,7 +1107,7 @@ class ReaderCallerCleanupContention(unittest.TestCase):
         with scratch("sa-rc-") as base:
             data = self.crash_then_shutdown(base, forced=True, real=None)
             record("contention-forced-fake", data)
-            self.assertTrue(data["reader_entered_cleanup"], data)
+            self.assert_forced(data)
             self.assert_clean(data)
 
     def test_forced_reader_cleanup_behind_caller_owner_real_clangd(self) -> None:
@@ -1071,7 +1115,7 @@ class ReaderCallerCleanupContention(unittest.TestCase):
         with scratch("sa-rr-") as base:
             data = self.crash_then_shutdown(base, forced=True, real=executable)
             record("contention-forced-real", data)
-            self.assertTrue(data["reader_entered_cleanup"], data)
+            self.assert_forced(data)
             self.assert_clean(data)
 
     def test_unforced_crash_and_immediate_shutdown_repeatedly(self) -> None:
