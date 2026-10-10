@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import tempfile
 import time
 import unittest
@@ -42,10 +43,26 @@ class ManagedRuntimeTests(unittest.TestCase):
         process = Mock(returncode=0, stdout=None, stderr=None)
         process.communicate.return_value = (b"clangd version 23.1.0\r\n", b"")
         self.process = process
+
+        def cleanup(process):
+            # Synthetic completed cleanup for the mocked spawn, never native proof.
+            if os.name == "posix":
+                process.cleanup_receipt = {
+                    "coverage": "retained_group_and_captured_descendants",
+                    "scope_confirmed": True,
+                    "unobserved_detached_descendants": "not_proven",
+                    "leader_reaped": True,
+                    "leader_exit": process.returncode,
+                    "uncertainties": [],
+                    "wait_error": None,
+                }
+            return True
+
+        self.mock_cleanup = cleanup
         self.spawn = self.enterContext(
             patch.object(runtime, "spawn_before_deadline", return_value=(process, None))
         )
-        self.enterContext(patch.object(runtime, "terminate_process_group", return_value=True))
+        self.enterContext(patch.object(runtime, "terminate_process_group", side_effect=cleanup))
         self.path = self.enterContext(patch.object(runtime, "_which_path_only", return_value=None))
 
     def resolve(self, name="clangd", budget=5):
@@ -406,7 +423,7 @@ class ManagedRuntimeTests(unittest.TestCase):
 
         def cleanup(process):
             time.sleep(1.1)
-            return True
+            return self.mock_cleanup(process)
 
         self.process.communicate.side_effect = hung
         with patch.object(runtime, "terminate_process_group", side_effect=cleanup):

@@ -541,6 +541,21 @@ class ManagedChildEnvironment(ReceiptCase):
         decoy = self.fixture(host_target())
         process = mock.Mock(returncode=0, stdout=None, stderr=None)
         process.communicate.return_value = (b"clangd version 23.1.0\n", b"")
+
+        def cleanup(process):
+            # Synthetic completed cleanup for the mocked spawn, never native proof.
+            if os.name == "posix":
+                process.cleanup_receipt = {
+                    "coverage": "retained_group_and_captured_descendants",
+                    "scope_confirmed": True,
+                    "unobserved_detached_descendants": "not_proven",
+                    "leader_reaped": True,
+                    "leader_exit": process.returncode,
+                    "uncertainties": [],
+                    "wait_error": None,
+                }
+            return True
+
         with (
             mock.patch.dict(
                 os.environ,
@@ -552,7 +567,7 @@ class ManagedChildEnvironment(ReceiptCase):
             mock.patch.object(
                 self.runtime, "spawn_before_deadline", return_value=(process, None)
             ) as spawn,
-            mock.patch.object(self.runtime, "terminate_process_group", return_value=True),
+            mock.patch.object(self.runtime, "terminate_process_group", side_effect=cleanup),
         ):
             ordinary = self.runtime.analysis_runtime_context(self.base)
             self.assertIsNone(ordinary.runtime_root)
@@ -588,6 +603,21 @@ class ManagedChildEnvironment(ReceiptCase):
                     context = self.runtime.AnalysisRuntimeContext(self.base)
                 process = mock.Mock(returncode=0, stdout=None, stderr=None)
                 process.communicate.return_value = (b"clangd version 23.1.0\n", b"")
+
+                def cleanup(process):
+                    # Synthetic completed cleanup for the mocked spawn, never native proof.
+                    if os.name == "posix":
+                        process.cleanup_receipt = {
+                            "coverage": "retained_group_and_captured_descendants",
+                            "scope_confirmed": True,
+                            "unobserved_detached_descendants": "not_proven",
+                            "leader_reaped": True,
+                            "leader_exit": process.returncode,
+                            "uncertainties": [],
+                            "wait_error": None,
+                        }
+                    return True
+
                 with (
                     mock.patch.dict(os.environ, {**poison, **preserved}),
                     mock.patch.object(
@@ -600,7 +630,7 @@ class ManagedChildEnvironment(ReceiptCase):
                     mock.patch.object(
                         self.runtime, "spawn_before_deadline", return_value=(process, None)
                     ) as spawn,
-                    mock.patch.object(self.runtime, "terminate_process_group", return_value=True),
+                    mock.patch.object(self.runtime, "terminate_process_group", side_effect=cleanup),
                 ):
                     program = self.runtime.resolve_analysis_program(
                         context, "clangd", time.monotonic() + 10
