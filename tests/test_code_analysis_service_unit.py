@@ -694,14 +694,24 @@ class ServiceTests(unittest.TestCase):
             program_resolver=lambda *args: self.program,
         )
 
-        def edit():
-            time.sleep(0.12)
-            self.source.write_bytes(b"int value = 3;\r\n")
+        warm = self.service.hover("main.cpp", 1, 5)
+        self.assertEqual(warm["status"], "ok", warm)
+        adapter = self.service._adapter
+        request = adapter.request
+        mutations = []
 
-        worker = threading.Thread(target=edit)
-        worker.start()
-        result = self.service.hover("main.cpp", 1, 5)
-        worker.join()
+        def edit_during_query(method, *args, **kwargs):
+            response = request(method, *args, **kwargs)
+            if method == "textDocument/hover":
+                # The real response has arrived, and the service has not checked
+                # its saved source snapshot yet. Cold startup cannot move this edit.
+                self.source.write_bytes(b"int value = 3;\r\n")
+                mutations.append(method)
+            return response
+
+        with patch.object(adapter, "request", side_effect=edit_during_query):
+            result = self.service.hover("main.cpp", 1, 5)
+        self.assertEqual(mutations, ["textDocument/hover"])
         self.assertEqual(result.get("code"), "analysis/source-changed", result)
 
     def test_unversioned_diagnostics_are_incomplete(self):
