@@ -170,9 +170,15 @@ reserve. Unconfirmed cleanup retains its marker and evidence.
 Darwin's `getpgid`/`getsid` use a live-only kernel lookup. After exact retained
 exit proof, ownership keeps the previously verified session-leader anchor;
 it still requires fresh matching birth identity and never treats unknown
-liveness as retirement. Group TERM/KILL permission failures and lost observation
-coverage keep cleanup unconfirmed. Failed cleanup logs its private receipt, including the first
-observation failure, for matching-host Actions diagnosis.
+liveness as retirement. Darwin group discovery uses kernel-filtered
+`proc_listpids(PROC_PGRP_ONLY)` membership, including zombies, with bounded
+buffer growth and rejection of errors/truncation. It avoids unnecessary group
+signals only after retained exit proof and two equal complete native membership
+snapshots with fresh matching zombie birth identities. Captured detached children
+still require their own cleanup. Signal permission failures, live/unknown native
+membership and lost observation coverage keep cleanup unconfirmed. The receipt
+records the terminal native membership proof. Failed cleanup logs its private
+receipt, including the first observation failure, for matching-host Actions diagnosis.
 The receipt explicitly scopes coverage to the retained group and captured
 descendants and labels unobserved detached descendants `not_proven`.
 

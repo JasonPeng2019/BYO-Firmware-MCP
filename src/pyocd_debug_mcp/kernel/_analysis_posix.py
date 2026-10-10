@@ -88,6 +88,33 @@ def _process_state(pid: int, token: str) -> str:
         return "unknown"
 
 
+def _darwin_group_members(group: int, deadline: float) -> set[int]:
+    """Kernel-filtered membership includes zombies; errors never mean empty."""
+    if sys.platform != "darwin":
+        raise RuntimeError("Darwin group membership requires libproc")
+    # Public libproc proc_listpids(PROC_PGRP_ONLY=2) returns bytes. XNU
+    # proc_info.c filters both allproc and zombproc under the process-list lock.
+    listpids = ctypes.CDLL("/usr/lib/libproc.dylib", use_errno=True).proc_listpids
+    listpids.argtypes = (ctypes.c_uint, ctypes.c_uint, ctypes.c_void_p, ctypes.c_int)
+    listpids.restype = ctypes.c_int
+    capacity = 32
+    while time.monotonic() < deadline and capacity <= 65536:
+        buffer = (ctypes.c_int * capacity)()
+        size = ctypes.sizeof(buffer)
+        ctypes.set_errno(0)
+        used = listpids(2, group, buffer, size)
+        if used <= 0 or used > size or used % ctypes.sizeof(ctypes.c_int):
+            error = ctypes.get_errno()
+            raise OSError(error, "Darwin group membership unavailable")
+        if used < size:
+            members = set(buffer[: used // ctypes.sizeof(ctypes.c_int)])
+            if any(pid <= 0 for pid in members) or group not in members:
+                raise RuntimeError("Darwin group snapshot lacks retained leader")
+            return members
+        capacity *= 2  # A full buffer may have omitted members; retry boundedly.
+    raise TimeoutError("Darwin complete group snapshot exceeded bounded phase")
+
+
 class AnalysisPopen(subprocess.Popen[Any]):
     """Popen-compatible analysis child; wait observes, cleanup finally reaps."""
 
@@ -108,6 +135,7 @@ class AnalysisPopen(subprocess.Popen[Any]):
         self._wait_error: str | None = None
         self._reaped = False
         self.cleanup_receipt: dict[str, Any] = {}
+        self._terminal_group_receipt: list[dict[str, Any]] | None = None
         super().__init__(*args, **kwargs)
         with _RETAINED_GUARD:
             _RETAINED[self.pid] = self
@@ -220,7 +248,12 @@ class AnalysisPopen(subprocess.Popen[Any]):
                 self._uncertainties.add("retained group anchor unavailable")
                 return False
             candidates: set[tuple[int, str]] = set()
-            for pid in psutil.pids():
+            group_candidates = (
+                _darwin_group_members(self.pid, deadline)
+                if sys.platform == "darwin"
+                else psutil.pids()
+            )
+            for pid in group_candidates:
                 if time.monotonic() >= deadline:
                     self._uncertainties.add("group observation exceeded its bounded phase")
                     return False
@@ -275,7 +308,7 @@ class AnalysisPopen(subprocess.Popen[Any]):
             # later birth token fetched from a possibly recycled candidate PID.
             self._captured.update(candidates)
             return True
-        except (psutil.Error, OSError) as exc:
+        except (psutil.Error, OSError, RuntimeError) as exc:
             self._uncertainties.add(f"ownership observation failed: {type(exc).__name__}")
             return False
         finally:
@@ -295,6 +328,45 @@ class AnalysisPopen(subprocess.Popen[Any]):
         finally:
             self._ownership_guard.release()
 
+    def _darwin_terminal_group(self, deadline: float) -> list[dict[str, Any]] | None:
+        """Positive exact membership/exit proof, independent of signal errno."""
+        if sys.platform != "darwin" or not self._anchor_matches():
+            return None
+        try:
+            if _exit_status(self.pid) is None:
+                return None
+            members = _darwin_group_members(self.pid, deadline)
+            terminal = []
+            for pid in sorted(members):
+                if time.monotonic() >= deadline:
+                    return None
+                token = f"psutil:{psutil.Process(pid).create_time():.9f}"
+                if _process_state(pid, token) != "zombie":
+                    return None
+                terminal.append({"pid": pid, "start_token": token, "state": "zombie"})
+            # Reject membership changes/PID recycling between list and identity
+            # reads. All exact remaining members are terminal and cannot fork.
+            if _darwin_group_members(self.pid, deadline) != members:
+                return None
+            if not self._anchor_matches():
+                return None
+            for member in terminal:
+                if (
+                    time.monotonic() >= deadline
+                    or _process_state(member["pid"], member["start_token"]) != "zombie"
+                ):
+                    return None
+            return terminal
+        except (psutil.Error, OSError, RuntimeError) as exc:
+            if self._first_observation_failure is None:
+                self._first_observation_failure = {
+                    "operation": "Darwin terminal group membership/identity",
+                    "pid": self.pid,
+                    "error": type(exc).__name__,
+                    "errno": getattr(exc, "errno", None),
+                }
+            return None
+
     def _signal_owned(self, selected_signal: int, deadline: float) -> None:
         if sys.platform == "win32":
             raise RuntimeError("AnalysisPopen cannot signal Windows processes")
@@ -302,12 +374,19 @@ class AnalysisPopen(subprocess.Popen[Any]):
             self._uncertainties.add("owned signal phase exceeded cleanup reserve")
             return
         if self._anchor_matches():
-            try:
-                os.killpg(self.pid, selected_signal)
-            except ProcessLookupError:
-                pass
-            except OSError:
-                self._uncertainties.add("owned group signal unavailable")
+            terminal = self._darwin_terminal_group(deadline)
+            if terminal is not None:
+                # Darwin excludes zombies from group signalling and can return
+                # EPERM for this exact terminal case. Avoid the unnecessary
+                # signal only with complete positive native membership proof.
+                self._terminal_group_receipt = terminal
+            else:
+                try:
+                    os.killpg(self.pid, selected_signal)
+                except ProcessLookupError:
+                    pass
+                except OSError:
+                    self._uncertainties.add("owned group signal unavailable")
         else:
             self._uncertainties.add("group signal refused without retained exact anchor")
         for (pid, token), state in self._states(deadline).items():
@@ -357,8 +436,15 @@ class AnalysisPopen(subprocess.Popen[Any]):
                     )
             complete_snapshot = self._capture(deadline)
             states = self._states(deadline)
+            native_terminal = True
+            if sys.platform == "darwin":
+                self._terminal_group_receipt = self._darwin_terminal_group(deadline)
+                native_terminal = self._terminal_group_receipt is not None
+                if not native_terminal:
+                    self._uncertainties.add("Darwin complete terminal group proof unavailable")
             retired = (
                 complete_snapshot
+                and native_terminal
                 and self.poll() is not None
                 and not any(s in {"live", "unknown"} for s in states.values())
                 and not self._uncertainties
@@ -404,6 +490,7 @@ class AnalysisPopen(subprocess.Popen[Any]):
                 "uncertainties": sorted(self._uncertainties.copy()),
                 "wait_error": self._wait_error,
                 "first_observation_failure": self._first_observation_failure,
+                "native_terminal_group": self._terminal_group_receipt,
                 "elapsed_seconds": time.monotonic() - started,
                 "budget_seconds": 3 * grace_seconds,
             }
