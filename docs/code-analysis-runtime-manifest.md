@@ -157,6 +157,12 @@ POSIX. `kernel/_analysis_posix.py` is their single private ownership home;
 Windows Jobs and hardware subprocess callers retain their existing behavior.
 It observes leader exit with `waitid(WNOWAIT)`, preserving an unreaped exact
 child/PGID anchor through normal exit, deadline, cancellation and setup failure.
+Successful `Popen(start_new_session=True)` construction establishes the actual
+direct child's session before `begin_ownership`; child setup failures raise through
+Popen's error pipe. Fresh retained-child waitid observations establish leader
+liveness/exit independently of live image or birth metadata. Missing OS birth
+metadata remains missing in the receipt and never grants detached PID authority.
+An observed exit before initial descendant observation remains a startup gap.
 Darwin's narrow libc bridge follows the public
 [wait definitions](https://raw.githubusercontent.com/apple-oss-distributions/xnu/main/bsd/sys/wait.h)
 and [siginfo layout](https://raw.githubusercontent.com/apple-oss-distributions/xnu/main/bsd/sys/signal.h);
@@ -170,18 +176,21 @@ require the retained exact anchor. Live/unknown children prevent confirmation;
 zombies are distinguished from live children. A bounded cleanup receipt records
 captured states, leader exit/reap, uncertainties and the existing three-grace
 reserve. Unconfirmed cleanup retains its marker and evidence.
-Darwin's `getpgid`/`getsid` use a live-only kernel lookup. After exact retained
-exit proof, ownership keeps the previously verified session-leader anchor;
-it still requires fresh matching birth identity and never treats unknown
-liveness as retirement. Darwin group discovery uses kernel-filtered
+Darwin's `getpgid`/`getsid` use a live-only kernel lookup. The successful new-session
+spawn and fresh exact retained-child proof keep the leader anchor usable after
+exit without querying its unavailable live image. Unknown retained-child
+observation remains unconfirmed. Darwin group discovery uses kernel-filtered
 `proc_listpids(PROC_PGRP_ONLY)` membership, including zombies, with bounded
 buffer growth and rejection of errors/truncation. It avoids unnecessary group
 signals only after retained exit proof and two equal complete native membership
-snapshots with fresh matching zombie birth identities. Captured detached children
+snapshots with fresh matching zombie birth identities for other members and
+authoritative retained-child exit proof for the leader. Captured detached children
 still require their own cleanup. Signal permission failures, live/unknown native
 membership and lost observation coverage keep cleanup unconfirmed. The receipt
 records the terminal native membership proof. Failed cleanup logs its private
 receipt, including the first observation failure, for matching-host Actions diagnosis.
+It also records the last eight group signal operations, selected signals, results
+and errno values; no signal error alone establishes terminal group membership.
 The receipt explicitly scopes coverage to the retained group and captured
 descendants and labels unobserved detached descendants `not_proven`.
 

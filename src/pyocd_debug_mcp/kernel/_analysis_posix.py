@@ -164,11 +164,15 @@ class AnalysisPopen(subprocess.Popen[Any]):
     _waitpid_lock: LockType
 
     def __init__(self, *args: Any, **kwargs: Any) -> None:
+        if kwargs.get("start_new_session") is not True:
+            raise ValueError("AnalysisPopen requires explicit start_new_session=True")
         self._ownership_guard = threading.Lock()
         self._cleanup_guard = threading.Lock()
         self._stop_observer = threading.Event()
         self._observer: threading.Thread | None = None
         self._leader_token: str | None = None
+        self._spawn_parent_pid = os.getpid()
+        self._spawn_succeeded = False
         self._session_established = False
         self._captured: set[tuple[int, str]] = set()
         self._uncertainties: set[str] = set()
@@ -177,7 +181,13 @@ class AnalysisPopen(subprocess.Popen[Any]):
         self._reaped = False
         self.cleanup_receipt: dict[str, Any] = {}
         self._terminal_group_receipt: list[dict[str, Any]] | None = None
+        self._group_signal_operations: list[dict[str, Any]] = []
         super().__init__(*args, **kwargs)
+        # Successful Popen returned after its child setup/exec error pipe:
+        # start_new_session=True performed setsid or construction raised. This
+        # exact direct child remains unreaped by our WNOWAIT wait/poll seams.
+        self._spawn_succeeded = True
+        self._session_established = True
         with _RETAINED_GUARD:
             _RETAINED[self.pid] = self
 
@@ -216,16 +226,25 @@ class AnalysisPopen(subprocess.Popen[Any]):
         """Called inside popen_owned's setup/cleanup boundary before markers."""
         if sys.platform == "win32":
             raise RuntimeError("AnalysisPopen requires POSIX process ownership")
+        initial_state = self._leader_state()
+        if initial_state == "unknown":
+            raise RuntimeError("Owned analysis direct-child observation unavailable")
+        if initial_state == "zombie":
+            self._uncertainties.add("leader exited before initial descendant observation")
         try:
             process = psutil.Process(self.pid)
             self._leader_token = f"psutil:{process.create_time():.9f}"
-        except psutil.Error as exc:
-            raise RuntimeError("Owned analysis birth identity unavailable") from exc
-        if os.getpgid(self.pid) != self.pid or os.getsid(self.pid) != self.pid:
-            raise RuntimeError("Analysis child did not establish its owned session/group")
-        self._session_established = True
-        self._captured.add((self.pid, self._leader_token))
-        if self.poll() is not None:
+        except (psutil.Error, OSError):
+            # Retained-child proof is independent of a zombie's live metadata.
+            # Missing birth identity still cannot authorize descendant ancestry.
+            if self._leader_state() != "zombie":
+                self._uncertainties.add("leader birth unavailable for descendant acquisition")
+        if self._leader_token is not None:
+            self._captured.add((self.pid, self._leader_token))
+        before_observation = self._leader_state()
+        if before_observation == "unknown":
+            raise RuntimeError("Owned analysis direct-child observation unavailable")
+        if before_observation == "zombie":
             self._uncertainties.add("leader exited before initial descendant observation")
         self._capture(time.monotonic() + 0.5)
 
@@ -237,46 +256,45 @@ class AnalysisPopen(subprocess.Popen[Any]):
         observer.start()
         self._observer = observer
 
-    def _anchor_matches(self) -> bool:
+    def _leader_state(self) -> str:
+        """Observe our actual spawned direct child, never a replacement PID."""
         if sys.platform == "win32":
-            return False
+            return "unknown"
         if (
             self._reaped
+            or os.getpid() != self._spawn_parent_pid
+            or not self._spawn_succeeded
             or not self._session_established
-            or self._leader_token is None
             or self._wait_error is not None
         ):
-            return False
-        state = _process_state(self.pid, self._leader_token)
-        if state not in {"live", "zombie"}:
-            if self._first_observation_failure is None:
-                self._first_observation_failure = {
-                    "operation": "anchor birth/liveness",
-                    "pid": self.pid,
-                    "state": state,
-                }
-            return False
+            return "unknown"
         try:
-            # WNOWAIT verifies the retained parent/child relationship as well as
-            # the birth token. The still-unreaped child prevents numeric reuse.
+            # Fresh waitid success verifies the direct parent/child relationship;
+            # ECHILD or an inaccessible observation grants no PID authority.
+            # WNOWAIT retains the PID even when live metadata is unavailable.
             exited = _exit_status(self.pid)
             if exited is not None:
-                # Darwin getpgid/getsid use proc_find, which excludes exited
-                # processes (XNU kern_exit.c / kern_prot.c). Their ESRCH is
-                # not loss of this exact unreaped child. A verified session
-                # leader cannot move to another session/group before exiting;
-                # fresh birth identity plus WNOWAIT retain its numeric anchor.
-                return True
-            return os.getpgid(self.pid) == self.pid and os.getsid(self.pid) == self.pid
+                if self.returncode is not None and self.returncode != exited:
+                    raise RuntimeError("Retained direct-child exit status changed")
+                self.returncode = exited
+                return "zombie"
+            return "live"
         except (OSError, RuntimeError) as exc:
             if self._first_observation_failure is None:
                 self._first_observation_failure = {
-                    "operation": "anchor waitid/session/group",
+                    "operation": "retained direct-child waitid",
                     "pid": self.pid,
                     "error": type(exc).__name__,
                     "errno": getattr(exc, "errno", None),
                 }
-            return False
+            self._wait_error = str(exc)
+            return "unknown"
+
+    def _anchor_matches(self) -> bool:
+        # Successful setsid made this actual direct child an immutable session
+        # leader. Fresh retained-child observation prevents recycled PID/PGID
+        # authority without requiring live-only getpgid/getsid or image data.
+        return self._leader_state() in {"live", "zombie"}
 
     def _capture(self, deadline: float) -> bool:
         if sys.platform == "win32":
@@ -299,6 +317,8 @@ class AnalysisPopen(subprocess.Popen[Any]):
                     self._uncertainties.add("group observation exceeded its bounded phase")
                     return False
                 try:
+                    if pid == self.pid:
+                        continue  # Direct-child ownership comes from spawn/waitid.
                     if os.getpgid(pid) == self.pid:
                         child = psutil.Process(pid)
                         token = f"psutil:{child.create_time():.9f}"
@@ -325,7 +345,8 @@ class AnalysisPopen(subprocess.Popen[Any]):
                 if time.monotonic() >= deadline:
                     self._uncertainties.add("descendant observation exceeded its bounded phase")
                     return False
-                if _process_state(pid, token) != "live":
+                state = self._leader_state() if pid == self.pid else _process_state(pid, token)
+                if state != "live":
                     continue
                 try:
                     parent = psutil.Process(pid)
@@ -361,9 +382,15 @@ class AnalysisPopen(subprocess.Popen[Any]):
         try:
             states = {}
             for identity in self._captured:
-                states[identity] = (
-                    _process_state(*identity) if time.monotonic() < deadline else "unknown"
-                )
+                if identity[0] != self.pid:
+                    states[identity] = (
+                        _process_state(*identity) if time.monotonic() < deadline else "unknown"
+                    )
+            # A missing OS birth token is kept missing. This private key labels
+            # actual direct-child spawn evidence; it is never a recovery token.
+            states[(self.pid, self._leader_token or "retained-direct-child")] = (
+                self._leader_state() if time.monotonic() < deadline else "unknown"
+            )
             return states
         finally:
             self._ownership_guard.release()
@@ -380,10 +407,22 @@ class AnalysisPopen(subprocess.Popen[Any]):
             for pid in sorted(members):
                 if time.monotonic() >= deadline:
                     return None
-                token = f"psutil:{psutil.Process(pid).create_time():.9f}"
-                if _process_state(pid, token) != "zombie":
-                    return None
-                terminal.append({"pid": pid, "start_token": token, "state": "zombie"})
+                if pid == self.pid:
+                    if self._leader_state() != "zombie":
+                        return None
+                    terminal.append(
+                        {
+                            "pid": pid,
+                            "start_token": self._leader_token,
+                            "state": "zombie",
+                            "identity_source": "retained-direct-child",
+                        }
+                    )
+                else:
+                    token = f"psutil:{psutil.Process(pid).create_time():.9f}"
+                    if _process_state(pid, token) != "zombie":
+                        return None
+                    terminal.append({"pid": pid, "start_token": token, "state": "zombie"})
             # Reject membership changes/PID recycling between list and identity
             # reads. All exact remaining members are terminal and cannot fork.
             if _darwin_group_members(self.pid, deadline) != members:
@@ -391,10 +430,12 @@ class AnalysisPopen(subprocess.Popen[Any]):
             if not self._anchor_matches():
                 return None
             for member in terminal:
-                if (
-                    time.monotonic() >= deadline
-                    or _process_state(member["pid"], member["start_token"]) != "zombie"
-                ):
+                state = (
+                    self._leader_state()
+                    if member["pid"] == self.pid
+                    else _process_state(member["pid"], member["start_token"])
+                )
+                if time.monotonic() >= deadline or state != "zombie":
                     return None
             return terminal
         except (psutil.Error, OSError, RuntimeError) as exc:
@@ -406,6 +447,18 @@ class AnalysisPopen(subprocess.Popen[Any]):
                     "errno": getattr(exc, "errno", None),
                 }
             return None
+
+    def _record_group_signal(self, selected_signal: int, result: str, error: int | None) -> None:
+        self._group_signal_operations.append(
+            {
+                "operation": "killpg",
+                "group": self.pid,
+                "signal": int(selected_signal),
+                "result": result,
+                "errno": error,
+            }
+        )
+        del self._group_signal_operations[:-8]  # Bound repeated cleanup diagnostics.
 
     def _signal_owned(self, selected_signal: int, deadline: float) -> None:
         if sys.platform == "win32":
@@ -420,20 +473,24 @@ class AnalysisPopen(subprocess.Popen[Any]):
                 # EPERM for this exact terminal case. Avoid the unnecessary
                 # signal only with complete positive native membership proof.
                 self._terminal_group_receipt = terminal
+                self._record_group_signal(selected_signal, "skipped-terminal-membership", None)
             else:
                 try:
                     os.killpg(self.pid, selected_signal)
-                except ProcessLookupError:
-                    pass
-                except OSError:
+                    self._record_group_signal(selected_signal, "sent", None)
+                except ProcessLookupError as exc:
+                    self._record_group_signal(selected_signal, "group-absent", exc.errno)
+                except OSError as exc:
+                    self._record_group_signal(selected_signal, "unavailable", exc.errno)
                     self._uncertainties.add("owned group signal unavailable")
         else:
             self._uncertainties.add("group signal refused without retained exact anchor")
+            self._record_group_signal(selected_signal, "refused-anchor", None)
         for (pid, token), state in self._states(deadline).items():
             if time.monotonic() >= deadline:
                 self._uncertainties.add("descendant signal phase exceeded cleanup reserve")
                 return
-            if state != "live":
+            if state != "live" or pid == self.pid:
                 continue
             try:
                 process = psutil.Process(pid)
@@ -519,11 +576,21 @@ class AnalysisPopen(subprocess.Popen[Any]):
                 "start_token": self._leader_token,
                 "group": self.pid,
                 "captured": [
-                    {"pid": pid, "start_token": token, "state": state}
+                    {
+                        "pid": pid,
+                        "start_token": self._leader_token if pid == self.pid else token,
+                        "state": state,
+                        "identity_source": (
+                            "retained-direct-child" if pid == self.pid else "observed-birth"
+                        ),
+                    }
                     for (pid, token), state in sorted(states.items())
                 ],
                 "leader_exit": self.returncode,
                 "leader_reaped": self._reaped,
+                "leader_identity_source": "successful-new-session-spawn-and-retained-waitid",
+                "spawn_parent_pid": self._spawn_parent_pid,
+                "new_session_spawn_succeeded": self._spawn_succeeded and self._session_established,
                 "confirmed": confirmed,
                 "coverage": "retained_group_and_captured_descendants",
                 "unobserved_detached_descendants": "not_proven",
@@ -531,6 +598,7 @@ class AnalysisPopen(subprocess.Popen[Any]):
                 "wait_error": self._wait_error,
                 "first_observation_failure": self._first_observation_failure,
                 "native_terminal_group": self._terminal_group_receipt,
+                "group_signal_operations": list(self._group_signal_operations),
                 "elapsed_seconds": time.monotonic() - started,
                 "budget_seconds": 3 * grace_seconds,
             }
