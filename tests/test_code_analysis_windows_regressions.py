@@ -32,6 +32,7 @@ from tests.code_analysis_support import (
     simple_project,
     temporary_directory,
 )
+from tests.test_clangd_adapter_unit import fake_factory, make_project
 
 
 def record(name: str, data: dict[str, Any]) -> None:
@@ -405,6 +406,88 @@ class WindowsClangdReplacement(unittest.TestCase):
 
 @unittest.skipUnless(os.name == "nt", "Windows cleanup failure and recovery")
 class WindowsCleanupRecovery(unittest.TestCase):
+    def test_locked_marker_reports_cleanup_failure_and_recovers(self) -> None:
+        executable = real_clangd_or_skip(self)
+        with temporary_directory("byo-locked-marker-") as base:
+            project = simple_project(base / "project")
+            store = processes.ProcessMarkerStore(base / "markers")
+            service = CodeAnalysisService(
+                make_context(project.root),
+                lambda program, snapshot, marker_store: ClangdAdapter(program, snapshot, store),
+                program_resolver=fixed_resolver(executable, version=None),
+            )
+            api = ctypes.WinDLL("kernel32", use_last_error=True)
+            api.CreateFileW.argtypes = (
+                wintypes.LPCWSTR,
+                wintypes.DWORD,
+                wintypes.DWORD,
+                wintypes.LPVOID,
+                wintypes.DWORD,
+                wintypes.DWORD,
+                wintypes.HANDLE,
+            )
+            api.CreateFileW.restype = wintypes.HANDLE
+            api.CloseHandle.argtypes = (wintypes.HANDLE,)
+            lock = None
+            identities: list[WindowsIdentity] = []
+            data: dict[str, Any] = {"clangd_sha256": sha256_file(executable)}
+            try:
+                self.assertEqual(
+                    service.diagnostics("src/main.c", timeout_seconds=20)["status"], "ok"
+                )
+                adapter = service._adapter
+                assert (
+                    adapter is not None
+                    and adapter.process is not None
+                    and adapter.marker is not None
+                )
+                process, marker = adapter.process, adapter.marker
+                identities.append(WindowsIdentity(process.pid))
+                marker_bytes = marker.read_bytes()
+                data["process_marker"] = json.loads(marker_bytes)
+                # Share reads/writes, but hold a genuine Windows deletion conflict.
+                lock = api.CreateFileW(str(marker), 0x80000000, 0x3, None, 3, 0x80, None)
+                if lock in (None, wintypes.HANDLE(-1).value):
+                    raise ctypes.WinError(ctypes.get_last_error())
+                project.write_text("src/second.c", "int second(void) { return 2; }\n")
+                project.write_database([project.entry("src/main.c"), project.entry("src/second.c")])
+                failure = service.diagnostics("src/second.c", timeout_seconds=20)
+                data.update(
+                    failure=failure,
+                    old_after_failure=identities[0].evidence(),
+                    marker_retained=marker.exists(),
+                )
+                self.assertEqual(failure["code"], "analysis/cleanup-failed", data)
+                self.assertIn("WinError 32", failure["message"], data)
+                self.assertFalse(data["old_after_failure"]["alive"], data)
+                self.assertEqual(marker.read_bytes(), marker_bytes)
+                self.assertIs(service._adapter, adapter)
+                self.assertIs(adapter.process, process)
+                api.CloseHandle(lock)
+                lock = None
+                recovered = service.diagnostics("src/second.c", timeout_seconds=20)
+                data["recovered"] = recovered
+                self.assertEqual(recovered["status"], "ok", data)
+                self.assertFalse(marker.exists())
+                assert service._adapter is not None and service._adapter.process is not None
+                identities.append(WindowsIdentity(service._adapter.process.pid))
+                service.shutdown()
+                data.update(
+                    after_shutdown=[i.evidence() for i in identities],
+                    markers_remaining=[str(p) for p in store.root.glob("*.json")],
+                )
+                self.assertFalse(any(i["alive"] for i in data["after_shutdown"]), data)
+                self.assertEqual(data["markers_remaining"], [])
+            finally:
+                if lock not in (None, wintypes.HANDLE(-1).value):
+                    api.CloseHandle(lock)
+                try:
+                    service.shutdown()
+                finally:
+                    data["emergency_cleanup"] = [i.close() for i in identities]
+                    record("locked-marker", data)
+                self.assertFalse(any(data["emergency_cleanup"]), data)
+
     def test_unconfirmed_replacement_retains_identity_and_marker_then_recovers(self) -> None:
         with temporary_directory("byo-recovery-") as base:
             project = simple_project(base / "project")
@@ -508,6 +591,175 @@ class WindowsCleanupRecovery(unittest.TestCase):
                 finally:
                     data["emergency_cleanup"] = [] if identity is None else [identity.close()]
                     record("blocked-transport", data)
+
+
+@unittest.skipUnless(os.name == "nt", "Windows owned process identity")
+class WindowsShutdownOwnership(unittest.TestCase):
+    def test_reader_preserves_a_previous_owners_failed_cleanup_for_recovery(self) -> None:
+        with temporary_directory("byo-shutdown-failure-") as base:
+            make_project(base)
+            adapter = fake_factory(base)(
+                fixed_resolver(Path(__file__))(None, "clangd", 0),
+                load_analysis_config(base),
+            )
+            reader_waiting = threading.Event()
+            owner_returned = threading.Event()
+            original_guard = adapter._shutdown_guard
+
+            class DelayedReaderGuard:
+                def acquire(self, blocking: bool = True) -> bool:
+                    if threading.current_thread().name == "clangd-reader":
+                        reader_waiting.set()
+                        if not owner_returned.wait(3):
+                            raise AssertionError("shutdown owner did not finish")
+                    return original_guard.acquire(blocking=blocking)
+
+                def release(self) -> None:
+                    original_guard.release()
+
+            adapter._shutdown_guard = DelayedReaderGuard()
+            identity = None
+            data: dict[str, Any] = {"termination_confirmation_seam": "unconfirmed"}
+            try:
+                adapter.start(time.monotonic() + 10)
+                assert adapter.process is not None and adapter.marker is not None
+                identity = WindowsIdentity(adapter.process.pid)
+                marker = adapter.marker
+                data["process_marker"] = json.loads(marker.read_text())
+                with self.assertRaises(ClangdFailure):
+                    adapter.request("test/malformed", {}, time.monotonic() + 3)
+                self.assertTrue(reader_waiting.wait(2))
+                with patch(
+                    "pyocd_debug_mcp.adapters.clangd.terminate_process_group", return_value=False
+                ):
+                    with self.assertRaises(ClangdFailure) as raised:
+                        adapter.shutdown(time.monotonic() + 2, graceful=False)
+                data["caller_result"] = raised.exception.code
+                self.assertEqual(raised.exception.code, "analysis/cleanup-failed")
+                owner_returned.set()
+                for thread in adapter._threads:
+                    thread.join(2)
+                data["marker_after_reader_exit"] = marker.exists()
+                self.assertFalse(any(t.is_alive() for t in adapter._threads))
+                self.assertTrue(marker.exists())
+                self.assertIsNotNone(adapter.process)
+                adapter.shutdown(time.monotonic() + 2, graceful=False)
+                data.update(
+                    after_recovery=identity.evidence(), marker_after_recovery=marker.exists()
+                )
+                self.assertFalse(data["after_recovery"]["alive"])
+                self.assertFalse(marker.exists())
+            finally:
+                owner_returned.set()
+                try:
+                    adapter.shutdown(time.monotonic() + 2, graceful=False)
+                finally:
+                    data["emergency_cleanup"] = [] if identity is None else [identity.close()]
+                    record("shutdown-ownership-recovery", data)
+                self.assertFalse(any(data["emergency_cleanup"]), data)
+
+    def test_reader_defers_to_shutdown_owner_without_blocking_its_join(self) -> None:
+        with temporary_directory("byo-shutdown-owner-") as base:
+            make_project(base)
+            adapter = fake_factory(base)(
+                fixed_resolver(Path(__file__))(None, "clangd", 0),
+                load_analysis_config(base),
+            )
+            reader_waiting = threading.Event()
+            release_reader = threading.Event()
+            owner_acquired = threading.Event()
+            original_guard = adapter._shutdown_guard
+
+            class ScheduledGuard:
+                def acquire(self, blocking: bool = True) -> bool:
+                    if threading.current_thread().name == "clangd-reader":
+                        reader_waiting.set()
+                        if not release_reader.wait(3):
+                            raise AssertionError("shutdown owner never released the reader seam")
+                    acquired = original_guard.acquire(blocking=blocking)
+                    if acquired and threading.current_thread().name == "shutdown-owner":
+                        owner_acquired.set()
+                        release_reader.set()
+                    return acquired
+
+                def release(self) -> None:
+                    original_guard.release()
+
+                def __enter__(self) -> ScheduledGuard:
+                    self.acquire()
+                    return self
+
+                def __exit__(self, *args: Any) -> None:
+                    self.release()
+
+            adapter._shutdown_guard = ScheduledGuard()
+            identity = None
+            caller = None
+            data: dict[str, Any] = {"scheduling_seam_only": True}
+
+            def shutdown_owner() -> None:
+                started = time.monotonic()
+                try:
+                    adapter.shutdown(started + 5, graceful=False)
+                    data["caller_result"] = "ok"
+                except ClangdFailure as exc:
+                    data.update(caller_result=exc.code, caller_message=str(exc))
+                finally:
+                    data["caller_seconds"] = time.monotonic() - started
+                    data["marker_at_caller_return"] = marker.exists()
+                    data["live_threads_at_caller_return"] = [
+                        t.name for t in adapter._threads if t.is_alive()
+                    ]
+
+            try:
+                adapter.start(time.monotonic() + 10)
+                assert adapter.process is not None and adapter.marker is not None
+                identity = WindowsIdentity(adapter.process.pid)
+                marker = adapter.marker
+                data.update(
+                    process_marker=json.loads(marker.read_text()), before=identity.evidence()
+                )
+                self.assertEqual(
+                    data["process_marker"]["start_token"], f"win:{identity.creation:016x}"
+                )
+                with self.assertRaises(ClangdFailure) as raised:
+                    adapter.request("test/malformed", {}, time.monotonic() + 3)
+                self.assertEqual(raised.exception.code, "analysis/protocol-error")
+                self.assertTrue(reader_waiting.wait(2), "reader did not reach ownership seam")
+                caller = threading.Thread(target=shutdown_owner, name="shutdown-owner")
+                caller.start()
+                self.assertTrue(owner_acquired.wait(2), "caller did not claim shutdown ownership")
+                caller.join(6)
+                for thread in adapter._threads:
+                    thread.join(2)
+                data.update(
+                    after=identity.evidence(),
+                    caller_alive=caller.is_alive(),
+                    live_transport_threads=[t.name for t in adapter._threads if t.is_alive()],
+                    marker_remaining=marker.exists(),
+                    process_cleared=adapter.process is None,
+                    pending_waiters=len(adapter._pending),
+                )
+                self.assertFalse(caller.is_alive(), data)
+                self.assertEqual(data["caller_result"], "ok", data)
+                self.assertLess(data["caller_seconds"], 1.5, data)
+                self.assertFalse(data["marker_at_caller_return"], data)
+                self.assertEqual(data["live_threads_at_caller_return"], [], data)
+                self.assertFalse(data["after"]["alive"], data)
+                self.assertEqual(data["live_transport_threads"], [], data)
+                self.assertFalse(marker.exists(), data)
+                self.assertIsNone(adapter.process)
+                self.assertEqual(len(adapter._pending), 0)
+            finally:
+                release_reader.set()
+                if caller is not None:
+                    caller.join(6)
+                try:
+                    adapter.shutdown(time.monotonic() + 2, graceful=False)
+                finally:
+                    data["emergency_cleanup"] = [] if identity is None else [identity.close()]
+                    record("shutdown-ownership", data)
+                self.assertFalse(any(data["emergency_cleanup"]), data)
 
 
 if __name__ == "__main__":
