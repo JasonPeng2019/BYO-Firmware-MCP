@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": "BYO native analysis runtime mapping, schema version 1",
-  "description": "Closed four-target syntax for analysis/runtime.json. Release files is the sole payload digest inventory. Strict JSON integer tokens, filesystem containment, exact case, modes/caller access, inventory/SBOM completeness, resource major/version agreement, native header identity and version probes require the semantic checks in ../code-analysis-runtime-manifest.md. There are no implicit defaults.",
+  "description": "Closed four-target syntax for analysis/runtime.json. Release files is the sole payload digest inventory; analysis/runtime.json and sbom.cdx.json both retain canonical kind metadata and executable false. Strict JSON integer tokens, filesystem containment, exact case, modes/caller access, inventory/SBOM completeness, resource major/version agreement, native header identity and version probes require the semantic checks in ../code-analysis-runtime-manifest.md. There are no implicit defaults.",
   "type": "object",
   "additionalProperties": false,
   "required": ["schema_version", "platform", "architecture", "programs"],

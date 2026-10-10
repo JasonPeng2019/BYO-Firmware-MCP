@@ -83,7 +83,7 @@ Hash final payloads, emit their SBOM components/relationships, then inventory
 | Payload | Kind / executable |
 | --- | --- |
 | `analysis/runtime.json` | `metadata` / false |
-| `sbom.cdx.json` | `sbom` / false |
+| `sbom.cdx.json` | `metadata` / false |
 | Analyzer executable | `analysis-executable` / true |
 | Cppcheck cfg/platform XML | `analysis-data` / false |
 | clangd resources | `analysis-resource` / false |
@@ -162,6 +162,9 @@ Darwin's narrow libc bridge follows the public
 and [siginfo layout](https://raw.githubusercontent.com/apple-oss-distributions/xnu/main/bsd/sys/signal.h);
 its actual ABI execution remains a matching-host Actions gate.
 An observer captures group members and descendants with PID/birth identities;
+children-list results are only candidate PIDs. Descendant acquisition requires
+a fresh birth/PPID chain to an exact already-owned parent, with every edge and
+birth identity rechecked before capture; stale parent maps grant no ownership.
 detached children are signaled only after fresh identity checks. Group signals
 require the retained exact anchor. Live/unknown children prevent confirmation;
 zombies are distinguished from live children. A bounded cleanup receipt records

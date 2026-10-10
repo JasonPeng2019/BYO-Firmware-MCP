@@ -93,9 +93,9 @@ def _target(value: dict[str, Any], path: str) -> tuple[str, str]:
         path,
         "requires a supported windows/x86_64, macos/aarch64, macos/x86_64 or linux/x86_64 target",
     )
-    _require(
-        (system, machine) == _host_target(), "host.architecture", "host and runtime target differ"
-    )
+    host_system, host_machine = _host_target()
+    _require(system == host_system, "host.platform", "host and runtime platform differ")
+    _require(machine == host_machine, "host.architecture", "host and runtime architecture differ")
     return system, machine
 
 
@@ -516,8 +516,7 @@ def _load(root: Path, deadline: float, cancellation: Cancellation | None) -> _Me
         _require(relative in inventory, relative, "metadata missing from release inventory")
         entry = inventory[relative]
         _require(
-            not entry["executable"]
-            and entry["kind"] == ("metadata" if relative == "analysis/runtime.json" else "sbom"),
+            not entry["executable"] and entry["kind"] == "metadata",
             relative,
             "invalid metadata inventory classification",
         )

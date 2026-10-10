@@ -115,6 +115,47 @@ def _darwin_group_members(group: int, deadline: float) -> set[int]:
     raise TimeoutError("Darwin complete group snapshot exceeded bounded phase")
 
 
+def _descendant_chain(
+    candidate: int, parent: tuple[int, str], deadline: float
+) -> set[tuple[int, str]]:
+    """Treat a children() result only as a proposal; acquire fresh ancestry."""
+    chain: dict[int, tuple[str, int]] = {}
+    current = candidate
+    while current != parent[0]:
+        if time.monotonic() >= deadline:
+            raise TimeoutError("Exact descendant ancestry exceeded bounded phase")
+        if current <= 1 or current in chain:
+            return set()  # Stale PPID proposal or ancestry outside this owner.
+        process = psutil.Process(current)
+        token = f"psutil:{process.create_time():.9f}"
+        ppid = process.ppid()
+        state = _process_state(current, token)
+        if state == "unknown":
+            raise RuntimeError("Descendant birth/liveness unavailable at acquisition")
+        if state not in {"live", "zombie"}:
+            return set()
+        chain[current] = (token, ppid)
+        current = ppid
+    # Recheck every exact child and PPID edge after reaching the known parent's
+    # identity. New birth tokens from recycled unrelated proposals never grant
+    # ownership merely because a previous global PPID map named their PID.
+    if _process_state(*parent) not in {"live", "zombie"}:
+        raise RuntimeError("Owned parent identity lost during ancestry acquisition")
+    for pid, (token, ppid) in chain.items():
+        if time.monotonic() >= deadline:
+            raise TimeoutError("Exact descendant ancestry exceeded bounded phase")
+        process = psutil.Process(pid)
+        if (
+            f"psutil:{process.create_time():.9f}" != token
+            or process.ppid() != ppid
+            or _process_state(pid, token) not in {"live", "zombie"}
+        ):
+            raise RuntimeError("Exact descendant relationship changed during acquisition")
+    if _process_state(*parent) not in {"live", "zombie"}:
+        raise RuntimeError("Owned parent identity lost during ancestry acquisition")
+    return {(pid, token) for pid, (token, _) in chain.items()}
+
+
 class AnalysisPopen(subprocess.Popen[Any]):
     """Popen-compatible analysis child; wait observes, cleanup finally reaps."""
 
@@ -290,10 +331,9 @@ class AnalysisPopen(subprocess.Popen[Any]):
                     parent = psutil.Process(pid)
                     if f"psutil:{parent.create_time():.9f}" != token:
                         continue
-                    children = {
-                        (child.pid, f"psutil:{child.create_time():.9f}")
-                        for child in parent.children(recursive=True)
-                    }
+                    children: set[tuple[int, str]] = set()
+                    for child in parent.children(recursive=True):
+                        children.update(_descendant_chain(child.pid, (pid, token), deadline))
                     if _process_state(pid, token) in {"live", "zombie"}:
                         candidates.update(children)
                     else:
