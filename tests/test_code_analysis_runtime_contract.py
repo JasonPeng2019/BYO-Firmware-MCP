@@ -193,6 +193,134 @@ class ManagedRuntime(RuntimeCase):
 
 
 class BoundedProbes(RuntimeCase):
+    @unittest.skipUnless(os.name == "posix", "POSIX scoped cleanup receipt; Windows Jobs unchanged")
+    def test_cached_native_probe_retains_exact_scoped_cleanup_receipt(self) -> None:
+        runtime = analysis_module("code_analysis_runtime")
+        directory, fake = self.shim("scoped-probe")
+        context = make_context(self.project.root)
+        actual_spawn = runtime.popen_owned
+        spawned = []
+
+        def capture(*args, **kwargs):
+            result = actual_spawn(*args, **kwargs)
+            spawned.append(result)
+            return result
+
+        with (
+            only_on_path(directory),
+            mock.patch.object(runtime, "_probe_cache", {}),
+            mock.patch.object(runtime, "popen_owned", side_effect=capture),
+        ):
+            first = resolve(context)
+            self.assertTrue(usable(first), first)
+            process = spawned[0][0]
+            process.cleanup_receipt["uncertainties"].append("late fixture mutation")
+            try:
+                cached = resolve(context)
+                self.assertTrue(usable(cached), cached)
+                self.assertEqual(field(first, "cleanup_receipt")["uncertainties"], [])
+                self.assertEqual(field(cached, "cleanup_receipt")["uncertainties"], [])
+            finally:
+                process.cleanup_receipt["uncertainties"].pop()
+        self.assertEqual(len(spawned), 1, "Receipt retention must survive actual cache reuse")
+        self.assertEqual(len(fake.events("version_probe")), 1)
+        self.assertEqual(fake.starts(), [])
+        process, marker = spawned[0]
+        receipt = field(first, "cleanup_receipt")
+        self.assertIsInstance(receipt, dict)
+        self.assertEqual(receipt, process.cleanup_receipt)
+        self.assertEqual(field(cached, "cleanup_receipt"), receipt)
+        self.assertEqual(receipt["pid"], process.pid)
+        self.assertEqual(receipt["coverage"], "retained_group_and_captured_descendants")
+        self.assertIs(receipt["scope_confirmed"], True)
+        self.assertEqual(receipt["unobserved_detached_descendants"], "not_proven")
+        self.assertIs(receipt["leader_reaped"], True)
+        self.assertEqual(receipt["leader_exit"], 0)
+        self.assertEqual(receipt["uncertainties"], [])
+        with self.assertRaises(ChildProcessError):
+            os.waitpid(process.pid, os.WNOHANG)
+        self.assertTrue(marker is None or not marker.exists())
+
+    @unittest.skipUnless(os.name == "posix", "POSIX scoped cleanup receipt; Windows Jobs unchanged")
+    def test_native_probe_refuses_corrupted_scope_and_retains_failure_receipt_and_marker(
+        self,
+    ) -> None:
+        runtime = analysis_module("code_analysis_runtime")
+        processes = analysis_module("kernel.processes")
+        actual_cleanup = runtime.terminate_process_group
+        actual_spawn = runtime.popen_owned
+        for case in ("missing", "wrong-coverage", "false-scope", "string-scope"):
+            with self.subTest(case=case):
+                directory, fake = self.shim("scope-fault-" + case)
+                store = processes.ProcessMarkerStore(self.base / ("markers-" + case))
+                native = []
+                gate = self.base / ("probe-release-" + case)
+
+                def marked_probe(argv, **kwargs):
+                    self.assertEqual(argv[1:], ["--version"])
+                    result = actual_spawn(
+                        [
+                            sys.executable,
+                            "-c",
+                            "import os,pathlib,sys,time; gate=pathlib.Path(sys.argv[1]);\n"
+                            "while not gate.exists(): time.sleep(.005)\n"
+                            "os.execv(sys.executable,[sys.executable,sys.argv[2],'--scenario',sys.argv[3],'--version'])",
+                            str(gate),
+                            str(FAKE_CLANGD),
+                            str(fake.scenario_path),
+                        ],
+                        **kwargs,
+                    )
+                    process, marker = result
+                    self.assertIsNotNone(marker, "Live native startup must establish a real marker")
+                    self.assertEqual(json.loads(marker.read_bytes())["pid"], process.pid)
+                    gate.touch()
+                    return result
+
+                def corrupt_after_actual_cleanup(process, *args, **kwargs):
+                    scope_confirmed = actual_cleanup(process, *args, **kwargs)
+                    self.assertTrue(scope_confirmed, process.cleanup_receipt)
+                    original = process.cleanup_receipt
+                    self.assertIs(original["scope_confirmed"], True)
+                    receipt = dict(original)
+                    if case == "missing":
+                        receipt.pop("coverage")
+                    elif case == "wrong-coverage":
+                        receipt["coverage"] = "all_descendants"
+                    elif case == "false-scope":
+                        receipt["scope_confirmed"] = False
+                    else:
+                        receipt["scope_confirmed"] = "true"
+                    process.cleanup_receipt = receipt
+                    native.append((process, receipt))
+                    # An actual successful reap plus the compatibility boolean
+                    # cannot bypass malformed scope evidence at this consumer.
+                    return scope_confirmed
+
+                with (
+                    only_on_path(directory),
+                    mock.patch.object(runtime, "_probe_cache", {}),
+                    mock.patch.object(runtime, "ProcessMarkerStore", return_value=store),
+                    mock.patch.object(runtime, "popen_owned", side_effect=marked_probe),
+                    mock.patch.object(
+                        runtime, "terminate_process_group", side_effect=corrupt_after_actual_cleanup
+                    ),
+                ):
+                    failed = resolve(make_context(self.project.root))
+                    self.assert_unavailable(failed)
+                    cached = resolve(make_context(self.project.root))
+                    self.assert_unavailable(cached)
+                self.assertEqual(len(native), 1, "Cached failure must retain the original evidence")
+                process, receipt = native[0]
+                self.assertEqual(field(failed, "cleanup_receipt"), receipt)
+                self.assertEqual(field(cached, "cleanup_receipt"), receipt)
+                self.assertEqual(len(fake.events("version_probe")), 1)
+                markers = list(store.root.glob("*.json"))
+                self.assertEqual(len(markers), 1, "Unaccepted proof retains real recovery evidence")
+                self.assertEqual(json.loads(markers[0].read_bytes())["pid"], process.pid)
+                with self.assertRaises(ChildProcessError):
+                    os.waitpid(process.pid, os.WNOHANG)
+
     def test_status_first_hung_probe_is_identity_cached_and_does_not_start_lsp(self) -> None:
         """No-argument status owns the probe cap; it has no expiring caller budget."""
         runtime = analysis_module("code_analysis_runtime")

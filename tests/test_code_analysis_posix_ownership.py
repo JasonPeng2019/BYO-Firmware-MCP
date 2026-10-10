@@ -64,6 +64,49 @@ def native_retained_exit(pid: int) -> tuple[int, int, int] | None:
     raise AssertionError("Retained-exit oracle requires a matching Linux/macOS Actions host")
 
 
+def native_group_members(group: int) -> set[int]:
+    """Original-group oracle independent of production psutil enumeration."""
+    if sys.platform.startswith("linux"):
+        members = set()
+        for entry in Path("/proc").iterdir():
+            if not entry.name.isdecimal():
+                continue
+            try:
+                data = (entry / "stat").read_text()
+            except (FileNotFoundError, ProcessLookupError):
+                continue
+            fields = data[data.rfind(")") + 2 :].split()
+            if int(fields[2]) == group:
+                members.add(int(entry.name))
+        return members
+    if sys.platform == "darwin":
+        listpids = ctypes.CDLL("/usr/lib/libproc.dylib", use_errno=True).proc_listpids
+        listpids.argtypes = (ctypes.c_uint, ctypes.c_uint, ctypes.c_void_p, ctypes.c_int)
+        listpids.restype = ctypes.c_int
+        capacity = 64
+        while capacity <= 65536:
+            buffer = (ctypes.c_int * capacity)()
+            size = ctypes.sizeof(buffer)
+            ctypes.set_errno(0)
+            used = listpids(2, group, buffer, size)  # PROC_PGRP_ONLY, includes zombies.
+            error = ctypes.get_errno()
+            if (
+                used < 0
+                or used > size
+                or used % ctypes.sizeof(ctypes.c_int)
+                or (used == 0 and error)
+            ):
+                raise OSError(error, "Independent native group observation unavailable")
+            if used < size:
+                members = set(buffer[: used // ctypes.sizeof(ctypes.c_int)])
+                if any(pid <= 0 for pid in members):
+                    raise AssertionError("Invalid native group membership")
+                return members
+            capacity *= 2
+        raise AssertionError("Independent native group observation was truncated")
+    raise AssertionError("Native group oracle requires a matching Linux/macOS Actions host")
+
+
 # Gates keep the native leader available until its exact identity is observed.
 # Detached descendants remain in the owned tree long enough for observation.
 TREE = r"""
@@ -92,6 +135,26 @@ os.replace(base / "ready.tmp", base / "ready")
 while not (base / "exit").exists(): time.sleep(.01)
 sys.stdout.write("native-fixture-complete\n")
 sys.stdout.flush()
+"""
+
+ESCAPE = r"""
+import os, pathlib, sys, time
+base = pathlib.Path(sys.argv[1])
+(base / 'ready').touch()
+while not (base / 'release').exists(): time.sleep(.005)
+middle = os.fork()
+if middle == 0:
+    os.setsid()
+    escaped = os.fork()
+    if escaped: os._exit(0)
+    os.close(1)
+    os.close(2)
+    (base / 'escaped.tmp').write_text(str(os.getpid()))
+    os.replace(base / 'escaped.tmp', base / 'escaped')
+    while True: time.sleep(.05)
+os.waitpid(middle, 0)
+(base / 'reparented').write_text(str(middle))
+while not (base / 'exit').exists(): time.sleep(.005)
 """
 
 
@@ -303,10 +366,15 @@ class NativePosixOwnership(unittest.TestCase):
         peer, peer_token = self.peer()
         posix = production("kernel._analysis_posix")
         actual_exit = posix._exit_status
-        for exit_code in (0, 23):
-            with self.subTest(exit_code=exit_code):
+        for exit_code, native_error in (
+            (0, errno.EPERM),
+            (23, errno.EPERM),
+            (0, errno.ECHILD),
+            (23, errno.ECHILD),
+        ):
+            with self.subTest(exit_code=exit_code, native_error=native_error):
                 process, marker, gate = self.gated_exit(
-                    exit_code, f"unknown-exit-{exit_code}", release=False
+                    exit_code, f"unknown-exit-{exit_code}-{native_error}", release=False
                 )
                 saved_marker = marker.read_bytes()
                 denied = []
@@ -314,7 +382,7 @@ class NativePosixOwnership(unittest.TestCase):
                 def unavailable_exit(pid):
                     if pid == process.pid and native_retained_exit(pid) is not None:
                         denied.append(pid)
-                        raise PermissionError(errno.EPERM, "exact retained exit unavailable")
+                        raise OSError(native_error, "exact retained exit unavailable")
                     return actual_exit(pid)
 
                 with (
@@ -332,6 +400,7 @@ class NativePosixOwnership(unittest.TestCase):
                 self.assertTrue(denied, "Cleanup must actually reach the unavailable exit seam")
                 receipt = process.cleanup_receipt
                 self.assertIs(receipt["confirmed"], False)
+                self.assertIs(receipt["scope_confirmed"], False)
                 self.assertIs(receipt["leader_reaped"], False)
                 self.assertIsNone(receipt["leader_exit"], "Never invent exit zero from errno")
                 self.assertTrue(receipt["uncertainties"])
@@ -339,6 +408,35 @@ class NativePosixOwnership(unittest.TestCase):
                 self.assertEqual(native_retained_exit(process.pid), (process.pid, 1, exit_code))
                 self.assertFalse(self.is_owned_live(process.pid, self.observed[process.pid]))
                 self.assertTrue(self.is_owned_live(peer.pid, peer_token))
+
+    def test_cached_correct_exit_cannot_replace_fresh_mismatched_retained_proof(self) -> None:
+        posix = production("kernel._analysis_posix")
+        actual_exit = posix._exit_status
+        for exit_code in (0, 23):
+            with self.subTest(exit_code=exit_code):
+                process, marker = self.gated_exit(exit_code, f"mismatched-exit-{exit_code}")
+                self.assertEqual(process.wait(timeout=5), exit_code)
+                self.assertEqual(native_retained_exit(process.pid), (process.pid, 1, exit_code))
+                calls = []
+
+                def mismatched_status(pid):
+                    if pid == process.pid:
+                        calls.append(pid)
+                        return exit_code + 1
+                    return actual_exit(pid)
+
+                with mock.patch.object(posix, "_exit_status", side_effect=mismatched_status):
+                    self.assertFalse(
+                        self.processes.terminate_process_group(process, grace_seconds=0.2)
+                    )
+                self.assertTrue(calls, "Fresh authoritative decoder must actually be checked")
+                receipt = process.cleanup_receipt
+                self.assertIs(receipt["scope_confirmed"], False)
+                self.assertIs(receipt["leader_reaped"], False)
+                self.assertEqual(receipt["leader_exit"], exit_code)
+                self.assertTrue(receipt["uncertainties"])
+                self.assertTrue(marker.exists())
+                self.assertEqual(native_retained_exit(process.pid), (process.pid, 1, exit_code))
 
     def test_retained_leader_exit_cannot_hide_inaccessible_captured_detached_live_child(
         self,
@@ -377,59 +475,253 @@ class NativePosixOwnership(unittest.TestCase):
         self.assertEqual(native_retained_exit(process.pid), (process.pid, 1, 0))
         self.assertTrue(self.is_owned_live(peer.pid, peer_token))
 
-    def test_already_exited_before_begin_keeps_initial_observation_gap_unconfirmed(self) -> None:
+    def test_already_exited_before_begin_confirms_only_retained_group_and_captured_scope(
+        self,
+    ) -> None:
         peer, peer_token = self.peer()
         posix = production("kernel._analysis_posix")
         actual_begin = posix.AnalysisPopen.begin_ownership
         for exit_code in (0, 23):
-            with self.subTest(exit_code=exit_code):
-                began_after_exit = []
+            for missing_birth in (False, True):
+                with (
+                    self.subTest(exit_code=exit_code, missing_birth=missing_birth),
+                    ExitStack() as faults,
+                ):
+                    began_after_exit = []
 
-                def begin_after_native_exit(process):
-                    # Exercise the real startup boundary, never manufacture a
-                    # receipt or use a delayed spawn as evidence of this race.
-                    self.owned.append((process, None))
-                    proof = self.until(lambda: native_retained_exit(process.pid))
-                    self.assertEqual(proof, (process.pid, 1, exit_code))
-                    began_after_exit.append(proof)
-                    with self.unavailable_leader_image(process.pid, metadata=False, session=True):
+                    def begin_after_native_exit(process):
+                        # Observe the actual startup race, without a fake receipt.
+                        self.owned.append((process, None))
+                        proof = self.until(lambda: native_retained_exit(process.pid))
+                        self.assertEqual(proof, (process.pid, 1, exit_code))
+                        began_after_exit.append(proof)
+                        faults.enter_context(
+                            self.unavailable_leader_image(
+                                process.pid, metadata=missing_birth, session=True
+                            )
+                        )
                         actual_begin(process)
 
-                with mock.patch.object(
-                    posix.AnalysisPopen, "begin_ownership", begin_after_native_exit
-                ):
-                    process, marker = self.processes.popen_owned(
-                        [
-                            sys.executable,
-                            "-c",
-                            f"print('startup exit'); raise SystemExit({exit_code})",
-                        ],
-                        marker_store=self.store,
-                        analysis_ownership=True,
-                        stdin=subprocess.DEVNULL,
-                        stdout=subprocess.PIPE,
-                        stderr=subprocess.PIPE,
+                    with mock.patch.object(
+                        posix.AnalysisPopen, "begin_ownership", begin_after_native_exit
+                    ):
+                        process, marker = self.processes.popen_owned(
+                            [
+                                sys.executable,
+                                "-c",
+                                f"print('startup exit'); raise SystemExit({exit_code})",
+                            ],
+                            marker_store=self.store,
+                            analysis_ownership=True,
+                            stdin=subprocess.DEVNULL,
+                            stdout=subprocess.PIPE,
+                            stderr=subprocess.PIPE,
+                        )
+                    self.assertEqual(began_after_exit, [(process.pid, 1, exit_code)])
+                    if marker is None:
+                        self.assertIs(process.cleanup_receipt["leader_reaped"], True)
+                    else:
+                        saved = json.loads(marker.read_bytes())
+                    if missing_birth:
+                        self.assertIsNone(
+                            marker, "Missing birth cannot manufacture a recovery token"
+                        )
+                    output, errors = process.communicate(timeout=5)
+                    self.assertEqual((output, errors), (b"startup exit\n", b""))
+                    self.assertEqual(process.returncode, exit_code)
+                    self.assertTrue(
+                        self.processes.terminate_process_group(process, grace_seconds=0.5)
                     )
-                self.assertEqual(began_after_exit, [(process.pid, 1, exit_code)])
-                self.assertIsNotNone(marker)
-                saved_marker = marker.read_bytes()
-                output, errors = process.communicate(timeout=5)
-                self.assertEqual((output, errors), (b"startup exit\n", b""))
-                self.assertEqual(process.returncode, exit_code)
-                with self.unavailable_leader_image(process.pid, metadata=True, session=True):
-                    self.assertFalse(
-                        self.processes.terminate_process_group(process, grace_seconds=0.2)
+                    receipt = process.cleanup_receipt
+                    self.assert_scoped_receipt(receipt)
+                    self.assertEqual(receipt["leader_exit"], exit_code)
+                    self.assertEqual(
+                        receipt["start_token"], None if marker is None else saved["start_token"]
                     )
-                receipt = process.cleanup_receipt
-                self.assertEqual(receipt["leader_exit"], exit_code)
-                self.assertIs(receipt["leader_reaped"], False)
-                self.assertIs(receipt["confirmed"], False)
-                self.assertIn(
-                    "leader exited before initial descendant observation", receipt["uncertainties"]
+                    leader = next(
+                        entry for entry in receipt["captured"] if entry["pid"] == process.pid
+                    )
+                    self.assertEqual(leader["start_token"], receipt["start_token"])
+                    self.assertTrue(leader.get("identity_source"), receipt)
+                    self.assertIs(receipt["early_direct_child_exit"], True)
+                    self.assertIs(receipt["new_session_spawn_succeeded"], True)
+                    self.assertEqual(receipt["spawn_parent_pid"], os.getpid())
+                    if sys.platform == "darwin":
+                        terminal = receipt["native_terminal_group"]
+                        self.assertEqual({entry["pid"] for entry in terminal}, {process.pid})
+                        self.assertTrue(all(entry["state"] == "zombie" for entry in terminal))
+                    with self.assertRaises(ChildProcessError):
+                        os.waitpid(process.pid, os.WNOHANG)
+                    self.assertEqual(native_group_members(process.pid), set())
+                    self.store.remove(marker)
+                    self.assertFalse(list(self.store.root.glob("*.json")))
+                    self.assertTrue(self.is_owned_live(peer.pid, peer_token))
+
+    def assert_scoped_receipt(self, receipt) -> None:
+        self.assertEqual(receipt["coverage"], "retained_group_and_captured_descendants")
+        self.assertIs(receipt["scope_confirmed"], True)
+        self.assertEqual(receipt["unobserved_detached_descendants"], "not_proven")
+        self.assertIs(receipt["leader_reaped"], True)
+        self.assertEqual(receipt["uncertainties"], [])
+
+    def test_never_observed_native_escape_remains_explicitly_not_proven(self) -> None:
+        peer, peer_token = self.peer()
+        posix = production("kernel._analysis_posix")
+        actual_begin = posix.AnalysisPopen.begin_ownership
+        directory = self.base / "unobserved-escape"
+        directory.mkdir()
+        escaped_identity = []
+
+        def begin_after_escape(process):
+            self.owned.append((process, None))
+            self.observe(process.pid)
+            self.until(lambda: (directory / "ready").exists())
+            (directory / "release").touch()
+            self.until(
+                lambda: (directory / "escaped").exists() and (directory / "reparented").exists()
+            )
+            escaped = int((directory / "escaped").read_text())
+            middle = int((directory / "reparented").read_text())
+            token = self.observe(escaped)
+            self.until(lambda: psutil.Process(escaped).ppid() not in {middle, process.pid})
+            self.assertNotEqual(os.getpgid(escaped), process.pid)
+            self.assertNotEqual(os.getsid(escaped), process.pid)
+            escaped_identity.append((escaped, token))
+            # Product ownership has not begun yet: the independent test knows
+            # this lineage, while the product has never seen the escaped child.
+            actual_begin(process)
+
+        with mock.patch.object(posix.AnalysisPopen, "begin_ownership", begin_after_escape):
+            process, marker = self.processes.popen_owned(
+                [sys.executable, "-c", ESCAPE, str(directory)],
+                marker_store=self.store,
+                analysis_ownership=True,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+            )
+        escaped, token = escaped_identity[0]
+        self.assertNotIn(escaped, {pid for pid, _ in process._captured})
+        (directory / "exit").touch()
+        self.assertEqual(self.until(lambda: native_retained_exit(process.pid)), (process.pid, 1, 0))
+        self.confirm_cleanup(process, marker, [process.pid])
+        self.assertEqual(native_group_members(process.pid), set())
+        self.assertNotIn(escaped, {entry["pid"] for entry in process.cleanup_receipt["captured"]})
+        self.assertTrue(
+            self.is_owned_live(escaped, token), "Scope success cannot mean full-tree absence"
+        )
+        self.assertTrue(self.is_owned_live(peer.pid, peer_token))
+        # emergency_cleanup owns only the independently observed exact native
+        # fixture identities, including this escape; it never repairs a receipt.
+
+    def test_incomplete_native_observation_can_recover_with_final_proof_in_same_reserve(
+        self,
+    ) -> None:
+        process, marker, _, ready = self.tree()
+        # Control one actual ownership iteration, then let cleanup perform its
+        # fresh native observations. Previously acquired descendants stay owned.
+        self.until(lambda: any(pid == ready["child"] for pid, _ in tuple(process._captured)))
+        process._stop_observer.set()
+        process._observer.join(1)
+        self.assertFalse(process._observer.is_alive())
+        actual_children = psutil.Process.children
+        entered, release = threading.Event(), threading.Event()
+        outcome, failures = [], []
+        deadline = time.monotonic() + 0.1
+
+        def bounded_children(candidate, recursive=False):
+            children = actual_children(candidate, recursive=recursive)
+            if candidate.pid == process.pid:
+                entered.set()
+                self.assertTrue(release.wait(2), "Fixture release must remain bounded")
+            return children
+
+        def observe_one_iteration():
+            try:
+                outcome.append(process._capture(deadline))
+            except BaseException as exc:
+                failures.append(exc)
+
+        with mock.patch.object(psutil.Process, "children", bounded_children):
+            observer = threading.Thread(target=observe_one_iteration)
+            observer.start()
+            try:
+                self.assertTrue(
+                    entered.wait(2), "Actual native child listing must reach the barrier"
                 )
-                self.assertEqual(marker.read_bytes(), saved_marker)
-                self.assertEqual(native_retained_exit(process.pid), (process.pid, 1, exit_code))
-                self.assertTrue(self.is_owned_live(peer.pid, peer_token))
+                self.until(lambda: time.monotonic() >= deadline)
+            finally:
+                release.set()
+                observer.join(2)
+        self.assertFalse(observer.is_alive())
+        self.assertEqual(failures, [])
+        self.assertEqual(outcome, [False], "Incomplete iteration is not complete proof")
+        self.assertTrue(self.is_owned_live(ready["child"], self.observed[ready["child"]]))
+        self.confirm_cleanup(process, marker, [process.pid, ready["child"]])
+        self.assertGreater(process.cleanup_receipt["incomplete_observation_count"], 0)
+        self.assertEqual(process.cleanup_receipt["budget_seconds"], 1.5)
+
+    def test_missing_final_native_observation_never_uses_earlier_complete_snapshot(self) -> None:
+        process, marker, _, ready = self.tree()
+        self.until(lambda: any(pid == ready["child"] for pid, _ in tuple(process._captured)))
+        actual_children = psutil.Process.children
+        denied = []
+
+        def denied_children(candidate, recursive=False):
+            if candidate.pid == process.pid:
+                denied.append(candidate.pid)
+                raise psutil.AccessDenied(candidate.pid)
+            return actual_children(candidate, recursive=recursive)
+
+        before = time.monotonic()
+        with mock.patch.object(psutil.Process, "children", denied_children):
+            self.assertFalse(self.processes.terminate_process_group(process, grace_seconds=0.2))
+        self.assertTrue(denied, "Actual live ownership observation must reach denied access")
+        receipt = process.cleanup_receipt
+        self.assertIs(receipt["scope_confirmed"], False)
+        self.assertIs(receipt["leader_reaped"], False)
+        self.assertTrue(receipt["uncertainties"])
+        self.assertTrue(marker.exists())
+        self.assertAlmostEqual(receipt["budget_seconds"], 0.6)
+        self.assertLess(time.monotonic() - before, 0.6 + 0.3)
+
+    def test_final_native_membership_exhaustion_retains_marker_and_unchanged_reserve(self) -> None:
+        process, marker, _, ready = self.tree()
+        self.until(lambda: any(pid == ready["child"] for pid, _ in tuple(process._captured)))
+        process._stop_observer.set()
+        process._observer.join(1)
+        self.assertFalse(process._observer.is_alive())
+        posix = production("kernel._analysis_posix")
+        owner, name = (
+            (posix, "_darwin_group_members") if sys.platform == "darwin" else (psutil, "pids")
+        )
+        actual_snapshot = getattr(owner, name)
+        observed = []
+        began = time.monotonic()
+        expires = None
+
+        def exhausted_snapshot(*args, **kwargs):
+            nonlocal expires
+            members = actual_snapshot(*args, **kwargs)
+            observed.append(members)
+            # A real native enumeration becomes too late to prove retirement.
+            # This barrier consumes exactly the caller's original reserve.
+            if expires is None:
+                expires = time.monotonic() + 0.6
+            threading.Event().wait(max(0, expires - time.monotonic()))
+            return members
+
+        with mock.patch.object(owner, name, side_effect=exhausted_snapshot):
+            self.assertFalse(self.processes.terminate_process_group(process, grace_seconds=0.2))
+        self.assertTrue(observed, "Actual native membership acquisition must reach the barrier")
+        receipt = process.cleanup_receipt
+        self.assertIs(receipt["scope_confirmed"], False)
+        self.assertIs(receipt["leader_reaped"], False)
+        self.assertTrue(receipt["uncertainties"])
+        self.assertTrue(marker.exists())
+        self.assertAlmostEqual(receipt["budget_seconds"], 0.6)
+        self.assertLess(time.monotonic() - began, 0.6 + 0.3)
+        self.assertTrue(self.is_owned_live(ready["child"], self.observed[ready["child"]]))
 
     def confirm_cleanup(self, process, marker, pids) -> None:
         before = time.monotonic()
@@ -444,6 +736,7 @@ class NativePosixOwnership(unittest.TestCase):
         self.assertEqual(receipt["group"], process.pid)
         self.assertEqual(receipt["start_token"], json.loads(marker.read_bytes())["start_token"])
         self.assertIs(receipt["confirmed"], True)
+        self.assert_scoped_receipt(receipt)
         self.assertIs(receipt["leader_reaped"], True)
         self.assertIsNotNone(receipt["leader_exit"])
         self.assertEqual(receipt["uncertainties"], [])
@@ -457,6 +750,8 @@ class NativePosixOwnership(unittest.TestCase):
             self.assertTrue(captured[pid]["start_token"])
             self.assertIn(captured[pid]["state"], {"gone", "zombie", "reused"})
         self.assertIsNotNone(process.poll(), "Leader must be reaped separately from group proof")
+        with self.assertRaises(ChildProcessError):
+            os.waitpid(process.pid, os.WNOHANG)
         for pid in pids:
             self.assertFalse(
                 self.is_owned_live(pid, self.observed[pid]),
@@ -471,7 +766,7 @@ class NativePosixOwnership(unittest.TestCase):
         (directory / "exit").touch()
         # Observe actual leader exit without reaping its retained native anchor.
         # The child inherits stdout, so group cleanup must happen before EOF.
-        self.until(lambda: (identity := posix_process_identity(process.pid)) and identity[1] == "Z")
+        self.assertEqual(self.until(lambda: native_retained_exit(process.pid)), (process.pid, 1, 0))
         self.confirm_cleanup(process, marker, [ready["leader"], ready["child"]])
         self.assertEqual(process.cleanup_receipt["leader_exit"], 0)
         output, errors = process.communicate(timeout=2)
@@ -552,7 +847,7 @@ class NativePosixOwnership(unittest.TestCase):
         peer, peer_token = self.peer()
         process, marker, directory, ready = self.tree(detach=True)
         (directory / "exit").touch()
-        self.until(lambda: (identity := posix_process_identity(process.pid)) and identity[1] == "Z")
+        self.assertEqual(self.until(lambda: native_retained_exit(process.pid)), (process.pid, 1, 0))
         self.confirm_cleanup(process, marker, [ready["leader"], ready["child"]])
         self.assertEqual(process.cleanup_receipt["leader_exit"], 0)
         self.assertTrue(self.is_owned_live(peer.pid, peer_token))
@@ -578,8 +873,13 @@ class NativePosixOwnership(unittest.TestCase):
                 self.assertEqual(process.returncode, exit_code)
                 # Exit observation must keep the exact native child available as
                 # an unreaped group anchor until the real cleanup proof completes.
-                retained = posix_process_identity(process.pid)
-                self.assertEqual(retained, (token, "Z"))
+                self.assertEqual(native_retained_exit(process.pid), (process.pid, 1, exit_code))
+                if sys.platform.startswith("linux"):
+                    self.assertEqual(posix_process_identity(process.pid), (token, "Z"))
+                # Darwin proc_pidinfo without its zombie option can return
+                # None here. Repeated exact WNOWAIT, rather than missing live
+                # metadata, proves this actual direct child remains unreaped.
+                self.assertEqual(native_retained_exit(process.pid), (process.pid, 1, exit_code))
                 self.confirm_cleanup(process, marker, [process.pid])
                 self.assertEqual(process.cleanup_receipt["leader_exit"], exit_code)
 

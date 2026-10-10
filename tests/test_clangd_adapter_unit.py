@@ -178,6 +178,98 @@ class PositionTests(unittest.TestCase):
 
 
 class TransportTests(unittest.TestCase):
+    @unittest.skipUnless(os.name == "posix", "POSIX receipt scope; Windows Jobs unchanged")
+    def test_shutdown_retains_native_scope_receipt_before_clearing_process(self):
+        process, marker = self.adapter.process, self.adapter.marker
+        self.assertIsNone(self.adapter._last_cleanup_receipt)
+        self.adapter.shutdown(time.monotonic() + 3)
+        receipt = self.adapter._last_cleanup_receipt
+        self.assertIsInstance(receipt, dict)
+        self.assertEqual(receipt, process.cleanup_receipt)
+        self.assertEqual(receipt["pid"], process.pid)
+        self.assertEqual(receipt["coverage"], "retained_group_and_captured_descendants")
+        self.assertIs(receipt["scope_confirmed"], True)
+        self.assertEqual(receipt["unobserved_detached_descendants"], "not_proven")
+        self.assertIs(receipt["leader_reaped"], True)
+        self.assertEqual(receipt["uncertainties"], [])
+        self.assertIsNone(self.adapter.process)
+        self.assertIsNone(self.adapter.marker)
+        self.assertFalse(marker.exists())
+        self.assertFalse(any(thread.is_alive() for thread in self.adapter._threads))
+        with self.assertRaises(ChildProcessError):
+            os.waitpid(process.pid, os.WNOHANG)
+        process.cleanup_receipt["uncertainties"].append("late fixture mutation")
+        try:
+            self.assertEqual(self.adapter._last_cleanup_receipt["uncertainties"], [])
+        finally:
+            process.cleanup_receipt["uncertainties"].pop()
+        self.adapter.shutdown(time.monotonic() + 3)
+        self.assertEqual(
+            self.adapter._last_cleanup_receipt, receipt, "Idempotent shutdown retains evidence"
+        )
+
+    @unittest.skipUnless(os.name == "posix", "POSIX receipt scope; Windows Jobs unchanged")
+    def test_shutdown_refuses_corrupted_native_scope_without_dropping_marker(self):
+        from pyocd_debug_mcp.adapters import clangd as adapter_module
+
+        actual_cleanup = adapter_module.terminate_process_group
+        for index, case in enumerate(("missing", "wrong-coverage", "false-scope", "string-scope")):
+            with self.subTest(case=case):
+                if index:
+                    self.adapter = fake_factory(self.root)(
+                        ResolvedAnalysisProgram(
+                            "clangd", Path(sys.executable), "fake", "path", ("fake",)
+                        ),
+                        load_analysis_config(self.root),
+                    )
+                    self.adapter.start(time.monotonic() + 3)
+                process, marker = self.adapter.process, self.adapter.marker
+                original, faulty = [], []
+
+                def corrupt_after_actual_cleanup(candidate, *args, **kwargs):
+                    self.assertIs(candidate, process)
+                    scope_confirmed = actual_cleanup(candidate, *args, **kwargs)
+                    self.assertTrue(scope_confirmed, candidate.cleanup_receipt)
+                    original.append(candidate.cleanup_receipt)
+                    receipt = dict(candidate.cleanup_receipt)
+                    if case == "missing":
+                        receipt.pop("coverage")
+                    elif case == "wrong-coverage":
+                        receipt["coverage"] = "all_descendants"
+                    elif case == "false-scope":
+                        receipt["scope_confirmed"] = False
+                    else:
+                        receipt["scope_confirmed"] = "true"
+                    candidate.cleanup_receipt = receipt
+                    faulty.append(receipt)
+                    return scope_confirmed
+
+                try:
+                    with patch.object(
+                        adapter_module,
+                        "terminate_process_group",
+                        side_effect=corrupt_after_actual_cleanup,
+                    ):
+                        with self.assertRaises(ClangdFailure) as failure:
+                            self.adapter.shutdown(time.monotonic() + 3)
+                    self.assertEqual(failure.exception.code, "analysis/cleanup-failed")
+                    self.assertEqual(
+                        len(faulty), 1, "The actual native cleanup operation must be reached"
+                    )
+                    self.assertEqual(self.adapter._last_cleanup_receipt, faulty[0])
+                    self.assertIs(self.adapter.process, process)
+                    self.assertEqual(self.adapter.marker, marker)
+                    self.assertTrue(marker.exists())
+                    self.assertEqual(json.loads(marker.read_bytes())["pid"], process.pid)
+                    with self.assertRaises(ChildProcessError):
+                        os.waitpid(process.pid, os.WNOHANG)
+                finally:
+                    # Restore only the actual receipt that preceded the injected
+                    # corruption, then retire this fixture through real shutdown.
+                    if original:
+                        process.cleanup_receipt = original[0]
+                    self.adapter.shutdown(time.monotonic() + 3)
+
     def test_wedged_stdin_bounds_cancellation_and_releases_other_waiter(self):
         process = self.adapter.process
         with concurrent.futures.ThreadPoolExecutor(2) as pool:
