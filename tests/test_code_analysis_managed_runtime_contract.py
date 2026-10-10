@@ -419,6 +419,25 @@ class TargetAndVersion(ManagedCase):
 
 
 class PayloadIntegrity(ManagedCase):
+    def test_sbom_uses_canonical_metadata_kind_and_never_probes_wrong_kind(self) -> None:
+        entry = self.fixture.inventory_entry("sbom.cdx.json")
+        self.assertEqual(entry["kind"], "metadata")
+        self.assertIs(entry["executable"], False)
+        with self.observer() as observed:
+            for name in ("cppcheck", "clangd"):
+                self.assert_usable(self.resolve(name), name)
+            for kind in ("sbom", "analysis-resource", "license"):
+                with self.subTest(kind=kind):
+                    # Keep classification independent of cached-receipt mutation.
+                    self.fixture = RuntimeFixture(self.base / ("sbom-kind-" + kind))
+                    self.context = self.fixture.context(self.project)
+                    for name in ("cppcheck", "clangd"):
+                        self.require_valid_control(observed, name)
+                    self.fixture.inventory_entry("sbom.cdx.json")["kind"] = kind
+                    self.fixture.save_manifest()
+                    for name in ("cppcheck", "clangd"):
+                        self.assert_rejected_without_spawn(observed, "sbom.cdx.json", name)
+
     def test_inventory_size_and_executable_flags_reject_type_coercion(self) -> None:
         with self.observer() as observed:
             for field, value in [

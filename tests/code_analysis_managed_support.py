@@ -316,8 +316,8 @@ class RuntimeFixture:
             relative = p.relative_to(self.root).as_posix()
             kind, executable = (
                 ("metadata", False)
-                if p == self.mapping_path
-                else (("sbom", False) if p == self.sbom_path else self.kind(relative))
+                if p in {self.mapping_path, self.sbom_path}
+                else self.kind(relative)
             )
             self.inventory.append(
                 {

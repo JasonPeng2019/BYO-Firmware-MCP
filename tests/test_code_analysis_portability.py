@@ -93,6 +93,27 @@ class ReceiptCase(unittest.TestCase):
 
 
 class PortableReceipts(ReceiptCase):
+    def test_canonical_sbom_metadata_and_wrong_kind_for_both_analyzers(self) -> None:
+        # Match the installer inventory, independently of fixture classification.
+        # These are cross-target header receipts, not native analyzer proof.
+        for target in TARGETS:
+            with self.subTest(target=target), self.host(target):
+                fixture = self.fixture(target)
+                entry = fixture.inventory_entry("sbom.cdx.json")
+                self.assertEqual(entry["kind"], "metadata")
+                self.assertIs(entry["executable"], False)
+                entry["kind"] = "metadata"
+                fixture.save_manifest()
+                for name in ("cppcheck", "clangd"):
+                    self.receipt(fixture, name)
+                for kind in ("sbom", "analysis-resource", "license"):
+                    with self.subTest(kind=kind):
+                        invalid = self.fixture(target)
+                        invalid.inventory_entry("sbom.cdx.json")["kind"] = kind
+                        invalid.save_manifest()
+                        for name in ("cppcheck", "clangd"):
+                            self.reject(invalid, name)
+
     def test_linux_gcc_notices_require_mapping_bytes_inventory_and_sbom_ownership(self) -> None:
         target = "linux-x86_64"
         with self.host(target):

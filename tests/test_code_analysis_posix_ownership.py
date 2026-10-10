@@ -37,7 +37,16 @@ if child == 0:
         while not (base / "detach").exists(): time.sleep(.01)
         os.setsid()
         (base / "detached").write_text(str(os.getpgrp()))
-    while True: time.sleep(.05)
+    grandchild = None
+    while True:
+        if grandchild is None and (base / "fork-grandchild").exists():
+            grandchild = os.fork()
+            if grandchild == 0:
+                os.setsid()
+                (base / "grandchild-ready.tmp").write_text(str(os.getpid()))
+                os.replace(base / "grandchild-ready.tmp", base / "grandchild-ready")
+                while True: time.sleep(.05)
+        time.sleep(.05)
 (base / "ready.tmp").write_text(json.dumps({"leader": os.getpid(), "child": child, "group": os.getpgrp()}))
 os.replace(base / "ready.tmp", base / "ready")
 while not (base / "exit").exists(): time.sleep(.01)
@@ -210,6 +219,75 @@ class NativePosixOwnership(unittest.TestCase):
         self.assertIn(b"native-fixture-complete", output)
         self.assertEqual(errors, b"")
         self.assertTrue(self.is_owned_live(peer.pid, peer_token))
+
+    def test_stale_child_listing_cannot_acquire_new_birth_with_foreign_parent(self) -> None:
+        # Positive acquisition control: a previously observed detached child
+        # forks a new descendant outside the leader's group. Its real ancestry
+        # must grant ownership; group enumeration alone cannot discover it.
+        control, control_marker, directory, ready = self.tree(detach=True)
+        (directory / "fork-grandchild").touch()
+        self.until(lambda: (directory / "grandchild-ready").exists())
+        grandchild = int((directory / "grandchild-ready").read_text())
+        self.observe(grandchild)
+        self.assertEqual(psutil.Process(grandchild).ppid(), ready["child"])
+        self.assertNotEqual(os.getpgid(grandchild), control.pid)
+        self.assertNotEqual(os.getsid(grandchild), control.pid)
+        self.confirm_cleanup(control, control_marker, [control.pid, ready["child"], grandchild])
+
+        process, marker = self.spawn([sys.executable, "-c", "import time; time.sleep(60)"])
+        leader_birth = psutil.Process(process.pid).create_time()
+        # A stale global PPID map can name a PID whose current birth is newer
+        # than the owned leader. Return that real new identity as children()
+        # does; only fresh native ancestry distinguishes it from ownership.
+        time.sleep(0.05)
+        peer, peer_token = self.peer()
+        proposal = psutil.Process(peer.pid)
+        self.assertGreater(proposal.create_time(), leader_birth)
+        self.assertEqual(proposal.ppid(), os.getpid())
+        self.assertNotEqual(proposal.ppid(), process.pid)
+        self.assertEqual(os.getpgid(peer.pid), peer.pid)
+        self.assertEqual(os.getsid(peer.pid), peer.pid)
+        actual_children, actual_kill, actual_killpg = psutil.Process.children, os.kill, os.killpg
+        listed = threading.Event()
+        forbidden_signals = []
+
+        def stale_children(parent, recursive=False):
+            children = actual_children(parent, recursive=recursive)
+            if parent.pid == process.pid:
+                listed.set()
+                return [*children, proposal]
+            return children
+
+        def guard_pid(pid, sig):
+            if pid == peer.pid:
+                forbidden_signals.append(("pid", pid, sig))
+                raise PermissionError("test guards the unrelated peer")
+            return actual_kill(pid, sig)
+
+        def guard_group(group, sig):
+            if group == peer.pid:
+                forbidden_signals.append(("group", group, sig))
+                raise PermissionError("test guards the unrelated peer group")
+            return actual_killpg(group, sig)
+
+        with (
+            mock.patch.object(psutil.Process, "children", stale_children),
+            mock.patch.object(os, "kill", side_effect=guard_pid),
+            mock.patch.object(os, "killpg", side_effect=guard_group),
+        ):
+            self.assertTrue(
+                listed.wait(5), "The live ownership observer must see the stale listing"
+            )
+            confirmed = self.processes.terminate_process_group(process, grace_seconds=0.5)
+        receipt = process.cleanup_receipt
+        self.assertNotIn(peer.pid, {entry["pid"] for entry in receipt["captured"]}, receipt)
+        self.assertEqual(forbidden_signals, [], "Foreign birth must never gain signal authority")
+        self.assertTrue(self.is_owned_live(peer.pid, peer_token))
+        self.assertTrue(confirmed, receipt)
+        self.assertIs(receipt["leader_reaped"], True)
+        self.assertEqual(receipt["uncertainties"], [])
+        self.store.remove(marker)
+        self.assertFalse(marker.exists())
 
     def test_captured_detached_descendant_cannot_survive_normal_exit(self) -> None:
         peer, peer_token = self.peer()

@@ -92,6 +92,28 @@ class ManagedRuntimeTests(unittest.TestCase):
                 self.spawn.assert_not_called()
                 self.path.assert_not_called()
 
+    def test_canonical_sbom_metadata_kind_is_required_before_probe(self):
+        manifest_path = self.root / "release-manifest.json"
+        manifest = json.loads(manifest_path.read_bytes())
+        entry = next(f for f in manifest["files"] if f["path"] == "sbom.cdx.json")
+        self.assertEqual(entry["kind"], "metadata")
+        self.assertIs(entry["executable"], False)
+        self.assertFalse(self.resolve().problems)
+        self.spawn.assert_called_once()
+        self.spawn.reset_mock()
+        # A fresh root must fail classification itself, rather than merely
+        # invalidate the positive control's already cached manifest receipt.
+        invalid = RuntimeFixture(self.root / "wrong-kind")
+        invalid.inventory_entry("sbom.cdx.json")["kind"] = "sbom"
+        invalid.save_manifest()
+        result = runtime.resolve_analysis_program(
+            invalid.context(self.root), "clangd", time.monotonic() + 5
+        )
+        self.assertTrue(result.problems, result)
+        self.assertIn("sbom.cdx.json", result.problems[0].message)
+        self.spawn.assert_not_called()
+        self.path.assert_not_called()
+
     def test_complete_mapping_is_strict_even_when_selecting_other_program(self):
         cases = [
             ("bool-schema", lambda m: m.update(schema_version=True)),
