@@ -7,6 +7,8 @@ Windows Job/hardware contracts remain in their original modules.
 
 from __future__ import annotations
 
+import ctypes
+import errno
 import json
 import os
 import signal
@@ -16,12 +18,50 @@ import tempfile
 import threading
 import time
 import unittest
+from contextlib import ExitStack, contextmanager
 from pathlib import Path
 from unittest import mock
 
 import psutil
 
 from tests.code_analysis_managed_support import posix_process_identity, production
+
+
+def native_retained_exit(pid: int) -> tuple[int, int, int] | None:
+    """Independent WNOWAIT oracle: exact direct child, event kind, exit status.
+
+    Never call the production exit decoder or Popen.poll here. Repeating this
+    native observation proves that the child has not been reaped in between.
+    """
+    if sys.platform == "darwin":
+        # Public Darwin siginfo_t/waitid ABI; Python need not expose os.waitid.
+        class Siginfo(ctypes.Structure):
+            _fields_ = [
+                ("signo", ctypes.c_int),
+                ("error", ctypes.c_int),
+                ("code", ctypes.c_int),
+                ("pid", ctypes.c_int),
+                ("uid", ctypes.c_uint),
+                ("status", ctypes.c_int),
+                ("address", ctypes.c_void_p),
+                ("value", ctypes.c_void_p),
+                ("band", ctypes.c_long),
+                ("padding", ctypes.c_ulong * 7),
+            ]
+
+        waitid = ctypes.CDLL(None, use_errno=True).waitid
+        waitid.argtypes = (ctypes.c_int, ctypes.c_uint, ctypes.POINTER(Siginfo), ctypes.c_int)
+        waitid.restype = ctypes.c_int
+        result = Siginfo()
+        # Darwin P_PID=1, WEXITED=4, WNOHANG=1, WNOWAIT=32.
+        if waitid(1, pid, ctypes.byref(result), 4 | 1 | 32) != 0:
+            error = ctypes.get_errno()
+            raise OSError(error, os.strerror(error))
+        return (result.pid, result.code, result.status) if result.pid else None
+    if sys.platform.startswith("linux"):
+        result = os.waitid(os.P_PID, pid, os.WEXITED | os.WNOHANG | os.WNOWAIT)
+        return (result.si_pid, result.si_code, result.si_status) if result else None
+    raise AssertionError("Retained-exit oracle requires a matching Linux/macOS Actions host")
 
 
 # Gates keep the native leader available until its exact identity is observed.
@@ -101,17 +141,16 @@ class NativePosixOwnership(unittest.TestCase):
         for process, _ in self.owned:
             try:
                 process.wait(timeout=2)
-            except subprocess.TimeoutExpired:
+            except (subprocess.TimeoutExpired, RuntimeError):
                 pass
             # Negative contracts intentionally leave a native anchor retained.
             # Reap only this fixture's exact direct child after the independent
             # oracle observes its exit; never upgrade its production receipt.
-            token = self.observed.get(process.pid)
-            if token and posix_process_identity(process.pid) == (token, "Z"):
-                try:
+            try:
+                if native_retained_exit(process.pid) is not None:
                     os.waitpid(process.pid, os.WNOHANG)
-                except ChildProcessError:
-                    pass
+            except ChildProcessError:
+                pass
             for stream in (process.stdin, process.stdout, process.stderr):
                 if stream is not None:
                     stream.close()
@@ -171,6 +210,226 @@ class NativePosixOwnership(unittest.TestCase):
         self.owned.append((process, None))
         token = self.observe(process.pid)
         return process, token
+
+    @contextmanager
+    def unavailable_leader_image(self, pid: int, *, metadata: bool, session: bool):
+        """Fault only live-image queries for this real, positively exited child."""
+        actual_birth, actual_status = psutil.Process.create_time, psutil.Process.status
+        actual_group, actual_session = os.getpgid, os.getsid
+
+        def birth(candidate):
+            if candidate.pid == pid:
+                raise psutil.AccessDenied(pid)
+            return actual_birth(candidate)
+
+        def status(candidate):
+            if candidate.pid == pid:
+                raise psutil.AccessDenied(pid)
+            return actual_status(candidate)
+
+        def group(candidate):
+            if candidate == pid:
+                raise ProcessLookupError(errno.ESRCH, "exited leader has no live group image")
+            return actual_group(candidate)
+
+        def sid(candidate):
+            if candidate == pid:
+                raise ProcessLookupError(errno.ESRCH, "exited leader has no live session image")
+            return actual_session(candidate)
+
+        with ExitStack() as stack:
+            if metadata:
+                stack.enter_context(mock.patch.object(psutil.Process, "create_time", birth))
+                stack.enter_context(mock.patch.object(psutil.Process, "status", status))
+            if session:
+                stack.enter_context(mock.patch.object(os, "getpgid", side_effect=group))
+                stack.enter_context(mock.patch.object(os, "getsid", side_effect=sid))
+            yield
+
+    def gated_exit(self, exit_code: int, name: str, *, release: bool = True):
+        gate = self.base / name
+        process, marker = self.spawn(
+            [
+                sys.executable,
+                "-c",
+                "import pathlib,sys,time; gate=pathlib.Path(sys.argv[1]);\n"
+                "while not gate.exists(): time.sleep(.01)\n"
+                "print('retained exit'); sys.exit(int(sys.argv[2]))",
+                str(gate),
+                str(exit_code),
+            ]
+        )
+        self.assertIsNone(native_retained_exit(process.pid), "Positive live startup control")
+        if not release:
+            return process, marker, gate
+        gate.touch()
+        self.assertEqual(
+            self.until(lambda: native_retained_exit(process.pid)), (process.pid, 1, exit_code)
+        )
+        return process, marker
+
+    def test_exact_retained_exit_survives_unavailable_leader_live_image(self) -> None:
+        peer, peer_token = self.peer()
+        for exit_code in (0, 23):
+            for metadata, session in ((True, False), (False, True), (True, True)):
+                with self.subTest(exit_code=exit_code, metadata=metadata, session=session):
+                    process, marker = self.gated_exit(
+                        exit_code, f"exit-{exit_code}-{metadata}-{session}"
+                    )
+                    saved_marker = marker.read_bytes()
+                    with self.unavailable_leader_image(
+                        process.pid, metadata=metadata, session=session
+                    ):
+                        output, errors = process.communicate(timeout=5)
+                        self.assertEqual(output, b"retained exit\n")
+                        self.assertEqual(errors, b"")
+                        self.assertEqual(process.returncode, exit_code)
+                        self.assertEqual(
+                            native_retained_exit(process.pid), (process.pid, 1, exit_code)
+                        )
+                        self.assertEqual(marker.read_bytes(), saved_marker)
+                        self.confirm_cleanup(process, marker, [process.pid])
+                    receipt = process.cleanup_receipt
+                    self.assertEqual(receipt["leader_exit"], exit_code)
+                    leader = [entry for entry in receipt["captured"] if entry["pid"] == process.pid]
+                    self.assertEqual(len(leader), 1, receipt)
+                    self.assertEqual(leader[0]["start_token"], receipt["start_token"])
+                    self.assertEqual(leader[0]["state"], "zombie")
+                    with self.assertRaises(ChildProcessError):
+                        os.waitpid(process.pid, os.WNOHANG)
+                    self.assertTrue(self.is_owned_live(peer.pid, peer_token))
+
+    def test_unavailable_exact_retained_exit_never_confirms_or_removes_marker(self) -> None:
+        peer, peer_token = self.peer()
+        posix = production("kernel._analysis_posix")
+        actual_exit = posix._exit_status
+        for exit_code in (0, 23):
+            with self.subTest(exit_code=exit_code):
+                process, marker, gate = self.gated_exit(
+                    exit_code, f"unknown-exit-{exit_code}", release=False
+                )
+                saved_marker = marker.read_bytes()
+                denied = []
+
+                def unavailable_exit(pid):
+                    if pid == process.pid and native_retained_exit(pid) is not None:
+                        denied.append(pid)
+                        raise PermissionError(errno.EPERM, "exact retained exit unavailable")
+                    return actual_exit(pid)
+
+                with (
+                    mock.patch.object(posix, "_exit_status", side_effect=unavailable_exit),
+                ):
+                    gate.touch()
+                    self.assertEqual(
+                        self.until(lambda: native_retained_exit(process.pid)),
+                        (process.pid, 1, exit_code),
+                    )
+                    with self.unavailable_leader_image(process.pid, metadata=True, session=True):
+                        self.assertFalse(
+                            self.processes.terminate_process_group(process, grace_seconds=0.2)
+                        )
+                self.assertTrue(denied, "Cleanup must actually reach the unavailable exit seam")
+                receipt = process.cleanup_receipt
+                self.assertIs(receipt["confirmed"], False)
+                self.assertIs(receipt["leader_reaped"], False)
+                self.assertIsNone(receipt["leader_exit"], "Never invent exit zero from errno")
+                self.assertTrue(receipt["uncertainties"])
+                self.assertEqual(marker.read_bytes(), saved_marker)
+                self.assertEqual(native_retained_exit(process.pid), (process.pid, 1, exit_code))
+                self.assertFalse(self.is_owned_live(process.pid, self.observed[process.pid]))
+                self.assertTrue(self.is_owned_live(peer.pid, peer_token))
+
+    def test_retained_leader_exit_cannot_hide_inaccessible_captured_detached_live_child(
+        self,
+    ) -> None:
+        peer, peer_token = self.peer()
+        process, marker, directory, ready = self.tree(detach=True)
+        child, token = ready["child"], self.observed[ready["child"]]
+        self.until(lambda: any(pid == child for pid, _ in process._captured))
+        (directory / "exit").touch()
+        self.assertEqual(self.until(lambda: native_retained_exit(process.pid)), (process.pid, 1, 0))
+        actual_birth = psutil.Process.create_time
+        denied = []
+
+        def child_birth(candidate):
+            if candidate.pid == child:
+                denied.append(child)
+                raise psutil.AccessDenied(child)
+            return actual_birth(candidate)
+
+        saved_marker = marker.read_bytes()
+        with (
+            mock.patch.object(psutil.Process, "create_time", child_birth),
+            self.unavailable_leader_image(process.pid, metadata=True, session=True),
+        ):
+            self.assertFalse(self.processes.terminate_process_group(process, grace_seconds=0.2))
+        self.assertTrue(denied, "Actual captured descendant observation must reach the fault")
+        receipt = process.cleanup_receipt
+        self.assertEqual(receipt["leader_exit"], 0)
+        self.assertIs(receipt["leader_reaped"], False)
+        self.assertIs(receipt["confirmed"], False)
+        self.assertTrue(receipt["uncertainties"])
+        captured = {entry["pid"]: entry for entry in receipt["captured"]}
+        self.assertEqual(captured[child]["state"], "unknown")
+        self.assertTrue(self.is_owned_live(child, token))
+        self.assertEqual(marker.read_bytes(), saved_marker)
+        self.assertEqual(native_retained_exit(process.pid), (process.pid, 1, 0))
+        self.assertTrue(self.is_owned_live(peer.pid, peer_token))
+
+    def test_already_exited_before_begin_keeps_initial_observation_gap_unconfirmed(self) -> None:
+        peer, peer_token = self.peer()
+        posix = production("kernel._analysis_posix")
+        actual_begin = posix.AnalysisPopen.begin_ownership
+        for exit_code in (0, 23):
+            with self.subTest(exit_code=exit_code):
+                began_after_exit = []
+
+                def begin_after_native_exit(process):
+                    # Exercise the real startup boundary, never manufacture a
+                    # receipt or use a delayed spawn as evidence of this race.
+                    self.owned.append((process, None))
+                    proof = self.until(lambda: native_retained_exit(process.pid))
+                    self.assertEqual(proof, (process.pid, 1, exit_code))
+                    began_after_exit.append(proof)
+                    with self.unavailable_leader_image(process.pid, metadata=False, session=True):
+                        actual_begin(process)
+
+                with mock.patch.object(
+                    posix.AnalysisPopen, "begin_ownership", begin_after_native_exit
+                ):
+                    process, marker = self.processes.popen_owned(
+                        [
+                            sys.executable,
+                            "-c",
+                            f"print('startup exit'); raise SystemExit({exit_code})",
+                        ],
+                        marker_store=self.store,
+                        analysis_ownership=True,
+                        stdin=subprocess.DEVNULL,
+                        stdout=subprocess.PIPE,
+                        stderr=subprocess.PIPE,
+                    )
+                self.assertEqual(began_after_exit, [(process.pid, 1, exit_code)])
+                self.assertIsNotNone(marker)
+                saved_marker = marker.read_bytes()
+                output, errors = process.communicate(timeout=5)
+                self.assertEqual((output, errors), (b"startup exit\n", b""))
+                self.assertEqual(process.returncode, exit_code)
+                with self.unavailable_leader_image(process.pid, metadata=True, session=True):
+                    self.assertFalse(
+                        self.processes.terminate_process_group(process, grace_seconds=0.2)
+                    )
+                receipt = process.cleanup_receipt
+                self.assertEqual(receipt["leader_exit"], exit_code)
+                self.assertIs(receipt["leader_reaped"], False)
+                self.assertIs(receipt["confirmed"], False)
+                self.assertIn(
+                    "leader exited before initial descendant observation", receipt["uncertainties"]
+                )
+                self.assertEqual(marker.read_bytes(), saved_marker)
+                self.assertEqual(native_retained_exit(process.pid), (process.pid, 1, exit_code))
+                self.assertTrue(self.is_owned_live(peer.pid, peer_token))
 
     def confirm_cleanup(self, process, marker, pids) -> None:
         before = time.monotonic()
