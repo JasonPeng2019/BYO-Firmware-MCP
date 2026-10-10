@@ -204,11 +204,13 @@ class ManagedRuntimeTests(unittest.TestCase):
         self.assertIn("reparse", result.problems[0].message)
         self.spawn.assert_not_called()
 
-    def test_large_file_hash_checks_actual_deadline_between_chunks(self):
+    def test_large_file_hash_checks_deadline_between_chunks(self):
         path = self.root / "chunked-program.exe"
         path.write_bytes(b"x" * (3 * 64 * 1024))
         original = Path.open
         reads = []
+        clock = [time.monotonic()]
+        deadline = clock[0] + 0.02
 
         class SlowStream:
             def __enter__(self):
@@ -221,12 +223,17 @@ class ManagedRuntimeTests(unittest.TestCase):
             def read(self, size):
                 reads.append(size)
                 data = self.stream.read(size)
-                time.sleep(0.03)
+                # Advance a controlled clock past the budget after one real read.
+                # Host timer resolution and scheduling cannot admit another chunk.
+                clock[0] = deadline + 0.01
                 return data
 
-        with patch.object(Path, "open", return_value=SlowStream()):
+        with (
+            patch.object(Path, "open", return_value=SlowStream()),
+            patch.object(self.manifest.time, "monotonic", side_effect=lambda: clock[0]),
+        ):
             with self.assertRaises(TimeoutError):
-                self.manifest.hash_file(path, time.monotonic() + 0.02, None)
+                self.manifest.hash_file(path, deadline, None)
         self.assertEqual(reads, [64 * 1024])
 
     def test_duplicate_keys_and_empty_extra_directories_rejected(self):
