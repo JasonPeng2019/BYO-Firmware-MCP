@@ -90,6 +90,12 @@ candidate:
 - native non-Linux profile/worker/cleanup qualification before configured CAN
   can be enabled there, plus physical pyOCD/J-Link regression coverage.
 
+The machine requirements, execution sequence, evidence rules, and completion
+criteria for these gates are documented in the
+[external qualification runbook](EXTERNAL_QUALIFICATION_RUNBOOK.md). That
+runbook is testing-only and does not authorize publication to an official BYO
+Releases repository.
+
 The Apache-2.0 text bundled under `LICENSES/` and `THIRD_PARTY_NOTICES.md`
 records provenance for CAN code adapted from Firmware-CLI. It does **not**
 declare a license for the project as a whole. Public publication remains

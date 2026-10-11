@@ -132,6 +132,8 @@ server startup and hardware behavior continue normally.
 - [Architecture](docs/architecture.md): runtime and state ownership.
 - [Client contract](docs/client-contract.md): MCP behavior and response contract.
 - [Plan-tool contract](docs/plan-tool-contract.md): guarded-operation plan fields.
+- [External qualification runbook](docs/EXTERNAL_QUALIFICATION_RUNBOOK.md): privileged `vcan`,
+  physical CAN/HIL, native-platform, OAuth, privacy, and release-gate procedures.
 - [Sentry evidence](sentry-evidence/README.md): final passing test suite,
   specifications, plans, and recorded results for the Sentry monitor/logger work.
 
