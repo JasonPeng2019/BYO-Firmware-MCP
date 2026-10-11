@@ -1,5 +1,10 @@
 ﻿# BYO Firmware MCP
 
+> **Release status:** `0.1.8rc1` is a mixed-product, pre-split,
+> local-delivery preview. It is not a public production release. See
+> [the release-status ledger](docs/RELEASE_STATUS.md) for the legal,
+> product-split, remote-authentication, and hardware qualification gates.
+
 BYO Firmware MCP is a local, stdio-based MCP server for guarded embedded-board
 setup, inspection, serial I/O, debug control, firmware deployment, and recovery
 through pyOCD.
@@ -7,9 +12,10 @@ through pyOCD.
 ## Current state
 
 The server implementation lives in `src/pyocd_debug_mcp`. It is distributable
-without bundled board profiles, firmware, packs, generated reports, or hardware
-state. Board-specific state is created in the firmware project's `.firm/`
-directory, never in this server checkout.
+without authoritative board profiles, firmware, packs, generated reports, or
+hardware state. The distribution includes one inert, RX-only virtual CAN example;
+it grants no authority until an operator copies/selects it explicitly at startup.
+Board-specific state is created in the firmware project's `.firm/` directory.
 
 The server is intentionally headless and client-neutral. It exposes its current
 tool surface through the MCP protocol; a visible tool is not, by itself,
@@ -28,6 +34,74 @@ Start the stdio server:
 ```text
 uv run --locked pyocd-debug-mcp
 ```
+
+### Client workspace assets
+
+The `0.1.8rc1` wheel installs the server only. The repository-owned client
+workspace (`byo-issue-report`, `$downgrade`, `$mass-erase`, and
+`attach-project`) is a **source handoff** shipped in a clone and in the raw
+sdist archive; `pip install` of either the wheel or sdist builds/installs the
+server wheel and does not attach those client assets. From a clone or an
+extracted sdist, attach them explicitly:
+
+```text
+client-workspace/bin/attach-project /absolute/path/to/firmware-project
+```
+
+Race-safe attachment requires POSIX descriptor-path support through
+`/proc/self/fd` or `/dev/fd`. Unsupported platforms fail closed before changing
+an existing workspace.
+
+The command copies the versioned assets to the firmware project's private
+`.agent-workspace/`. On refresh it overlays BYO-owned paths and preserves validated
+unrelated top-level and nested third-party workspace assets. A server-only
+installation must not be described as client skill delivery.
+
+### Optional software CAN
+
+Classical CAN support is opt-in and startup-bound. By default it is off. To use
+the bundled RX-only virtual example for isolated lifecycle and policy checks, install the
+optional backend dependencies and stage one immutable profile before starting
+the server:
+
+```text
+uv sync --locked --extra can
+PYOCD_CAN_MODE=available \
+PYOCD_CAN_CONFIG=/absolute/path/to/BYO-Firmware-MCP/fixtures/can/virtual_rx_only.yaml \
+uv run --locked --extra can pyocd-debug-mcp
+```
+
+For a wheel or sdist installation, install `pyocd-debug-mcp[can]`. A base
+installation deliberately omits `python-can` and Linux `pyroute2`: all
+non-CAN functions and the static, seven-name off-mode CAN registration remain
+available without them. Selecting `PYOCD_CAN_MODE=available` without the extra
+fails closed with an installation remedy rather than starting a partial CAN
+runtime.
+
+Source checkouts expose that exact path. Wheels install the same example as
+`pyocd_debug_mcp/examples/can/virtual_rx_only.yaml`; copy it to an operator-owned
+location, update its logical `board_ids` if needed, and pass the resulting
+absolute path. The example is never selected automatically.
+
+The `python-can` virtual backend is process-local inside the isolated worker.
+It proves adapter, worker, policy, and cleanup behavior with a child-hosted test
+peer, but it cannot exchange frames with a virtual peer opened in another
+process and is not an end-to-end integration backend. Linux `vcan` wiring is
+implemented but remains experimental and unqualified. Configured CAN is
+currently enabled only on qualified Linux hosts; Windows, Cygwin/MSYS, and
+macOS fail closed before profile loading. Physical SocketCAN profiles
+are intentionally rejected in this release. No virtual observation is
+physical-bus evidence. `connect_can` requires an active setup-full, currently validated
+debug session. `read_can` and `send_can` additionally require their exact plan
+tools. Transmit is disabled unless the startup profile enables it and names the
+exact allowed identifiers. Always call `disconnect_can` (or normal
+`disconnect`, which closes CAN first) after use.
+
+The optional startup pins are `PYOCD_CAN_CONFIG_SHA256`,
+`PYOCD_CAN_RUNTIME_SHA256`, and `PYOCD_CAN_READ_SECONDS`. Unknown non-empty
+`PYOCD_CAN_*` values fail startup rather than being ignored. See the
+[server guide](SERVER_GUIDE.md#software-classical-can) for the complete
+contract.
 
 Register this command with an MCP-compatible client, preferably from the
 firmware project's directory:
@@ -80,9 +154,13 @@ An interrupted escalation from lite or full retains its prior active tier and
 records the incomplete attempt separately. A corrupt committed policy is never
 treated as raw and must be repaired before hardware access.
 
-`$downgrade` and `$mass-erase` are manual-only workspace skills. The server
+After the source-handoff attachment above, `$downgrade` and `$mass-erase` are
+manual-only workspace skills. The server
 uses their project-local grants under `.agent-workspace/runtime/manual-permissions`,
-resets those grants at every startup, and consumes each authorization once. Ask
+resets those grants at every startup, and consumes each authorization once. A
+server-only start does not create `.agent-workspace`; manual authorization stays
+unavailable until the runtime has an explicit repository ignore (the attachment
+installs one). Ask
 the human to invoke the named skill; do not create or edit a grant directly.
 Mass erase reserves that exact disclosure before plan acceptance and consumes it
 before the backend call; a cancelled, changed, or failed plan discards the old

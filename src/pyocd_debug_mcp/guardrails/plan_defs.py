@@ -3,12 +3,20 @@
 from __future__ import annotations
 
 import json
+import re
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from enum import Enum
 from types import MappingProxyType
 from typing import Final
 
+from pyocd_debug_mcp.can_config import (
+    MAX_CAN_DATA_BYTES,
+    MAX_DATA_HEX_TEXT_LENGTH,
+    MAX_READ_FRAMES,
+    MAX_READ_SECONDS,
+    MAX_SEND_TIMEOUT_SECONDS,
+)
 from pyocd_debug_mcp.services.uart_exchange_schema import (
     validate_serial_exchange_parameters,
 )
@@ -72,6 +80,7 @@ class PlanDefinition:
     action_validator: Callable[[Mapping[str, object]], str | None] | None = None
     artifact_binding_field: str | None = None
     artifact_binding_suffixes: tuple[str, ...] = ()
+    validate_scope_on_submission: bool = False
 
     @property
     def common_fields(self) -> tuple[FieldDefinition, ...]:
@@ -199,6 +208,27 @@ def _validate_write_memory_parameters(values: Mapping[str, object]) -> str | Non
         return None
     if not isinstance(elf_artifact, str) or not elf_artifact.strip():
         return "elf_artifact must name the current project ELF for a symbol write"
+    return None
+
+
+def _validate_send_can_parameters(values: Mapping[str, object]) -> str | None:
+    arbitration_id = values.get("arbitration_id")
+    extended = values.get("extended")
+    if type(arbitration_id) is int and extended is False and arbitration_id > 0x7FF:
+        return "arbitration_id is outside the standard 11-bit CAN range"
+    data_hex = values.get("data_hex")
+    if not isinstance(data_hex, str):
+        return None
+    if len(data_hex) > MAX_DATA_HEX_TEXT_LENGTH:
+        return (
+            "data_hex textual representation must contain at most "
+            f"{MAX_DATA_HEX_TEXT_LENGTH} characters"
+        )
+    compact = re.sub(r"\s+", "", data_hex)
+    if len(compact) % 2 or re.fullmatch(r"[0-9a-fA-F]*", compact) is None:
+        return "data_hex must contain an even number of hexadecimal digits"
+    if len(compact) > 2 * MAX_CAN_DATA_BYTES:
+        return f"data_hex must encode at most {MAX_CAN_DATA_BYTES} bytes for Classical CAN"
     return None
 
 
@@ -601,6 +631,73 @@ _DEFINITIONS = (
         SafetyMode.FRESH_WRITE,
         30.0,
         "The text and all transport parameters are bound exactly by the plan.",
+    ),
+    PlanDefinition(
+        "read_can",
+        "read_can-plan",
+        "Capture bounded, exact-allowlisted Classical CAN frames for the selected board.",
+        (
+            _field(
+                "read_seconds",
+                FieldType.NUMBER,
+                "Finite capture duration, or NULL for the startup-effective default.",
+                nullable=True,
+                minimum=0,
+                maximum=MAX_READ_SECONDS,
+                exclusive_minimum=True,
+            ),
+            _field(
+                "max_frames",
+                FieldType.INTEGER,
+                "Positive returned-frame cap, or NULL for the immutable profile default.",
+                nullable=True,
+                minimum=1,
+                maximum=MAX_READ_FRAMES,
+            ),
+        ),
+        BudgetMode.FLEXIBLE,
+        PermissionMode.NONE,
+        SafetyMode.VALIDATED_READ,
+        5.0,
+        "CAN must already be connected; profile filters and process quotas remain authoritative.",
+        validate_scope_on_submission=True,
+    ),
+    PlanDefinition(
+        "send_can",
+        "send_can-plan",
+        "Send one exact-allowlisted Classical CAN data frame from the selected fixture.",
+        (
+            _field(
+                "arbitration_id",
+                FieldType.INTEGER,
+                "Exact 11- or 29-bit CAN identifier.",
+                minimum=0,
+                maximum=0x1FFFFFFF,
+            ),
+            _field(
+                "data_hex",
+                FieldType.TEXT,
+                "Zero to eight bytes encoded as hexadecimal text.",
+                allow_empty=True,
+            ),
+            _field("extended", FieldType.BOOLEAN, "True for a 29-bit identifier."),
+            _field(
+                "timeout_seconds",
+                FieldType.NUMBER,
+                "Finite send timeout, or NULL for the immutable profile default.",
+                nullable=True,
+                minimum=0,
+                maximum=MAX_SEND_TIMEOUT_SECONDS,
+                exclusive_minimum=True,
+            ),
+        ),
+        BudgetMode.FLEXIBLE,
+        PermissionMode.NONE,
+        SafetyMode.FRESH_WRITE,
+        5.0,
+        "The exact ID, payload, frame width, timeout, profile allowlist, and process quota bind every attempt.",
+        action_validator=_validate_send_can_parameters,
+        validate_scope_on_submission=True,
     ),
 )
 
@@ -1072,6 +1169,42 @@ _GUIDANCE: Final = MappingProxyType(
                 "timeout_seconds": 1.0,
             },
         ),
+        "read_can": _PromptGuidance(
+            "Use for a bounded observation of exact CAN identifiers authorized by the immutable "
+            "startup fixture. It is not a streaming analyzer and cannot widen profile filters.",
+            "The board must be setup-full, connected, currently validated, attached to CAN, and "
+            "bound by this exact plan. Profile time/frame/process caps are rechecked at execution.",
+            "A matching raw CAN frame does not authenticate its sender. Software virtual evidence "
+            "does not establish physical-bus behavior.",
+            (
+                "State which expected identifiers or absence would test the hypothesis.",
+                "Use the shortest useful capture duration and returned-frame cap.",
+                "Confirm the immutable fixture profile is the intended isolated software bench.",
+            ),
+            "Disconnect CAN when the observation is complete; the server owns worker cleanup.",
+            {"read_seconds": None, "max_frames": None},
+        ),
+        "send_can": _PromptGuidance(
+            "Use only to transmit one Classical CAN data frame already authorized by the startup "
+            "fixture. A different ID, payload, width, or timeout requires a replacement plan.",
+            "The board must be setup-full, connected, currently validated, attached to CAN, and "
+            "bound by this exact plan. TX enablement, exact ID allowlist, backend capabilities, "
+            "rate limit, and process quota are rechecked immediately before submission.",
+            "CAN input can change target or peer state. One API submission is not a physical "
+            "single-attempt claim outside a separately qualified backend.",
+            (
+                "Confirm the identifier and payload are safe for the isolated fixture.",
+                "State the exact expected peer or target response.",
+                "Use read_can to observe the bounded result when needed.",
+            ),
+            "Treat timeout or missing response as inconclusive and disconnect CAN after the test.",
+            {
+                "arbitration_id": 0x123,
+                "data_hex": "cafe0001",
+                "extended": False,
+                "timeout_seconds": None,
+            },
+        ),
     }
 )
 
@@ -1081,17 +1214,41 @@ def _render_null_response(
     permission_disclosure: str | None,
 ) -> str:
     guidance = _GUIDANCE[definition.action_name]
+
+    def bound(value: float) -> str:
+        return str(value) if isinstance(value, int) else format(value, ".15g")
+
+    def field_contract(field: FieldDefinition) -> str:
+        constraints = [field.field_type.value]
+        if field.nullable:
+            constraints.append("NULL allowed")
+        if field.choices:
+            choices = ", ".join(json.dumps(choice) for choice in field.choices)
+            constraints.append(f"one of {choices}")
+        if field.minimum is not None:
+            operator = ">" if field.exclusive_minimum else ">="
+            constraints.append(f"{operator} {bound(field.minimum)}")
+        if field.maximum is not None:
+            constraints.append(f"<= {bound(field.maximum)}")
+        if field.min_items is not None:
+            constraints.append(f"at least {field.min_items} item(s)")
+        if field.max_items is not None:
+            constraints.append(f"at most {field.max_items} item(s)")
+        if field.allow_empty:
+            constraints.append("empty allowed")
+        return "; ".join(constraints)
+
     action_lines = (
         "\n".join(
-            f"- {field.name} ({field.field_type.value}{' or NULL' if field.nullable else ''}): "
-            f"{field.description}"
+            f"- {field.name} ({field_contract(field)}): {field.description}"
             for field in definition.action_fields
         )
         or "- No action-specific parameters; action_parameters must be the empty object {}."
     )
     action_names = ", ".join(field.name for field in definition.action_fields) or "none"
     plan_lines = "\n".join(
-        f"- {field.name}: {field.description}" for field in definition.plan_fields
+        f"- {field.name} ({field_contract(field)}): {field.description}"
+        for field in definition.plan_fields
     )
     permission = {
         PermissionMode.NONE: (

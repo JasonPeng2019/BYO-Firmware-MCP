@@ -14,13 +14,11 @@ regardless of which directory it lives in.
 
 Run it by hand:
 
-    python tests/manual/manual_remote_probe_hardware_check.py
     python tests/manual/manual_remote_probe_hardware_check.py --probe-uid <uid> --port <port>
 
-The default `--probe-uid` is the ST-LINK verified on the machine REMOTE_PROBE_PLAN.md
-was written against (`0668FF514988525067213913`); pass your own with `--probe-uid` on
-any other machine. `--port` defaults to an OS-assigned free port so repeat runs never
-collide with a leftover listener.
+The checked-in record redacts the physical probe used during the original run.
+Supply the intended probe explicitly with `--probe-uid`. `--port` defaults to an
+OS-assigned free port so repeat runs never collide with a leftover listener.
 
 Expect the PC read back in step 5 to be a real but essentially arbitrary code address
 (the plan measured `0x80015de` on its reference board) -- the exact value depends on
@@ -55,7 +53,6 @@ from pyocd_debug_mcp.tools.remote_probes import (  # noqa: E402
     build_remote_probe_handlers,
 )
 
-DEFAULT_PROBE_UID = "0668FF514988525067213913"
 SERVER_START_TIMEOUT_SECONDS = 30.0
 POLL_INTERVAL_SECONDS = 0.2
 
@@ -100,7 +97,7 @@ def _terminate(process: subprocess.Popen[bytes]) -> None:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--probe-uid", default=DEFAULT_PROBE_UID)
+    parser.add_argument("--probe-uid", required=True)
     parser.add_argument("--port", type=int, default=None)
     args = parser.parse_args()
 
@@ -171,9 +168,9 @@ def main() -> int:
                 native_uarts=lambda: [],
                 remote_probes=lambda: load_remote_probes(registry_path),
             ).snapshot()
-            assert not any(
-                row.provider == "remote" for row in after.probes
-            ), "the remote row survived unregistration"
+            assert not any(row.provider == "remote" for row in after.probes), (
+                "the remote row survived unregistration"
+            )
 
         print("PASS: the remote probe route works end to end against real hardware.")
         return 0

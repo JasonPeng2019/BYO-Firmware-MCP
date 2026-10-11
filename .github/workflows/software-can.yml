@@ -1,0 +1,103 @@
+name: Software CAN
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  software-can:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.10", "3.12"]
+
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          fetch-depth: 0
+      - name: Install uv
+        uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        with:
+          version: "0.12.0"
+          python-version: ${{ matrix.python-version }}
+          enable-cache: true
+      - name: Report pinned build toolchain
+        run: uv --version
+      - name: Install locked software test environment
+        run: uv sync --locked --extra can --group dev
+      - name: Lint release and CAN implementation
+        run: >-
+          uv run --locked --extra can ruff check
+          src tests scripts client-workspace client-workspace/bin/attach-project
+      - name: Check Python formatting
+        env:
+          BYO_FORMAT_BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
+          BYO_FORMAT_DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        run: >-
+          uv run --locked --extra can python
+          scripts/verify_changed_python_format.py
+      - name: Type-check the package
+        run: >-
+          uv run --locked --extra can pyright
+          src scripts client-workspace client-workspace/bin/attach-project
+      - name: Verify evidence privacy manifest
+        run: >-
+          uv run --locked --extra can python
+          scripts/verify_evidence_privacy.py
+      - name: Verify retained release evidence consistency
+        run: >-
+          uv run --locked --extra can python
+          scripts/verify_release_evidence.py
+      - name: Run software CAN and package tests
+        run: >-
+          uv run --locked --extra can python -m unittest discover
+          -s tests -p 'test_*.py' -v
+      - name: Verify clean wheel and sdist installs
+        run: >-
+          uv run --locked --extra can python
+          scripts/verify_release_artifacts.py
+      - name: Build and reverify exact release handoff bytes
+        if: matrix.python-version == '3.12'
+        run: |
+          uv run --locked --extra can python scripts/verify_release_artifacts.py --keep-dist release-dist
+          uv run --locked --extra can python scripts/verify_release_artifacts.py release-dist
+          sha256sum release-dist/* | tee release-dist/SHA256SUMS
+      - name: Retain exact verified release handoff bytes
+        if: matrix.python-version == '3.12'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: pyocd-debug-mcp-0.1.8rc1
+          path: release-dist/
+          if-no-files-found: error
+          retention-days: 30
+
+  windows-can-disabled:
+    runs-on: windows-latest
+    timeout-minutes: 15
+
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          fetch-depth: 0
+      - name: Install uv
+        uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        with:
+          version: "0.12.0"
+          python-version: "3.12"
+          enable-cache: true
+      - name: Install locked CAN test environment
+        run: uv sync --locked --extra can --group dev
+      - name: Verify Windows off mode and configured-mode startup guard
+        run: >-
+          uv run --locked --extra can python -m unittest -v
+          tests.test_can_config_gate.CanStartupTests.test_off_contract_has_frozen_canonical_bytes_and_digest
+          tests.test_can_config_gate.CanStartupTests.test_native_windows_configured_can_is_disabled
+          tests.test_can_server_contract.CanServerContractTests.test_static_inventory_and_non_layer2_binding
+          tests.test_can_server_contract.CanServerContractTests.test_off_status_disconnect_and_connect_are_canonical_json
+          tests.test_remote_probes.LoadSaveTests.test_cross_process_registrations_do_not_lose_acknowledged_entries
+          tests.test_tiered_acceptance_workspace.TieredWorkspaceAcceptanceTests.test_native_windows_workspace_junction_is_rejected_without_external_writes

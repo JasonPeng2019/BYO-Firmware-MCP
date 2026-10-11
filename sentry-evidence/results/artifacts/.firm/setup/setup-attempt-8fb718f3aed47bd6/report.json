@@ -7,7 +7,7 @@
     "reused": false
   },
   "candidate_validation_results": [],
-  "connection_id": "probe:066FFF514988525067233337",
+  "connection_id": "probe:redacted-stlink-probe",
   "connection_results": {},
   "continuation_id": "setup-continuation-eb301cc2fe018f38",
   "created_at": "2026-07-24T00:51:58.456252Z",
@@ -232,8 +232,8 @@
       {
         "description": "STM32 STLink NUCLEO-L476RG",
         "probe_family": "stlink",
-        "probe_id": "066FFF514988525067233337",
-        "usb_serial": "066FFF514988525067233337"
+        "probe_id": "redacted-stlink-probe",
+        "usb_serial": "redacted-stlink-probe"
       }
     ],
     "serial_ports": [
@@ -243,14 +243,14 @@
         "pid": 14155,
         "port_path": "COM12",
         "provably_mapped": true,
-        "serial_id": "066FFF514988525067233337",
-        "usb_serial": "066FFF514988525067233337",
+        "serial_id": "redacted-stlink-probe",
+        "usb_serial": "redacted-stlink-probe",
         "vid": 1155
       }
     ],
     "user_input": {
       "board_id": "nucleo_l476rg",
-      "connection_id": "probe:066FFF514988525067233337",
+      "connection_id": "probe:redacted-stlink-probe",
       "display_name": "NUCLEO-L476RG",
       "mcu_part_number": "STM32L476RGT6",
       "requires_uart": false,
@@ -494,8 +494,8 @@
           {
             "description": "STM32 STLink NUCLEO-L476RG",
             "probe_family": "stlink",
-            "probe_id": "066FFF514988525067233337",
-            "usb_serial": "066FFF514988525067233337"
+            "probe_id": "redacted-stlink-probe",
+            "usb_serial": "redacted-stlink-probe"
           }
         ],
         "serial_ports": [
@@ -505,14 +505,14 @@
             "pid": 14155,
             "port_path": "COM12",
             "provably_mapped": true,
-            "serial_id": "066FFF514988525067233337",
-            "usb_serial": "066FFF514988525067233337",
+            "serial_id": "redacted-stlink-probe",
+            "usb_serial": "redacted-stlink-probe",
             "vid": 1155
           }
         ],
         "user_input": {
           "board_id": "nucleo_l476rg",
-          "connection_id": "probe:066FFF514988525067233337",
+          "connection_id": "probe:redacted-stlink-probe",
           "display_name": "NUCLEO-L476RG",
           "mcu_part_number": "STM32L476RGT6",
           "requires_uart": false,
@@ -527,7 +527,7 @@
       "code": "setup/selections-resolved",
       "details": {
         "build": null,
-        "probe": "STM32 STLink NUCLEO-L476RG (identifier ending 233337)",
+        "probe": "STM32 STLink NUCLEO-L476RG (identifier redacted)",
         "serial": null
       },
       "phase": "selection",
@@ -551,8 +551,8 @@
     "probe": {
       "description": "STM32 STLink NUCLEO-L476RG",
       "probe_family": "stlink",
-      "probe_id": "066FFF514988525067233337",
-      "usb_serial": "066FFF514988525067233337"
+      "probe_id": "redacted-stlink-probe",
+      "usb_serial": "redacted-stlink-probe"
     },
     "serial": null
   },

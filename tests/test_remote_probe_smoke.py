@@ -19,11 +19,12 @@ and isolated `HardwareInventoryService` instances thoroughly. What it does not c
    `nullcontext()`); `register_remote_probe` and `unregister_remote_probe` take no
    `board_id`, so two calls to either tool run concurrently on independent threads in
    production. This was R1 in round 1 of this review and has since been fixed with
-   `remote_probes._registry_lock`, which wraps the whole load -> modify -> save cycle
-   in `register_entry`/`unregister_entry`; `check_endpoint` deliberately runs *before*
-   the lock is taken, so it can never serialize two unrelated registrations behind
-   each other's multi-second TCP timeout. `ConcurrentRegistrationTests` now proves the
-   lock holds with a `threading.Barrier`-synchronised hammer against the real
+   `remote_probes._registry_lock` plus a per-registry OS file lock, which wrap the
+   whole load -> modify -> save cycle in `register_entry`/`unregister_entry` across
+   threads and server processes; `check_endpoint` deliberately runs *before* the locks
+   are taken, so it can never serialize two unrelated registrations behind each
+   other's multi-second TCP timeout. `ConcurrentRegistrationTests` now proves the
+   thread lock holds with a `threading.Barrier`-synchronised hammer against the real
    production path rather than an interleave test -- see that class's docstring for
    why an interleave test cannot be built against the fixed code (round 1's version of
    this test blocked on a hook that is no longer inside the critical section, which
@@ -281,7 +282,9 @@ class ConcurrentRegistrationTests(unittest.TestCase):
             for index in range(preseed_count):
                 handlers["register_remote_probe"](f"seed-{index}", 7000 + index, f"seed {index}")
 
-            to_unregister = [(f"seed-{index}", 7000 + index) for index in range(0, preseed_count, 2)]
+            to_unregister = [
+                (f"seed-{index}", 7000 + index) for index in range(0, preseed_count, 2)
+            ]
             to_keep = {f"seed-{index}" for index in range(1, preseed_count, 2)}
 
             barrier = threading.Barrier(len(to_unregister) + new_count)
@@ -297,9 +300,7 @@ class ConcurrentRegistrationTests(unittest.TestCase):
             def do_register(index: int) -> None:
                 try:
                     barrier.wait(timeout=10.0)
-                    handlers["register_remote_probe"](
-                        f"new-{index}", 8000 + index, f"new {index}"
-                    )
+                    handlers["register_remote_probe"](f"new-{index}", 8000 + index, f"new {index}")
                 except BaseException as exc:  # noqa: BLE001
                     errors.append(exc)
 

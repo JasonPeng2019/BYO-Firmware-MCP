@@ -5,6 +5,11 @@ provider-qualified selectors, and registered remote pyOCD probe endpoints.  It i
 separate from the runnable server code so historical test material is available without
 turning the repository root back into a development workspace.
 
+The checked-in results and test snapshots are privacy-redacted derivatives:
+operator home-directory paths were replaced with redaction markers, and physical
+probe identifiers in test snapshots were replaced with format-valid synthetic
+values. They are not byte-for-byte copies of the private originals.
+
 ## Contents
 
 - `tests/` contains the complete final automated test suite, including the fallback

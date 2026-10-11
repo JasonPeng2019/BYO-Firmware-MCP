@@ -143,6 +143,25 @@ Extra instructions: Prefer read_memory_symbol when debug metadata identifies the
 Extra instructions: A port path is runtime-only; it is never persisted as attachment identity.
 The result includes complete time-bounded UART output as reversible JSON-escaped `captured_text`.
 
+## `read_can-plan`
+
+- Action: `read_can`
+- Purpose: Capture bounded, exact-allowlisted Classical CAN frames for the selected board.
+- Budget mode: `flexible`
+- Permission mode: `none`
+- Safety mode: `validated-read`
+- Timeout: `5` seconds base; dispatch adds the effective read duration
+- Populated plan fields, in order: `board_id`, `hypothesis`, `strategy`, `hypothesis_made`, `strategy_evaluated`, `expected_fail_return`, `expected_success_return`, `max_calls`, `max_calls_buffer`, `action_parameters`
+- Exact action-parameter fields, in order: `read_seconds`, `max_frames`
+
+| Action field | Type | Constraints | Description |
+| --- | --- | --- | --- |
+| `read_seconds` | `number` | nullable; > 0; <= 10 | Finite capture duration, or NULL for the startup-effective default (the bounded startup override when present, otherwise the immutable profile default). |
+| `max_frames` | `integer` | nullable; >= 1; <= 128 | Positive returned-frame cap, or NULL for the immutable profile default. |
+
+Extra instructions: CAN must already be connected; profile filters and process quotas remain authoritative.
+The outer dispatch deadline is the effective profile/request read duration plus 5 seconds.
+
 ## `register_write-plan`
 
 - Action: `register_write`
@@ -204,6 +223,27 @@ Extra instructions: This reset does not unlock a protected target.
 | `clear_input` | `boolean` | required | Discard buffered input after open only when true; false preserves boot/prompt bytes. |
 
 Extra instructions: All steps, readiness input, and the optional pre-probe delay are exact and execute through one port open; successful cleanup preserves application state. The result includes complete time-bounded aggregate `captured_text` and complete ordered `step_captured_texts`, reversibly JSON-escaped.
+
+## `send_can-plan`
+
+- Action: `send_can`
+- Purpose: Send one exact-allowlisted Classical CAN data frame from the selected fixture.
+- Budget mode: `flexible`
+- Permission mode: `none`
+- Safety mode: `fresh-write`
+- Timeout: `5` seconds base; dispatch adds twice the effective send timeout
+- Populated plan fields, in order: `board_id`, `hypothesis`, `strategy`, `hypothesis_made`, `strategy_evaluated`, `expected_fail_return`, `expected_success_return`, `max_calls`, `max_calls_buffer`, `action_parameters`
+- Exact action-parameter fields, in order: `arbitration_id`, `data_hex`, `extended`, `timeout_seconds`
+
+| Action field | Type | Constraints | Description |
+| --- | --- | --- | --- |
+| `arbitration_id` | `integer` | required; >= 0; <= 536870911 (`0x1fffffff`) | Exact 11- or 29-bit CAN identifier; standard frames are additionally limited to `0x7ff`. |
+| `data_hex` | `text` | required; empty allowed | Zero to eight bytes encoded as hexadecimal text. |
+| `extended` | `boolean` | required | True for a 29-bit identifier. |
+| `timeout_seconds` | `number` | nullable; > 0; <= 0.5 | Finite send timeout, or NULL for the immutable profile default. |
+
+Extra instructions: The exact ID, payload, frame width, timeout, profile allowlist, and process quota bind every attempt.
+The outer dispatch deadline is twice the effective profile/request send timeout plus 5 seconds.
 
 ## `set_breakpoint-plan`
 

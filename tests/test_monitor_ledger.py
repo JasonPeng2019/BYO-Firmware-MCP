@@ -164,6 +164,17 @@ class LedgerAppend(MonitorTestCase):
         text = self.ledger.resident_files()[0].read_text(encoding="utf-8")
         self.assertIn("get_state", text)
 
+        from unittest.mock import patch
+
+        syncs = []
+        with patch("pyocd_debug_mcp.monitor.ledger._fsync_directory", side_effect=syncs.append):
+            fresh = SegmentLedger(self.store, "ws-durable", "run-durable")
+            self.addCleanup(fresh.seal)
+            self.assertTrue(add_snapshot(fresh))
+        directory = self.store.server_data / "ws-durable"  # type: ignore[operator]
+        self.assertIn(directory.parent, syncs)
+        self.assertGreaterEqual(syncs.count(directory), 2)
+
     def test_records_carry_their_run_identity(self) -> None:
         add_snapshot(self.ledger)
         record = json.loads(self.ledger.resident_files()[0].read_text().splitlines()[0])
@@ -253,6 +264,17 @@ class ChainIntegrity(MonitorTestCase):
         lines[2] = json.dumps(record, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
         self.path.write_text("\n".join(lines) + "\n", encoding="utf-8")
         self.assertIs(verify_file(self.path), VerificationOutcome.CHAIN_INVALID)
+
+        malformed = (
+            b"\xff",
+            b'{"hash":"not-a-hash","prev":0}\n',
+            b'{"hash":"not-a-hash","prev":"genesis","detail":"\\ud800"}\n',
+            ("[" * 20_000 + "]" * 20_000 + "\n").encode(),
+        )
+        for content in malformed:
+            with self.subTest(content=content):
+                self.path.write_bytes(content)
+                self.assertIs(verify_file(self.path), VerificationOutcome.CHAIN_INVALID)
 
     def test_deleted_record_is_detected(self) -> None:
         """A snapshot removed from the sequence leaves a detectable gap."""

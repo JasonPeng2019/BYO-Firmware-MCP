@@ -110,9 +110,33 @@ def build_remote_probe_handlers(
         # under the lock, so this ordering cannot lose a concurrent write -- see
         # `remote_probes._registry_lock`.
         reachable = services.check_endpoint(normalized_host, normalized_port)
-        remote_probes.register_entry(
-            registry_path, normalized_host, normalized_port, description or ""
-        )
+        try:
+            remote_probes.register_entry(
+                registry_path, normalized_host, normalized_port, description or ""
+            )
+        except remote_probes.RemoteProbeDurabilityError:
+            return _json(
+                {
+                    "status": "remote_probe_uncertain",
+                    "code": "remote_probe/registry-durability-uncertain",
+                    "agent_prompt": (
+                        "The registry replacement completed, but the filesystem did not "
+                        "confirm directory durability. The endpoint may already be registered; "
+                        "inspect the registry or retry the same idempotent registration."
+                    ),
+                }
+            )
+        except (OSError, remote_probes.RemoteProbeError):
+            return _json(
+                {
+                    "status": "remote_probe_rejected",
+                    "code": "remote_probe/registry-invalid",
+                    "agent_prompt": (
+                        "The existing remote-probe registry could not be safely updated. "
+                        "Its bytes were preserved; repair or restore the registry before retrying."
+                    ),
+                }
+            )
         selector = f"remote:{normalized_host}:{normalized_port}"
 
         if reachable:
@@ -183,9 +207,33 @@ def build_remote_probe_handlers(
             )
 
         registry_path = services.registry_path()
-        _remaining, removed = remote_probes.unregister_entry(
-            registry_path, normalized_host, normalized_port
-        )
+        try:
+            _remaining, removed = remote_probes.unregister_entry(
+                registry_path, normalized_host, normalized_port
+            )
+        except remote_probes.RemoteProbeDurabilityError:
+            return _json(
+                {
+                    "status": "remote_probe_uncertain",
+                    "code": "remote_probe/registry-durability-uncertain",
+                    "agent_prompt": (
+                        "The registry replacement completed, but the filesystem did not "
+                        "confirm directory durability. The endpoint may already be removed; "
+                        "inspect the registry or retry the same idempotent removal."
+                    ),
+                }
+            )
+        except (OSError, remote_probes.RemoteProbeError):
+            return _json(
+                {
+                    "status": "remote_probe_rejected",
+                    "code": "remote_probe/registry-invalid",
+                    "agent_prompt": (
+                        "The existing remote-probe registry could not be safely updated. "
+                        "Its bytes were preserved; repair or restore the registry before retrying."
+                    ),
+                }
+            )
         selector = f"remote:{normalized_host}:{normalized_port}"
 
         status = "remote_probe_unregistered" if removed else "remote_probe_not_registered"
@@ -197,8 +245,7 @@ def build_remote_probe_handlers(
                 "port": normalized_port,
                 "removed": removed,
                 "agent_prompt": (
-                    f"{selector} was removed; it will no longer appear in inventory "
-                    "snapshots."
+                    f"{selector} was removed; it will no longer appear in inventory snapshots."
                     if removed
                     else f"{selector} was not in the registry; nothing changed."
                 ),

@@ -63,6 +63,7 @@ class BoardTrail:
         tool: str,
         board: str | None,
         connection: str | None,
+        record_board: str | None = None,
         args_fp: str,
         outcome: str,
         error_class: str | None = None,
@@ -73,7 +74,7 @@ class BoardTrail:
         entry = TrailEntry(
             ts=_timestamp(),
             tool=tool,
-            board=board,
+            board=record_board if record_board is not None else board,
             connection=connection,
             args_fp=args_fp,
             outcome=outcome,

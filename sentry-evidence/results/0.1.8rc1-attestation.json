@@ -1,0 +1,22 @@
+{
+  "candidate_manifest_sha256": "92caf844027e4dc97ddeb52e4c6ec5e5de310455b646bf3b869b2b88cc9c44c4",
+  "release_logs": [
+    {
+      "path": "sentry-evidence/results/0.1.8rc1-static.log",
+      "sha256": "fd180d0f521487c95f371456f3fcdbde4deee9d8174485449ae415e630605517"
+    },
+    {
+      "path": "sentry-evidence/results/0.1.8rc1-python310-parse.log",
+      "sha256": "a5e42f15ab8fc05f844ecfb6eebe9db0dc21e6e684af003851481e796310cfe0"
+    },
+    {
+      "path": "sentry-evidence/results/0.1.8rc1-software-suite.log",
+      "sha256": "ffdf8dfccba67cc9c9f17a9c0907d8b5cc75a07957fc14ec13512030b5f1311f"
+    },
+    {
+      "path": "sentry-evidence/results/0.1.8rc1-monitor-codex-e2e.log",
+      "sha256": "b61602651aa59151b887584cc8347476bce8958d2791312b7afd58296660482f"
+    }
+  ],
+  "schema_version": 1
+}

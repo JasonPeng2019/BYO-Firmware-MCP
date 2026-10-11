@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import unittest
 from typing import Any, cast
+from unittest.mock import patch
 
 from pyocd_debug_mcp.discovery_hooks import EMPTY_SNAPSHOT
 from pyocd_debug_mcp.hardware_inventory import (
@@ -30,6 +31,18 @@ from pyocd_debug_mcp.services.connections import probe_connection_id
 
 SHA_A = "a" * 64
 SHA_B = "b" * 64
+_PROVIDERS = patch(
+    "pyocd_debug_mcp.hardware_inventory.registered_provider_ids",
+    return_value=("cmsisdap", "jlink"),
+)
+
+
+def setUpModule() -> None:
+    _PROVIDERS.start()
+
+
+def tearDownModule() -> None:
+    _PROVIDERS.stop()
 
 
 def _probe_row(
@@ -86,14 +99,14 @@ class ResolutionTests(unittest.TestCase):
         self.store = ProbeSelectionStore()
 
     def test_connection_id_resolves_to_provider_and_unique_id(self) -> None:
-        row = _probe_row("jlink", "683710208")
-        token = probe_connection_id("jlink", "683710208")
+        row = _probe_row("jlink", "111222333")
+        token = probe_connection_id("jlink", "111222333")
         self.store.record(ProbeSelection.from_row(token, row))
 
         selection = self.store.resolve(token, _snapshot(row))
 
         self.assertEqual(selection.provider, "jlink")
-        self.assertEqual(selection.unique_id, "683710208")
+        self.assertEqual(selection.unique_id, "111222333")
         self.assertEqual(selection.identity_scope, "stable")
         self.assertTrue(selection.durable)
 
@@ -106,13 +119,13 @@ class ResolutionTests(unittest.TestCase):
         self.assertEqual(selection.unique_id, "AbCdEf")
 
     def test_a_decimal_uid_still_resolves_after_leading_zeros_change(self) -> None:
-        recorded_row = _probe_row("jlink", "683710208")
-        self.store.record(ProbeSelection.from_row("probe:683710208", recorded_row))
-        fresh = _probe_row("jlink", "000683710208")
+        recorded_row = _probe_row("jlink", "111222333")
+        self.store.record(ProbeSelection.from_row("probe:111222333", recorded_row))
+        fresh = _probe_row("jlink", "000111222333")
 
-        selection = self.store.resolve("probe:683710208", _snapshot(fresh))
+        selection = self.store.resolve("probe:111222333", _snapshot(fresh))
 
-        self.assertEqual(selection.unique_id, "000683710208")
+        self.assertEqual(selection.unique_id, "000111222333")
 
     def test_a_missing_row_raises_instead_of_selecting_another_probe(self) -> None:
         recorded = _probe_row("jlink", "111")
@@ -180,12 +193,12 @@ class ResolutionTests(unittest.TestCase):
     def test_an_unrecorded_token_is_derived_from_the_snapshot(self) -> None:
         """An assignment can predate the store; deriving is not trusting."""
 
-        row = _probe_row("jlink", "683710208")
+        row = _probe_row("jlink", "111222333")
 
-        selection = self.store.resolve("probe:683710208", _snapshot(row))
+        selection = self.store.resolve("probe:111222333", _snapshot(row))
 
-        self.assertEqual(selection.unique_id, "683710208")
-        self.assertIsNotNone(self.store.recorded("probe:683710208"))
+        self.assertEqual(selection.unique_id, "111222333")
+        self.assertIsNotNone(self.store.recorded("probe:111222333"))
 
     def test_an_unrecorded_token_with_no_matching_row_is_refused(self) -> None:
         with self.assertRaises(SelectionNotRecorded) as caught:
@@ -265,8 +278,8 @@ class BoundedStoreTests(unittest.TestCase):
         self.assertIsNone(self.store.recorded("probe:0"), "the actual oldest entry should evict")
 
     def test_a_stable_selection_still_resolves_normally_once_bounded(self) -> None:
-        row = _probe_row("jlink", "683710208")
-        token = probe_connection_id("jlink", "683710208")
+        row = _probe_row("jlink", "111222333")
+        token = probe_connection_id("jlink", "111222333")
         self.store.record(ProbeSelection.from_row(token, row))
         for index in range(10):
             self.store.record(
@@ -275,7 +288,7 @@ class BoundedStoreTests(unittest.TestCase):
 
         selection = self.store.resolve(token, _snapshot(row))
 
-        self.assertEqual(selection.unique_id, "683710208")
+        self.assertEqual(selection.unique_id, "111222333")
         self.assertTrue(selection.durable)
 
     def test_a_repeatedly_resolved_entry_survives_eviction_pressure(self) -> None:
@@ -371,16 +384,16 @@ class TokenDerivationTests(unittest.TestCase):
 
     def test_a_prefixed_token_matches_a_stable_identity(self) -> None:
         selection = derive_selection_from_token(
-            "probe:683710208", _snapshot(_probe_row("jlink", "683710208"))
+            "probe:111222333", _snapshot(_probe_row("jlink", "111222333"))
         )
 
         self.assertIsNotNone(selection)
         assert selection is not None
-        self.assertEqual(selection.unique_id, "683710208")
+        self.assertEqual(selection.unique_id, "111222333")
 
     def test_a_bare_token_matches_a_stable_identity(self) -> None:
         selection = derive_selection_from_token(
-            "683710208", _snapshot(_probe_row("jlink", "683710208"))
+            "111222333", _snapshot(_probe_row("jlink", "111222333"))
         )
 
         self.assertIsNotNone(selection)
@@ -397,7 +410,7 @@ class TokenDerivationTests(unittest.TestCase):
     def test_decimal_leading_zeros_are_accepted(self) -> None:
         self.assertIsNotNone(
             derive_selection_from_token(
-                "probe:000683710208", _snapshot(_probe_row("jlink", "683710208"))
+                "probe:000111222333", _snapshot(_probe_row("jlink", "111222333"))
             )
         )
 
@@ -478,7 +491,9 @@ class SessionUartSelectionTests(unittest.TestCase):
     def _record(self, board: str = "board-1", path: str = "COM9") -> None:
         self.store.record(
             SessionUartSelection(
-                board_id=board, port_path=path, description="Session UART",
+                board_id=board,
+                port_path=path,
+                description="Session UART",
                 provenance=("hook:h",),
             )
         )
@@ -587,11 +602,9 @@ class ResolvedProbeUidDegradationTests(unittest.TestCase):
         def broken_snapshot() -> InventorySnapshot:
             raise RuntimeError("boom: simulated inventory failure")
 
-        with patch.object(
-            server, "_hardware_inventory", SimpleNamespace(snapshot=broken_snapshot)
-        ):
+        with patch.object(server, "_hardware_inventory", SimpleNamespace(snapshot=broken_snapshot)):
             with self.assertRaises(TargetControlError) as caught:
-                server._resolved_probe_uid_for_connection("probe:683710208")
+                server._resolved_probe_uid_for_connection("probe:111222333")
 
         self.assertIn("boom", str(caught.exception))
 

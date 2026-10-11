@@ -25,7 +25,10 @@ from __future__ import annotations
 
 import os
 import secrets
+import tempfile
 import threading
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
 from enum import Enum
 from hashlib import blake2b
@@ -79,11 +82,102 @@ _cached_salt: bytes | None = None
 _override_root: Path | None = None
 
 
+def _fsync_directory(directory: Path) -> None:
+    if os.name != "posix":
+        return
+    descriptor = os.open(directory, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+
+
+def _ensure_durable_directory(directory: Path) -> None:
+    """Create each missing component and persist its entry in the parent."""
+
+    missing: list[Path] = []
+    current = directory
+    while not current.exists():
+        missing.append(current)
+        parent = current.parent
+        if parent == current:
+            break
+        current = parent
+    for component in reversed(missing):
+        component.mkdir(exist_ok=True)
+        _fsync_directory(component.parent)
+
+
+@contextmanager
+def _identity_file_lock(path: Path) -> Iterator[None]:
+    """Serialize first-use identity creation across server processes."""
+
+    lock_path = path.with_name(f".{path.name}.lock")
+    _ensure_durable_directory(lock_path.parent)
+    descriptor = os.open(lock_path, os.O_RDWR | os.O_CREAT, 0o600)
+    locked = False
+    try:
+        try:
+            os.fchmod(descriptor, 0o600)
+        except OSError:
+            pass
+        _fsync_directory(lock_path.parent)
+        if os.name == "posix":
+            import fcntl
+
+            fcntl.flock(descriptor, fcntl.LOCK_EX)
+            locked = True
+        elif os.name == "nt":  # pragma: no cover - exercised by hosted Windows
+            import msvcrt
+
+            if os.fstat(descriptor).st_size == 0:
+                os.write(descriptor, b"\0")
+                os.fsync(descriptor)
+            os.lseek(descriptor, 0, os.SEEK_SET)
+            msvcrt.locking(descriptor, msvcrt.LK_LOCK, 1)
+            locked = True
+        yield
+    finally:
+        if locked and os.name == "posix":
+            import fcntl
+
+            fcntl.flock(descriptor, fcntl.LOCK_UN)
+        elif locked and os.name == "nt":  # pragma: no cover - exercised by hosted Windows
+            import msvcrt
+
+            os.lseek(descriptor, 0, os.SEEK_SET)
+            msvcrt.locking(descriptor, msvcrt.LK_UNLCK, 1)
+        os.close(descriptor)
+
+
+def _durable_private_replace(path: Path, payload: bytes) -> None:
+    """Atomically publish private bytes only after their contents are durable."""
+
+    _ensure_durable_directory(path.parent)
+    descriptor, temporary_name = tempfile.mkstemp(
+        prefix=f".{path.name}.", suffix=".tmp", dir=path.parent
+    )
+    temporary = Path(temporary_name)
+    try:
+        try:
+            os.fchmod(descriptor, 0o600)
+        except OSError:
+            pass
+        with os.fdopen(descriptor, "wb") as stream:
+            stream.write(payload)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, path)
+        _fsync_directory(path.parent)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
 def _usable(candidate: Path) -> bool:
     """Return whether a candidate root exists and accepts a write."""
 
     try:
-        candidate.mkdir(parents=True, exist_ok=True)
+        _ensure_durable_directory(candidate)
         probe = candidate / ".write-probe"
         probe.write_text("", encoding="utf-8")
         probe.unlink(missing_ok=True)
@@ -107,7 +201,7 @@ def _operator_candidate() -> Path | None:
         return None
     try:
         return Path(configured).expanduser().resolve() / OPERATOR_SUBDIR
-    except OSError:
+    except (OSError, UnicodeError):
         return None
 
 
@@ -154,7 +248,7 @@ def resolve_store_root() -> StoreRoot:
                 continue
             try:
                 for sub in (SERVER_DATA, SIMULATED_REMOTE):
-                    (candidate / sub).mkdir(parents=True, exist_ok=True)
+                    _ensure_durable_directory(candidate / sub)
             except OSError:
                 continue
             resolved = StoreRoot(state, candidate)
@@ -186,16 +280,21 @@ def deployment_salt() -> bytes:
         if store is not None and store.root is not None:
             path = store.root / SALT_FILE
             try:
-                if path.exists():
-                    existing = path.read_bytes()
+                with _identity_file_lock(path):
+                    try:
+                        existing = path.read_bytes()
+                    except OSError:
+                        existing = b""
                     if len(existing) == _SALT_BYTES:
+                        try:
+                            path.chmod(0o600)
+                        except OSError:
+                            pass
                         _cached_salt = existing
                         return existing
-                path.write_bytes(salt)
-                try:
-                    os.chmod(path, 0o600)
-                except OSError:
-                    pass
+                    _durable_private_replace(path, salt)
+                    _cached_salt = salt
+                    return salt
             except OSError:
                 pass  # a process-local salt is acceptable; never crash for this
         _cached_salt = salt
@@ -234,9 +333,14 @@ def read_workspace_token(store: StoreRoot, wid: str) -> str | None:
     if directory is None:
         return None
     try:
-        return (directory / TOKEN_FILE).read_text(encoding="utf-8").strip() or None
-    except OSError:
+        value = (directory / TOKEN_FILE).read_text(encoding="utf-8").strip()
+    except (OSError, UnicodeError):
         return None
+    if len(value) != _TOKEN_BYTES * 2 or any(
+        character not in "0123456789abcdef" for character in value
+    ):
+        return None
+    return value
 
 
 def workspace_token(store: StoreRoot, wid: str) -> str:
@@ -247,18 +351,23 @@ def workspace_token(store: StoreRoot, wid: str) -> str:
     plaintext path may ever be written into this directory.
     """
 
-    existing = read_workspace_token(store, wid)
-    if existing is not None:
-        return existing
     token = secrets.token_hex(_TOKEN_BYTES)
     directory = _workspace_dir(store, wid)
     if directory is None:
         return token
-    try:
-        directory.mkdir(parents=True, exist_ok=True)
-        (directory / TOKEN_FILE).write_text(token, encoding="utf-8")
-    except OSError:
-        pass  # an unpersisted token still identifies this run honestly
+    path = directory / TOKEN_FILE
+    with _guard:
+        existing = read_workspace_token(store, wid)
+        if existing is not None:
+            return existing
+        try:
+            with _identity_file_lock(path):
+                existing = read_workspace_token(store, wid)
+                if existing is not None:
+                    return existing
+                _durable_private_replace(path, token.encode("ascii"))
+        except OSError:
+            pass  # an unpersisted token still identifies this run honestly
     return token
 
 

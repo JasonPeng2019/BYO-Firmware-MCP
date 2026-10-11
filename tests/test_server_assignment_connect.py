@@ -22,8 +22,20 @@ from pyocd_debug_mcp.setup_flow.validate import ValidationInventory, ValidationP
 from pyocd_debug_mcp.target_errors import TargetConnectionError
 
 
-FIRST_PROBE = "683710208"
-SECOND_PROBE = "683854191"
+FIRST_PROBE = "111222333"
+SECOND_PROBE = "444555666"
+_PROVIDERS = patch(
+    "pyocd_debug_mcp.hardware_inventory.registered_provider_ids",
+    return_value=("cmsisdap", "jlink"),
+)
+
+
+def setUpModule() -> None:
+    _PROVIDERS.start()
+
+
+def tearDownModule() -> None:
+    _PROVIDERS.stop()
 
 
 def _board(board_id: str) -> BoardConfig:
@@ -817,11 +829,11 @@ class ActiveConnectionRowsToctouTests(unittest.TestCase):
         handle = TargetSessionHandle(
             session=None,
             board=board,
-            probe_uid="683710208",
+            probe_uid="111222333",
             route_used="test",
             target_override=None,
         )
-        connection = SimpleNamespace(handle=handle, connection_id="probe:683710208")
+        connection = SimpleNamespace(handle=handle, connection_id="probe:111222333")
 
         class _RacingConnectionManager:
             def assigned_board_ids(self) -> tuple[str, ...]:
@@ -841,7 +853,7 @@ class ActiveConnectionRowsToctouTests(unittest.TestCase):
             rows = server._active_connection_rows()
 
         self.assertEqual(len(rows), 1, "the vanished board should be skipped, not raised on")
-        self.assertEqual(rows[0].probe_uid, "683710208")
+        self.assertEqual(rows[0].probe_uid, "111222333")
 
 
 if __name__ == "__main__":

@@ -24,7 +24,7 @@ from pyocd_debug_mcp.guardrails.plan_engine import (
     accepted_plan_payload,
     canonical_json,
 )
-from pyocd_debug_mcp.kernel.operations import wrap_layer2_response
+from pyocd_debug_mcp.kernel.operations import add_exception_note, wrap_layer2_response
 from pyocd_debug_mcp.kernel.run_state import ServerRun
 from pyocd_debug_mcp.safety.map_build import (
     GenericSafetyMapDocument,
@@ -212,7 +212,9 @@ class UnlockCoordinator:
         try:
             self._abandon_manual_claim(binding, claim_id)
         except Exception as cleanup_error:  # noqa: BLE001 - keep the submit/backend error primary
-            primary.add_note(f"manual mass-erase reservation cleanup failed: {cleanup_error}")
+            add_exception_note(
+                primary, f"manual mass-erase reservation cleanup failed: {cleanup_error}"
+            )
 
     def _identity(
         self, board_id: str
@@ -815,8 +817,9 @@ class UnlockCoordinator:
             self.services.finalize_recovery(board_id)
         except Exception as cleanup_error:
             if backend_error is not None:
-                backend_error.add_note(
-                    f"recovery cleanup after failed backend attempt also failed: {cleanup_error}"
+                add_exception_note(
+                    backend_error,
+                    f"recovery cleanup after failed backend attempt also failed: {cleanup_error}",
                 )
             else:
                 report = self._report(

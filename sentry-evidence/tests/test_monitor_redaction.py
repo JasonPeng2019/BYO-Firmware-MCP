@@ -48,9 +48,7 @@ class Fingerprints(MonitorTestCase):
         from pyocd_debug_mcp.guardrails.plan_engine import canonical_json
 
         value = {"address": 536883712}
-        unsalted = blake2b(
-            canonical_json(value).encode("utf-8"), digest_size=8
-        ).hexdigest()
+        unsalted = blake2b(canonical_json(value).encode("utf-8"), digest_size=8).hexdigest()
         self.assertNotEqual(fingerprint(value), unsalted)
 
     def test_salt_differs_across_deployments(self) -> None:
@@ -122,9 +120,7 @@ class SaltPersistence(MonitorTestCase):
 
 class MechanicalBar(MonitorTestCase):
     def test_payload_keys_are_dropped(self) -> None:
-        scrubbed = scrub_mechanical(
-            {"data": "DEADBEEF" * 100, "value": 42, "contents": "secret"}
-        )
+        scrubbed = scrub_mechanical({"data": "DEADBEEF" * 100, "value": 42, "contents": "secret"})
         self.assertEqual(scrubbed["data"], "<omitted>")
         self.assertEqual(scrubbed["contents"], "<omitted>")
 
@@ -181,9 +177,7 @@ class NarrativeBar(MonitorTestCase):
 
     def test_full_command_line_is_rejected(self) -> None:
         with self.assertRaises(NarrativeContentError):
-            check_narrative(
-                r"ran C:\tools\arm-none-eabi-gcc.exe -O2 -mcpu=cortex-m4 -o app.elf"
-            )
+            check_narrative(r"ran C:\tools\arm-none-eabi-gcc.exe -O2 -mcpu=cortex-m4 -o app.elf")
 
     def test_self_rating_is_rejected(self) -> None:
         with self.assertRaises(NarrativeContentError):

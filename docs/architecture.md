@@ -140,6 +140,14 @@ workers under their exact session-local connection tokens rather than fabricatin
 Noninteractive probe-inventory CLI children receive null stdin, so neither they nor descendant
 launchers can read or wait on the MCP stdio protocol pipe.
 
+The CAN worker has one explicit portability boundary before those deadlines:
+Python's synchronous `multiprocessing.Process.start()` has no portable
+interrupt or deadline API. The first CAN connection and concurrent shutdown can
+therefore wait for OS process creation to return. Once `start()` returns and the
+child identity is known, readiness, operations, cancellation, and retirement
+use the documented finite bounds; the server does not publish an unidentified
+generation or pretend it can safely reap one.
+
 Raw and symbol memory checks cover the exact bytes accessed. UNKNOWN spans fail
 closed, while authoritative PROHIBITED spans remain readable for deliberate
 inspection and fail closed for every mutation. `safety/regions.py` uses authoritative
@@ -409,6 +417,19 @@ example documents that the loader and parser validate against, so the contract t
 server offers is one it will accept back. The generated
 [plan-tool contract](plan-tool-contract.md) is the corresponding human-readable reference.
 
-The checkout, wheel, and sdist contain the same generic runtime. Board profiles, pack bytes,
-firmware, and evidence are created or selected in the active project; none is bundled with the
-server.
+Optional Classical CAN follows the same composition boundary but has separate
+resource ownership. Startup reads and snapshots one immutable software-only
+fixture profile. `CanSessionManager` owns a lazy event-loop thread and at most
+one spawned CAN worker; the worker is the only process that imports and owns a
+`python-can` bus object. CAN calls still use managed MCP dispatch and the named
+board lock, but are intentionally not Layer-2 resource-bound: cancellation
+retires the CAN generation without evicting the independent SWD connection.
+Debug disconnect reverses that dependency by proving CAN closed before it
+mutates the validation gate, plan state, assignment, or SWD connection.
+
+The wheel and sdist contain the generic runtime plus one inert, software-only RX
+CAN example. The source checkout also carries a TX-enabled fixture used only by
+tests; that fixture is excluded from both distributions. Neither is selected
+automatically or treated as an authoritative board profile. Operator profiles,
+pack bytes, firmware, and evidence are created or selected in the active project;
+none becomes authority merely by being bundled with the server.

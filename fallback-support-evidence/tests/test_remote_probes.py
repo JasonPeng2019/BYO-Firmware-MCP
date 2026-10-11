@@ -21,7 +21,11 @@ from pyocd_debug_mcp.hardware_inventory import (
     ProbeSelection,
     ProbeSelectionStore,
 )
-from pyocd_debug_mcp.probe_inventory import EMPTY_NATIVE_PROBE_LISTING, NativeProbeListing, ProbeInfo
+from pyocd_debug_mcp.probe_inventory import (
+    EMPTY_NATIVE_PROBE_LISTING,
+    NativeProbeListing,
+    ProbeInfo,
+)
 from pyocd_debug_mcp.remote_probes import (
     RemoteProbeEntry,
     RemoteProbeError,
@@ -104,9 +108,7 @@ class LoadSaveTests(_RegistryCase):
         self.assertEqual(load_remote_probes(self.registry_path), ())
 
     def test_round_trip_preserves_every_field(self) -> None:
-        entries = (
-            RemoteProbeEntry("bench.local", 5555, "bench ST-LINK", "2026-01-01T00:00:00Z"),
-        )
+        entries = (RemoteProbeEntry("bench.local", 5555, "bench ST-LINK", "2026-01-01T00:00:00Z"),)
         save_remote_probes(self.registry_path, entries)
 
         loaded = load_remote_probes(self.registry_path)

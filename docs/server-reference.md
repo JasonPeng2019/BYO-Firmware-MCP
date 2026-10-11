@@ -470,17 +470,20 @@ inspection decide whether a chosen artifact is safe to program.
 
 ## 12. Monitoring (“Sentry”) and evidence delivery
 
-The monitor is passive: it observes managed dispatch and must never delay,
-reorder, authorize, or change a tool result. It records bounded in-memory trails
-for problem reports, cumulative counters, issue classification/deduplication,
-periodic usage snapshots, routine check-in prompts, and an append-only per-run
-hash-linked ledger. It also verifies prior ledger segments and reports its
-health.
+The monitor is passive with respect to execution: it observes managed dispatch
+and must never delay, reorder, authorize, or change the primary tool result. At
+the routine cadence it may append one separate check-in prompt content block;
+exact-JSON tools retain their unchanged JSON as the first block. It records
+bounded in-memory trails for problem reports, cumulative counters, issue
+classification/deduplication, periodic usage snapshots, routine check-in
+prompts, and an append-only per-run hash-linked ledger. It also verifies prior
+ledger segments and reports its health.
 
 `server_health_check` is read-only monitor diagnostics. `report_agent_issue`
 submits the monitor's explicit structured issue form, and
 `submit_routine_checkin` supplies its routine activity form. None opens a
-hardware gate, consumes a hardware plan, or changes a hardware tool result.
+hardware gate, consumes a hardware plan, or changes tool execution or the
+primary result block.
 
 The ledger detects ordinary corruption, partial writes, and localized edits. It
 is not tamper-proof against the local machine owner, who can rewrite records and
@@ -876,7 +879,7 @@ one-way allocation history might be unrecoverable.
 | Tool | Inputs | Exact effect | Authority consequence |
 | --- | --- | --- | --- |
 | `connect` | `board_id` | opens profile-derived managed target session | no gate merely from connection |
-| `disconnect` | `board_id` | closes named target/UART resources only | clears named proof/gate |
+| `disconnect` | `board_id` | closes named-board CAN first, then target/UART resources and probe; an unproven CAN close refuses before debug teardown | clears named proof/gate only after CAN closure is proven |
 | `get_board_info` | `board_id` | returns active profile/routing facts | read-only |
 | `get_state` | `board_id` | queries observable core run state | read-only |
 | `halt` | `board_id` | halts target core | target remains halted |
@@ -1044,6 +1047,56 @@ Normal successful operations retain their documented MCU state. Only explicit
 reset tools or accepted reset finalizers cause reset/run behavior. Stdio EOF and
 normal shutdown use the same ownership path rather than leaving live sessions
 to a client process exit.
+
+## H.1 Classical CAN preview contract
+
+The server always registers these seven CAN names, including when CAN is off:
+
+| Tool | Arguments | Contract |
+| --- | --- | --- |
+| `get_can_status` | `board_id` | Read-only immutable profile, ownership, budget, backend capability, and cleanup state. |
+| `connect_can` | `board_id` | Attach the startup-staged software profile. Requires the profile-authorized board plus an active setup-full, currently validated debug session. |
+| `disconnect_can` | `board_id` | Idempotently retire that board's CAN generation. It remains available for cleanup without a current validation stamp. |
+| `read_can-plan` | standard plan envelope; action fields `read_seconds`, `max_frames` | Bind a duration > 0 and <= 10 seconds plus a frame cap from 1 through 128. JSON `null` selects the startup-effective read duration or immutable profile frame default. |
+| `read_can` | `board_id`, `read_seconds`, `max_frames` | Consume the exact accepted plan and return only exact-allowlisted frames within profile and process limits. |
+| `send_can-plan` | standard plan envelope; action fields `arbitration_id`, `data_hex`, `extended`, `timeout_seconds` | Bind one Classical CAN frame (`0..0x1fffffff`, additionally `<=0x7ff` when standard), zero to eight payload bytes, and a timeout > 0 and <= 0.5 seconds. No conversational or plan-level permission widens the startup profile. |
+| `send_can` | `board_id`, `arbitration_id`, `data_hex`, `extended`, `timeout_seconds` | Consume the exact accepted plan. TX must be enabled and the 11- or 29-bit identifier must be in the immutable exact allowlist. Payloads are zero to eight bytes of hex text. |
+
+`get_can_status` publishes the redacted immutable profile summary, absolute
+process/rate ceilings, current counters, and remaining tracked capacity. In off
+mode the profile, limit, and remaining-capacity fields are explicitly `null`.
+
+The five operational CAN handlers (status, connect, disconnect, read, and send)
+return canonical JSON with `schema_version`, `ok`,
+`status`, `operation`, `board_id`, and current `can` state. Refusals and
+failures add stable `code` and `message` fields. Read success adds counts,
+elapsed time, stop reason, truncation, and frame records; send success adds its
+frame record. Payload disclosure follows the immutable evidence policy.
+Dispatcher admission is structured too: board-lock contention returns
+`can/board-busy` with `status: refused`, while an outer operation deadline
+returns `can/operation-timeout` with `status: failed`. Neither path emits
+unparseable prose in the first content block.
+The two `*-plan` handlers instead retain the standard textual plan workflow;
+their all-NULL initialization response is client guidance rather than JSON.
+
+Those portable CAN deadlines start after synchronous
+`multiprocessing.Process.start()` returns. The OS process-creation call itself
+has no portable Python cancellation/deadline hook, so the first `connect_can`
+and a concurrent shutdown can wait beyond the outer deadline if creation
+stalls. After the worker identity exists, readiness, operations, cancellation,
+and retirement are bounded. Waiting at this boundary avoids claiming cleanup
+or orphaning a child that the parent cannot yet identify.
+
+The base package does not install backend libraries. Off mode retains the
+static registration without `python-can`; configured mode requires
+the `can` package extra and otherwise fails closed with an install remedy. The
+virtual backend is process-local inside the isolated worker. Its child-hosted
+test peer proves exact software RX/TX and lifecycle behavior, but another
+process cannot join the channel, so it is not an end-to-end integration
+transport. Configured CAN is enabled only on qualified Linux hosts; every
+non-Linux platform fails closed before profile loading. Linux `vcan`, physical
+adapters, and physical bus behavior are not qualified by this release.
+Physical profiles are rejected at startup.
 
 ## I. Monitor and Sentry implementation detail
 

@@ -38,18 +38,28 @@ yet been pushed.
 from __future__ import annotations
 
 import json
+import os
 import queue
+import stat
+import tempfile
 import threading
 import time
 from collections.abc import Sequence
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import Any
 
 from pyocd_debug_mcp.monitor.block import StalenessBlock
-from pyocd_debug_mcp.monitor.ledger import _SEGMENT_DIGITS, SegmentInfo, file_identity
+from pyocd_debug_mcp.monitor.ledger import (
+    _SEGMENT_DIGITS,
+    SegmentInfo,
+    file_identity,
+    run_is_active,
+)
 from pyocd_debug_mcp.monitor.paths import StoreRoot
+from pyocd_debug_mcp.monitor.reports import report_identity
 from pyocd_debug_mcp.monitor.transport import (
     DeliveryResult,
     DeliveryState,
@@ -76,6 +86,115 @@ CLOSEOUT_BUDGET_SECONDS = 0.4
 # this governs receipt-book housekeeping, not counter/report cadence, and the two
 # must be free to change independently.
 DELIVERY_STATE_PRUNE_INTERVAL = 200
+_DELIVERY_STATE_GUARD = threading.RLock()
+
+
+def _is_reparse_point(metadata: os.stat_result) -> bool:
+    attributes = int(getattr(metadata, "st_file_attributes", 0))
+    marker = int(getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0))
+    return bool(attributes & marker) or bool(getattr(metadata, "st_reparse_tag", 0))
+
+
+def _fsync_directory(directory: Path) -> None:
+    """Persist an atomic replacement's directory entry where POSIX supports it."""
+
+    if os.name != "posix":
+        return
+    descriptor = os.open(directory, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+
+
+def _ensure_durable_directory(directory: Path) -> None:
+    """Create each missing component and persist its entry in the parent."""
+
+    missing: list[Path] = []
+    current = directory
+    while not current.exists():
+        missing.append(current)
+        parent = current.parent
+        if parent == current:
+            break
+        current = parent
+    for component in reversed(missing):
+        component.mkdir(exist_ok=True)
+        _fsync_directory(component.parent)
+
+
+@contextmanager
+def _delivery_state_file_lock(path: Path):  # type: ignore[no-untyped-def]
+    """Serialize receipt-book replacement across server processes."""
+
+    lock_path = path.with_name(f".{path.name}.lock")
+    _ensure_durable_directory(lock_path.parent)
+    descriptor = os.open(
+        lock_path,
+        os.O_RDWR | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0),
+        0o600,
+    )
+    locked = False
+    try:
+        metadata = os.fstat(descriptor)
+        if not stat.S_ISREG(metadata.st_mode) or metadata.st_nlink != 1:
+            raise OSError(f"delivery-state lock is not a private regular file: {lock_path}")
+        path_metadata = lock_path.lstat()
+        if stat.S_ISLNK(path_metadata.st_mode) or _is_reparse_point(path_metadata):
+            raise OSError(f"delivery-state lock must not be a link: {lock_path}")
+        if (
+            not stat.S_ISREG(path_metadata.st_mode)
+            or path_metadata.st_nlink != 1
+            or (path_metadata.st_dev, path_metadata.st_ino) != (metadata.st_dev, metadata.st_ino)
+        ):
+            raise OSError(f"delivery-state lock changed while opening: {lock_path}")
+        fchmod = getattr(os, "fchmod", None)
+        if fchmod is not None:
+            try:
+                fchmod(descriptor, 0o600)
+            except OSError:
+                pass
+        if os.name == "posix":
+            import fcntl
+
+            fcntl.flock(descriptor, fcntl.LOCK_EX)
+            locked = True
+        elif os.name == "nt":  # pragma: no cover - native Windows path
+            import msvcrt
+
+            # Windows permits locking beyond EOF. Do not write a first-use
+            # sentinel before acquiring the very lock that serializes writers.
+            os.lseek(descriptor, 0, os.SEEK_SET)
+            msvcrt.locking(descriptor, msvcrt.LK_LOCK, 1)
+            locked = True
+        current = lock_path.lstat()
+        if (
+            stat.S_ISLNK(current.st_mode)
+            or _is_reparse_point(current)
+            or (current.st_dev, current.st_ino) != (metadata.st_dev, metadata.st_ino)
+        ):
+            raise OSError(f"delivery-state lock changed before acquisition: {lock_path}")
+        yield
+    finally:
+        if locked and os.name == "posix":
+            import fcntl
+
+            fcntl.flock(descriptor, fcntl.LOCK_UN)
+        elif locked and os.name == "nt":  # pragma: no cover - native Windows path
+            import msvcrt
+
+            os.lseek(descriptor, 0, os.SEEK_SET)
+            msvcrt.locking(descriptor, msvcrt.LK_UNLCK, 1)
+        os.close(descriptor)
+
+
+def _read_acked_state(path: Path) -> set[str]:
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError, ValueError, RecursionError):
+        return set()
+    acked = raw.get("acked") if isinstance(raw, dict) else None
+    return {str(item) for item in acked} if isinstance(acked, list) else set()
 
 
 @dataclass(frozen=True, slots=True)
@@ -103,9 +222,11 @@ class DeliveryService:
         self._block = block
         self._queue: queue.Queue[_Job | None] = queue.Queue(maxsize=QUEUE_MAX)
         self._guard = threading.Lock()
+        self._persistence_guard = _DELIVERY_STATE_GUARD
         self._last_state = DeliveryState.NOT_CONFIGURED
         self._last_at: datetime | None = None
         self._acked: set[str] = set()
+        self._report_relocations: dict[str, set[Path]] = {}
         self._dropped = 0
         self._thread: threading.Thread | None = None
         self._stop = threading.Event()
@@ -121,15 +242,24 @@ class DeliveryService:
         path = self._state_path()
         if path is None:
             return
-        try:
-            raw = json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
-            return
-        acked = raw.get("acked") if isinstance(raw, dict) else None
-        if isinstance(acked, list):
-            self._acked = {str(item) for item in acked}
+        with self._persistence_guard, _delivery_state_file_lock(path):
+            self._acked = _read_acked_state(path)
 
-    def _save_state(self) -> None:
+    def _refresh_state(self) -> None:
+        """Merge receipts written by another live delivery service."""
+
+        path = self._state_path()
+        if path is None:
+            return
+        try:
+            with self._persistence_guard, _delivery_state_file_lock(path):
+                persisted = _read_acked_state(path)
+        except OSError:
+            return
+        with self._guard:
+            self._acked |= persisted
+
+    def _save_state(self, *, remove: frozenset[str] = frozenset()) -> bool:
         """Persist ``_acked``, then sweep it if this save crossed a prune boundary.
 
         The prune check lives here, not in a separate wrapper, so that *every*
@@ -143,12 +273,8 @@ class DeliveryService:
 
         ``_prune_acked`` calls back into this method to persist what it
         removed; that second pass rechecks the same boundary condition on the
-        now-smaller set, which in the overwhelmingly common case is no longer
-        a multiple of the interval and simply returns. On the rare exact
-        coincidence where it is, the recursive prune has strictly fewer
-        candidates than the last pass (nothing new went missing on disk in
-        between), so it terminates in at most a few extra passes, never
-        indefinitely.
+        now-smaller set. A sweep triggers whenever one save crosses a multiple
+        of the interval, including a batched jump such as 199 to 201.
         """
 
         path = self._state_path()
@@ -157,19 +283,47 @@ class DeliveryService:
             # disk for a prune sweep to reason about either. Leave the
             # in-memory set alone rather than pruning it against a store that
             # cannot confirm anything is actually absent.
-            return
-        try:
-            path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_text(
-                json.dumps({"acked": sorted(self._acked)}, sort_keys=True),
-                encoding="utf-8",
-            )
-        except OSError:
-            pass
-        with self._guard:
-            size = len(self._acked)
-        if size and size % DELIVERY_STATE_PRUNE_INTERVAL == 0:
+            return False
+        temporary: Path | None = None
+        with self._persistence_guard:
+            with _delivery_state_file_lock(path):
+                with self._guard:
+                    local_acked = set(self._acked)
+                persisted = _read_acked_state(path)
+                previous_size = len(persisted)
+                merged = (persisted | local_acked) - set(remove)
+                acked = sorted(merged)
+                try:
+                    _ensure_durable_directory(path.parent)
+                    with tempfile.NamedTemporaryFile(
+                        mode="w",
+                        encoding="utf-8",
+                        dir=path.parent,
+                        prefix=f".{path.name}.",
+                        suffix=".tmp",
+                        delete=False,
+                    ) as handle:
+                        temporary = Path(handle.name)
+                        handle.write(json.dumps({"acked": acked}, sort_keys=True))
+                        handle.flush()
+                        os.fsync(handle.fileno())
+                    os.replace(temporary, path)
+                    temporary = None
+                    _fsync_directory(path.parent)
+                except OSError:
+                    return False
+                finally:
+                    if temporary is not None:
+                        try:
+                            temporary.unlink(missing_ok=True)
+                        except OSError:
+                            pass
+                with self._guard:
+                    self._acked = merged
+                size = len(acked)
+        if size // DELIVERY_STATE_PRUNE_INTERVAL > previous_size // DELIVERY_STATE_PRUNE_INTERVAL:
             self._prune_acked()
+        return True
 
     def _prune_acked(self) -> None:
         """Drop ``_acked`` entries whose backing file is confirmed absent.
@@ -186,15 +340,13 @@ class DeliveryService:
         with self._guard:
             acked_snapshot = set(self._acked)
         prunable = {
-            identity
-            for identity in acked_snapshot
-            if not self._identity_file_exists(identity)
+            identity for identity in acked_snapshot if not self._identity_file_exists(identity)
         }
         if not prunable:
             return
         with self._guard:
             self._acked -= prunable
-        self._save_state()
+        self._save_state(remove=frozenset(prunable))
 
     def _identity_file_exists(self, identity: str) -> bool:
         """Return whether the file an ``_acked`` identity names is still on disk.
@@ -234,11 +386,7 @@ class DeliveryService:
                 segment = int(segment_text)
             except ValueError:
                 return True
-            path = (
-                server_data
-                / workspace
-                / f"{run_id}.{segment:0{_SEGMENT_DIGITS}d}.jsonl"
-            )
+            path = server_data / workspace / f"{run_id}.{segment:0{_SEGMENT_DIGITS}d}.jsonl"
             try:
                 return path.exists()
             except OSError:
@@ -263,13 +411,17 @@ class DeliveryService:
         with self._guard:
             if self._thread is not None:
                 return
-            thread = threading.Thread(
-                target=self._run, name="byo-monitor-delivery", daemon=True
-            )
+            thread = threading.Thread(target=self._run, name="byo-monitor-delivery", daemon=True)
             self._thread = thread
         thread.start()
 
-    def stop(self, timeout: float = CLOSEOUT_BUDGET_SECONDS) -> None:
+    def stop(
+        self,
+        timeout: float = CLOSEOUT_BUDGET_SECONDS,
+        *,
+        close_transport: bool = True,
+    ) -> None:
+        deadline = time.monotonic() + max(0.0, timeout)
         self._stop.set()
         try:
             self._queue.put_nowait(None)
@@ -277,11 +429,56 @@ class DeliveryService:
             pass
         thread = self._thread
         if thread is not None:
-            thread.join(timeout=timeout)
-        try:
-            self._transport.close()
-        except Exception:  # noqa: BLE001 - teardown is best-effort
-            pass
+            thread.join(timeout=max(0.0, deadline - time.monotonic()))
+        if close_transport:
+
+            def close_best_effort() -> None:
+                try:
+                    self._transport.close()
+                except Exception:  # noqa: BLE001 - teardown is best-effort
+                    pass
+
+            closer = threading.Thread(
+                target=close_best_effort,
+                name="byo-monitor-transport-close",
+                daemon=True,
+            )
+            closer.start()
+            closer.join(timeout=max(0.0, deadline - time.monotonic()))
+
+    def retire(self, *, close_transport: bool) -> None:
+        """Drain queued recovery work, then retire this service asynchronously.
+
+        Binding must not abandon the unbound service's older recovery backlog,
+        but it also must not put a slow sender on the request path. A sentinel
+        after the existing jobs provides both properties. A daemon reaper owns
+        the optional transport close after the queue has drained.
+        """
+
+        thread = self._thread
+        if thread is None:
+            if close_transport:
+                threading.Thread(
+                    target=self._transport.close,
+                    name="byo-monitor-retired-transport-close",
+                    daemon=True,
+                ).start()
+            return
+
+        def enqueue_sentinel() -> None:
+            self._queue.put(None)
+            thread.join()
+            if close_transport:
+                try:
+                    self._transport.close()
+                except Exception:  # noqa: BLE001 - retired teardown is best-effort
+                    pass
+
+        threading.Thread(
+            target=enqueue_sentinel,
+            name="byo-monitor-delivery-retire",
+            daemon=True,
+        ).start()
 
     def close_for_shutdown(
         self, segments: Sequence[SegmentInfo], budget: float = CLOSEOUT_BUDGET_SECONDS
@@ -343,6 +540,23 @@ class DeliveryService:
     def enqueue_report(self, report: dict[str, Any]) -> None:
         self._enqueue(_Job("report", report=report))
 
+    def track_report_relocation(self, identity: str, destination: Path) -> None:
+        """Tell an in-flight pre-bind sender where its source body was moved."""
+
+        with self._guard:
+            self._report_relocations.setdefault(identity, set()).add(destination)
+
+    def cancel_report_relocation(self, identity: str, destination: Path) -> None:
+        """Forget a registered relocation when the corresponding move failed."""
+
+        with self._guard:
+            destinations = self._report_relocations.get(identity)
+            if destinations is None:
+                return
+            destinations.discard(destination)
+            if not destinations:
+                self._report_relocations.pop(identity, None)
+
     def enqueue_bootup(self) -> None:
         """Deliver prior runs' sealed files and undelivered report/summary
         bodies, after readiness, asynchronously.
@@ -365,8 +579,10 @@ class DeliveryService:
             candidates = sorted(directory.glob("*.jsonl"))
         except OSError:
             return ()
+        self._refresh_state()
         with self._guard:
             acked = set(self._acked)
+        active_runs: dict[str, bool] = {}
         for path in candidates:
             stem = path.name[: -len(".jsonl")]
             run_id, _, segment_text = stem.rpartition(".")
@@ -375,6 +591,12 @@ class DeliveryService:
             try:
                 segment = int(segment_text)
             except ValueError:
+                continue
+            active = active_runs.get(run_id)
+            if active is None:
+                active = run_is_active(directory, run_id)
+                active_runs[run_id] = active
+            if active:
                 continue
             identity = file_identity(self._workspace, run_id, segment)
             if identity in acked:
@@ -398,20 +620,60 @@ class DeliveryService:
         server_data = self._store.server_data
         if server_data is None:
             return ()
-        directory = server_data / self._workspace / "reports"
-        if not directory.is_dir():
-            return ()
-        try:
-            candidates = sorted(directory.glob("*.json"))
-        except OSError:
-            return ()
+        directories = [server_data / self._workspace / "reports"]
+        unbound = server_data / "unbound" / "reports"
+        if self._workspace != "unbound":
+            directories.append(unbound)
+        candidates: list[Path] = []
+        for directory in directories:
+            if not directory.is_dir():
+                continue
+            try:
+                for path in sorted(directory.glob("*.json")):
+                    try:
+                        body = json.loads(path.read_text(encoding="utf-8"))
+                    except (
+                        OSError,
+                        UnicodeError,
+                        json.JSONDecodeError,
+                        ValueError,
+                        RecursionError,
+                    ):
+                        continue
+                    identity = report_identity(body) if isinstance(body, dict) else None
+                    if identity is None or identity != path.stem:
+                        continue
+                    session_id = body.get("session_id") if isinstance(body, dict) else None
+                    if (
+                        isinstance(session_id, str)
+                        and session_id != self._run_id
+                        and run_is_active(directory.parent, session_id)
+                    ):
+                        # A different live server still owns this body. Recovery
+                        # may claim it only after that process exits and its OS
+                        # lease is released.
+                        continue
+                    candidates.append(path)
+            except OSError:
+                continue
+        self._refresh_state()
         with self._guard:
             acked = set(self._acked)
-        return tuple(
-            (path.stem, path) for path in candidates if path.stem not in acked
-        )
+        found: dict[str, Path] = {}
+        for path in candidates:
+            if path.stem in acked:
+                # Crash/race recovery: ACK persistence precedes deletion. If a
+                # bind moved the body between those two acts, delete the moved
+                # resident copy rather than excluding it forever.
+                try:
+                    path.unlink(missing_ok=True)
+                except OSError:
+                    pass
+                continue
+            found.setdefault(path.stem, path)
+        return tuple(sorted(found.items()))
 
-    def _send_report(self, report: dict[str, Any]) -> None:
+    def _send_report(self, report: dict[str, Any], *, source_path: Path | None = None) -> None:
         """Send one report/summary body and, if acknowledged, remember and delete it.
 
         Recorded the same way a segment's ACK is: added to the shared ``_acked``
@@ -421,38 +683,53 @@ class DeliveryService:
         (ack recorded and saved, then delete) applies here too.
         """
 
-        identity = str(report.get("report_id") or report.get("summary_id") or "")
+        identity = report_identity(report)
+        if identity is None:
+            return
         result = self._transport.send_report(report)
         self._record(result)
-        if not identity or identity not in result.acked:
+        if identity not in result.acked:
             return
         with self._guard:
             self._acked.add(identity)
-        self._save_state()
+        if not self._save_state():
+            return
         # Delete-on-acknowledgement, mirroring the segment path in ``_perform``:
         # the delivered copy is the durable one, so the local copy is retained
         # only while un-acknowledged.
         server_data = self._store.server_data
         if server_data is None:
             return
-        path = server_data / self._workspace / "reports" / f"{identity}.json"
-        try:
-            path.unlink(missing_ok=True)
-        except OSError:
-            return
+        path = source_path or server_data / self._workspace / "reports" / f"{identity}.json"
+        with self._guard:
+            relocated = self._report_relocations.pop(identity, set())
+        for resident in {path, *relocated}:
+            try:
+                resident.unlink(missing_ok=True)
+            except OSError:
+                continue
 
     def _perform(self, job: _Job) -> None:
         if job.kind == "report" and job.report is not None:
             self._send_report(job.report)
             return
         if job.kind == "prior_reports":
-            for _, path in self._prior_report_files():
+            for expected_identity, path in self._prior_report_files():
                 try:
                     report = json.loads(path.read_text(encoding="utf-8"))
-                except (OSError, json.JSONDecodeError):
+                except (
+                    OSError,
+                    UnicodeError,
+                    json.JSONDecodeError,
+                    ValueError,
+                    RecursionError,
+                ):
                     continue
-                if isinstance(report, dict):
-                    self._send_report(report)
+                if isinstance(report, dict) and report_identity(report) == expected_identity:
+                    try:
+                        self._send_report(report, source_path=path)
+                    except Exception:  # noqa: BLE001 - isolate one corrupt durable body
+                        continue
             return
         items = self._prior_run_files() if job.kind == "bootup" else job.files
         if not items:
@@ -463,7 +740,8 @@ class DeliveryService:
             return
         with self._guard:
             self._acked |= set(result.acked)
-        self._save_state()
+        if not self._save_state():
+            return
         for identity, path in items:
             if identity not in result.acked:
                 continue
@@ -501,9 +779,7 @@ class DeliveryService:
                 "origin": self._transport.origin,
                 "state": self._last_state.value,
                 "last_at": (
-                    self._last_at.isoformat().replace("+00:00", "Z")
-                    if self._last_at
-                    else None
+                    self._last_at.isoformat().replace("+00:00", "Z") if self._last_at else None
                 ),
                 "acked_files": len(self._acked),
                 "dropped_jobs": self._dropped,

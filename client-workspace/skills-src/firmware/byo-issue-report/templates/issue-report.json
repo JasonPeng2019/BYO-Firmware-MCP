@@ -1,0 +1,45 @@
+{
+  "signal_type": "S-4",
+  "codebase_objective": "Firmware project for a controlled board; complete the requested guarded operation.",
+  "hypothesis": "The populated plan envelope did not match the contract the server accepted.",
+  "goal": "Complete the requested board operation through the guarded server route.",
+  "plan": "Discover the route, submit its plan envelope, then call the unlocked action.",
+  "failure_point": {
+    "action_taken": "Submitted the populated plan request after the server returned its template.",
+    "observed_result": "The server rejected the request again for the same envelope rule.",
+    "named_step": "the relevant plan tool"
+  },
+  "recent_actions": [
+    {
+      "action": "Inspected the advertised tools.",
+      "result": "Found the guarded plan route.",
+      "code_context": "Identified the supported path for the requested firmware operation."
+    },
+    {
+      "action": "Requested plan initialization.",
+      "result": "Received the action-parameter template.",
+      "code_context": "Collected the server-authored contract for the board operation."
+    },
+    {
+      "action": "Prepared the populated plan envelope.",
+      "result": "Used the returned fields without adding a wrapper.",
+      "code_context": "Bound the intended firmware action to the current board state."
+    },
+    {
+      "action": "Submitted the plan request.",
+      "result": "The server rejected the envelope.",
+      "code_context": "Attempted to unlock the guarded operation through its required plan."
+    },
+    {
+      "action": "Retried from the fresh returned template.",
+      "result": "The same envelope rule was rejected again.",
+      "code_context": "Checked whether current server guidance allowed the firmware task to proceed."
+    }
+  ],
+  "earlier_phases": [
+    "Selected the current board and confirmed its advertised capability tier.",
+    "Reviewed the project objective and chose the guarded server workflow."
+  ],
+  "session_start": "The session began with a request to perform a firmware operation on the configured board.",
+  "signal_subcase": null
+}

@@ -198,9 +198,7 @@ class HardwareEvidence:
         geometry = _exact_fields(
             raw["erase_geometry"], _ERASE_GEOMETRY_FIELDS, "evidence.erase_geometry"
         )
-        erase_origin = _integer(
-            geometry["erase_origin"], "evidence.erase_geometry.erase_origin"
-        )
+        erase_origin = _integer(geometry["erase_origin"], "evidence.erase_geometry.erase_origin")
         erase_size = _integer(geometry["erase_size"], "evidence.erase_geometry.erase_size")
         if erase_size <= 0:
             raise EvidenceError(
@@ -237,7 +235,9 @@ class HardwareEvidence:
             raise EvidenceError(
                 "evidence/target", "device_support evidence requires an exact target"
             )
-        sources.sort(key=lambda item: (item.kind.value, item.identifier, item.version, item.revision))
+        sources.sort(
+            key=lambda item: (item.kind.value, item.identifier, item.version, item.revision)
+        )
         if len(set(sources)) != len(sources):
             raise EvidenceError("evidence/sources", "sources must not contain duplicates")
 
@@ -257,7 +257,10 @@ class HardwareEvidence:
                     "evidence/name-aliases", "name_aliases must be a list of non-empty strings"
                 )
             name_aliases = tuple(
-                sorted((alias.strip() for alias in aliases_raw), key=lambda item: (_normalized(item), item))
+                sorted(
+                    (alias.strip() for alias in aliases_raw),
+                    key=lambda item: (_normalized(item), item),
+                )
             )
             if len({_normalized(alias) for alias in name_aliases}) != len(name_aliases):
                 raise EvidenceError(
@@ -475,10 +478,10 @@ def reconcile_hardware_evidence(
     for support in device_support.regions:
         candidates = sorted(
             [
-            official
-            for official in official_document.regions
-            if official.fact_id == support.fact_id
-            or bool(official.name_keys.intersection(support.name_keys))
+                official
+                for official in official_document.regions
+                if official.fact_id == support.fact_id
+                or bool(official.name_keys.intersection(support.name_keys))
             ],
             key=lambda item: item.fact_id,
         )

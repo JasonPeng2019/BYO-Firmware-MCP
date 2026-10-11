@@ -64,12 +64,73 @@ Once execution starts, success, backend failure, timeout, and cancellation all
 spend exactly one call. When a budget is exhausted, initialize and submit a new
 plan instead of retrying the hidden action.
 
+## Classical CAN
+
+Treat these seven registered routes as the CAN contract: `get_can_status`,
+`connect_can`, `disconnect_can`, `read_can-plan`, `read_can`, `send_can-plan`,
+and `send_can`. Action visibility remains plan-driven and is not authority.
+CAN is off unless an operator installed the `can` extra and staged one
+immutable startup profile.
+
+Call `get_can_status(board_id)` for canonical profile, ownership, budget,
+capability, and cleanup state. Call `connect_can(board_id)` only after the
+profile-authorized board has an active setup-full debug connection and current
+validation stamp. `disconnect_can(board_id)` is the idempotent cleanup route;
+call it even when validation was cleared or an earlier operation failed.
+
+Before a read, initialize `read_can-plan` with all fields set to JSON `null`,
+then submit the exact plan envelope. Its action parameters are
+`read_seconds` (a finite positive number no greater than 10 seconds, or `null`
+for the startup-effective default) and `max_frames` (an integer from 1 through
+128, or `null` for the profile default). Invoke `read_can` with those exact
+values. Before a send, use `send_can-plan` in the same two-step flow with exact
+`arbitration_id`, `data_hex`, `extended`, and `timeout_seconds` action
+parameters. The payload is zero to eight bytes of hexadecimal text, and
+`timeout_seconds` is at most 0.5 seconds or may be `null` for the profile
+default. Arbitration IDs are bounded to `0x1fffffff`, with standard frames
+additionally bounded to `0x7ff`. Neither plan requests user permission; neither
+can enable TX, add an identifier, or increase profile or process limits.
+
+The five operational routes (`get_can_status`, `connect_can`, `disconnect_can`,
+`read_can`, and `send_can`) return canonical JSON in the first content block for
+a schema-valid call. The two `*-plan` routes use the standard textual plan
+workflow and their all-NULL initialization response is guidance, not JSON. Route
+`status: refused` by its stable policy code and `status: failed` as an admitted
+backend/cleanup failure. A request that times out waiting for the board lock is
+`can/board-busy`/`refused`; an admitted operation that exceeds its outer
+deadline is `can/operation-timeout`/`failed`. Both keep canonical JSON with
+current CAN state in that first block. When a routine monitor check-in is due,
+the server appends it as a separate second text block; do not parse that block
+as part of the CAN envelope. Framework-level argument/schema validation can
+fail before CAN admission and therefore remains an ordinary MCP error rather
+than a CAN JSON envelope. Do not infer sender identity from a received frame,
+treat a timeout as proof of absence, or treat virtual observations as physical
+timing, arbitration, wiring, or fault evidence. The virtual backend is
+process-local inside the isolated worker and has child-hosted-peer software
+contract coverage; it cannot communicate with a virtual peer in another
+process and is not integration evidence. Configured CAN is enabled only on
+qualified Linux hosts; Windows, Cygwin/MSYS, and macOS fail closed before
+profile loading. Linux `vcan` and all physical CAN behavior remain unqualified
+in `0.1.8rc1`.
+
+Portable CAN deadlines begin only after synchronous
+`multiprocessing.Process.start()` returns and a worker identity exists. Python
+does not provide a portable way to interrupt or deadline-bound that OS process
+creation call. Consequently, the first `connect_can` can exceed the advertised
+outer deadline if process creation itself stalls, and shutdown waits for that
+call to return rather than risk orphaning a child whose identity was never
+published. Readiness, backend calls, cancellation, and retirement are bounded
+after process creation returns.
+
 ## Connection routing
 
-Use visible `connect` only with the server-generated `board_id`. It is a
-profile-only action: do not supply or infer a probe UID, pyOCD target, external
-board-config path, or launch-environment override. Unknown fields are rejected
-through direct MCP dispatch and through `action_batch`.
+Use visible `connect` with the server-generated `board_id`. For `setup-lite` and
+`setup-full` boards it is profile-only: do not supply or infer a probe UID,
+pyOCD target, external board-config path, or launch-environment override. A
+deliberately unconfigured `no-setup` board is the narrow exception: `connect`
+may receive its explicit `probe_uid` or `target` for raw target resolution, but
+still rejects board-config paths and launch-environment overrides. Unknown
+fields are rejected through direct MCP dispatch and through `action_batch`.
 
 Connection identifiers issued by `setup_overview` are opaque server tokens, not
 probe serial numbers. Pass them back exactly as received. The server re-resolves
@@ -77,12 +138,12 @@ each token against a fresh hardware snapshot at use time, so a token whose devic
 has gone is refused with `discovery/selection-disappeared` and routed back through
 setup rather than silently matching a similar device.
 
-If normal profile/probe resolution fails and a deliberate exceptional manual
-connection is appropriate, initialize `connect_override-plan`. Only its hidden
-`connect_override` action accepts run-scoped `probe_uid`, `target_override`, or
-`external_board_config`; those values never rewrite a profile. Do not use the
-override path to conceal a profile/hardware mismatch that setup or validation
-should correct.
+If normal profile/probe resolution fails for a configured board and a deliberate
+exceptional manual connection is appropriate, initialize
+`connect_override-plan`. Its hidden `connect_override` action accepts run-scoped
+`probe_uid`, `target_override`, or `external_board_config`; those values never
+rewrite a profile. Do not use the override path to conceal a profile/hardware
+mismatch that setup or validation should correct.
 
 ## Permission
 

@@ -27,6 +27,7 @@ def forbid_unknown_tool_arguments(
     tool_name: str,
     *,
     reject_populated_permission: bool = False,
+    strict: bool = False,
 ) -> None:
     """Make a pinned FastMCP argument model preserve the exact plan envelope."""
 
@@ -59,6 +60,7 @@ def forbid_unknown_tool_arguments(
                 "model_config": ConfigDict(
                     arbitrary_types_allowed=True,
                     extra="forbid",
+                    strict=strict,
                 ),
                 "reject_permission_on_populated_plan": reject_permission_on_populated_plan,
             },
@@ -66,6 +68,8 @@ def forbid_unknown_tool_arguments(
         tool.fn_metadata.arg_model = argument_model
     else:
         argument_model.model_config["extra"] = "forbid"
+        if strict:
+            argument_model.model_config["strict"] = True
     argument_model.model_rebuild(force=True)
     tool.parameters = argument_model.model_json_schema(by_alias=True)
 
@@ -154,6 +158,7 @@ def register_plan_tools(
             mcp,
             definition.plan_tool_name,
             reject_populated_permission=definition.permission_mode is PermissionMode.NONE,
+            strict=definition.action_name in {"read_can", "send_can"},
         )
         registered[definition.plan_tool_name] = handler
     return registered

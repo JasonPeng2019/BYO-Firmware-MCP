@@ -388,8 +388,7 @@ def _validated_platforms(raw: Mapping[str, Any], label: str) -> frozenset[str]:
         token = item.strip().casefold()
         if token not in SUPPORTED_PLATFORMS:
             raise DiscoveryHookError(
-                f"{label} platform '{item}' is not one of "
-                f"{', '.join(sorted(SUPPORTED_PLATFORMS))}"
+                f"{label} platform '{item}' is not one of {', '.join(sorted(SUPPORTED_PLATFORMS))}"
             )
         platforms.add(token)
     return frozenset(platforms)
@@ -460,7 +459,9 @@ def parse_manifest_document(
     if not isinstance(rows, list):
         raise DiscoveryHookError(f"{label} hooks must be a list")
     if len(rows) > MAX_HOOKS_PER_MANIFEST:
-        raise DiscoveryHookError(f"{label} must not declare more than {MAX_HOOKS_PER_MANIFEST} hooks")
+        raise DiscoveryHookError(
+            f"{label} must not declare more than {MAX_HOOKS_PER_MANIFEST} hooks"
+        )
     declarations: list[DiscoveryHookDeclaration] = []
     seen: set[str] = set()
     for index, row in enumerate(rows):
@@ -513,9 +514,16 @@ def _contained_entrypoint(root: Path, entrypoint: str, *, label: str) -> Path:
             f"{label} entrypoint must be relative to the server's hook directory"
         )
     resolved_root = Path(root).resolve()
-    resolved = (resolved_root / candidate).resolve()
-    if resolved == resolved_root or not resolved.is_relative_to(resolved_root):
+    # Prove lexical containment before following links. If resolving the lexical
+    # child then escapes, report the more useful symlink-specific refusal below.
+    lexical = Path(os.path.abspath(resolved_root / candidate))
+    if lexical == resolved_root or not lexical.is_relative_to(resolved_root):
         raise DiscoveryHookError(f"{label} entrypoint must stay below {resolved_root}")
+    resolved = lexical.resolve()
+    if not resolved.is_relative_to(resolved_root):
+        raise DiscoveryHookError(
+            f"{label} entrypoint resolves outside the hook directory through a link"
+        )
     if not resolved.is_file():
         raise DiscoveryHookError(f"{label} entrypoint is not a file: {resolved}")
     # `is_relative_to` compares text after resolve() and does not, on its own, prove a
@@ -635,9 +643,7 @@ def load_hook_snapshot(
         operator_manifest = Path(configured).expanduser()
         operator_bytes = _read_manifest_bytes(operator_manifest, label="operator hook registry")
         if operator_bytes is None:
-            raise DiscoveryHookError(
-                f"operator hook registry does not exist: {operator_manifest}"
-            )
+            raise DiscoveryHookError(f"operator hook registry does not exist: {operator_manifest}")
         digest.update(b"operator\x00")
         digest.update(hashlib.sha256(operator_bytes).digest())
         operator_declarations = parse_manifest_document(
@@ -666,9 +672,7 @@ def load_hook_snapshot(
         specs.append(resolve_declaration(declaration, root=root, source="project"))
     if operator_root is not None:
         for declaration in operator_declarations:
-            specs.append(
-                resolve_declaration(declaration, root=operator_root, source="operator")
-            )
+            specs.append(resolve_declaration(declaration, root=operator_root, source="operator"))
 
     # Deterministic execution order across repeated snapshots. A project hook and an
     # operator hook may share a hook_id; source keeps them distinguishable.
@@ -889,14 +893,10 @@ def _execute(
     readers: list[tuple[_CappedReader, threading.Thread, IO[bytes]]] = []
     if stdout_stream is not None:
         reader = _CappedReader(stdout_stream, MAX_HOOK_STDOUT_BYTES, [])
-        readers.append(
-            (reader, threading.Thread(target=reader.run, daemon=True), stdout_stream)
-        )
+        readers.append((reader, threading.Thread(target=reader.run, daemon=True), stdout_stream))
     if stderr_stream is not None:
         reader = _CappedReader(stderr_stream, MAX_HOOK_STDERR_BYTES, [])
-        readers.append(
-            (reader, threading.Thread(target=reader.run, daemon=True), stderr_stream)
-        )
+        readers.append((reader, threading.Thread(target=reader.run, daemon=True), stderr_stream))
     remove_marker = False
     joined: list[IO[bytes]] = []
 
@@ -977,6 +977,16 @@ def execute_hook(
             spec,
             "source_changed",
             "hook file changed since the last refresh_discovery_hooks; refresh again",
+        )
+
+    # Some network/ACL-backed POSIX filesystems permit direct execution despite
+    # cleared mode bits. Enforce the operator contract ourselves so losing the
+    # execute bit always produces the same typed refusal on every POSIX host.
+    if spec.runner == "executable" and os.name != "nt" and not os.access(spec.entrypoint, os.X_OK):
+        return _refusal(
+            spec,
+            "launch_failed",
+            "hook process could not be started: entrypoint is not executable",
         )
 
     try:
@@ -1089,8 +1099,7 @@ def execute_eligible_hooks(
 
     selected = platform or current_platform()
     return tuple(
-        execute_hook(spec, marker_store=marker_store)
-        for spec in snapshot.eligible(kind, selected)
+        execute_hook(spec, marker_store=marker_store) for spec in snapshot.eligible(kind, selected)
     )
 
 
@@ -1128,7 +1137,7 @@ PROBE_OUTPUT_SCHEMA_EXAMPLE: dict[str, object] = {
     "probes": [
         {
             "provider": "cmsisdap",
-            "unique_id": "066EFF505057717867163251",
+            "unique_id": "ABCD00000000000000000002",
             "description": "ST-LINK/V2-1 on the target board",
         }
     ],
@@ -1141,7 +1150,7 @@ UART_OUTPUT_SCHEMA_EXAMPLE: dict[str, object] = {
         {
             "port_path": "COM7",
             "description": "USB Serial Device",
-            "serial_number": "066EFF505057717867163251",
+            "serial_number": "ABCD00000000000000000002",
             "vid": 1155,
             "pid": 14155,
         }
@@ -1158,7 +1167,7 @@ import sys
 PROBES = [
     {
         "provider": "cmsisdap",
-        "unique_id": "066EFF505057717867163251",
+        "unique_id": "ABCD00000000000000000002",
         "description": "ST-LINK/V2-1 on the target board",
     }
 ]
@@ -1185,7 +1194,7 @@ UARTS = [
     {
         "port_path": "COM7",
         "description": "USB Serial Device",
-        "serial_number": "066EFF505057717867163251",
+        "serial_number": "ABCD00000000000000000002",
         "vid": 1155,
         "pid": 14155,
     }

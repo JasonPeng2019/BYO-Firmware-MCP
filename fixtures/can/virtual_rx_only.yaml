@@ -1,0 +1,38 @@
+schema_version: 1
+profile_id: virtual_rx_only
+board_ids: [nucleo_l476rg]
+probe_uids: []
+protocol: classic
+adapter:
+  kind: virtual
+  channel: byo-rx-only
+bus:
+  expected_nominal_bitrate: 500000
+  require_one_shot_for_tx: false
+  receive_own_messages: false
+receive:
+  exact_ids:
+    - arbitration_id: 0x321
+      extended: false
+  default_read_seconds: 0.25
+  max_read_seconds: 2.0
+  default_max_frames: 8
+  max_frames: 32
+transmit:
+  enabled: false
+  exact_ids: []
+  max_frames_per_second: 10
+  max_tx_attempts_per_process: 100
+  default_send_timeout_seconds: 0.1
+  max_send_timeout_seconds: 0.5
+process_limits:
+  max_can_tool_calls: 512
+  max_target_policy_refusals: 128
+  max_read_calls: 256
+  max_health_transactions: 32
+  max_received_frames: 4096
+  max_capture_artifacts: 256
+  max_capture_bytes: 16777216
+evidence:
+  provider_payloads: metadata_only
+  artifact_payloads: full

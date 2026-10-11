@@ -21,6 +21,7 @@ pyocd.local.yaml
 /runs/
 /scratch/
 /.firm/
+/.agent-workspace/runtime/
 /packs/
 /boards/
 /firmware/

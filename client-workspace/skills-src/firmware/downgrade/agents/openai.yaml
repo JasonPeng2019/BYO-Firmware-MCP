@@ -1,0 +1,4 @@
+interface:
+  display_name: "Downgrade firmware safety tier"
+  short_description: "Human-only one-use downgrade permission"
+  default_prompt: "Authorize the named board's current policy to downgrade to no-setup mode."

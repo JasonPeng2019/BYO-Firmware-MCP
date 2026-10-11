@@ -72,9 +72,7 @@ class _Bucket:
 class ThrashDetector:
     """Fire once per genuine loop, and never on a legitimate repetition pattern."""
 
-    def __init__(
-        self, threshold: int = THRESHOLD, window_seconds: float = WINDOW_SECONDS
-    ) -> None:
+    def __init__(self, threshold: int = THRESHOLD, window_seconds: float = WINDOW_SECONDS) -> None:
         self._threshold = threshold
         self._window = window_seconds
         self._guard = threading.Lock()

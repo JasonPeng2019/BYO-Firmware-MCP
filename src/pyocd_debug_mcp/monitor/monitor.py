@@ -13,13 +13,16 @@ recurse -- and is only counted.
 from __future__ import annotations
 
 import json
+import os
 import platform
 import sys
+import tempfile
 import threading
 import time
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from enum import Enum
 from pathlib import Path
 from typing import Any
 
@@ -43,7 +46,7 @@ from pyocd_debug_mcp.monitor.counters import (
 )
 from pyocd_debug_mcp.monitor.delivery import DeliveryService
 from pyocd_debug_mcp.monitor.ledger import SegmentLedger, verify_prior_runs
-from pyocd_debug_mcp.monitor.redaction import fingerprint, result_text, scrub_mechanical
+from pyocd_debug_mcp.monitor.redaction import digest_id, fingerprint, result_text, scrub_mechanical
 from pyocd_debug_mcp.monitor.reports import (
     Deduper,
     Origin,
@@ -51,6 +54,7 @@ from pyocd_debug_mcp.monitor.reports import (
     build_report,
     build_summary,
     grouping_key,
+    report_identity,
 )
 from pyocd_debug_mcp.monitor.thrash import ThrashDetector
 from pyocd_debug_mcp.monitor.trail import BoardTrail
@@ -59,6 +63,35 @@ from pyocd_debug_mcp.monitor.transport import (
     SimulatedRemoteTransport,
     Transport,
 )
+
+
+def _fsync_directory(directory: Path) -> None:
+    """Persist a replaced directory entry on POSIX; other platforms lack this API."""
+
+    if os.name != "posix":
+        return
+    descriptor = os.open(directory, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+
+
+def _ensure_durable_directory(directory: Path) -> None:
+    """Create each missing component and persist its entry in the parent."""
+
+    missing: list[Path] = []
+    current = directory
+    while not current.exists():
+        missing.append(current)
+        parent = current.parent
+        if parent == current:
+            break
+        current = parent
+    for component in reversed(missing):
+        component.mkdir(exist_ok=True)
+        _fsync_directory(component.parent)
+
 
 _MAX_BUFFERED_RECORDS = 2000
 
@@ -87,6 +120,24 @@ class MonitorContext:
     gate_snapshot: Callable[[str], Any]
     live_identity: Callable[[str], Any]
     connection_id: Callable[[str], str | None]
+
+
+@dataclass(frozen=True, slots=True)
+class _FiledReport:
+    report: dict[str, Any]
+    persistence: ArtifactPersistence
+
+
+class ArtifactPersistence(str, Enum):
+    """Outcome of publishing a report body to its recovery-visible path."""
+
+    PERSISTED = "persisted"
+    FAILED = "failed"
+    UNCERTAIN = "uncertain"
+
+    @property
+    def confirmed(self) -> bool:
+        return self is ArtifactPersistence.PERSISTED
 
 
 class Observation:
@@ -123,7 +174,7 @@ class Observation:
                 duration_ms=self._duration_ms(),
                 exc=None,
             )
-        except BaseException:  # noqa: BLE001 - observation must never alter dispatch
+        except Exception:  # noqa: BLE001 - process-control BaseExceptions must propagate
             self._monitor._note_internal_failure()
 
     def failed(self, exc: BaseException) -> None:
@@ -141,7 +192,7 @@ class Observation:
                 duration_ms=self._duration_ms(),
                 exc=exc,
             )
-        except BaseException:  # noqa: BLE001
+        except Exception:  # noqa: BLE001
             self._monitor._note_internal_failure()
 
 
@@ -215,11 +266,17 @@ class IssueMonitor:
         # so a slow bind can never stall a tool call the way holding _guard for
         # the whole bind used to risk.
         self._bind_lock = threading.Lock()
+        # Couples artifact workspace selection/publication with the one-time
+        # unbound -> bound transition. Without this, a report can select the
+        # unbound directory, pause, and publish there after delivery has moved
+        # permanently to the real workspace.
+        self._artifact_lock = threading.RLock()
         self._buffered: list[dict[str, Any]] = []
         self._bound = False
         self._checkin_due = False
         self._internal_failures = 0
         self._verification: dict[str, str] = {}
+        self._injected_transport = transport
         self._transport = transport or self._default_transport()
         self._delivery = DeliveryService(
             self._store, self._workspace, context.run_id, self._transport, self._block
@@ -276,9 +333,7 @@ class IssueMonitor:
 
         try:
             self._counters.set_advertised(self._ctx.advertised_tools())
-            self._verification = verify_prior_runs(
-                self._store, self._workspace, self._ctx.run_id
-            )
+            self._verification = verify_prior_runs(self._store, self._workspace, self._ctx.run_id)
             self._append(
                 "boot",
                 detail={
@@ -292,7 +347,7 @@ class IssueMonitor:
             )
             self._delivery.start()
             self._delivery.enqueue_bootup()
-        except BaseException:  # noqa: BLE001
+        except Exception:  # noqa: BLE001
             self._note_internal_failure()
 
     def bind_workspace(self, path: Path | None) -> None:
@@ -302,8 +357,8 @@ class IssueMonitor:
         ``_ledger`` and ``_delivery`` are the bound ones -- otherwise a call
         landing in that window would see ``_bound is True`` and write straight
         to the pre-bind (unbound-workspace) ledger instead of buffering, silently
-        splitting one run's occasions across two chains. So the new ledger,
-        transport, and delivery service are built *first*, off to the side, and
+        splitting one run's occasions across two chains. So the new ledger and
+        transport are built *first*, off to the side, and
         ``_bound`` is flipped in the same guarded block that publishes them --
         one atomic swap, not two.
 
@@ -330,35 +385,104 @@ class IssueMonitor:
                 wid = paths.workspace_id(path)
                 token = paths.workspace_token(self._store, wid)
                 new_ledger = SegmentLedger(self._store, wid, self._ctx.run_id)
-                new_transport = self._default_transport(wid)
-                new_delivery = DeliveryService(
-                    self._store, wid, self._ctx.run_id, new_transport, self._block
-                )
+                new_transport = self._injected_transport or self._default_transport(wid)
                 verification = verify_prior_runs(self._store, wid, self._ctx.run_id)
-                with self._guard:
+                with self._artifact_lock:
                     previous = self._delivery
-                    self._workspace = wid
-                    self._workspace_token = token
-                    self._ledger = new_ledger
-                    self._transport = new_transport
-                    self._delivery = new_delivery
-                    self._verification = verification
-                    buffered = list(self._buffered)
-                    self._buffered.clear()
-                    # Published last, and only here: by the time this is True,
-                    # _ledger and _delivery are already the bound ones.
-                    self._bound = True
+                    previous_ledger = self._ledger
+                    # An injected transport belongs to the caller and is reused
+                    # by the bound service. Closing it here made binding silently
+                    # invalidate fail-always and wedged test transports.
+                    # Preserve recovery work already queued under the honest
+                    # unbound namespace. It drains asynchronously and retires;
+                    # binding never waits on a sender.
+                    previous.start()
+                    previous.enqueue_bootup()
+                    self._migrate_unbound_bodies(wid, previous)
+                    # Construct after stopping the old service so its receipt
+                    # book includes any ACK completed during the bounded stop.
+                    new_delivery = DeliveryService(
+                        self._store, wid, self._ctx.run_id, new_transport, self._block
+                    )
+                    with self._guard:
+                        self._workspace = wid
+                        self._workspace_token = token
+                        self._ledger = new_ledger
+                        self._transport = new_transport
+                        self._delivery = new_delivery
+                        self._verification = verification
+                        buffered = list(self._buffered)
+                        self._buffered.clear()
+                        # Published last, and only here: by the time this is True,
+                        # _ledger and _delivery are already the bound ones.
+                        self._bound = True
+                    old_tail = previous_ledger.seal()
+                    if old_tail is not None:
+                        previous.enqueue_segments((old_tail,))
+                    previous.retire(close_transport=self._injected_transport is None)
             finally:
                 self._bind_lock.release()
-            # Stop the pre-bind service before it's forgotten, or its daemon
-            # thread outlives the run pointed at a workspace we no longer use.
-            # Neither this nor the start below holds _guard.
-            previous.stop(timeout=0.1)
             new_delivery.start()
             for record in buffered:
                 self._write_record(dict(record))
             new_delivery.enqueue_bootup()
-        except BaseException:  # noqa: BLE001
+        except Exception:  # noqa: BLE001
+            self._note_internal_failure()
+
+    def _migrate_unbound_bodies(self, workspace: str, previous_delivery: DeliveryService) -> None:
+        """Move pre-bind bodies into the bound recovery namespace, best effort.
+
+        The caller holds ``_artifact_lock``, so no body can choose/publish its
+        destination during the move. Delivery also scans the unbound fallback,
+        preserving recovery if a filesystem error prevents migration.
+        """
+
+        server_data = self._store.server_data
+        if server_data is None or workspace == paths.UNBOUND_WORKSPACE:
+            return
+        source_directory = server_data / paths.UNBOUND_WORKSPACE / "reports"
+        if not source_directory.is_dir():
+            return
+        destination_directory = server_data / workspace / "reports"
+        try:
+            _ensure_durable_directory(destination_directory)
+            for source in sorted(source_directory.glob("*.json")):
+                try:
+                    body = json.loads(source.read_text(encoding="utf-8"))
+                except (
+                    OSError,
+                    UnicodeError,
+                    json.JSONDecodeError,
+                    ValueError,
+                    RecursionError,
+                ):
+                    continue
+                if not isinstance(body, dict) or body.get("session_id") != self._ctx.run_id:
+                    # ``unbound`` is shared by concurrently starting servers.
+                    # A bind may claim only bodies created by this run.
+                    continue
+                destination = destination_directory / source.name
+                if destination.exists():
+                    # IDs are content identities. Remove an exact duplicate;
+                    # retain a conflicting source for the fallback recovery scan.
+                    if source.read_bytes() == destination.read_bytes():
+                        previous_delivery.track_report_relocation(source.stem, destination)
+                        source.unlink()
+                    continue
+                # Register the destination before moving. If an already-running
+                # pre-bind send is ACKed during this exact window, it will clean
+                # whichever side of the move contains the durable body. A
+                # conflicting destination above is deliberately never tracked:
+                # an ACK for this source must not delete unrelated bytes.
+                previous_delivery.track_report_relocation(source.stem, destination)
+                try:
+                    os.replace(source, destination)
+                except OSError:
+                    previous_delivery.cancel_report_relocation(source.stem, destination)
+                    raise
+            _fsync_directory(destination_directory)
+            _fsync_directory(source_directory)
+        except OSError:
             self._note_internal_failure()
 
     def closeout(self, reason: str) -> None:
@@ -388,7 +512,7 @@ class IssueMonitor:
             # One shared deadline across drain-then-stop, not two independent
             # budgets stacked -- see DeliveryService.close_for_shutdown.
             self._delivery.close_for_shutdown(segments)
-        except BaseException:  # noqa: BLE001
+        except BaseException:  # noqa: BLE001 - terminal closeout must remain best-effort
             self._note_internal_failure()
 
     # -- the block (the one place monitoring holds authority) ------------
@@ -441,7 +565,7 @@ class IssueMonitor:
             args_fp = fingerprint(arguments)
             guard_fp = self._guard_fingerprint(tool, board)
             return Observation(self, tool, board, args_fp, guard_fp)
-        except BaseException:  # noqa: BLE001
+        except Exception:  # noqa: BLE001
             self._note_internal_failure()
             return None
 
@@ -499,12 +623,12 @@ class IssueMonitor:
         duration_ms: int,
         exc: BaseException | None,
     ) -> None:
-        connection = self._safe(
-            lambda: self._ctx.connection_id(board) if board else None, None
-        )
+        raw_connection = self._safe(lambda: self._ctx.connection_id(board) if board else None, None)
+        connection = digest_id(raw_connection) if isinstance(raw_connection, str) else None
         self._trail.append(
             tool=tool,
             board=board,
+            record_board=digest_id(board) if board is not None else None,
             connection=connection,
             args_fp=args_fp,
             outcome=outcome.value,
@@ -528,8 +652,15 @@ class IssueMonitor:
                 tool=tool,
                 board=board,
                 anchor=error_signature(exc),
-                title=f"{tool}: {type(exc).__name__}",
-                description=str(exc)[:500],
+                title=f"{tool}: managed execution failed",
+                # Exception text can contain credentials, payload fragments, or
+                # host paths. Mechanical reports persist only the type/category;
+                # the salted anchor above retains grouping without disclosure.
+                description=(
+                    "An unexpected exception was raised during managed tool execution; "
+                    "its type was omitted and exception text was omitted by the mechanical "
+                    "redaction boundary."
+                ),
                 refusal_code=None,
                 named_remedy=None,
                 args_fp=args_fp,
@@ -561,11 +692,7 @@ class IssueMonitor:
         # fifth usage snapshot coincides with a check-in prompt.
         if self._usage_snapshot_every > 0 and total % self._usage_snapshot_every == 0:
             self._usage_snapshot_tick()
-        if (
-            NARRATIVE_LOGGING
-            and self._checkin_every > 0
-            and total % self._checkin_every == 0
-        ):
+        if NARRATIVE_LOGGING and self._checkin_every > 0 and total % self._checkin_every == 0:
             with self._guard:
                 self._checkin_due = True
 
@@ -582,12 +709,19 @@ class IssueMonitor:
             # Refresh-then-snapshot via the shared helper: see its docstring for
             # why the order is load-bearing here.
             snapshot = self._refreshed_snapshot()
-            summary = self._build_summary(
-                trigger=str(snapshot.total), snapshot=snapshot
-            )
+            summary = self._build_summary(trigger=str(snapshot.total), snapshot=snapshot)
+            persistence = self._write_artifact_file(summary)
+            if not persistence.confirmed:
+                self._note_internal_failure()
             self._append(
                 "usage_snapshot",
-                detail={"summary_id": summary["summary_id"], **self._usage(snapshot)},
+                detail={
+                    "summary_id": summary["summary_id"],
+                    "body_persistence": persistence.value,
+                    "body_persisted": persistence.confirmed,
+                    "delivery_enqueued": persistence.confirmed,
+                    **self._usage(snapshot),
+                },
             )
             # Seal on the same beat as the snapshot: the roll boundary is the
             # snapshot cadence, not a second number that could drift from it.
@@ -596,12 +730,12 @@ class IssueMonitor:
             if rolled is not None and rolled not in segments:
                 segments.append(rolled)
             self._delivery.enqueue_segments(segments)
-            # Durable local copy before the handoff, same as a problem report:
-            # a dropped or interrupted send still leaves a file bootup recovery
-            # can find.
-            self._write_artifact_file(summary)
-            self._delivery.enqueue_report(summary)
-        except BaseException:  # noqa: BLE001
+            # A body is handed off only after a durable local copy exists; on a
+            # write failure the ledger above is the explicit mechanical
+            # disclaimer and there is no transient-only delivery attempt.
+            if persistence.confirmed:
+                self._delivery.enqueue_report(summary)
+        except Exception:  # noqa: BLE001
             self._note_internal_failure()
 
     @staticmethod
@@ -690,7 +824,7 @@ class IssueMonitor:
         named_remedy: str | None,
         args_fp: str | None,
         narrative: dict[str, Any] | None = None,
-    ) -> dict[str, Any] | None:
+    ) -> _FiledReport | None:
         triage = TRIAGE_FOR_SIGNAL.get(signal, TriageClass.SERVER_DEFECT)
         key = grouping_key(signal, triage, tool, anchor)
         emit, suppressed = self._deduper.admit(key)
@@ -721,10 +855,16 @@ class IssueMonitor:
             narrative=narrative,
             suppressed_since_last=suppressed,
         )
-        self._write_artifact_file(report)
+        persistence = self._write_artifact_file(report)
+        if not persistence.confirmed:
+            self._note_internal_failure()
+        if persistence is ArtifactPersistence.FAILED:
+            self._deduper.withdraw(key, suppressed)
         # A filed report is one of the ledger's occasions, so the chain carries the
         # fact that it happened alongside the snapshots. The narrative and the
         # trail stay in the report itself; the ledger keeps the mechanical anchor.
+        # A failed body write is retained honestly as a mechanical-only occasion
+        # and is never handed to delivery as though boot recovery could resend it.
         self._append(
             "report",
             detail={
@@ -735,13 +875,17 @@ class IssueMonitor:
                 "tool": tool,
                 "error_signature": anchor,
                 "grouping_key": key,
+                "body_persistence": persistence.value,
+                "body_persisted": persistence.confirmed,
+                "delivery_enqueued": persistence.confirmed,
                 **self._usage(snapshot),
             },
         )
-        self._delivery.enqueue_report(report)
-        return report
+        if persistence.confirmed:
+            self._delivery.enqueue_report(report)
+        return _FiledReport(report=report, persistence=persistence)
 
-    def _write_artifact_file(self, artifact: Mapping[str, Any]) -> None:
+    def _write_artifact_file(self, artifact: Mapping[str, Any]) -> ArtifactPersistence:
         """Durably persist a report or summary body next to the ledger.
 
         This is what bootup recovery's ``_prior_report_files`` finds and resends
@@ -755,30 +899,60 @@ class IssueMonitor:
         ``DeliveryService``.
         """
 
+        with self._artifact_lock:
+            return self._write_artifact_file_locked(artifact)
+
+    def _write_artifact_file_locked(self, artifact: Mapping[str, Any]) -> ArtifactPersistence:
+        """Implement artifact persistence while ``_artifact_lock`` is held."""
+
         server_data = self._store.server_data
         if server_data is None:
-            return
-        identity = artifact.get("report_id") or artifact.get("summary_id")
-        if not identity:
-            return
+            return ArtifactPersistence.FAILED
+        identity = report_identity(artifact)
+        if identity is None:
+            return ArtifactPersistence.FAILED
         # Reports live in the per-user store, never inside the workspace project
         # directory and never under the safety-evidence root.
         directory = server_data / self._workspace / "reports"
+        temporary: Path | None = None
+        published = False
         try:
-            directory.mkdir(parents=True, exist_ok=True)
-            (directory / f"{identity}.json").write_text(
-                json.dumps(dict(artifact), ensure_ascii=False, indent=2, sort_keys=True),
+            _ensure_durable_directory(directory)
+            content = json.dumps(dict(artifact), ensure_ascii=False, indent=2, sort_keys=True)
+            with tempfile.NamedTemporaryFile(
+                mode="w",
                 encoding="utf-8",
-            )
-        except (OSError, KeyError):
-            return
+                dir=directory,
+                prefix=f".{identity}.",
+                suffix=".tmp",
+                delete=False,
+            ) as handle:
+                temporary = Path(handle.name)
+                handle.write(content)
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.replace(temporary, directory / f"{identity}.json")
+            published = True
+            temporary = None
+            _fsync_directory(directory)
+        except (OSError, KeyError, TypeError, ValueError):
+            # Once replace succeeds, a later directory-fsync failure cannot be
+            # reported as definite absence: the final path is visible now and
+            # may survive for boot recovery.  Callers disclose that uncertainty
+            # and never enqueue it on the current request path.
+            return ArtifactPersistence.UNCERTAIN if published else ArtifactPersistence.FAILED
+        finally:
+            if temporary is not None:
+                try:
+                    temporary.unlink(missing_ok=True)
+                except OSError:
+                    pass
+        return ArtifactPersistence.PERSISTED
 
     # -- summaries and health --------------------------------------------
 
     def _uptime(self) -> float:
-        return max(
-            0.0, (datetime.now(timezone.utc) - self._ctx.run_started_at).total_seconds()
-        )
+        return max(0.0, (datetime.now(timezone.utc) - self._ctx.run_started_at).total_seconds())
 
     def _build_summary(
         self,
@@ -840,9 +1014,7 @@ class IssueMonitor:
             segments = self._ledger.sealed_segments()
             return {
                 "run_id": self._ctx.run_id,
-                "run_started_at": self._ctx.run_started_at.isoformat().replace(
-                    "+00:00", "Z"
-                ),
+                "run_started_at": self._ctx.run_started_at.isoformat().replace("+00:00", "Z"),
                 "uptime_seconds": round(self._uptime(), 3),
                 "narrative_logging": profile_name(),
                 "counters": {
@@ -881,7 +1053,7 @@ class IssueMonitor:
                 },
                 "block": self._block.describe(),
             }
-        except BaseException:  # noqa: BLE001
+        except Exception:  # noqa: BLE001
             self._note_internal_failure()
             return {"monitoring": "degraded"}
 
@@ -894,25 +1066,44 @@ class IssueMonitor:
             validated, signal = validate_issue_form(form)
         except ValueError as exc:
             return {"status": "report_rejected", "message": str(exc)}
-        report = self._file_report(
+        filed = self._file_report(
             signal=signal,
             origin=Origin.MODEL_SKILL,
-            tool=str(validated.get("failure_point", {}).get("named_step") or "") or None,
+            # The model's named_step is narrative, not an authoritative tool
+            # identity. No observed server tool is available on this intake path,
+            # so keep the mechanical anchor empty rather than copying model prose
+            # into report/ledger/grouping fields.
+            tool=None,
             board=None,
             anchor=f"model:{signal.value}:{validated.get('signal_subcase') or '-'}",
-            title=str(validated.get("goal", "agent-reported issue"))[:120],
-            description=str(validated.get("hypothesis", ""))[:500],
+            title=f"Agent-reported {signal.value} issue",
+            description="Validated model-authored details are attached under narrative.",
             refusal_code=None,
             named_remedy=None,
             args_fp=None,
             narrative=validated,
         )
-        if report is None:
+        if filed is None:
             return {
                 "status": "report_grouped",
                 "message": "An equivalent report was already filed recently.",
             }
-        return {"status": "report_recorded", "report_id": report["report_id"]}
+        if filed.persistence is ArtifactPersistence.FAILED:
+            return {
+                "status": "report_not_recorded",
+                "message": "The report body could not be stored and was not queued for delivery.",
+            }
+        if filed.persistence is ArtifactPersistence.UNCERTAIN:
+            return {
+                "status": "report_recording_uncertain",
+                "message": (
+                    "The report body was published locally but its durability could not be "
+                    "confirmed. It was not queued now and may be recovered for delivery after "
+                    "restart."
+                ),
+                "report_id": filed.report["report_id"],
+            }
+        return {"status": "report_recorded", "report_id": filed.report["report_id"]}
 
     def submit_checkin(self, form: Mapping[str, Any]) -> dict[str, Any]:
         from pyocd_debug_mcp.monitor.narrative import validate_checkin_form
@@ -928,21 +1119,46 @@ class IssueMonitor:
         summary = self._build_summary(
             trigger="agent-invoked", narrative=validated, snapshot=snapshot
         )
+        persistence = self._write_artifact_file(summary)
+        if not persistence.confirmed:
+            self._note_internal_failure()
         # A check-in is its own record kind, distinct from a usage snapshot and
-        # from a report: it is a health record, never an issue.
+        # from a report: it is a health record, never an issue. Its mechanical
+        # record states honestly whether the full narrative body survived.
         self._append(
             "checkin",
-            detail={"summary_id": summary["summary_id"], **self._usage(snapshot)},
+            detail={
+                "summary_id": summary["summary_id"],
+                "body_persistence": persistence.value,
+                "body_persisted": persistence.confirmed,
+                "delivery_enqueued": persistence.confirmed,
+                **self._usage(snapshot),
+            },
         )
         segments = self._ledger.sealed_segments()
         self._delivery.enqueue_segments(segments)
-        self._write_artifact_file(summary)
+        if persistence is ArtifactPersistence.FAILED:
+            return {
+                "status": "checkin_not_recorded",
+                "message": "The check-in body could not be stored and was not queued for delivery.",
+            }
+        if persistence is ArtifactPersistence.UNCERTAIN:
+            return {
+                "status": "checkin_recording_uncertain",
+                "message": (
+                    "The check-in body was published locally but its durability could not be "
+                    "confirmed. It was not queued now and may be recovered for delivery after "
+                    "restart."
+                ),
+                "summary_id": summary["summary_id"],
+            }
         self._delivery.enqueue_report(summary)
         return {"status": "checkin_recorded", "summary_id": summary["summary_id"]}
 
 
 __all__ = [
     "CHECKIN_PROMPT",
+    "ArtifactPersistence",
     "IssueMonitor",
     "MonitorContext",
     "NullMonitor",

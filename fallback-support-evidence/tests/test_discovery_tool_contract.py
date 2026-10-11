@@ -128,17 +128,13 @@ class SchemaDriftTests(unittest.TestCase):
                 execution = discovery_hooks.execute_hook(snapshot.hooks[0])
                 self.assertTrue(execution.ok, execution.failure_detail)
                 assert execution.output is not None
-                rows = (
-                    execution.output.probes if kind == "probe" else execution.output.uarts
-                )
+                rows = execution.output.probes if kind == "probe" else execution.output.uarts
                 self.assertTrue(rows, "the published example hook returned no rows")
 
     def test_declared_limits_match_the_values_actually_enforced(self) -> None:
         limits = self.contract("probe")["limits"]
 
-        self.assertEqual(
-            limits["max_timeout_seconds"], discovery_hooks.MAX_HOOK_TIMEOUT_SECONDS
-        )
+        self.assertEqual(limits["max_timeout_seconds"], discovery_hooks.MAX_HOOK_TIMEOUT_SECONDS)
         self.assertEqual(limits["max_rows"], discovery_hooks.MAX_HOOK_ROWS)
         self.assertEqual(limits["max_field_characters"], discovery_hooks.MAX_FIELD_CHARS)
         self.assertEqual(limits["max_stdout_bytes"], discovery_hooks.MAX_HOOK_STDOUT_BYTES)
@@ -190,9 +186,7 @@ class SchemaDriftTests(unittest.TestCase):
         self.assertEqual(self.contract("probe")["hook_root"], str(self.root))
 
     def test_probe_contract_lists_registered_providers_and_uart_does_not(self) -> None:
-        self.assertEqual(
-            self.contract("probe")["pyocd_providers"], ["cmsisdap", "jlink", "stlink"]
-        )
+        self.assertEqual(self.contract("probe")["pyocd_providers"], ["cmsisdap", "jlink", "stlink"])
         self.assertNotIn("pyocd_providers", self.contract("uart"))
 
     def test_an_unsupported_kind_is_refused_with_the_supported_list(self) -> None:
@@ -269,9 +263,7 @@ class UniqueIdGuidanceDriftTests(unittest.TestCase):
         from pyocd.probe.aggregator import DebugProbeAggregator
         from pyocd.probe.tcp_client_probe import TCPClientProbe
 
-        klasses, uid, is_explicit = DebugProbeAggregator._get_probe_classes(
-            "remote:localhost:5555"
-        )
+        klasses, uid, is_explicit = DebugProbeAggregator._get_probe_classes("remote:localhost:5555")
 
         self.assertEqual(list(klasses), [TCPClientProbe])
         self.assertTrue(is_explicit, "remote probes are only constructed when explicit")

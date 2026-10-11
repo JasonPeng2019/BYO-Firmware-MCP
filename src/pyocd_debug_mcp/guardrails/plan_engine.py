@@ -419,7 +419,11 @@ def _field_error(field: FieldDefinition, value: object) -> str | None:
     elif field_type is FieldType.NUMBER:
         if isinstance(value, bool) or not isinstance(value, (int, float)):
             return "must be a finite number"
-        type_error = None if math.isfinite(float(value)) else "must be a finite number"
+        try:
+            finite = math.isfinite(float(value))
+        except OverflowError:
+            finite = False
+        type_error = None if finite else "must be a finite number"
     elif field_type is FieldType.BOOLEAN:
         type_error = None if isinstance(value, bool) else "must be a boolean"
     elif field_type is FieldType.ARRAY:
@@ -562,6 +566,8 @@ class PlanEngine:
         )
         canonical_parameters = _canonical_action_parameters(definition, action_parameters)
         canonical_plan_fields = canonical_json(dict(fields))
+        if definition.validate_scope_on_submission:
+            self.scope_validator(definition, board_id, session_id)
         artifact_binding = self._bind_artifact(
             definition,
             action_parameters,

@@ -45,12 +45,8 @@ class SnapshotAtomicityTests(unittest.TestCase):
         write_manifest(
             self.root,
             [
-                hook_entry(
-                    "probe-hook", "probe", argv=["counter_probe", str(self.probe_counter)]
-                ),
-                hook_entry(
-                    "uart-hook", "uart", argv=["counter_uart", str(self.uart_counter)]
-                ),
+                hook_entry("probe-hook", "probe", argv=["counter_probe", str(self.probe_counter)]),
+                hook_entry("uart-hook", "uart", argv=["counter_uart", str(self.uart_counter)]),
             ],
         )
         self.hooks = load_hook_snapshot(self.root, environ={})
@@ -229,9 +225,7 @@ class TwoBoardOverviewConcurrencyTests(unittest.TestCase):
             directory,
             [
                 hook_entry("probe-hook", "probe", argv=["counter_probe", str(counter)]),
-                hook_entry(
-                    "uart-hook", "uart", argv=["counter_uart", str(counter) + ".uart"]
-                ),
+                hook_entry("uart-hook", "uart", argv=["counter_uart", str(counter) + ".uart"]),
             ],
         )
         hooks: DiscoveryHookSnapshot = load_hook_snapshot(directory, environ={})
@@ -266,9 +260,7 @@ class TwoBoardOverviewConcurrencyTests(unittest.TestCase):
                 ids = {row.snapshot_id for row in snapshot.probes}
                 ids |= {row.snapshot_id for row in snapshot.uarts}
                 self.assertEqual(ids, {snapshot.snapshot_id})
-        self.assertNotEqual(
-            results["alpha"].snapshot_id, results["beta"].snapshot_id
-        )
+        self.assertNotEqual(results["alpha"].snapshot_id, results["beta"].snapshot_id)
 
 
 class RowIdHelperTests(unittest.TestCase):

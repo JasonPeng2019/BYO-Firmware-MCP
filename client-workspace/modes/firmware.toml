@@ -1,0 +1,7 @@
+name = "firmware"
+description = "BYO firmware workflow, monitor reporting, and human-only destructive grants"
+
+# These names resolve to skills-src/firmware/<name>/SKILL.md after attachment.
+# The reporting skill is model-invocable. The two destructive permission skills
+# explicitly disable model invocation and require a human invocation.
+skills = ["byo-issue-report", "downgrade", "mass-erase"]

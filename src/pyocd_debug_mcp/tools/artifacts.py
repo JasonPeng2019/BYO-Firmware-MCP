@@ -76,9 +76,7 @@ def build_artifact_handlers() -> dict[str, Callable[..., str]]:
                 "authority": "provenance_only",
                 "safety_handoff": {
                     "status": (
-                        "flash_plan_artifact_available"
-                        if has_flash_artifact
-                        else "provenance_only"
+                        "flash_plan_artifact_available" if has_flash_artifact else "provenance_only"
                     ),
                     "next_step": (
                         "Submit the matching application or bootloader flash plan with the "

@@ -286,9 +286,7 @@ class PermissionStore:
             keys = [
                 key
                 for key, value in self.server_run.permissions.items()
-                if isinstance(key, tuple)
-                and len(key) == 2
-                and isinstance(value, PermissionGrant)
+                if isinstance(key, tuple) and len(key) == 2 and isinstance(value, PermissionGrant)
             ]
             self.server_run.permissions.clear()
             callback = self._on_revoke

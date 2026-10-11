@@ -209,9 +209,7 @@ class UartOpenFailureTests(unittest.TestCase):
 
     def test_serial_exchange_reports_a_genuine_port_failure_as_uart_open_failed(self) -> None:
         def _exchange_uart(*_args: Any, **_kwargs: Any) -> Any:
-            raise RuntimeError(
-                "Unable to exchange data on COM_TEST at 115200 baud: port vanished"
-            )
+            raise RuntimeError("Unable to exchange data on COM_TEST at 115200 baud: port vanished")
 
         services = _services_for_failure(exchange_uart=_exchange_uart)
         step_args: list[dict[str, Any]] = [

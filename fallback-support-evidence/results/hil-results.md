@@ -10,7 +10,7 @@
 1. Routed the attached ST-Link board and submitted non-destructive P1 setup with the supplied datasheet.
 2. P1 stopped at its real CMSIS-Pack target-resolution continuation (as required); it was not continued.
 3. Submitted and started a separate same-board P2 setup in the same server run, retiring P1.
-4. P2 reached its own CMSIS-Pack continuation. Submitted the already-present official archive facts exactly: `Keil.STM32L4xx_DFP`, version `3.1.0`, URL `https://www.keil.com/pack/Keil.STM32L4xx_DFP.3.1.0.pack`, SHA-256 `5672383C07FBDCEE0E471A33F4F8BEB2E1F3200BC999244DCD6858E0E8E8203F`, local path `C:\Users\Jason\Documents\Jason\FirmCLI_Tester\Firmware-Test-Manual\MCP-Trial-3\BYO-Firmware-MCP\testing_folder\Keil.STM32L4xx_DFP.3.1.0.pack`.
+4. P2 reached its own CMSIS-Pack continuation. Submitted the already-present official archive facts exactly: `Keil.STM32L4xx_DFP`, version `3.1.0`, URL `https://www.keil.com/pack/Keil.STM32L4xx_DFP.3.1.0.pack`, SHA-256 `5672383C07FBDCEE0E471A33F4F8BEB2E1F3200BC999244DCD6858E0E8E8203F`, local path `<redacted-home>\Documents\<redacted-user>\FirmCLI_Tester\Firmware-Test-Manual\MCP-Trial-3\BYO-Firmware-MCP\testing_folder\Keil.STM32L4xx_DFP.3.1.0.pack`.
 5. The live continuation accepted the pack and resolved `stm32l476rgtx`; followed the live paired `board_fix_setup` redirect.
 6. Paired setup fix completed and automatic validation passed. Live setup status reported `setup_ready` and normal guarded-work readiness.
 7. Live setup-plan initialization reported the underlying `board_setup` action hidden and locked pending a new exact plan, proving completed P2 closed the paired/primary setup allowance while normal profile readiness remained available.

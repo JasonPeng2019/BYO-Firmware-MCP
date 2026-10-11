@@ -19,13 +19,13 @@ from typing import Any, Mapping, Sequence
 
 PROBE_ROW = {
     "provider": "cmsisdap",
-    "unique_id": "066EFF505057717867163251",
+    "unique_id": "ABCD00000000000000000002",
     "description": "Fake CMSIS-DAP probe",
 }
 UART_ROW = {
     "port_path": "COM7",
     "description": "Fake USB Serial Device",
-    "serial_number": "066EFF505057717867163251",
+    "serial_number": "ABCD00000000000000000002",
     "vid": 1155,
     "pid": 14155,
 }
@@ -253,9 +253,7 @@ def main() -> int:
         return 0
 
     if mode == "record_env":
-        Path(argument).write_text(
-            os.environ.get("PYTHONIOENCODING", "<unset>"), encoding="utf-8"
-        )
+        Path(argument).write_text(os.environ.get("PYTHONIOENCODING", "<unset>"), encoding="utf-8")
         emit(probe_document([dict(PROBE_ROW)]))
         return 0
 

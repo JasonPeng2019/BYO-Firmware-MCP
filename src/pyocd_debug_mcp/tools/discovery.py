@@ -148,8 +148,7 @@ class DiscoveryRetryStore:
             if self._clock() - context.created_at > RETRY_TTL_SECONDS:
                 self._contexts.pop(retry_id, None)
                 raise ExpiredRetry(
-                    "that retry ticket has expired; call "
-                    f"{CONTRACT_TOOL} again to get a fresh one"
+                    f"that retry ticket has expired; call {CONTRACT_TOOL} again to get a fresh one"
                 )
             if kind is not None and context.kind != kind:
                 raise WrongKindRetry(
@@ -395,9 +394,7 @@ def build_discovery_handlers(
         failed = [execution for execution in executions if not execution.ok]
 
         document: dict[str, Any] = {
-            "status": (
-                "discovery_hooks_refreshed" if not failed else "discovery_hooks_partial"
-            ),
+            "status": ("discovery_hooks_refreshed" if not failed else "discovery_hooks_partial"),
             "hook_root": str(services.hook_root()),
             "manifest_sha256": snapshot.manifest_sha256,
             "loaded_at": snapshot.loaded_at,

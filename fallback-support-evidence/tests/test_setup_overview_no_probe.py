@@ -339,14 +339,14 @@ class ProbeConnectionIdTests(unittest.TestCase):
     """
 
     CASES = (
-        "683710208",
-        "000683710208",
+        "111222333",
+        "000111222333",
         "0",
         "0000",
         "ABCDEF123456",
         "abcdef123456",
         "AbCdEf123456",
-        "066EFF505057717867163251",
+        "ABCD00000000000000000002",
     )
 
     def test_mint_is_provider_qualified_stripped_and_casefolded(self) -> None:
@@ -414,9 +414,7 @@ class ProbeConnectionIdTests(unittest.TestCase):
                 minted = probe_connection_id("jlink", uid)
                 self.assertTrue(server._same_setup_connection(minted, f"probe:{uid}"))
                 self.assertTrue(server._same_setup_connection(f"probe:{uid}", minted))
-                self.assertTrue(
-                    server._same_setup_connection(minted, f"probe:{uid.casefold()}")
-                )
+                self.assertTrue(server._same_setup_connection(minted, f"probe:{uid.casefold()}"))
 
     def test_two_canonical_tokens_for_the_same_provider_still_compare_equal(self) -> None:
         for uid in self.CASES:
@@ -431,8 +429,8 @@ class ProbeConnectionIdTests(unittest.TestCase):
     def test_decimal_leading_zeros_still_compare_equal_after_the_mint(self) -> None:
         self.assertTrue(
             server._same_setup_connection(
-                probe_connection_id("jlink", "000683710208"),
-                probe_connection_id("jlink", "683710208"),
+                probe_connection_id("jlink", "000111222333"),
+                probe_connection_id("jlink", "111222333"),
             )
         )
         self.assertEqual(
@@ -451,8 +449,8 @@ class ProbeConnectionIdTests(unittest.TestCase):
     def test_distinct_uids_do_not_collide_after_the_mint(self) -> None:
         self.assertFalse(
             server._same_setup_connection(
-                probe_connection_id("jlink", "683710208"),
-                probe_connection_id("jlink", "683854191"),
+                probe_connection_id("jlink", "111222333"),
+                probe_connection_id("jlink", "444555666"),
             )
         )
         # Leading-zero stripping applies to decimals only; hex text is not renumbered.
@@ -575,8 +573,8 @@ class CrossProviderCollisionTests(unittest.TestCase):
         """A J-Link-style decimal UID and its zero-padded twin, under two providers."""
 
         probes = (
-            _probe(1, usb_serial="683710208", probe_family="jlink"),
-            _probe(2, usb_serial="000683710208", probe_family="cmsisdap"),
+            _probe(1, usb_serial="111222333", probe_family="jlink"),
+            _probe(2, usb_serial="000111222333", probe_family="cmsisdap"),
         )
         harness = _OverviewHarness(probes, ())
 

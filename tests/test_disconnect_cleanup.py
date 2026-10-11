@@ -19,6 +19,34 @@ def _connection():
 
 
 class DisconnectCleanupTests(unittest.TestCase):
+    def test_state_cleanup_failure_cannot_skip_explicit_resource_closes(self) -> None:
+        for gate_failure in (
+            RuntimeError("gate clear failed"),
+            KeyboardInterrupt("second shutdown signal"),
+        ):
+            with self.subTest(failure=type(gate_failure).__name__):
+                manager = ConnectionManager()
+                handle = TargetSessionHandle(None, None, "probe-1", "worker", None)
+                runtime = Mock(name="runtime")
+                connection = manager.assign("board-1", handle, runtime)
+                with (
+                    patch.object(server, "connection_manager", manager),
+                    patch.object(server.assignment_store, "clear_board"),
+                    patch.object(server.gate_manager, "clear", side_effect=gate_failure),
+                    patch.object(server.plan_engine, "invalidate_board"),
+                    patch.object(server, "_clear_setup_continuation"),
+                    patch.object(server.target_control, "close_session") as close_worker,
+                    patch.object(server._session_store, "close_session") as close_runtime,
+                    patch.object(server, "_record_event"),
+                    self.assertRaises(type(gate_failure)) as raised,
+                ):
+                    server._disconnect_debug_only("board-1")
+
+                self.assertIs(raised.exception, gate_failure)
+                close_worker.assert_called_once_with(connection.handle)
+                close_runtime.assert_called_once_with(connection.runtime_session)
+                self.assertIsNone(manager.maybe_connection("board-1"))
+
     def test_worker_marker_failure_still_closes_runtime_and_records_failure(self) -> None:
         connection = _connection()
         worker_failure = TargetConnectionError(
@@ -31,9 +59,7 @@ class DisconnectCleanupTests(unittest.TestCase):
             patch.object(server, "_record_event", record),
         ):
             with self.assertRaises(TargetConnectionError) as raised:
-                server._finish_disconnect_cleanup(
-                    "board-1", connection, started=time.monotonic()
-                )
+                server._finish_disconnect_cleanup("board-1", connection, started=time.monotonic())
 
         self.assertIs(raised.exception, worker_failure)
         close_runtime.assert_called_once_with(connection.runtime_session)
@@ -54,9 +80,7 @@ class DisconnectCleanupTests(unittest.TestCase):
             patch.object(server, "_record_event", record),
         ):
             with self.assertRaises(OSError) as raised:
-                server._finish_disconnect_cleanup(
-                    "board-1", connection, started=time.monotonic()
-                )
+                server._finish_disconnect_cleanup("board-1", connection, started=time.monotonic())
 
         self.assertIs(raised.exception, runtime_failure)
         close_worker.assert_called_once_with(connection.handle)
@@ -77,9 +101,7 @@ class DisconnectCleanupTests(unittest.TestCase):
             patch.object(server, "_record_event") as record,
         ):
             with self.assertRaises(RuntimeError) as raised:
-                server._finish_disconnect_cleanup(
-                    "board-1", connection, started=time.monotonic()
-                )
+                server._finish_disconnect_cleanup("board-1", connection, started=time.monotonic())
 
         self.assertIs(raised.exception.__cause__, worker_failure)
         self.assertIn("worker marker retained", str(raised.exception))
@@ -106,9 +128,7 @@ class DisconnectCleanupTests(unittest.TestCase):
             patch.object(server, "_record_event", record),
         ):
             with self.assertRaises(RuntimeError):
-                server._finish_disconnect_cleanup(
-                    "board-1", connection, started=time.monotonic()
-                )
+                server._finish_disconnect_cleanup("board-1", connection, started=time.monotonic())
 
         recorded = record.call_args.kwargs["details"]["message"]
         self.assertGreater(len(recorded), 300)
@@ -125,9 +145,7 @@ class DisconnectCleanupTests(unittest.TestCase):
             patch.object(server, "_record_event", side_effect=event_failure),
         ):
             with self.assertRaises(TargetConnectionError) as raised:
-                server._finish_disconnect_cleanup(
-                    "board-1", connection, started=time.monotonic()
-                )
+                server._finish_disconnect_cleanup("board-1", connection, started=time.monotonic())
 
         self.assertIs(raised.exception, worker_failure)
         self.assertIs(raised.exception.__cause__, event_failure)

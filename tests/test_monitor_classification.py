@@ -7,6 +7,7 @@ classifier that reads refusals as defects would bury the real signal on day one.
 
 from __future__ import annotations
 
+import json
 import unittest
 
 from mcp.server.fastmcp.exceptions import ToolError
@@ -167,7 +168,7 @@ class UnexpectedFailuresAreReported(unittest.TestCase):
         outcome, triage, code = classify_exception(RuntimeError("boom"))
         self.assertIs(outcome, Outcome.UNEXPECTED_ERROR)
         self.assertIs(triage, TriageClass.SERVER_DEFECT)
-        self.assertEqual(code, "runtime/RuntimeError")
+        self.assertEqual(code, "runtime/unexpected-error")
 
     def test_deadline_termination_is_a_server_defect(self) -> None:
         outcome, triage, _ = classify_exception(
@@ -253,7 +254,22 @@ class NonErrorRefusalsAreRecognised(unittest.TestCase):
         )
         self.assertIs(outcome, Outcome.POLICY_REFUSAL)
         self.assertEqual(code, "artifact_collection_refused")
-        self.assertEqual(remedy, "Use explicit outputs.")
+        self.assertEqual(remedy, "provided")
+
+    def test_echoed_json_markers_never_become_a_mechanical_remedy(self) -> None:
+        injected = "invalid next_step password=synthetic-secret UART=OK_READY probe=synthetic-id"
+        outcome, code, remedy = classify_result(
+            json.dumps(
+                {
+                    "status": "discovery_contract_rejected",
+                    "code": "discovery/unsupported-kind",
+                    "agent_prompt": f"Unsupported kind: {injected}",
+                }
+            )
+        )
+        self.assertIs(outcome, Outcome.POLICY_REFUSAL)
+        self.assertEqual(code, "discovery_contract_rejected")
+        self.assertIsNone(remedy)
 
     def test_no_board_sentinel(self) -> None:
         outcome, code, _ = classify_result(f"{NO_BOARD_FRAGMENT} for this session.")
@@ -291,7 +307,7 @@ class ErrorCodesAreUnchanged(unittest.TestCase):
             (ReferenceArtifactError("x"), "flash/reference-artifact"),
             (SymbolLookupError("x"), "symbols/lookup-failure"),
             (BoardNotConnectedError("x"), "server/not-connected"),
-            (KeyError("x"), "runtime/KeyError"),
+            (KeyError("x"), "runtime/unexpected-error"),
         ]
         for exc, expected in cases:
             with self.subTest(expected=expected):
@@ -310,9 +326,26 @@ class SignaturesGroupAcrossRuns(unittest.TestCase):
         self.assertEqual(first, second)
 
     def test_signature_keeps_the_exception_identity(self) -> None:
-        self.assertNotEqual(
-            error_signature(RuntimeError("x")), error_signature(ValueError("x"))
+        self.assertNotEqual(error_signature(RuntimeError("x")), error_signature(ValueError("x")))
+
+    def test_unknown_exception_symbols_are_opaque(self) -> None:
+        class AcmeCustomerSecretBootloaderFailure(RuntimeError):
+            pass
+
+        exc = AcmeCustomerSecretBootloaderFailure("password=hunter2")
+        code = error_code(exc)
+        signature = error_signature(exc)
+        self.assertEqual(code, "runtime/unexpected-error")
+        self.assertNotIn("AcmeCustomerSecretBootloaderFailure", signature)
+        self.assertNotIn("hunter2", signature)
+
+    def test_signature_never_discloses_exception_text_or_host_paths(self) -> None:
+        signature = error_signature(
+            RuntimeError("SECRET_TOKEN_ABC at C:\\Users\\alice\\private\\fw.elf")
         )
+        self.assertNotIn("SECRET_TOKEN_ABC", signature)
+        self.assertNotIn("alice", signature)
+        self.assertNotIn("fw.elf", signature)
 
 
 if __name__ == "__main__":

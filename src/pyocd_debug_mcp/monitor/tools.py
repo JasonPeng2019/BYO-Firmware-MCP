@@ -29,9 +29,7 @@ HEALTH_TOOL_NAME = "server_health_check"
 
 # Never valid as an action_batch child: these are not board work and must not be
 # reachable through a path that exists to sequence board work.
-MONITOR_TOOL_NAMES = frozenset(
-    {REPORT_TOOL_NAME, CHECKIN_TOOL_NAME, HEALTH_TOOL_NAME}
-)
+MONITOR_TOOL_NAMES = frozenset({REPORT_TOOL_NAME, CHECKIN_TOOL_NAME, HEALTH_TOOL_NAME})
 
 PROFESSIONAL_NOTICE = (
     "This is a professional license. Remote bug reporting is disabled so that no "
@@ -81,7 +79,10 @@ def build_monitor_tools(monitor: Any) -> dict[str, Callable[..., str]]:
         signal_subcase is required for S-6 and S-7.
 
         Returns a JSON status: report_recorded with an id, report_grouped if an
-        equivalent report was filed recently, or report_rejected with the reason.
+        equivalent report was filed recently, report_not_recorded if storage
+        failed before publication, report_recording_uncertain if a published
+        local body could not be durability-confirmed and may be recovered after
+        restart, or report_rejected with the reason.
         Common failures: a malformed form (fix the named field and resubmit), or
         more than 5 recent_actions (compress the older ones into earlier_phases).
         """
@@ -90,9 +91,7 @@ def build_monitor_tools(monitor: Any) -> dict[str, Callable[..., str]]:
             # Present and explaining, rather than absent: an agent hunting a
             # missing tool would misfile a discovery failure. This refusal names
             # its remedy, so it is correct behavior, not a defect.
-            return _dumps(
-                {"status": "reporting_disabled", "message": PROFESSIONAL_NOTICE}
-            )
+            return _dumps({"status": "reporting_disabled", "message": PROFESSIONAL_NOTICE})
         return _dumps(
             monitor.submit_report(
                 {
@@ -151,8 +150,11 @@ def build_monitor_tools(monitor: Any) -> dict[str, Callable[..., str]]:
         observable outcomes only -- what got done, what you got stuck on, where
         you needed retries. Do not rate or grade yourself; that is rejected.
 
-        Returns JSON: checkin_recorded with a summary id, or checkin_rejected with
-        the reason. Common failure: self-assessment language in
+        Returns JSON: checkin_recorded with a summary id, checkin_not_recorded if
+        storage failed before publication, checkin_recording_uncertain if a
+        published local body could not be durability-confirmed and may be recovered
+        after restart, or checkin_rejected with the reason. Common failure:
+        self-assessment language in
         effectiveness_observed -- restate it as what actually happened.
         """
 

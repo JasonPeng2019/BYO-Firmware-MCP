@@ -13,6 +13,8 @@ from unittest.mock import Mock, patch
 from pyocd_debug_mcp import server
 from pyocd_debug_mcp.adapters.swd_interface import TargetSessionHandle
 from pyocd_debug_mcp.adapters.swd_process import _WorkerClient
+from pyocd_debug_mcp.kernel import operations
+from pyocd_debug_mcp.kernel.operations import ManagedOperation, OperationCancelledError
 from pyocd_debug_mcp.services.connections import ConnectionManager
 from pyocd_debug_mcp.services.session_runtime import InMemorySessionStore
 
@@ -30,7 +32,88 @@ class ConnectionPromotionTransactionTests(unittest.TestCase):
             server._validation_connect,
         ):
             with self.subTest(function=function.__name__):
-                self.assertIn("_promote_open_session(", inspect.getsource(function))
+                self.assertIn("_promote_open_session_if_live(", inspect.getsource(function))
+        self.assertIn(
+            "complete_operation=False",
+            inspect.getsource(server._validation_connect),
+        )
+
+        handle = _handle("probe-cancelled", "token-cancelled")
+        with (
+            patch.object(
+                server,
+                "run_if_not_cancelled",
+                side_effect=OperationCancelledError("client disconnected"),
+            ),
+            patch.object(server.target_control, "close_session") as close_worker,
+            self.assertRaises(OperationCancelledError),
+        ):
+            server._promote_open_session_if_live(
+                "board-cancelled", handle, gate_reason="validation required"
+            )
+        close_worker.assert_called_once_with(handle)
+
+    def test_validation_promotion_does_not_disable_later_cancellation(self) -> None:
+        """A bootstrap connection is only an intermediate validation stage."""
+
+        manager = ConnectionManager()
+        handle = _handle("probe-validation", "token-validation")
+        runtime = Mock(name="runtime")
+        store = SimpleNamespace(
+            start_session=Mock(return_value=runtime),
+            close_session=Mock(),
+        )
+        gate = SimpleNamespace(
+            clear=Mock(),
+            snapshot=Mock(return_value=None),
+            current_mismatch=Mock(return_value=None),
+        )
+        operation = ManagedOperation(
+            operation_id="operation-validation",
+            request_id="request-validation",
+            tool_name="board_validate",
+            board_id="board-validation",
+            timeout_seconds=30.0,
+            non_interruptible=False,
+            preserve_halt=False,
+        )
+
+        token = operations._current_operation.set(operation)
+        try:
+            with (
+                patch.object(server, "connection_manager", manager),
+                patch.object(server, "_session_store", store),
+                patch.object(server, "gate_manager", gate),
+                patch.object(server.target_control, "close_session") as close_worker,
+            ):
+                assignment = server._promote_open_session_if_live(
+                    "board-validation",
+                    handle,
+                    gate_reason="validation connection not yet stamped",
+                    complete_operation=False,
+                )
+                self.assertIs(manager.maybe_connection("board-validation"), assignment)
+                self.assertFalse(operation.completion_committed)
+
+                operation.request_cancel("client disconnected")
+                with self.assertRaises(OperationCancelledError):
+                    operations.cancellation_checkpoint()
+
+                server._validation_close(
+                    server._ValidationConnection(
+                        handle,
+                        False,
+                        board_id="board-validation",
+                        promoted=True,
+                        assignment=assignment,
+                    )
+                )
+
+            self.assertIsNone(manager.maybe_connection("board-validation"))
+            store.close_session.assert_called_once_with(runtime)
+            close_worker.assert_called_once_with(handle)
+        finally:
+            operations._current_operation.reset(token)
 
     def test_start_session_failure_always_closes_the_new_worker(self) -> None:
         manager = ConnectionManager()
@@ -47,9 +130,7 @@ class ConnectionPromotionTransactionTests(unittest.TestCase):
             patch.object(server.target_control, "close_session") as close_worker,
         ):
             with self.assertRaisesRegex(RuntimeError, "summary persistence failed"):
-                server._promote_open_session(
-                    "board-new", handle, gate_reason="validation required"
-                )
+                server._promote_open_session("board-new", handle, gate_reason="validation required")
 
         self.assertIsNone(manager.maybe_connection("board-new"))
         store.close_session.assert_not_called()
@@ -82,9 +163,7 @@ class ConnectionPromotionTransactionTests(unittest.TestCase):
             patch.object(server, "gate_manager", SimpleNamespace(clear=Mock())),
         ):
             with self.assertRaisesRegex(RuntimeError, "summary persistence failed"):
-                server._promote_open_session(
-                    "board-new", handle, gate_reason="validation required"
-                )
+                server._promote_open_session("board-new", handle, gate_reason="validation required")
 
         self.assertTrue(client._closed)
         self.assertFalse(marker.exists())
@@ -204,9 +283,7 @@ class ConnectionPromotionTransactionTests(unittest.TestCase):
             nonlocal replacement
             self.assertEqual((board_id, reason), ("board-new", "validation required"))
             manager.clear("board-new")
-            replacement = manager.assign(
-                "board-new", replacement_handle, replacement_runtime
-            )
+            replacement = manager.assign("board-new", replacement_handle, replacement_runtime)
             raise ValueError("gate persistence failed")
 
         store = SimpleNamespace(
@@ -256,9 +333,7 @@ class ConnectionPromotionTransactionTests(unittest.TestCase):
             ),
         ):
             with self.assertRaises(ValueError) as raised:
-                server._promote_open_session(
-                    "board-new", handle, gate_reason="validation required"
-                )
+                server._promote_open_session("board-new", handle, gate_reason="validation required")
 
         self.assertEqual(str(raised.exception), "primary gate failure")
         self.assertIsInstance(raised.exception.__cause__, RuntimeError)

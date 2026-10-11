@@ -1,19 +1,24 @@
 # Test Coverage Map: Snapshot-Cadence Rework (CORRECTED)
 
-**Baseline test result:**
+**Maintainer-reported historical focused verification:**
 
 ```
-Ran 257 tests in 92.931s - OK (excluding codex e2e)
+Ran 290 tests in 95.417s - OK (skipped=2)
 ```
 
-(5 new tests added: AC-32, AC-21 full fields, AC-73, F-45, plus verification helper)
+This run includes the monitor modules, repository-owned client-skill contracts,
+and AT09 workspace acceptance. The two skips are platform-specific monitor
+hardening cases; no external-agent E2E module is included in this focused run.
+Only the summary was retained, so this old run is context rather than durable
+evidence for the current release candidate. Current raw command output is kept
+under `sentry-evidence/results/0.1.8rc1-*.log`.
 
 ## Coverage Summary
 
 | Count | Status |
 |-------|--------|
-| **COVERED** | 26 |
-| **PARTIAL** | 2 |
+| **COVERED** | 28 |
+| **PARTIAL** | 0 |
 | **MISSING** | 0 |
 | **TOTAL** | 28 |
 
@@ -32,13 +37,13 @@ Ran 257 tests in 92.931s - OK (excluding codex e2e)
 | AC-96 | Long run rolls segments at the configured boundary; changing that boundary changes only the only-local window and leaves ledger format unchanged | COVERED | `test_monitor_behaviour.py::OneCadenceMovesEverythingItGoverns::test_halving_the_cadence_doubles_snapshots_and_segments`, `test_monitor_ledger.py::Segments::test_roll_seals_and_opens_a_successor` |
 | AC-97 | Periodic delivery never pushes the file currently being appended to; bootup delivers prior runs' files; closeout seals and attempts the final segment | COVERED | `test_monitor_delivery.py::SelfDrainingSpool` tests (multiple) |
 | AC-103 | Each usage snapshot carries the run's cumulative counts, not a per-window delta; dropping intermediates does not lower the total; every problem report likewise carries cumulative counts | COVERED | `test_monitor_ledger.py::RecordsOccasionsNotCalls::test_a_later_snapshot_never_reports_less_than_an_earlier_one`, `test_monitor_behaviour.py::UsageSnapshotTick::test_snapshots_carry_cumulative_counts`, `test_a_dropped_snapshot_does_not_lower_the_next_total` |
-| AC-104 | Under-report defense documented as three tiers: (1) casual defeated by cumulative + block; (2) deliberate editing detectable via off-box witness post-cutover; (3) source-level forgery neither prevented nor detected | PARTIAL | `test_monitor_ledger.py::NoOverclaiming::test_the_under_report_ceiling_is_documented` asserts tier 3 is stated in docstring ("neither prevented nor detected", "not** unforgeable"); tiers 1–2 documented in spec but not explicitly tested in code |
+| AC-104 | Under-report defense documented as three tiers: (1) casual defeated by cumulative + block; (2) deliberate editing detectable via off-box witness post-cutover; (3) source-level forgery neither prevented nor detected | COVERED | Tier 1: `test_monitor_ledger.py::NoOverclaiming::test_tier_one_combines_cumulative_survivor_with_staleness_block`; tier 2/current pre-cutover limit: `ChainIntegrity::test_offline_rewrite_with_recomputed_chain_is_not_detected`; tier 3/documented ceiling: `NoOverclaiming::test_the_under_report_ceiling_is_documented`. The real off-box witness remains a delivery implementation item, not a claim made by these tests. |
 | AC-105 | With sender stuck on unreachable/hanging endpoint, tool-call latency indistinguishable from baseline; no request awaits send; sealed files remain on disk | COVERED | `test_monitor_delivery.py::AStuckSenderIsInvisible::test_tool_calls_keep_their_baseline_latency` |
 | AC-106 | Snapshot cadence, check-in cadence, trail buffer size, and staleness threshold each resolve to a single named constant; changing snapshot cadence in one place changes snapshot production, segment roll, and periodic recording together; leaves trail buffer unchanged | COVERED | `test_monitor_counters_trail.py::CadenceResolution::test_defaults_are_the_constants`, `test_monitor_behaviour.py::OneCadenceMovesEverythingItGoverns` (ensemble), `test_monitor_counters_trail.py` shows distinct constants |
 | F-38 | System maintains durable, append-only ledger of usage snapshots (every 100 calls), check-ins, problem reports, and boot/close records — not one per tool call | COVERED | `test_monitor_ledger.py::RecordsOccasionsNotCalls::test_all_five_occasion_kinds_append` |
 | F-42 | Each usage snapshot must record enough to answer: which tools ran, how many times (cumulative), with what outcome distribution, and which advertised tools were never exercised | COVERED | `test_monitor_ledger.py::RecordsOccasionsNotCalls::test_snapshot_carries_cumulative_counts` |
 | F-43 | At each 100-call tick system produces a usage snapshot: a summary record carrying the run's cumulative counts | COVERED | `test_monitor_behaviour.py::UsageSnapshotTick::test_snapshot_record_is_written_at_the_boundary` |
-| F-44 | Summary must contain: run identity, uptime, cumulative counts by tool/outcome/error, ledger state (record count, chain head, hardening, verification), delivery state, build capability, environment | PARTIAL | `test_monitor_ledger.py::LedgerAppend::test_hardening_state_is_observable` asserts hardening; `test_monitor_behaviour.py::ReportingThroughTheMonitor::test_every_report_carries_the_runs_cumulative_counts` asserts usage (activity) counts; new test `SnapshotCarriesAllRequiredFields` asserts chain_head, binding, state; but no single test asserts **all** F-44 fields together (e.g., missing explicit tests for uptime, environment version, verification outcome in summary payload) |
+| F-44 | Summary must contain: run identity, uptime, cumulative counts by tool/outcome/error, ledger state (record count, chain head, hardening, verification), delivery state, build capability, environment | COVERED | `test_monitor_wiring.py::ExactHealthCheckBoundaries::test_delivered_snapshot_contains_required_complete_summary` asserts the complete delivered summary together, including uptime, environment, and verification; focused lower-level assertions remain in `test_monitor_ledger.py` and `test_monitor_behaviour.py`. |
 | F-45 | 100-call snapshot boundary and 500-call check-in boundary counted per Server Run and must not reset on board change, disconnect, gate closure, or plan expiry | COVERED | **NEW:** `test_monitor_behaviour.py::CounterSurvivesBindWorkspace::test_counter_total_and_cadence_survive_workspace_binding` verifies counter total and cadence survive `bind_workspace()` rebuild; `test_monitor_counters_trail.py::Counting::test_no_reset_method_exists` proves no reset method exists |
 | F-75 | Always-present recording occasions: boot, usage snapshot every 100 tool calls, and close; personal build adds check-in every 500 calls; problem report produces a record | COVERED | `test_monitor_ledger.py::RecordsOccasionsNotCalls::test_all_five_occasion_kinds_append` |
 | F-77 | The periodic record is the usage snapshot of §4.11, produced every 100 calls | COVERED | `test_monitor_behaviour.py::UsageSnapshotTick::test_snapshot_record_is_written_at_the_boundary` |
@@ -53,7 +58,7 @@ Ran 257 tests in 92.931s - OK (excluding codex e2e)
 
 ---
 
-## Changes Made (4 Items)
+## Reconciliation changes
 
 1. **AC-32**: Was missing. **Added test**: `RecordingWithNoTransport::test_all_three_occasions_produced_with_null_transport` uses NullTransport and verifies all three records. Now COVERED.
 
@@ -63,6 +68,14 @@ Ran 257 tests in 92.931s - OK (excluding codex e2e)
 
 4. **F-45**: Was missing test for hazard. **Added test**: `CounterSurvivesBindWorkspace::test_counter_total_and_cadence_survive_workspace_binding` verifies counter and cadence survive `bind_workspace()` rebuild. Now COVERED.
 
+5. **F-44**: The delivered all-fields assertion now exists as
+   `ExactHealthCheckBoundaries::test_delivered_snapshot_contains_required_complete_summary`.
+   The old partial classification was stale. Now COVERED.
+
+6. **AC-104**: Added an explicit tier-1 behavior test and cited the existing
+   tier-2 recomputed-chain behavior plus tier-3 documented ceiling. Now COVERED
+   without claiming that today's filler is an off-box witness.
+
 ---
 
 ## PARTIAL and MISSING (Remaining)
@@ -70,11 +83,11 @@ Ran 257 tests in 92.931s - OK (excluding codex e2e)
 ### MISSING (0)
 None.
 
-### PARTIAL (2)
+### PARTIAL (0)
 
-1. **F-44** — Summary field completeness: tests verify hardening, activity counts, chain_head, binding, and state in separate tests; no single test asserts every F-44 field together (uptime, environment version, verification outcome in payload not explicitly checked).
-
-2. **AC-104** — Under-report defense tiers: tier 3 (source-level forgery not prevented) explicitly tested in docstring; tiers 1–2 (casual/deliberate) documented in spec but validation deferred to spec-level inspection.
+None. Real OAuth/OpenID delivery is deliberately tracked separately in
+`mcp-issue-monitor-remaining-work.md`; until that cutover, tier-2 tests assert
+the honest local limitation rather than claiming an off-box witness exists.
 
 ---
 
@@ -87,13 +100,19 @@ None.
 - `CounterSurvivesBindWorkspace::test_counter_total_and_cadence_survive_workspace_binding` (F-45)
 - `VerifierDoesNotFlagAckedDeletion::test_counter_vs_resident_file_gap_is_not_a_fault` (AC-73)
 
-**Final test result:**
+**Current reconciliation additions:**
+
+- `tests/test_monitor_ledger.py::NoOverclaiming::test_tier_one_combines_cumulative_survivor_with_staleness_block` (AC-104 tier 1)
+- `tests/test_monitor_client_skill.py` (fixed templates and S-4…S-14 client criteria)
+- `tests/test_monitor_spec_review.py` (current review and remaining-work consistency)
+
+**Historical test result (maintainer-reported; summary only):**
 
 ```bash
-Ran 246 tests in ~36s - OK
+Ran 290 tests in 95.417s - OK (skipped=2)
 ```
 
 ---
 
-**Generated:** 2026-07-30  
-**Coverage Map Version:** 1.1 (Round 2 — corrected arithmetic, verified each COVERED row, added 5 tests for AC-32/21/73/45, reconciled AC-104)
+**Generated:** 2026-10-10
+**Coverage Map Version:** 1.2 (current summary evidence and all three AC-104 tiers reconciled)

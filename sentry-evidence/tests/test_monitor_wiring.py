@@ -84,8 +84,7 @@ class CorrectRefusalsProduceNoDefects(ServerIntegrationCase):
         defects = [
             json.loads(path.read_text(encoding="utf-8"))
             for path in reports
-            if json.loads(path.read_text(encoding="utf-8"))["triage_class"]
-            == "server_defect"
+            if json.loads(path.read_text(encoding="utf-8"))["triage_class"] == "server_defect"
         ]
         self.assertEqual(defects, [], f"unexpected server-defect reports: {defects}")
 
@@ -368,7 +367,9 @@ class ExactHealthCheckBoundaries(unittest.TestCase):
         datetime.fromisoformat(summary["run_started_at"].replace("Z", "+00:00"))
         self.assertGreaterEqual(summary["uptime_seconds"], 0)
         self.assertEqual(activity["total"], 100)
-        self.assertEqual(activity["per_tool"], {"initialization_handshake": 1, "server_health_check": 99})
+        self.assertEqual(
+            activity["per_tool"], {"initialization_handshake": 1, "server_health_check": 99}
+        )
         self.assertEqual(activity["per_outcome"], {"success": 100})
         self.assertEqual(activity["per_error_class"], {})
         self.assertEqual(sum(activity["per_tool"].values()), activity["total"])
@@ -382,16 +383,12 @@ class ExactHealthCheckBoundaries(unittest.TestCase):
         self.assertGreaterEqual(ledger["total_appended"], 0)
         self.assertGreaterEqual(ledger["resident_files"], 0)
         self.assertTrue(ledger["chain_head"])
-        self.assertIn(
-            ledger["hardening"], {"applied", "unsupported", "failed", "not_attempted"}
-        )
+        self.assertIn(ledger["hardening"], {"applied", "unsupported", "failed", "not_attempted"})
         self.assertIsInstance(ledger["verification"], dict)
         self.assertIsNone(ledger["last_write_error"])
         self.assertEqual(delivery["transport"], "test")
         self.assertEqual(delivery["origin"], "test")
-        self.assertIn(
-            delivery["state"], {"sent", "failed", "not_configured", "filler_simulated"}
-        )
+        self.assertIn(delivery["state"], {"sent", "failed", "not_configured", "filler_simulated"})
         self.assertIsInstance(delivery["acked_files"], int)
         self.assertGreaterEqual(delivery["undelivered_files"], 0)
         self.assertTrue(delivery["store_state"])
@@ -435,9 +432,7 @@ class ExactHealthCheckBoundaries(unittest.TestCase):
                 {
                     "codebase_summary": "A firmware MCP server under test.",
                     "work_summary": "Exercised the health-check monitoring boundary.",
-                    "tools_used": [
-                        {"tool": "server_health_check", "purpose": "monitor boundary"}
-                    ],
+                    "tools_used": [{"tool": "server_health_check", "purpose": "monitor boundary"}],
                     "effectiveness_observed": "The boundary produced its requested record.",
                 },
             )[0].text
@@ -450,11 +445,7 @@ class ExactHealthCheckBoundaries(unittest.TestCase):
         self.assertIn("agent_narrative", checkin_summary)
         self.assertEqual(checkin_summary["activity"]["total"], 500)
         self.assertNotIn("signal_type", checkin_summary)
-        checkins = [
-            record
-            for record in self._ledger_records()
-            if record.get("kind") == "checkin"
-        ]
+        checkins = [record for record in self._ledger_records() if record.get("kind") == "checkin"]
         self.assertEqual(len(checkins), 1)
         self.assertEqual(checkins[0]["detail"]["summary_id"], checkin["summary_id"])
         for forbidden in ("signal_type", "severity", "grouping_key"):
@@ -470,9 +461,7 @@ class WorkspaceBinding(ServerIntegrationCase):
         self.assertIn("workspace_path", signature.parameters)
 
     def test_invalid_path_is_ignored_not_refused(self) -> None:
-        blocks = self.call(
-            "initialization_handshake", {"workspace_path": "not/absolute"}
-        )
+        blocks = self.call("initialization_handshake", {"workspace_path": "not/absolute"})
         text = blocks[0].text
         self.assertIn("operating guidance", text)
         self.assertIn("unbound", text)
@@ -508,8 +497,7 @@ class ErrorsAreReported(ServerIntegrationCase):
         observation.failed(RuntimeError("kaboom in the handler"))
 
         reports = [
-            json.loads(path.read_text(encoding="utf-8"))
-            for path in self.store.rglob("rpt-*.json")
+            json.loads(path.read_text(encoding="utf-8")) for path in self.store.rglob("rpt-*.json")
         ]
         defects = [r for r in reports if r["triage_class"] == "server_defect"]
         self.assertTrue(defects)
@@ -530,8 +518,7 @@ class ErrorsAreReported(ServerIntegrationCase):
         beta.failed(RuntimeError("beta blew up"))
 
         reports = [
-            json.loads(path.read_text(encoding="utf-8"))
-            for path in self.store.rglob("rpt-*.json")
+            json.loads(path.read_text(encoding="utf-8")) for path in self.store.rglob("rpt-*.json")
         ]
         beta_reports = [r for r in reports if r.get("tool_name") == "t_beta"]
         self.assertTrue(beta_reports)

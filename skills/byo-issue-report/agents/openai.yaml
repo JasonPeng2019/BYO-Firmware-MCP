@@ -1,0 +1,4 @@
+interface:
+  display_name: "BYO issue report"
+  short_description: "Classify conversation-visible BYO failures and submit the fixed monitor forms"
+  default_prompt: "Classify a conversation-visible BYO server problem and submit one validated issue report, or submit a due routine check-in."

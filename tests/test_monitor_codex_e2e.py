@@ -8,28 +8,19 @@ secondary -- the durable record is the product.
 from __future__ import annotations
 
 import json
+import subprocess
+import sys
+import time
 import unittest
+
+import psutil
 
 from tests.codex_harness import (
     REQUIRED_MODEL,
+    SERVER_PROJECT,
     CodexAgentTestCase,
     _known_model_migration,
 )
-from tests.store_cleanup import restore as store_restore, snapshot as store_snapshot
-
-
-_STORE_BEFORE: "set[str] | None" = None
-
-
-def setUpModule() -> None:
-    global _STORE_BEFORE
-    _STORE_BEFORE = store_snapshot()
-
-
-def tearDownModule() -> None:
-    """Restore the real store to exactly what was there before this module ran."""
-
-    store_restore(_STORE_BEFORE)
 
 
 class AgentSessionsAreRecorded(CodexAgentTestCase):
@@ -45,10 +36,11 @@ class AgentSessionsAreRecorded(CodexAgentTestCase):
     def test_boot_record_survives_a_real_client_teardown(self) -> None:
         """Durability comes from the append, not from any shutdown path.
 
-        A close record is deliberately *not* required here. This client tears the
-        server down by killing the process rather than closing stdin, and on
-        Windows that arrives with no notification at all -- so closeout is
-        best-effort by construction. The boot record must still be on disk,
+        A close record is deliberately *not* required here. The client may tear
+        down without closing stdin; the test-owned launcher observes that parent
+        exit and retires the server, but on Windows no graceful notification is
+        guaranteed -- so closeout is best-effort by construction. The boot record
+        must still be on disk,
         because it was durable the moment it was appended.
         ``test_stdio_lifecycle`` covers the clean-EOF path where a close record
         *is* guaranteed.
@@ -120,8 +112,10 @@ class WorkspaceBindingThroughARealHandshake(CodexAgentTestCase):
 class HealthCheckIsAUsableOracle(CodexAgentTestCase):
     def test_agent_can_read_live_counts_back(self) -> None:
         result = self.run_agent(
-            "call the MCP tool server_health_check twice, "
-            "with no arguments both times. Reply with ONLY the two values of "
+            "call the MCP tool server_health_check once with no arguments and wait for "
+            "its response. Only after receiving that response, call the same tool a "
+            "second time with no arguments; do not issue the calls in parallel. "
+            "Reply with ONLY the two values of "
             "counters.total from the two responses, separated by a comma, like: 0,1"
         )
         self.assertEqual(result.returncode, 0, result.combined[-2000:])
@@ -374,6 +368,70 @@ class ModelPinningIsEnforced(CodexAgentTestCase):
         with self.assertRaises(AssertionError):
             self._assert_model_was_honoured(CodexResult(0, "model: gpt-4o-mini\n", ""))
         self._assert_model_was_honoured(CodexResult(0, f"model: {REQUIRED_MODEL}\n", ""))
+        config = (self.codex_home / "config.toml").read_text(encoding="utf-8")
+        launcher = self.codex_home / "server_launcher.py"
+        self.assertIn(launcher.as_posix(), config)
+        self.assertIn("_watch_parent", launcher.read_text(encoding="utf-8"))
+
+        # Exercise the same nonce/create-time/command identity check
+        # used after every live Codex run without starting a second MCP client.
+        probe = subprocess.Popen(
+            [
+                sys.executable,
+                str(launcher),
+                "--harness-lifecycle-probe",
+            ],
+            cwd=str(SERVER_PROJECT),
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+
+        def clean_probe() -> None:
+            if probe.poll() is None:
+                probe.kill()
+            probe.wait(timeout=10)
+
+        self.addCleanup(clean_probe)
+        record = self.codex_home / "server-pids" / str(probe.pid)
+        deadline = time.monotonic() + 10.0
+        while not record.exists() and probe.poll() is None and time.monotonic() < deadline:
+            time.sleep(0.02)
+        self.assertTrue(record.exists(), "lifecycle probe did not publish its PID record")
+        self._terminate_owned_servers()
+        probe.wait(timeout=10)
+        self.assertIsNotNone(probe.returncode)
+        self.assertFalse(record.exists())
+
+        # The launcher's portable watchdog also retires the server when its
+        # immediate client parent vanishes without running harness cleanup.
+        parent = subprocess.run(
+            [
+                sys.executable,
+                "-c",
+                (
+                    "import subprocess,sys,time; from pathlib import Path; "
+                    f"p=subprocess.Popen([sys.executable,{str(launcher)!r},"
+                    "'--harness-lifecycle-probe'],stdin=subprocess.DEVNULL,"
+                    "stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL); "
+                    f"r=Path({str(self.codex_home / 'server-pids')!r})/str(p.pid); "
+                    "d=time.monotonic()+10; "
+                    "exec('while not r.exists() and time.monotonic() < d:\\n time.sleep(0.02)'); "
+                    "assert r.exists(); "
+                    "print(p.pid, flush=True)"
+                ),
+            ],
+            cwd=str(SERVER_PROJECT),
+            check=True,
+            text=True,
+            capture_output=True,
+        )
+        orphan_pid = int(parent.stdout.strip())
+        deadline = time.monotonic() + 10.0
+        while psutil.pid_exists(orphan_pid) and time.monotonic() < deadline:
+            time.sleep(0.02)
+        self.assertFalse(psutil.pid_exists(orphan_pid), "parent-death watcher left a server alive")
+        self.assertFalse((self.codex_home / "server-pids" / str(orphan_pid)).exists())
 
 
 if __name__ == "__main__":

@@ -268,7 +268,7 @@ Probe output:
   "probes": [
     {
       "provider": "stlink",
-      "unique_id": "0668FF514988525067213913",
+      "unique_id": "ABCD00000000000000000001",
       "description": "STM32 ST-LINK",
       "usb_location": "optional diagnostic location"
     }
