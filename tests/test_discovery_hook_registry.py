@@ -292,12 +292,13 @@ class ContainmentTests(_TempRoot):
 
         def fake_realpath(path: object, *args: object, **kwargs: object) -> str:
             resolved = original_realpath(path, *args, **kwargs)  # type: ignore[arg-type]
-            # `Path.resolve()` delegates here too, so let the resolution pass through
-            # and only divert the containment re-check that follows it.
-            if resolved == entrypoint:
+            # Python 3.12 delegates ``Path.resolve()`` to ``realpath`` with a
+            # ``strict`` keyword while Python 3.10 uses pathlib's internal
+            # resolver.  Divert only our explicit, keyword-free containment
+            # re-check so the test exercises the same boundary on both runtimes.
+            if resolved == entrypoint and not args and not kwargs:
                 seen[resolved] = seen.get(resolved, 0) + 1
-                if seen[resolved] > 1:
-                    return escaped
+                return escaped
             return resolved
 
         with unittest.mock.patch.object(os.path, "realpath", fake_realpath):
@@ -305,7 +306,7 @@ class ContainmentTests(_TempRoot):
                 load_hook_snapshot(self.root, environ={})
 
         self.assertIn("outside the hook directory", str(caught.exception))
-        self.assertGreater(seen.get(entrypoint, 0), 1, "the realpath re-check never ran")
+        self.assertGreater(seen.get(entrypoint, 0), 0, "the realpath re-check never ran")
 
     def test_oversized_hook_file_is_refused(self) -> None:
         big = self.root / "big_hook.py"

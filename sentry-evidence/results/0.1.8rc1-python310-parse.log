@@ -1,7 +1,7 @@
 BYO-Firmware-MCP 0.1.8rc1 CPython 3.10 parse verification
-generated_utc=2026-10-11T04:10:33.659870Z
-base_git_head=595075fc8004e1d4f1282541888447e803ab07ee
-working_tree_manifest_sha256=92caf844027e4dc97ddeb52e4c6ec5e5de310455b646bf3b869b2b88cc9c44c4
+generated_utc=2026-10-11T06:46:03.450014Z
+base_git_head=8f1934487f1f0256d1aa0d57b029a76a33903da8
+working_tree_manifest_sha256=1e59f7281881304597f75d2a4b8664a2c19ab4dd4287d5555fef5ff3cbc1dc3d
 uv_lock_sha256=809229545c463b3870253e251f18773cb92fab4df8d0480b07c36d701e4869b7
 uv_version=uv 0.12.0 (x86_64-unknown-linux-gnu)
 python_version=Python 3.10.20

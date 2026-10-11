@@ -266,6 +266,7 @@ class LoadSaveTests(_RegistryCase):
         victim = Path(self._directory.name) / "external-lock-peer"
         victim.write_text("do not mutate\n", encoding="utf-8")
         victim.chmod(0o644)
+        original_mode = stat.S_IMODE(victim.stat().st_mode)
         lock_path = hardlink_registry.with_name(f".{hardlink_registry.name}.lock")
         try:
             os.link(victim, lock_path)
@@ -273,7 +274,7 @@ class LoadSaveTests(_RegistryCase):
             return
         with self.assertRaisesRegex(OSError, "not a private regular file"):
             register_entry(hardlink_registry, "blocked.local", 5555, "blocked")
-        self.assertEqual(stat.S_IMODE(victim.stat().st_mode), 0o644)
+        self.assertEqual(stat.S_IMODE(victim.stat().st_mode), original_mode)
         self.assertEqual(victim.read_text(encoding="utf-8"), "do not mutate\n")
 
 
