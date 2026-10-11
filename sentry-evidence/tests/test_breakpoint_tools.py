@@ -37,8 +37,8 @@ class BreakpointToolCanonicalizationTests(unittest.TestCase):
             ),
             set_target_breakpoint=lambda _handle, address: self.set_addresses.append(address),
             remove_target_breakpoint=lambda _handle, address: self.remove_addresses.append(address),
-            check_breakpoint=lambda _board_id, address, _artifact: (
-                self.safety_addresses.append(address)
+            check_breakpoint=lambda _board_id, address, _artifact: self.safety_addresses.append(
+                address
             ),
         )
         self.handlers = build_breakpoint_handlers(services)

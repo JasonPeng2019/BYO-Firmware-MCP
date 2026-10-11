@@ -63,8 +63,7 @@ def _listing(*uids: str) -> NativeProbeListing:
         return EMPTY_NATIVE_PROBE_LISTING
     return NativeProbeListing(
         probes=tuple(
-            ProbeInfo(uid=uid, description=f"J-Link {uid}", raw=uid, family="jlink")
-            for uid in uids
+            ProbeInfo(uid=uid, description=f"J-Link {uid}", raw=uid, family="jlink") for uid in uids
         ),
         command=("pyocd", "list", "--probes"),
         exit_code=0,
@@ -103,9 +102,7 @@ class _Workflow:
         self.session_uarts = SessionUartSelectionStore()
         self.launches: list[str] = []
 
-        def run_hooks(
-            snapshot: DiscoveryHookSnapshot, kind: str
-        ) -> Sequence[HookExecution]:
+        def run_hooks(snapshot: DiscoveryHookSnapshot, kind: str) -> Sequence[HookExecution]:
             self.launches.append(kind)
             return execute_eligible_hooks(snapshot, kind)
 
@@ -125,10 +122,12 @@ class _Workflow:
                 registered_providers=registered_provider_ids,
                 run_hooks=run_hooks,
                 on_refresh=lambda snapshot: (
-                    self.selections.clear(),
-                    self.session_uarts.clear(),
-                )
-                and None,
+                    (
+                        self.selections.clear(),
+                        self.session_uarts.clear(),
+                    )
+                    and None
+                ),
             )
         )
 
@@ -175,7 +174,7 @@ class ProbeDiscoveryWorkflowTests(_WorkflowCase):
         self.assertEqual(self.flow.launches.count("probe"), 2)  # refresh + snapshot
         self.assertEqual(len(snapshot.probes), 1)
         row = snapshot.probes[0]
-        self.assertEqual(row.unique_id, "066EFF505057717867163251")
+        self.assertEqual(row.unique_id, "ABCD00000000000000000002")
         self.assertEqual(row.provider, "cmsisdap")
         self.assertTrue(row.from_hook)
         self.assertEqual(row.identity_scope, "stable")
@@ -205,7 +204,7 @@ class ProbeDiscoveryWorkflowTests(_WorkflowCase):
         token = self.flow.select(snapshot)
         selection = self.flow.selections.resolve(token, self.flow.snapshot())
 
-        self.assertEqual(selection.unique_id, "066EFF505057717867163251")
+        self.assertEqual(selection.unique_id, "ABCD00000000000000000002")
         self.assertFalse(self.flow.retry_store.known(ticket.retry_id))
 
     def test_a_provider_qualified_remote_selector_survives_the_whole_pipe(self) -> None:
@@ -246,7 +245,7 @@ class ProbeDiscoveryWorkflowTests(_WorkflowCase):
 
         for _repeat in range(3):
             selection = self.flow.selections.resolve(token, self.flow.snapshot())
-            self.assertEqual(selection.unique_id, "066EFF505057717867163251")
+            self.assertEqual(selection.unique_id, "ABCD00000000000000000002")
 
     def test_a_device_that_becomes_natively_visible_still_resolves(self) -> None:
         self.flow.native_ports = [_port("COM3")]
@@ -258,7 +257,7 @@ class ProbeDiscoveryWorkflowTests(_WorkflowCase):
         self.flow.native_probes = NativeProbeListing(
             probes=(
                 ProbeInfo(
-                    uid="066EFF505057717867163251",
+                    uid="ABCD00000000000000000002",
                     description="ST-LINK",
                     raw="x",
                     family="cmsisdap",
@@ -275,7 +274,7 @@ class ProbeDiscoveryWorkflowTests(_WorkflowCase):
 
         self.assertEqual(len(self.flow.launches), before, "a hook ran despite native rows")
         selection = self.flow.selections.resolve(token, snapshot)
-        self.assertEqual(selection.unique_id, "066EFF505057717867163251")
+        self.assertEqual(selection.unique_id, "ABCD00000000000000000002")
         self.assertTrue(snapshot.probes[0].native)
 
     def test_a_disappeared_hook_probe_refuses_instead_of_substituting(self) -> None:
@@ -285,16 +284,14 @@ class ProbeDiscoveryWorkflowTests(_WorkflowCase):
         token = self.flow.select(self.flow.snapshot())
 
         # The hook now reports a *different* probe.
-        self.flow.install(
-            [hook_entry("probe-hook", "probe", argv=["probe_uid", "SOMETHINGELSE"])]
-        )
+        self.flow.install([hook_entry("probe-hook", "probe", argv=["probe_uid", "SOMETHINGELSE"])])
         self.flow.refresh()
         self.flow.selections.record(
             ProbeSelection(
                 connection_id=token,
                 provider="cmsisdap",
-                unique_id="066EFF505057717867163251",
-                stable_identity="066EFF505057717867163251",
+                unique_id="ABCD00000000000000000002",
+                stable_identity="ABCD00000000000000000002",
                 provenance=("hook:probe-hook",),
                 hook_source_sha256=None,
                 identity_scope="stable",
@@ -317,16 +314,14 @@ class ProbeDiscoveryWorkflowTests(_WorkflowCase):
         # Edit the hook file. The bytes now differ from what the refresh admitted.
         (self.flow.root / "hook.py").write_text(
             'import json,sys;json.dump({"schema_version":1,"kind":"probe",'
-            '"probes":[{"provider":"cmsisdap","unique_id":"066EFF505057717867163251",'
+            '"probes":[{"provider":"cmsisdap","unique_id":"ABCD00000000000000000002",'
             '"description":"Edited"}]},sys.stdout)',
             encoding="utf-8",
         )
         after_edit = self.flow.snapshot()
 
         self.assertEqual(after_edit.probes, (), "a drifted hook still produced rows")
-        self.assertEqual(
-            after_edit.hook_failures[0].failure_code, "discovery/hook-source-changed"
-        )
+        self.assertEqual(after_edit.hook_failures[0].failure_code, "discovery/hook-source-changed")
         with self.assertRaises(SelectionDisappeared):
             self.flow.selections.resolve(token, after_edit)
 
@@ -351,9 +346,7 @@ class ProbeDiscoveryWorkflowTests(_WorkflowCase):
 class ProbeFailureBranchTests(_WorkflowCase):
     def test_a_hook_timeout_is_reported_with_the_configured_deadline(self) -> None:
         self.flow.native_ports = [_port("COM3")]
-        self.flow.install(
-            [hook_entry("slow", "probe", argv=["hang"], timeout_seconds=1.0)]
-        )
+        self.flow.install([hook_entry("slow", "probe", argv=["hang"], timeout_seconds=1.0)])
 
         payload = self.flow.refresh()
         snapshot = self.flow.snapshot()
@@ -416,9 +409,7 @@ class ProbeFailureBranchTests(_WorkflowCase):
         self.flow.install([hook_entry("probe-hook", "probe", argv=["probe"])])
         self.flow.refresh()
         snapshot = self.flow.snapshot()
-        selection = self.flow.selections.resolve(
-            self.flow.select(snapshot), self.flow.snapshot()
-        )
+        selection = self.flow.selections.resolve(self.flow.select(snapshot), self.flow.snapshot())
 
         payload = open_failure_payload(
             PROBE_OPEN_FAILED,
@@ -434,9 +425,7 @@ class ProbeFailureBranchTests(_WorkflowCase):
 
     def test_an_unsupported_provider_is_diagnostic_only(self) -> None:
         self.flow.native_ports = [_port("COM3")]
-        self.flow.install(
-            [hook_entry("odd", "probe", argv=["probe_provider", "nosuchprovider"])]
-        )
+        self.flow.install([hook_entry("odd", "probe", argv=["probe_provider", "nosuchprovider"])])
         self.flow.refresh()
 
         snapshot = self.flow.snapshot()
@@ -480,7 +469,7 @@ class UartDiscoveryWorkflowTests(_WorkflowCase):
         self.assertEqual(len(snapshot.uarts), 1)
         row = snapshot.uarts[0]
         self.assertEqual(row.port_path, "COM7")
-        self.assertEqual(row.usb_serial, "066EFF505057717867163251")
+        self.assertEqual(row.usb_serial, "ABCD00000000000000000002")
         self.assertEqual(row.identity_scope, "stable")
         self.assertNotIn("probe", self.flow.launches)
 
@@ -492,9 +481,7 @@ class UartDiscoveryWorkflowTests(_WorkflowCase):
         self.flow.refresh()
         first = self.flow.snapshot().uarts[0]
 
-        self.flow.install(
-            [hook_entry("uart-hook", "uart", argv=["uart_port", "COM42"])]
-        )
+        self.flow.install([hook_entry("uart-hook", "uart", argv=["uart_port", "COM42"])])
         self.flow.refresh()
         second = self.flow.snapshot().uarts[0]
 
@@ -503,9 +490,7 @@ class UartDiscoveryWorkflowTests(_WorkflowCase):
 
     def test_a_session_local_uart_is_usable_this_run_and_never_cached(self) -> None:
         self.flow.native_probes = _listing("U1")
-        self.flow.install(
-            [hook_entry("uart-hook", "uart", argv=["uart_session_local", "COM9"])]
-        )
+        self.flow.install([hook_entry("uart-hook", "uart", argv=["uart_session_local", "COM9"])])
         self.flow.refresh()
         snapshot = self.flow.snapshot()
         row = snapshot.uarts[0]
@@ -524,18 +509,14 @@ class UartDiscoveryWorkflowTests(_WorkflowCase):
 
     def test_a_session_local_uart_that_vanishes_is_forgotten(self) -> None:
         self.flow.native_probes = _listing("U1")
-        self.flow.install(
-            [hook_entry("uart-hook", "uart", argv=["uart_session_local", "COM9"])]
-        )
+        self.flow.install([hook_entry("uart-hook", "uart", argv=["uart_session_local", "COM9"])])
         self.flow.refresh()
         row = self.flow.snapshot().uarts[0]
         self.flow.session_uarts.record(
             SessionUartSelection("board-1", row.port_path, row.description, row.provenance)
         )
 
-        self.flow.install(
-            [hook_entry("uart-hook", "uart", argv=["uart_session_local", "COM11"])]
-        )
+        self.flow.install([hook_entry("uart-hook", "uart", argv=["uart_session_local", "COM11"])])
         self.flow.refresh()
         resolved = self.flow.session_uarts.resolve("board-1", self.flow.snapshot())
 
@@ -586,9 +567,7 @@ class MultiBoardWorkflowTests(_WorkflowCase):
         fresh = self.flow.snapshot()
         for token, expected in tokens.items():
             with self.subTest(token=token):
-                self.assertEqual(
-                    self.flow.selections.resolve(token, fresh).unique_id, expected
-                )
+                self.assertEqual(self.flow.selections.resolve(token, fresh).unique_id, expected)
         self.assertEqual(len(set(tokens.values())), 2)
 
     def test_both_kinds_can_be_hook_discovered_in_one_snapshot(self) -> None:

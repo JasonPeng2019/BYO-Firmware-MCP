@@ -319,7 +319,9 @@ class HardwareInventoryService:
     active_connections: Callable[[], Sequence[ActiveConnectionRow]] = lambda: ()
     hook_snapshot: Callable[[], DiscoveryHookSnapshot] = lambda: EMPTY_SNAPSHOT
     vendor_uarts: Callable[[], Sequence[VendorUartRow]] = lambda: ()
-    run_hooks: HookRunner = field(default=lambda snapshot, kind: execute_eligible_hooks(snapshot, kind))
+    run_hooks: HookRunner = field(
+        default=lambda snapshot, kind: execute_eligible_hooks(snapshot, kind)
+    )
     # The default is what preserves every existing test: no registry configured means
     # no remote rows and no behavior change whatsoever.
     remote_probes: Callable[[], Sequence[RemoteProbeEntry]] = lambda: ()
@@ -333,9 +335,7 @@ class HardwareInventoryService:
         native_listing = self.native_probes()
         probe_rows = self._native_probe_rows(native_listing, counter)
 
-        uart_rows, native_uart_available, hooks, uart_diagnostics = self._collect_uart_rows(
-            counter
-        )
+        uart_rows, native_uart_available, hooks, uart_diagnostics = self._collect_uart_rows(counter)
         diagnostics: list[HookExecution] = []
 
         # ---- The gating rule, in exactly one place -------------------------------
@@ -433,9 +433,7 @@ class HardwareInventoryService:
         if run_uart_hooks:
             executions = tuple(self.run_hooks(hooks, "uart"))
             diagnostics.extend(executions)
-            uart_rows = self._merge_uart_rows(
-                uart_rows, self._hook_uart_rows(executions, counter)
-            )
+            uart_rows = self._merge_uart_rows(uart_rows, self._hook_uart_rows(executions, counter))
 
         return uart_rows, native_uart_available, hooks, diagnostics
 
@@ -699,9 +697,7 @@ class UnsupportedProvider(RuntimeError):
     def __init__(self, provider: str, registered_providers: tuple[str, ...]) -> None:
         self.provider = provider
         self.registered_providers = registered_providers
-        super().__init__(
-            f"provider '{provider}' is not registered by this pyOCD installation"
-        )
+        super().__init__(f"provider '{provider}' is not registered by this pyOCD installation")
 
 
 @dataclass(frozen=True, slots=True)

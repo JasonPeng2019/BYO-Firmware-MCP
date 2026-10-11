@@ -1,0 +1,448 @@
+#!/usr/bin/env python3
+"""Attach the versioned BYO client workspace to one project directory."""
+
+from __future__ import annotations
+
+import argparse
+import os
+import secrets
+import shutil
+import stat
+import tempfile
+import time
+from collections.abc import Iterator
+from contextlib import contextmanager
+from pathlib import Path
+
+
+WORKSPACE_SOURCE = Path(__file__).resolve().parents[1]
+PRIVATE_DIRECTORY_MODE = 0o700
+ATTACH_LOCK_TIMEOUT_SECONDS = 30.0
+
+
+def _is_reparse_point(metadata: os.stat_result) -> bool:
+    """Return whether Windows marks an entry as a junction/name surrogate."""
+
+    attributes = int(getattr(metadata, "st_file_attributes", 0))
+    reparse_attribute = int(getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0))
+    return bool(attributes & reparse_attribute) or bool(getattr(metadata, "st_reparse_tag", 0))
+
+
+def _reject_link(metadata: os.stat_result, path: Path, *, label: str) -> None:
+    if stat.S_ISLNK(metadata.st_mode):
+        raise ValueError(f"{label} is a symbolic link: {path}")
+    if _is_reparse_point(metadata):
+        raise ValueError(f"{label} is a Windows reparse point: {path}")
+
+
+def _reject_unsafe_entries(
+    directory: Path,
+    *,
+    label: str,
+    expected_root_identity: tuple[int, int] | None = None,
+) -> None:
+    """Refuse links and special files without following directory symlinks."""
+
+    root_metadata = directory.stat() if expected_root_identity is not None else directory.lstat()
+    if expected_root_identity is None:
+        _reject_link(root_metadata, directory, label=label)
+    if not stat.S_ISDIR(root_metadata.st_mode):
+        raise ValueError(f"{label} is not a directory: {directory}")
+    if (
+        expected_root_identity is not None
+        and (
+            root_metadata.st_dev,
+            root_metadata.st_ino,
+        )
+        != expected_root_identity
+    ):
+        raise ValueError(f"{label} changed during attachment: {directory}")
+    for current, directories, filenames in os.walk(directory, followlinks=False):
+        current_path = Path(current)
+        for name in (*directories, *filenames):
+            candidate = current_path / name
+            metadata = candidate.lstat()
+            if stat.S_ISLNK(metadata.st_mode):
+                raise ValueError(f"{label} contains a symbolic link: {candidate}")
+            if _is_reparse_point(metadata):
+                raise ValueError(f"{label} contains a Windows reparse point: {candidate}")
+            if stat.S_ISREG(metadata.st_mode):
+                if metadata.st_nlink != 1:
+                    raise ValueError(f"{label} contains a multiply linked file: {candidate}")
+            elif not stat.S_ISDIR(metadata.st_mode):
+                raise ValueError(f"{label} contains a special file: {candidate}")
+
+
+def _directory_identity(path: Path, *, label: str) -> tuple[int, int]:
+    metadata = path.lstat()
+    _reject_link(metadata, path, label=label)
+    if not stat.S_ISDIR(metadata.st_mode):
+        raise ValueError(f"{label} is not a directory: {path}")
+    return metadata.st_dev, metadata.st_ino
+
+
+def _require_directory_identity(
+    path: Path,
+    expected: tuple[int, int],
+    *,
+    label: str,
+) -> None:
+    if _directory_identity(path, label=label) != expected:
+        raise ValueError(f"{label} changed during attachment: {path}")
+
+
+def _descriptor_directory() -> Path | None:
+    """Return a pathname view of open descriptors, when safely available."""
+
+    if os.name != "posix":
+        return None
+    for candidate in (Path("/proc/self/fd"), Path("/dev/fd")):
+        if candidate.is_dir():
+            return candidate
+    return None
+
+
+@contextmanager
+def _anchored_directory(path: Path, *, label: str) -> Iterator[tuple[Path, tuple[int, int]]]:
+    """Anchor directory access to an opened object or fail before mutation."""
+
+    identity = _directory_identity(path, label=label)
+    descriptor_directory = _descriptor_directory()
+    if descriptor_directory is None:
+        raise OSError(
+            "safe workspace attachment requires POSIX descriptor-path support "
+            "(/proc/self/fd or /dev/fd)"
+        )
+    descriptor = os.open(
+        path,
+        os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0),
+    )
+    opened = os.fstat(descriptor)
+    if (opened.st_dev, opened.st_ino) != identity:
+        os.close(descriptor)
+        raise ValueError(f"{label} changed while it was being opened: {path}")
+    access = descriptor_directory / str(descriptor)
+    try:
+        yield access, identity
+        _require_directory_identity(path, identity, label=label)
+    finally:
+        os.close(descriptor)
+
+
+def _remove_private_stage(path: Path, expected: tuple[int, int]) -> None:
+    """Remove only the stage object we created; never traverse a swapped link."""
+
+    try:
+        metadata = path.lstat()
+    except FileNotFoundError:
+        return
+    if stat.S_ISLNK(metadata.st_mode):
+        path.unlink()
+        return
+    if _is_reparse_point(metadata):
+        os.rmdir(path)
+        return
+    if stat.S_ISDIR(metadata.st_mode) and (metadata.st_dev, metadata.st_ino) == expected:
+        shutil.rmtree(path)
+
+
+def _require_beneath(path: Path, root: Path) -> None:
+    resolved = path.resolve(strict=False)
+    resolved_root = root.resolve(strict=True)
+    if not resolved.is_relative_to(resolved_root):
+        raise ValueError(f"workspace destination escapes project-local root: {path}")
+
+
+def _temporary_sibling(root: Path, prefix: str) -> Path:
+    """Return a private, unpredictable directory below ``root``."""
+
+    path = Path(tempfile.mkdtemp(prefix=prefix, dir=root))
+    os.chmod(path, PRIVATE_DIRECTORY_MODE)
+    return path
+
+
+def _unused_sibling(root: Path, prefix: str) -> Path:
+    for _ in range(128):
+        candidate = root / f"{prefix}{secrets.token_hex(16)}"
+        if not os.path.lexists(candidate):
+            return candidate
+    raise OSError("cannot allocate a private workspace backup path")
+
+
+@contextmanager
+def _attachment_lock(root: Path) -> Iterator[None]:
+    """Serialize the whole replacement transaction across local processes."""
+
+    lock = root / ".agent-workspace-attach.lock"
+    deadline = time.monotonic() + ATTACH_LOCK_TIMEOUT_SECONDS
+    while True:
+        try:
+            os.mkdir(lock, PRIVATE_DIRECTORY_MODE)
+            break
+        except FileExistsError:
+            try:
+                metadata = lock.lstat()
+            except FileNotFoundError:
+                continue
+            _reject_link(metadata, lock, label="workspace attachment lock")
+            if not stat.S_ISDIR(metadata.st_mode):
+                raise ValueError(f"workspace attachment lock is not a directory: {lock}")
+            if time.monotonic() >= deadline:
+                raise TimeoutError(
+                    "another workspace attachment is still active; "
+                    f"remove a stale lock only after confirming no installer is running: {lock}"
+                ) from None
+            time.sleep(0.01)
+    try:
+        yield
+    finally:
+        try:
+            os.rmdir(lock)
+        except FileNotFoundError:
+            pass
+
+
+def _copy_immutable_assets(stage: Path, identity: tuple[int, int]) -> None:
+    """Copy BYO-owned source paths into a fresh private staging directory."""
+
+    _reject_unsafe_entries(WORKSPACE_SOURCE, label="workspace source")
+    for entry in WORKSPACE_SOURCE.iterdir():
+        if entry.name in {"runtime", "__pycache__"}:
+            continue
+        metadata = stage.stat()
+        if (metadata.st_dev, metadata.st_ino) != identity:
+            raise ValueError("staged workspace changed during attachment")
+        target = stage / entry.name
+        if os.path.lexists(target):
+            raise ValueError(f"staged workspace target already exists: {target}")
+        if entry.is_dir():
+            shutil.copytree(
+                entry,
+                target,
+                symlinks=True,
+                ignore=shutil.ignore_patterns("__pycache__", "*.pyc"),
+            )
+        else:
+            shutil.copy2(entry, target, follow_symlinks=False)
+    _reject_unsafe_entries(
+        stage,
+        label="staged workspace",
+        expected_root_identity=identity,
+    )
+
+
+def _merge_preserved_assets(source: Path, stage: Path) -> None:
+    """Add validated non-BYO entries without overwriting staged source paths."""
+
+    for entry in source.iterdir():
+        target = stage / entry.name
+        source_metadata = entry.lstat()
+        _reject_link(source_metadata, entry, label="workspace preserved source")
+        if stat.S_ISREG(source_metadata.st_mode):
+            if source_metadata.st_nlink != 1:
+                raise ValueError(f"workspace preserved source is multiply linked: {entry}")
+        elif not stat.S_ISDIR(source_metadata.st_mode):
+            raise ValueError(f"workspace preserved source is a special file: {entry}")
+        if not os.path.lexists(target):
+            if stat.S_ISDIR(source_metadata.st_mode):
+                with _anchored_directory(entry, label="workspace preserved source") as (
+                    entry_access,
+                    _identity,
+                ):
+                    shutil.copytree(entry_access, target, symlinks=True)
+            else:
+                flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+                descriptor = os.open(entry, flags)
+                try:
+                    opened = os.fstat(descriptor)
+                    current = entry.lstat()
+                    if (
+                        not stat.S_ISREG(opened.st_mode)
+                        or opened.st_nlink != 1
+                        or stat.S_ISLNK(current.st_mode)
+                        or _is_reparse_point(current)
+                        or (opened.st_dev, opened.st_ino) != (current.st_dev, current.st_ino)
+                    ):
+                        raise ValueError(
+                            f"workspace preserved source changed while opening: {entry}"
+                        )
+                    with os.fdopen(os.dup(descriptor), "rb") as source_handle:
+                        with target.open("xb") as target_handle:
+                            shutil.copyfileobj(source_handle, target_handle)
+                            fchmod = getattr(os, "fchmod", None)
+                            if fchmod is not None:
+                                fchmod(target_handle.fileno(), stat.S_IMODE(opened.st_mode))
+                finally:
+                    os.close(descriptor)
+            continue
+        target_metadata = target.lstat()
+        _reject_link(target_metadata, target, label="staged workspace target")
+        if stat.S_ISDIR(source_metadata.st_mode) and stat.S_ISDIR(target_metadata.st_mode):
+            with _anchored_directory(entry, label="workspace preserved source") as (
+                entry_access,
+                _identity,
+            ):
+                _merge_preserved_assets(entry_access, target)
+
+
+def _install_workspace(root: Path) -> Path:
+    destination = root / ".agent-workspace"
+    destination_identity: tuple[int, int] | None = None
+
+    if os.path.lexists(destination):
+        metadata = destination.lstat()
+        _reject_link(metadata, destination, label="workspace destination")
+        if not stat.S_ISDIR(metadata.st_mode):
+            raise ValueError(f"workspace destination is not a directory: {destination}")
+        destination_identity = (metadata.st_dev, metadata.st_ino)
+    _require_beneath(destination, root)
+
+    stage = _temporary_sibling(root, ".agent-workspace-stage-")
+    stage_identity = _directory_identity(stage, label="staged workspace")
+    descriptor_directory = _descriptor_directory()
+    if descriptor_directory is None:
+        _remove_private_stage(stage, stage_identity)
+        raise OSError(
+            "safe workspace attachment requires POSIX descriptor-path support "
+            "(/proc/self/fd or /dev/fd)"
+        )
+    stage_descriptor = os.open(
+        stage,
+        os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0),
+    )
+    opened = os.fstat(stage_descriptor)
+    if (opened.st_dev, opened.st_ino) != stage_identity:
+        os.close(stage_descriptor)
+        _remove_private_stage(stage, stage_identity)
+        raise ValueError("staged workspace changed while it was being opened")
+    # All population below is anchored to the opened directory object. A
+    # concurrent rename/symlink swap of its public pathname therefore cannot
+    # redirect writes into the replacement target.
+    stage_access = descriptor_directory / str(stage_descriptor)
+    backup: Path | None = None
+    backup_identity: tuple[int, int] | None = None
+    published = False
+    try:
+        _copy_immutable_assets(stage_access, stage_identity)
+        # Create runtime while it is guaranteed absent and the stage is still a
+        # private tree we own. Preserved runtime contents are merged into this
+        # directory below. Never chmod an existing path here: a concurrent
+        # symlink substitution must be rejected, not followed to an external
+        # target before the final tree validation runs.
+        runtime = stage_access / "runtime"
+        runtime.mkdir(mode=PRIVATE_DIRECTORY_MODE)
+        if os.path.lexists(destination):
+            backup = _unused_sibling(root, ".agent-workspace-backup-")
+            os.replace(destination, backup)
+            moved = backup.lstat()
+            if destination_identity != (moved.st_dev, moved.st_ino):
+                raise ValueError("workspace destination changed during attachment")
+            with _anchored_directory(backup, label="workspace destination") as (
+                backup_access,
+                opened_backup_identity,
+            ):
+                backup_identity = opened_backup_identity
+                _reject_unsafe_entries(
+                    backup_access,
+                    label="workspace destination",
+                    expected_root_identity=opened_backup_identity,
+                )
+                _merge_preserved_assets(backup_access, stage_access)
+
+        # The versioned source paths already occupy the stage. The validated
+        # prior tree only fills absent paths, preserving unrelated top-level
+        # entries and nested third-party skills/configuration without allowing
+        # old bytes to overwrite the refreshed BYO kit.
+        os.fchmod(stage_descriptor, PRIVATE_DIRECTORY_MODE)
+        _reject_unsafe_entries(
+            stage_access,
+            label="staged workspace",
+            expected_root_identity=stage_identity,
+        )
+        _require_directory_identity(stage, stage_identity, label="staged workspace")
+        os.replace(stage, destination)
+        installed = destination.lstat()
+        if stat.S_ISLNK(installed.st_mode) or _is_reparse_point(installed):
+            # A hostile name swap can occur after the last pre-rename identity
+            # check. Never report success with that substituted link published.
+            if stat.S_ISLNK(installed.st_mode):
+                destination.unlink()
+            else:  # pragma: no cover - attachment fails earlier on native Windows
+                os.rmdir(destination)
+            raise ValueError("staged workspace changed during publication")
+        if (
+            not stat.S_ISDIR(installed.st_mode)
+            or (
+                installed.st_dev,
+                installed.st_ino,
+            )
+            != stage_identity
+        ):
+            raise ValueError("staged workspace changed during publication")
+        published = True
+    except BaseException:
+        if backup is not None and not published and not os.path.lexists(destination):
+            try:
+                _reject_unsafe_entries(
+                    backup,
+                    label="workspace rollback source",
+                    expected_root_identity=backup_identity,
+                )
+            except (OSError, ValueError):
+                # Never republish a backup that changed after validation. Leave
+                # it under its private random name for explicit recovery.
+                pass
+            else:
+                os.replace(backup, destination)
+                backup = None
+        raise
+    finally:
+        os.close(stage_descriptor)
+        if not published:
+            _remove_private_stage(stage, stage_identity)
+        if backup is not None and published and os.path.lexists(backup):
+            shutil.rmtree(backup)
+
+    return destination
+
+
+def _ensure_hidden_workspace_entry(project_root: Path) -> Path:
+    """Atomically overlay client assets while preserving validated local state.
+
+    Nothing is copied into an existing workspace tree. The old tree is first
+    moved aside, checked for links/special files, and used only as a read
+    source. A complete private staging tree preserves entries not owned by the
+    BYO source kit and is then atomically published.
+    """
+
+    root = Path(os.path.abspath(Path(project_root).expanduser()))
+    root.mkdir(parents=True, exist_ok=True)
+    if _descriptor_directory() is None:
+        # Preserve the strongest available diagnostic for an already-unsafe
+        # destination, but never enter the replacement transaction without an
+        # opened-directory pathname that cannot be redirected by a name swap.
+        _directory_identity(root, label="project root")
+        destination = root / ".agent-workspace"
+        if os.path.lexists(destination):
+            metadata = destination.lstat()
+            _reject_link(metadata, destination, label="workspace destination")
+        raise OSError(
+            "safe workspace attachment requires POSIX descriptor-path support "
+            "(/proc/self/fd or /dev/fd)"
+        )
+    with _anchored_directory(root, label="project root") as (root_access, _identity):
+        with _attachment_lock(root_access):
+            _install_workspace(root_access)
+    return root / ".agent-workspace"
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description="Attach BYO firmware client assets")
+    parser.add_argument("project_root", nargs="?", default=".", type=Path)
+    args = parser.parse_args()
+    print(_ensure_hidden_workspace_entry(args.project_root))
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

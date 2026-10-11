@@ -274,8 +274,7 @@ def _removed_breakpoint_provider_failure(
         expected = original & 0xFFFF
         if observed != expected:
             return (
-                f"raw instruction is 0x{observed:04X}, expected restored original "
-                f"0x{expected:04X}"
+                f"raw instruction is 0x{observed:04X}, expected restored original 0x{expected:04X}"
             )
         return None
     if kind == "hw":
@@ -496,9 +495,7 @@ class PyOCDSWDInterface(SWDInterface):
         if session is None:
             raise ProbeNotFoundError("No matching debug probe found.")
         try:
-            self._open_and_verify_session(
-                session, board, target_override, pack_object, pdsc_device
-            )
+            self._open_and_verify_session(session, board, target_override, pack_object, pdsc_device)
         except Exception as exc:  # noqa: BLE001 - preserve backend context
             try:
                 _close_session(session)
@@ -607,9 +604,7 @@ class PyOCDSWDInterface(SWDInterface):
                 # returning. The bounded retry covers probes where the first halt
                 # command races reset release.
                 session.open()
-                self._verify_session_pack_source(
-                    session, target_override, pack_object, pdsc_device
-                )
+                self._verify_session_pack_source(session, target_override, pack_object, pdsc_device)
                 halt_deadline = time.monotonic() + 0.5
                 while True:
                     session.target.halt()
@@ -912,7 +907,9 @@ class PyOCDSWDInterface(SWDInterface):
                 try:
                     target.selected_core_or_raise.bp_manager.flush()
                 except Exception as exc:  # noqa: BLE001 - collect every cleanup failure
-                    rollback_failures.append(f"breakpoint manager flush: {type(exc).__name__}: {exc}")
+                    rollback_failures.append(
+                        f"breakpoint manager flush: {type(exc).__name__}: {exc}"
+                    )
                 try:
                     target.flush()
                 except Exception as exc:  # noqa: BLE001 - collect every cleanup failure
@@ -1009,9 +1006,7 @@ class PyOCDSWDInterface(SWDInterface):
                     address,
                 )
                 if provider_failure is not None:
-                    verification_failures.append(
-                        f"provider-level removal: {provider_failure}"
-                    )
+                    verification_failures.append(f"provider-level removal: {provider_failure}")
 
                 if not verification_failures and remaining is None:
                     return

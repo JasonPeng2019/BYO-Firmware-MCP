@@ -15,6 +15,7 @@ from __future__ import annotations
 import secrets
 import threading
 import time
+from collections.abc import Mapping
 from dataclasses import dataclass
 from enum import Enum
 from datetime import datetime, timezone
@@ -27,9 +28,29 @@ from pyocd_debug_mcp.monitor.classify import (
     Signal,
     TriageClass,
 )
+from pyocd_debug_mcp.monitor.redaction import report_fingerprint
 
 REPORT_SCHEMA_VERSION = 1
 DEDUPE_WINDOW_SECONDS = 300.0
+
+
+def report_identity(report: Mapping[str, Any]) -> str | None:
+    """Return a filesystem-safe report/summary identity, or ``None``.
+
+    Durable bodies can survive crashes and are therefore untrusted when read
+    back. Keep their identity a single portable filename component before any
+    transport constructs a destination path from it.
+    """
+
+    raw = report.get("report_id") or report.get("summary_id")
+    if not isinstance(raw, str) or not raw or len(raw) > 128:
+        return None
+    if raw in {".", ".."} or any(
+        character not in "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._-"
+        for character in raw
+    ):
+        return None
+    return raw
 
 
 def _timestamp() -> str:
@@ -78,6 +99,14 @@ class Deduper:
             self._suppressed[key] = self._suppressed.get(key, 0) + 1
             return False, self._suppressed[key]
 
+    def withdraw(self, key: str, suppressed: int) -> None:
+        """Undo an emission reservation whose body could not be persisted."""
+
+        with self._guard:
+            self._last_emit.pop(key, None)
+            if suppressed:
+                self._suppressed[key] = self._suppressed.get(key, 0) + suppressed
+
 
 @dataclass(frozen=True, slots=True)
 class ReportEnvironment:
@@ -114,9 +143,20 @@ def build_report(
     """Assemble one report. Content only -- serialization belongs to the transport."""
 
     triage = TRIAGE_FOR_SIGNAL.get(signal, TriageClass.SERVER_DEFECT)
+    report_id = f"rpt-{secrets.token_hex(8)}"
+    scoped_trail: list[dict[str, Any]] = []
+    for entry in trail:
+        scoped = dict(entry)
+        entry_fingerprint = scoped.get("args_fp")
+        if isinstance(entry_fingerprint, str):
+            scoped["args_fp"] = report_fingerprint(entry_fingerprint, report_id)
+        connection_fingerprint = scoped.get("connection")
+        if isinstance(connection_fingerprint, str):
+            scoped["connection"] = report_fingerprint(connection_fingerprint, report_id)
+        scoped_trail.append(scoped)
     report: dict[str, Any] = {
         "schema_version": REPORT_SCHEMA_VERSION,
-        "report_id": f"rpt-{secrets.token_hex(8)}",
+        "report_id": report_id,
         "timestamp": _timestamp(),
         "session_id": run_id,
         "run_started_at": run_started_at,
@@ -130,7 +170,9 @@ def build_report(
         "error_signature": anchor,
         "refusal_code": refusal_code,
         "named_remedy": named_remedy,
-        "args_fingerprint": args_fp,
+        "args_fingerprint": (
+            report_fingerprint(args_fp, report_id) if args_fp is not None else None
+        ),
         "board_scope": board_scope,
         "workspace_token": workspace_token,
         "guard_state": guard_state,
@@ -139,7 +181,7 @@ def build_report(
         # numbers the periodic usage snapshot carries, read from the same live
         # counter -- not a second accumulator kept for reports.
         "usage": usage,
-        "trail": trail,
+        "trail": scoped_trail,
         "grouping_key": grouping_key(signal, triage, tool, anchor),
         "suppressed_since_last": suppressed_since_last,
         "environment": {

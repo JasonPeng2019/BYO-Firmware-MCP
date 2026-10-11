@@ -10,10 +10,18 @@ and port validation, and remote rows staying visible alongside a native probe.
 from __future__ import annotations
 
 import json
+import multiprocessing
+import os
+import queue
 import socket
+import stat
 import tempfile
+import threading
+import time
 import unittest
 from pathlib import Path
+from typing import Any
+from unittest import mock
 
 from pyocd_debug_mcp.firmstore.store import FirmLayout
 from pyocd_debug_mcp.hardware_inventory import (
@@ -21,7 +29,11 @@ from pyocd_debug_mcp.hardware_inventory import (
     ProbeSelection,
     ProbeSelectionStore,
 )
-from pyocd_debug_mcp.probe_inventory import EMPTY_NATIVE_PROBE_LISTING, NativeProbeListing, ProbeInfo
+from pyocd_debug_mcp.probe_inventory import (
+    EMPTY_NATIVE_PROBE_LISTING,
+    NativeProbeListing,
+    ProbeInfo,
+)
 from pyocd_debug_mcp.remote_probes import (
     RemoteProbeEntry,
     RemoteProbeError,
@@ -29,6 +41,7 @@ from pyocd_debug_mcp.remote_probes import (
     load_remote_probes,
     normalize_host,
     normalize_port,
+    register_entry,
     remove_remote_probe,
     save_remote_probes,
     upsert_remote_probe,
@@ -53,6 +66,31 @@ def _listing(*probes: tuple[str, str]) -> NativeProbeListing:
     )
 
 
+def _delayed_process_registration(
+    registry: str,
+    host: str,
+    start: Any,
+    failures: Any,
+) -> None:
+    """Widen the stale-snapshot window so a missing process lock loses writes."""
+
+    from pyocd_debug_mcp import remote_probes
+
+    original_upsert = remote_probes.upsert_remote_probe
+
+    def delayed_upsert(*args, **kwargs):  # type: ignore[no-untyped-def]
+        time.sleep(0.1)
+        return original_upsert(*args, **kwargs)
+
+    remote_probes.upsert_remote_probe = delayed_upsert
+    try:
+        if not start.wait(10.0):
+            raise TimeoutError("process registration start signal was not received")
+        register_entry(Path(registry), host, 5555, host)
+    except BaseException as exc:  # noqa: BLE001 - returned to the parent assertion
+        failures.put(repr(exc))
+
+
 class _RegistryCase(unittest.TestCase):
     def setUp(self) -> None:
         self._directory = tempfile.TemporaryDirectory()
@@ -69,6 +107,9 @@ class NormalizationTests(unittest.TestCase):
     def test_an_empty_host_is_rejected(self) -> None:
         with self.assertRaises(RemoteProbeError):
             normalize_host("   ")
+        for malformed in ("nul\0host", "localhost:5555", "bad host"):
+            with self.subTest(host=malformed), self.assertRaises(RemoteProbeError):
+                normalize_host(malformed)
 
     def test_a_real_host_is_stripped_of_surrounding_whitespace(self) -> None:
         self.assertEqual(normalize_host("  bench.local  "), "bench.local")
@@ -84,6 +125,10 @@ class NormalizationTests(unittest.TestCase):
     def test_a_non_integer_port_is_rejected(self) -> None:
         with self.assertRaises(RemoteProbeError):
             normalize_port("not-a-port")
+        with self.assertRaises(RemoteProbeError):
+            normalize_port(5555.9)
+        with self.assertRaises(RemoteProbeError):
+            normalize_port("9" * 5_000)
 
     def test_a_boolean_port_is_rejected(self) -> None:
         with self.assertRaises(RemoteProbeError):
@@ -104,9 +149,7 @@ class LoadSaveTests(_RegistryCase):
         self.assertEqual(load_remote_probes(self.registry_path), ())
 
     def test_round_trip_preserves_every_field(self) -> None:
-        entries = (
-            RemoteProbeEntry("bench.local", 5555, "bench ST-LINK", "2026-01-01T00:00:00Z"),
-        )
+        entries = (RemoteProbeEntry("bench.local", 5555, "bench ST-LINK", "2026-01-01T00:00:00Z"),)
         save_remote_probes(self.registry_path, entries)
 
         loaded = load_remote_probes(self.registry_path)
@@ -116,8 +159,37 @@ class LoadSaveTests(_RegistryCase):
     def test_malformed_json_loads_as_empty_rather_than_crashing(self) -> None:
         self.registry_path.parent.mkdir(parents=True, exist_ok=True)
         self.registry_path.write_text("{not json", encoding="utf-8")
+        original = self.registry_path.read_bytes()
 
         self.assertEqual(load_remote_probes(self.registry_path), ())
+        with self.assertRaisesRegex(RemoteProbeError, "refusing to overwrite"):
+            register_entry(self.registry_path, "new.local", 5555, "new")
+        self.assertEqual(self.registry_path.read_bytes(), original)
+
+        self.registry_path.write_bytes(b"\xff")
+        invalid_utf8 = self.registry_path.read_bytes()
+        self.assertEqual(load_remote_probes(self.registry_path), ())
+        with self.assertRaisesRegex(RemoteProbeError, "preserved"):
+            register_entry(self.registry_path, "new.local", 5555, "new")
+        self.assertEqual(self.registry_path.read_bytes(), invalid_utf8)
+
+        invalid_documents = (
+            '{"schema_version":true,"entries":[]}',
+            '{"schema_version":1.0,"entries":[]}',
+            '{"schema_version":1,"entries":[{"host":"a.local","port":"5555",'
+            '"description":"","registered_at":""}]}',
+            '{"schema_version":1,"schema_version":1,"entries":[]}',
+            '{"schema_version":1,"entries":[{"host":"a.local","host":"b.local",'
+            '"port":5555,"description":"","registered_at":""}]}',
+            "[" * 20_000 + "]" * 20_000,
+        )
+        for invalid_document in invalid_documents:
+            with self.subTest(invalid_document=invalid_document):
+                self.registry_path.write_text(invalid_document, encoding="utf-8")
+                original_invalid = self.registry_path.read_bytes()
+                with self.assertRaisesRegex(RemoteProbeError, "refusing to overwrite"):
+                    register_entry(self.registry_path, "new.local", 5555, "new")
+                self.assertEqual(self.registry_path.read_bytes(), original_invalid)
 
     def test_a_bad_entry_is_skipped_but_a_good_sibling_entry_still_loads(self) -> None:
         self.registry_path.parent.mkdir(parents=True, exist_ok=True)
@@ -138,10 +210,72 @@ class LoadSaveTests(_RegistryCase):
 
     def test_save_creates_missing_parent_directories(self) -> None:
         nested = Path(self._directory.name) / "nested" / "dir" / "remote_probes.json"
+        syncs: list[Path] = []
 
-        save_remote_probes(nested, (RemoteProbeEntry("h", 1, "", ""),))
+        with mock.patch(
+            "pyocd_debug_mcp.remote_probes._fsync_directory",
+            side_effect=syncs.append,
+        ):
+            save_remote_probes(nested, (RemoteProbeEntry("h", 1, "", ""),))
 
         self.assertTrue(nested.is_file())
+        self.assertEqual(
+            syncs,
+            [
+                Path(self._directory.name),
+                Path(self._directory.name) / "nested",
+                Path(self._directory.name) / "nested" / "dir",
+            ],
+        )
+
+    def test_cross_process_registrations_do_not_lose_acknowledged_entries(self) -> None:
+        context = multiprocessing.get_context("spawn")
+        start = context.Event()
+        failures = context.Queue()
+        hosts = [f"process-{index}.local" for index in range(6)]
+        processes = [
+            context.Process(
+                target=_delayed_process_registration,
+                args=(str(self.registry_path), host, start, failures),
+            )
+            for host in hosts
+        ]
+        for process in processes:
+            process.start()
+        start.set()
+        for process in processes:
+            process.join(20.0)
+
+        self.assertTrue(all(not process.is_alive() for process in processes))
+        self.assertEqual([process.exitcode for process in processes], [0] * len(processes))
+        reported_failures: list[str] = []
+        while True:
+            try:
+                reported_failures.append(failures.get_nowait())
+            except queue.Empty:
+                break
+        self.assertEqual(reported_failures, [])
+        self.assertEqual(
+            {entry.host for entry in load_remote_probes(self.registry_path)}, set(hosts)
+        )
+
+        # A rejected multiply-linked lock must not chmod or otherwise mutate its
+        # external peer before validation.  (Hard links are unavailable on a few
+        # filesystems, so retain the concurrency assertion above in that case.)
+        hardlink_registry = Path(self._directory.name) / "hardlink.json"
+        victim = Path(self._directory.name) / "external-lock-peer"
+        victim.write_text("do not mutate\n", encoding="utf-8")
+        victim.chmod(0o644)
+        original_mode = stat.S_IMODE(victim.stat().st_mode)
+        lock_path = hardlink_registry.with_name(f".{hardlink_registry.name}.lock")
+        try:
+            os.link(victim, lock_path)
+        except OSError:
+            return
+        with self.assertRaisesRegex(OSError, "not a private regular file"):
+            register_entry(hardlink_registry, "blocked.local", 5555, "blocked")
+        self.assertEqual(stat.S_IMODE(victim.stat().st_mode), original_mode)
+        self.assertEqual(victim.read_text(encoding="utf-8"), "do not mutate\n")
 
 
 # --------------------------------------------------------------------------------------
@@ -214,6 +348,29 @@ class CheckEndpointTests(unittest.TestCase):
         probe.close()  # closed immediately: very unlikely anything now listens on it
 
         self.assertFalse(check_endpoint("127.0.0.1", port, timeout_seconds=0.5))
+
+        with mock.patch.object(threading.Thread, "start", side_effect=RuntimeError("no thread")):
+            for _ in range(12):
+                self.assertFalse(check_endpoint("start-fails.example", 5555, 0.01))
+        with mock.patch(
+            "pyocd_debug_mcp.remote_probes.socket.create_connection",
+            return_value=mock.MagicMock(),
+        ):
+            self.assertTrue(
+                check_endpoint("slots-were-released.example", 5555, timeout_seconds=0.5)
+            )
+
+        def slow_resolution(*_args: Any, **_kwargs: Any) -> None:
+            time.sleep(0.2)
+            raise OSError("slow DNS")
+
+        started = time.monotonic()
+        with mock.patch(
+            "pyocd_debug_mcp.remote_probes.socket.create_connection",
+            side_effect=slow_resolution,
+        ):
+            self.assertFalse(check_endpoint("slow.example", 5555, timeout_seconds=0.01))
+        self.assertLess(time.monotonic() - started, 0.1)
 
 
 # --------------------------------------------------------------------------------------
@@ -370,6 +527,19 @@ class ToolHandlerTests(_RegistryCase):
         self.assertEqual(len(loaded), 1)
         self.assertEqual(loaded[0].host, "bench.local")
 
+        with mock.patch(
+            "pyocd_debug_mcp.remote_probes._fsync_directory",
+            side_effect=OSError("directory sync failed"),
+        ):
+            uncertain = json.loads(
+                handlers["register_remote_probe"]("uncertain.local", 5555, "uncertain")
+            )
+        self.assertEqual(uncertain["code"], "remote_probe/registry-durability-uncertain")
+        self.assertNotIn("bytes were preserved", uncertain["agent_prompt"])
+        self.assertIn(
+            "uncertain.local", {entry.host for entry in load_remote_probes(self.registry_path)}
+        )
+
     def test_a_reachable_endpoint_reports_reachable_true(self) -> None:
         handlers = self._handlers(check_endpoint_result=True)
 
@@ -428,6 +598,16 @@ class ToolHandlerTests(_RegistryCase):
         result = json.loads(handlers["unregister_remote_probe"]("bench.local", 5555))
 
         self.assertTrue(result["removed"])
+        self.assertEqual(load_remote_probes(self.registry_path), ())
+
+        handlers["register_remote_probe"]("uncertain.local", 5555, "bench")
+        with mock.patch(
+            "pyocd_debug_mcp.remote_probes._fsync_directory",
+            side_effect=OSError("directory sync failed"),
+        ):
+            uncertain = json.loads(handlers["unregister_remote_probe"]("uncertain.local", 5555))
+        self.assertEqual(uncertain["code"], "remote_probe/registry-durability-uncertain")
+        self.assertNotIn("bytes were preserved", uncertain["agent_prompt"])
         self.assertEqual(load_remote_probes(self.registry_path), ())
 
     def test_unregistering_an_absent_endpoint_is_not_an_error(self) -> None:

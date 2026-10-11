@@ -15,7 +15,9 @@ and no code path may treat it as a durable off-box copy.
 from __future__ import annotations
 
 import json
+import os
 import shutil
+import tempfile
 import threading
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
@@ -24,7 +26,91 @@ from enum import Enum
 from pathlib import Path
 from typing import Any, Protocol
 
+from pyocd_debug_mcp.monitor.reports import report_identity
+
 _MAX_BREADCRUMBS = 100
+
+
+def _fsync_directory(directory: Path) -> None:
+    """Persist an atomic destination entry where directory fsync is available."""
+
+    if os.name != "posix":
+        return
+    descriptor = os.open(directory, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+
+
+def _ensure_durable_directory(directory: Path) -> None:
+    """Create each missing component and persist its entry in the parent."""
+
+    missing: list[Path] = []
+    current = directory
+    while not current.exists():
+        missing.append(current)
+        parent = current.parent
+        if parent == current:
+            break
+        current = parent
+    for component in reversed(missing):
+        component.mkdir(exist_ok=True)
+        _fsync_directory(component.parent)
+
+
+def _durable_copy(source: Path, target: Path) -> None:
+    """Atomically install a file and return only after its directory is durable."""
+
+    _ensure_durable_directory(target.parent)
+    temporary: Path | None = None
+    try:
+        with (
+            source.open("rb") as source_handle,
+            tempfile.NamedTemporaryFile(
+                mode="wb",
+                dir=target.parent,
+                prefix=f".{target.name}.",
+                suffix=".tmp",
+                delete=False,
+            ) as target_handle,
+        ):
+            temporary = Path(target_handle.name)
+            shutil.copyfileobj(source_handle, target_handle)
+            target_handle.flush()
+            os.fsync(target_handle.fileno())
+        os.replace(temporary, target)
+        temporary = None
+        _fsync_directory(target.parent)
+    finally:
+        if temporary is not None:
+            temporary.unlink(missing_ok=True)
+
+
+def _durable_write_text(target: Path, text: str) -> None:
+    """Atomically write UTF-8 text and durably publish its directory entry."""
+
+    _ensure_durable_directory(target.parent)
+    temporary: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="w",
+            encoding="utf-8",
+            dir=target.parent,
+            prefix=f".{target.name}.",
+            suffix=".tmp",
+            delete=False,
+        ) as handle:
+            temporary = Path(handle.name)
+            handle.write(text)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, target)
+        temporary = None
+        _fsync_directory(target.parent)
+    finally:
+        if temporary is not None:
+            temporary.unlink(missing_ok=True)
 
 
 class DeliveryState(str, Enum):
@@ -171,8 +257,7 @@ class SimulatedRemoteTransport:
         destination = self._root / self._workspace / "ledger"
         for identity, path in items:
             try:
-                destination.mkdir(parents=True, exist_ok=True)
-                shutil.copy2(path, destination / path.name)
+                _durable_copy(path, destination / path.name)
                 acked.add(identity)
             except OSError:
                 continue
@@ -191,7 +276,9 @@ class SimulatedRemoteTransport:
         # A problem report carries report_id; a usage/checkin summary carries
         # summary_id instead -- both are stable delivery identities, so either
         # is acceptable here.
-        identity = str(report.get("report_id") or report.get("summary_id") or "")
+        identity = report_identity(report)
+        if identity is None:
+            return DeliveryResult(DeliveryState.FAILED, frozenset(), None, "invalid identity")
         if client:
             try:
                 client.capture_event(_as_sentry_event(report))
@@ -200,16 +287,16 @@ class SimulatedRemoteTransport:
         # The JSON copy is written regardless, so a report survives an SDK problem.
         try:
             destination = self._root / self._workspace / "reports"
-            destination.mkdir(parents=True, exist_ok=True)
-            (destination / f"{identity or 'report'}.json").write_text(
+            target = destination / f"{identity}.json"
+            _durable_write_text(
+                target,
                 json.dumps(report, ensure_ascii=False, indent=2, sort_keys=True),
-                encoding="utf-8",
             )
-        except OSError:
+        except (OSError, UnicodeError, TypeError, ValueError, RecursionError):
             return DeliveryResult(DeliveryState.FAILED, frozenset(), None, "write failed")
         return DeliveryResult(
             DeliveryState.FILLER_SIMULATED,
-            frozenset({identity}) if identity else frozenset(),
+            frozenset({identity}),
             datetime.now(timezone.utc),
         )
 
@@ -250,8 +337,8 @@ class TestTransport:
     def send_report(self, report: Mapping[str, Any]) -> DeliveryResult:
         if not self.fail_always:
             self.sent_reports.append(report)
-        identity = str(report.get("report_id") or report.get("summary_id") or "")
-        return self._result(frozenset({identity}) if identity else frozenset())
+        identity = report_identity(report)
+        return self._result(frozenset({identity}) if identity is not None else frozenset())
 
     def close(self) -> None:
         return None
@@ -292,9 +379,7 @@ def _as_sentry_event(report: Mapping[str, Any]) -> dict[str, Any]:
             "triage_class": report.get("triage_class"),
             "origin": report.get("origin"),
             "tool_name": report.get("tool_name"),
-            "narrative_logging": (report.get("environment") or {}).get(
-                "narrative_logging"
-            ),
+            "narrative_logging": (report.get("environment") or {}).get("narrative_logging"),
         },
         "contexts": {
             "guard_state": dict(report.get("guard_state") or {}),

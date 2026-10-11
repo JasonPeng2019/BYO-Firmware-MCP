@@ -12,25 +12,25 @@
         {
           "description": "STM32 STLink NUCLEO-L476RG",
           "probe_family": "stlink",
-          "probe_id": "066FFF514988525067233337",
-          "usb_serial": "066FFF514988525067233337"
+          "probe_id": "redacted-stlink-probe",
+          "usb_serial": "redacted-stlink-probe"
         },
         {
           "description": "Segger J-Link OB-SAM3U128-V2-NordicSem",
           "probe_family": "jlink",
-          "probe_id": "683710208",
-          "usb_serial": "683710208"
+          "probe_id": "redacted-jlink-probe-a",
+          "usb_serial": "redacted-jlink-probe-a"
         },
         {
           "description": "Segger J-Link OB-SAM3U128-V2-NordicSem",
           "probe_family": "jlink",
-          "probe_id": "683854191",
-          "usb_serial": "683854191"
+          "probe_id": "redacted-jlink-probe-b",
+          "usb_serial": "redacted-jlink-probe-b"
         }
       ]
     },
     "observed_mcu": "Cortex-M4 CPUID compatibility identity 0x410FC241",
-    "probe_identity": "066FFF514988525067233337",
+    "probe_identity": "redacted-stlink-probe",
     "probe_identity_scope": "hardware-stable",
     "silicon_actual": 1091551809,
     "silicon_expected": 49728,
@@ -58,8 +58,8 @@
     {
       "details": {
         "identity_scope": "hardware-stable",
-        "probe_id": "066FFF514988525067233337",
-        "probe_identity": "066FFF514988525067233337"
+        "probe_id": "redacted-stlink-probe",
+        "probe_identity": "redacted-stlink-probe"
       },
       "name": "Resolve intended stable hardware probe identity",
       "number": 3,

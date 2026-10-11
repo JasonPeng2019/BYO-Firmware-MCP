@@ -67,6 +67,7 @@ import os
 import subprocess
 import sys
 import threading
+import stat
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from enum import Enum
@@ -85,6 +86,7 @@ from pyocd_debug_mcp.monitor.paths import StoreRoot
 # for the normal case.
 _HARDENING_TIMEOUT_SECONDS = 0.5
 _SEGMENT_DIGITS = 4
+_RUN_LEASE_SUFFIX = ".active.lock"
 
 
 class Hardening(str, Enum):
@@ -121,6 +123,143 @@ def file_identity(workspace: str, run_id: str, segment: int) -> str:
     """Return the stable identity used for delivery, ACK, and receiver dedup."""
 
     return f"{workspace}:{run_id}:{segment:0{_SEGMENT_DIGITS}d}"
+
+
+def _is_reparse_point(metadata: os.stat_result) -> bool:
+    attributes = int(getattr(metadata, "st_file_attributes", 0))
+    marker = int(getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0))
+    return bool(attributes & marker) or bool(getattr(metadata, "st_reparse_tag", 0))
+
+
+def _fsync_directory(directory: Path) -> None:
+    """Persist newly created ledger directory entries on POSIX."""
+
+    if os.name != "posix":
+        return
+    descriptor = os.open(directory, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+
+
+def _ensure_durable_directory(directory: Path) -> None:
+    """Create missing components and persist each entry in its parent."""
+
+    missing: list[Path] = []
+    current = directory
+    while not current.exists():
+        missing.append(current)
+        parent = current.parent
+        if parent == current:
+            break
+        current = parent
+    for component in reversed(missing):
+        component.mkdir(exist_ok=True)
+        _fsync_directory(component.parent)
+
+
+def _run_lease_path(directory: Path, run_id: str) -> Path:
+    """Return a fixed-width filename even if a caller supplied an odd run ID."""
+
+    token = blake2b(run_id.encode("utf-8", "surrogatepass"), digest_size=16).hexdigest()
+    return directory / f".{token}{_RUN_LEASE_SUFFIX}"
+
+
+def _lock_run_lease(descriptor: int, *, blocking: bool) -> bool:
+    """Acquire a process-scoped lease without writing shared sentinel bytes."""
+
+    try:
+        if os.name == "posix":
+            import fcntl
+
+            operation = fcntl.LOCK_EX | (0 if blocking else fcntl.LOCK_NB)
+            fcntl.flock(descriptor, operation)
+        elif os.name == "nt":  # pragma: no cover - native Windows path
+            import msvcrt
+
+            os.lseek(descriptor, 0, os.SEEK_SET)
+            mode = msvcrt.LK_LOCK if blocking else msvcrt.LK_NBLCK
+            msvcrt.locking(descriptor, mode, 1)
+        else:  # pragma: no cover - supported runtimes are POSIX/Windows
+            return False
+    except (BlockingIOError, OSError):
+        return False
+    return True
+
+
+def _unlock_run_lease(descriptor: int) -> None:
+    try:
+        if os.name == "posix":
+            import fcntl
+
+            fcntl.flock(descriptor, fcntl.LOCK_UN)
+        elif os.name == "nt":  # pragma: no cover - native Windows path
+            import msvcrt
+
+            os.lseek(descriptor, 0, os.SEEK_SET)
+            msvcrt.locking(descriptor, msvcrt.LK_UNLCK, 1)
+    except OSError:
+        pass
+
+
+def _open_run_lease(directory: Path, run_id: str, *, create: bool) -> int | None:
+    """Open and validate the private lease inode without following a link."""
+
+    path = _run_lease_path(directory, run_id)
+    flags = os.O_RDWR | getattr(os, "O_NOFOLLOW", 0)
+    if create:
+        flags |= os.O_CREAT
+    try:
+        descriptor = os.open(path, flags, 0o600)
+    except OSError:
+        return None
+    try:
+        opened = os.fstat(descriptor)
+        current = path.lstat()
+        if (
+            not stat.S_ISREG(opened.st_mode)
+            or opened.st_nlink != 1
+            or stat.S_ISLNK(current.st_mode)
+            or _is_reparse_point(current)
+            or (opened.st_dev, opened.st_ino) != (current.st_dev, current.st_ino)
+        ):
+            raise OSError("run lease is not a private regular file")
+        if create:
+            # The lock only becomes a crash-durable ownership marker after its
+            # directory entry is persisted. Syncing an existing entry is cheap
+            # and avoids a racy pre-open existence probe.
+            _fsync_directory(directory)
+        # Creation already requests 0600. Do not chmod a pre-existing path:
+        # even after the single-link check, a concurrent hard-link insertion
+        # could otherwise redirect a metadata change onto an external peer.
+        return descriptor
+    except OSError:
+        os.close(descriptor)
+        return None
+
+
+def run_is_active(directory: Path, run_id: str) -> bool:
+    """Return true unless a prior run's lease can be proved inactive.
+
+    Missing leases are legacy files and are recoverable. An existing but unsafe
+    or unreadable lease is treated conservatively as active: skipping recovery is
+    preferable to deleting a segment that may still have a writer.
+    """
+
+    lease = _run_lease_path(directory, run_id)
+    if not os.path.lexists(lease):
+        return False
+    descriptor = _open_run_lease(directory, run_id, create=False)
+    if descriptor is None:
+        return True
+    try:
+        if not _lock_run_lease(descriptor, blocking=False):
+            return True
+        _unlock_run_lease(descriptor)
+        return False
+    finally:
+        os.close(descriptor)
 
 
 def _harden(path: Path) -> Hardening:
@@ -194,6 +333,9 @@ class SegmentLedger:
         self._total_appended = 0
         self._sealed: list[SegmentInfo] = []
         self._last_error: str | None = None
+        self._lease_descriptor: int | None = None
+        if self._store.server_data is not None:
+            self.activate()
 
     # -- introspection ---------------------------------------------------
 
@@ -241,19 +383,57 @@ class SegmentLedger:
         server_data = self._store.server_data
         return None if server_data is None else server_data / self._workspace
 
+    def _activate_locked(self) -> bool:
+        if self._lease_descriptor is not None:
+            return True
+        directory = self._directory()
+        if directory is None:
+            return False
+        try:
+            _ensure_durable_directory(directory)
+        except OSError as exc:
+            self._last_error = f"{type(exc).__name__}: {exc}"
+            return False
+        descriptor = _open_run_lease(directory, self._run_id, create=True)
+        if descriptor is None or not _lock_run_lease(descriptor, blocking=False):
+            if descriptor is not None:
+                os.close(descriptor)
+            self._last_error = "OSError: another process owns this run ledger"
+            return False
+        self._lease_descriptor = descriptor
+        return True
+
+    def activate(self) -> bool:
+        """Claim this run before it creates reports or writable segments."""
+
+        with self._guard:
+            return self._activate_locked()
+
     def _open_segment_locked(self) -> bool:
         directory = self._directory()
         if directory is None:
             return False
+        if not self._activate_locked():
+            return False
         self._segment += 1
         name = f"{self._run_id}.{self._segment:0{_SEGMENT_DIGITS}d}.jsonl"
         path = directory / name
+        handle: TextIO | None = None
         try:
-            directory.mkdir(parents=True, exist_ok=True)
             handle = path.open("a", encoding="utf-8")
+            # A file fsync below persists record bytes, not necessarily the new
+            # filename. Persist the directory entry before append can succeed.
+            _fsync_directory(directory)
         except OSError as exc:
+            if handle is not None:
+                handle.close()
             self._segment -= 1
             self._last_error = f"{type(exc).__name__}: {exc}"
+            descriptor = self._lease_descriptor
+            self._lease_descriptor = None
+            if descriptor is not None:
+                _unlock_run_lease(descriptor)
+                os.close(descriptor)
             return False
         self._handle = handle
         self._path = path
@@ -367,7 +547,13 @@ class SegmentLedger:
         """Close the current segment with no successor."""
 
         with self._guard:
-            return self._close_locked()
+            info = self._close_locked()
+            descriptor = self._lease_descriptor
+            self._lease_descriptor = None
+            if descriptor is not None:
+                _unlock_run_lease(descriptor)
+                os.close(descriptor)
+            return info
 
     def forget(self, identity: str) -> None:
         """Drop a sealed segment from the resident set after its file was unlinked."""
@@ -389,21 +575,29 @@ def verify_file(path: Path) -> VerificationOutcome:
         lines = path.read_text(encoding="utf-8").splitlines()
     except OSError:
         return VerificationOutcome.RUN_ABSENT
+    except UnicodeError:
+        return VerificationOutcome.CHAIN_INVALID
     prev: str | None = None
     for line in lines:
         if not line.strip():
             continue
         try:
             record = json.loads(line)
-        except json.JSONDecodeError:
+        except (json.JSONDecodeError, ValueError, RecursionError):
             return VerificationOutcome.CHAIN_INVALID
         if not isinstance(record, dict) or "hash" not in record or "prev" not in record:
             return VerificationOutcome.CHAIN_INVALID
         claimed = record.pop("hash")
-        recomputed = _link(record["prev"], record)
+        previous = record["prev"]
+        if not isinstance(claimed, str) or not isinstance(previous, str):
+            return VerificationOutcome.CHAIN_INVALID
+        try:
+            recomputed = _link(previous, record)
+        except (TypeError, ValueError, UnicodeError):
+            return VerificationOutcome.CHAIN_INVALID
         if recomputed != claimed:
             return VerificationOutcome.CHAIN_INVALID
-        if prev is not None and record["prev"] != prev:
+        if prev is not None and previous != prev:
             return VerificationOutcome.CHAIN_INVALID
         prev = claimed
     # Internally consistent. Without a published head off-box we cannot rule out a
@@ -411,9 +605,7 @@ def verify_file(path: Path) -> VerificationOutcome:
     return VerificationOutcome.IMPOSSIBLE
 
 
-def verify_prior_runs(
-    store: StoreRoot, workspace: str, current_run_id: str
-) -> dict[str, str]:
+def verify_prior_runs(store: StoreRoot, workspace: str, current_run_id: str) -> dict[str, str]:
     """Verify every resident file from a previous run of this workspace."""
 
     server_data = store.server_data
@@ -430,6 +622,10 @@ def verify_prior_runs(
     for path in candidates:
         if path.name.startswith(f"{current_run_id}."):
             continue
+        stem = path.name[: -len(".jsonl")]
+        run_id, separator, _segment = stem.rpartition(".")
+        if separator and run_id and run_is_active(directory, run_id):
+            continue
         outcomes[path.name] = verify_file(path).value
     return outcomes
 
@@ -440,6 +636,7 @@ __all__ = [
     "SegmentLedger",
     "VerificationOutcome",
     "file_identity",
+    "run_is_active",
     "verify_file",
     "verify_prior_runs",
 ]

@@ -25,4 +25,12 @@ server.
 - `results/HIL_RESULTS.md`: the final setup-relock HIL regression passed with
   no destructive board operation.
 
-The commands and their original output are preserved verbatim in `results/`.
+The command outcomes are preserved in `results/`. Before source publication,
+operator home-directory paths and physical probe identifiers were replaced by
+explicit redaction markers. These files are privacy-redacted derivatives, not
+byte-for-byte copies of the private originals; the substitutions do not change
+the recorded pass/fail outcomes. `SANITIZATION_MANIFEST.json` records the
+replacement classes and exact retained derivative hashes. Verify both the
+manifest and generic privacy scan with
+`python scripts/verify_evidence_privacy.py`; use its explicit
+`--write-manifest` mode only after an intentional evidence update.

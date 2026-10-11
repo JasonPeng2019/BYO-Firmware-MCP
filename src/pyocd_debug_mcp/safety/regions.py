@@ -446,9 +446,7 @@ def build_recovery_erase_disclosure(
     """Derive recovery loss from the map; callers cannot inject allowed ranges."""
 
     mapped = tuple(regions)
-    physical_flash = tuple(
-        region for region in mapped if region.kind is RegionKind.PHYSICAL_FLASH
-    )
+    physical_flash = tuple(region for region in mapped if region.kind is RegionKind.PHYSICAL_FLASH)
     if not physical_flash:
         raise RegionError("the current safety map has no physical flash range to disclose")
     explicit = geometry.get("sectors")

@@ -1,5 +1,9 @@
 # BYO Server Guide
 
+> `0.1.8rc1` is a mixed-product, pre-split, local-delivery preview, not a
+> public production release. Its remaining external release gates are recorded
+> in [docs/RELEASE_STATUS.md](docs/RELEASE_STATUS.md).
+
 BYO Server is a headless local MCP server for safe embedded-board setup,
 debugging, serial I/O, flash, and recovery through pyOCD. It runs over stdio
 only. Any compatible MCP client can use it; the server, not the client, owns
@@ -8,9 +12,10 @@ and cleanup.
 
 ## Start the server
 
-The repository is intentionally a fresh-start distribution: it contains no board profiles, packs,
-reference firmware, reviewed-device catalog, or generated `.firm` state. Install the locked
-environment, then register the stdio command with any MCP-compatible client:
+The repository is intentionally a fresh-start distribution: it contains no authoritative board
+profiles, packs, reference firmware, reviewed-device catalog, or generated `.firm` state. Its one
+RX-only virtual CAN YAML is an inert example that is never selected automatically. Install the
+locked environment, then register the stdio command with any MCP-compatible client:
 
 ```text
 uv sync --locked
@@ -41,6 +46,85 @@ uv run --locked pyocd-pack-repair --help
 uv run --locked pyocd-native-build --help
 uv run --locked pyocd-collect-artifacts --help
 ```
+
+## Software Classical CAN
+
+CAN authority is selected once, before the MCP transport starts. With no CAN
+variables, all seven CAN names remain registered under the normal plan-driven
+visibility rules, but the runtime is off and creates no CAN thread or worker.
+The backend libraries are deliberately an optional dependency group: a base
+installation keeps the full non-CAN server and static seven-name CAN
+registration, while configured CAN requires
+`pyocd-debug-mcp[can]` (or `uv sync --extra can`). A software fixture can be
+enabled with:
+
+```text
+uv sync --locked --extra can
+PYOCD_CAN_MODE=available \
+PYOCD_CAN_CONFIG=/absolute/path/to/fixtures/can/virtual_rx_only.yaml \
+uv run --locked --extra can pyocd-debug-mcp
+```
+
+Selecting available mode without the extra fails closed at startup and names
+the install remedy; it never silently falls back to off mode.
+
+That path is stable in a source checkout. A wheel installs the same inert example
+at `pyocd_debug_mcp/examples/can/virtual_rx_only.yaml`; copy/edit it in an
+operator-owned location before use when its example `board_ids` do not match the
+logical board. No packaged example becomes runtime authority automatically.
+
+The source is read once, strictly parsed, hashed, then canonicalized and
+snapshotted into the private run directory. Operators can pin the source with
+`PYOCD_CAN_CONFIG_SHA256=<64-lowercase-hex>` and the canonical runtime contract
+with `PYOCD_CAN_RUNTIME_SHA256=<64-lowercase-hex>`. A finite
+`PYOCD_CAN_READ_SECONDS` may replace the profile's default read window,
+but cannot exceed its maximum. Unknown non-empty `PYOCD_CAN_*` variables,
+legacy FirmwareCLI fixture-proof variables, `required` mode, symlinks, malformed
+profiles, and physical `socketcan` profiles all fail startup on supported POSIX
+hosts. Configured CAN fails startup on every non-Linux platform until native
+profile-loading, worker, and cleanup behavior is qualified there.
+Compatibility health-check declarations from a shared FirmwareCLI profile are
+strictly parsed and remain part of its canonical hash, but BYO does not execute
+or claim terminal/health proof from them.
+
+The shipped preview proof rung is software only:
+
+- `virtual` uses `python-can`'s process-local interface inside an isolated
+  worker. Tests use a child-hosted peer to prove exact RX/TX, policy, and
+  cleanup behavior; a peer in another process cannot join that channel, so
+  this is a software contract proof rather than an integration transport;
+- `socketcan_vcan` is implemented for Linux when the named `vcan` link already
+  exists and passes capability inspection, but remains experimental and
+  unqualified until a privileged CI/HIL lane exercises it;
+- configured non-Linux CAN is disabled pending native qualification; and
+- physical CAN adapters are not supported or qualified by this release.
+
+Seven names are always registered: `get_can_status`, `connect_can`,
+`disconnect_can`, `read_can-plan`, `read_can`, `send_can-plan`, and `send_can`.
+Bus attachment requires the profile-authorized logical board, an active
+setup-full debug connection, and a current validation stamp. Reads and sends
+also consume an exact plan; transmit remains off unless the immutable profile
+enables it and exact-allowlists the identifier. Profile duration/frame limits
+and process-lifetime quotas cannot be widened by callers.
+
+One CAN worker can be owned by one logical board at a time. A proven disconnect
+allows a later sequential rebind, but process quotas do not reset. Normal debug
+`disconnect` closes CAN before clearing validation or releasing SWD. If cleanup
+cannot be proven, ownership is retained for bounded retry and debug authority is
+left intact rather than claiming success. Process shutdown makes the same
+bounded cleanup attempts once the worker identity exists and exits non-zero if
+the CAN generation remains uncertain. The preceding synchronous
+`multiprocessing.Process.start()` call is not portably interruptible or
+deadline-bounded: an initial `connect_can` or concurrent shutdown can wait for
+OS process creation to return rather than orphaning an as-yet unidentified
+child.
+
+The five operational CAN routes return canonical JSON; the two `*-plan` routes
+retain the standard textual plan workflow. Payload bytes are returned only when the
+operator profile selects full provider payloads; otherwise frame records remain
+metadata-only. Raw CAN frames do not authenticate their sender, and virtual or
+`vcan` observations do not establish physical timing, wiring, arbitration, or
+fault behavior.
 
 After setup validation, `get_setup_status` returns advisory, provider-neutral
 build guidance. The client inspects the project's own build metadata, resolves
@@ -208,7 +292,15 @@ The distributable package can be checked without operating hardware:
 ```text
 uv build
 uv run --locked python -c "import pyocd_debug_mcp; import pyocd_debug_mcp.server"
+uv run --locked python scripts/verify_release_artifacts.py
 ```
+
+With no positional argument, the release verifier builds fresh archives, installs the wheel and sdist into
+separate temporary base environments, checks the off-mode inventory and the
+missing-extra diagnostic, then installs the `can` extra and opens/closes the
+process-local virtual backend in its isolated worker. Pass `dist` to verify the
+exact existing handoff pair instead; the command rejects stale or ambiguous
+archive sets.
 
 ## More detail
 

@@ -71,7 +71,7 @@ def load_anchor(server_data: Path | None) -> Anchor | None:
         return None
     try:
         raw = json.loads(_anchor_path(server_data).read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
+    except (OSError, UnicodeError, json.JSONDecodeError, ValueError, RecursionError):
         return None
     if not isinstance(raw, dict):
         return None
@@ -187,9 +187,7 @@ class StalenessBlock:
         anchor = self.anchor
         days = STALENESS_THRESHOLD.days
         if anchor is not None:
-            days = max(
-                days, int((datetime.now(timezone.utc) - anchor.at).total_seconds() // 86400)
-            )
+            days = max(days, int((datetime.now(timezone.utc) - anchor.at).total_seconds() // 86400))
         return BLOCK_MESSAGE.format(days=days)
 
 

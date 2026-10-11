@@ -20,7 +20,7 @@ from enum import Enum
 
 from mcp.server.fastmcp.exceptions import ToolError
 
-from pyocd_debug_mcp.monitor.redaction import normalize_signature
+from pyocd_debug_mcp.monitor.redaction import fingerprint, normalize_signature
 
 # Held locally rather than imported from ``server``: server imports this module,
 # so importing back would be circular. A test asserts this stays a substring of
@@ -30,6 +30,7 @@ NO_BOARD_FRAGMENT = "No project board profile is loaded"
 _REFUSAL_PREFIX = "Refused ["
 _REFUSAL_CODE = re.compile(r"^Refused \[([^\]]+)\]:\s*(.*)", re.DOTALL)
 _CALL_FIRST = re.compile(r"Call '([^']+)' first", re.IGNORECASE)
+_SAFE_TOOL_NAME = re.compile(r"[a-z][a-z0-9_-]{0,99}\Z")
 _LOCKED_TOOL = re.compile(r"^Tool '.+' is locked")
 _UNKNOWN_TOOL = re.compile(r"^Unknown tool: ")
 _NEEDS_BOARD = re.compile(r"^Guarded tool '.+' requires a non-empty board_id")
@@ -244,14 +245,17 @@ def error_code(exc: BaseException) -> str:
         return "symbols/lookup-failure"
     if isinstance(exc, BoardNotConnectedError):
         return "server/not-connected"
-    return f"runtime/{type(exc).__name__}"
+    # Novel Python symbols can contain private customer or codebase names. They
+    # are not a public taxonomy and must never become durable metadata.
+    return "runtime/unexpected-error"
 
 
 def error_signature(exc: BaseException) -> str:
-    """Return a normalized signature stable enough to group across runs."""
+    """Return a non-readable, salted signature stable enough to group locally."""
 
     kind = f"{type(exc).__module__}.{type(exc).__name__}"
-    return f"{kind}: {normalize_signature(str(exc))}"
+    private_material = f"{kind}:{normalize_signature(str(exc))}"
+    return f"unexpected:{fingerprint(private_material)}"
 
 
 def _tool_error_classification(
@@ -387,14 +391,35 @@ def classify_result(text: str) -> tuple[Outcome, str | None, str | None]:
     payload = _maybe_json(stripped)
     if isinstance(payload, dict):
         status = payload.get("status")
+        operation = payload.get("operation")
+        is_can_envelope = operation in {
+            "get_can_status",
+            "connect_can",
+            "disconnect_can",
+            "read_can",
+            "send_can",
+        }
+        if is_can_envelope and status == "refused":
+            code = payload.get("code")
+            return (
+                Outcome.POLICY_REFUSAL,
+                code if isinstance(code, str) else "policy/refused",
+                _named_remedy(text),
+            )
+        if is_can_envelope and status == "failed":
+            code = payload.get("code")
+            return (
+                Outcome.UNEXPECTED_ERROR,
+                code if isinstance(code, str) else "can/backend-failure",
+                None,
+            )
         if isinstance(status, str) and (
             status.endswith("_refused") or status.endswith("_rejected")
         ):
-            remedy = payload.get("remedy") or payload.get("next_step")
             return (
                 Outcome.POLICY_REFUSAL,
                 status,
-                remedy if isinstance(remedy, str) else _named_remedy(text),
+                _named_remedy(text),
             )
     return Outcome.SUCCESS, None, None
 
@@ -405,7 +430,7 @@ def _maybe_json(text: str) -> object:
     for candidate in (text, text.split("\n", 1)[0]):
         try:
             return json.loads(candidate)
-        except json.JSONDecodeError:
+        except (json.JSONDecodeError, ValueError, RecursionError):
             continue
     return None
 
@@ -417,13 +442,28 @@ def _named_remedy(text: str) -> str | None:
     recorded on every refusal rather than only on reported ones.
     """
 
+    payload = _maybe_json(text.lstrip())
+    if isinstance(payload, dict):
+        # Only schema-owned top-level fields can declare that a remedy exists.
+        # Searching serialized JSON lets arbitrary echoed input smuggle marker
+        # strings such as ``next_step`` into the mechanical trail.
+        for key in ("remedy", "next_step"):
+            value = payload.get(key)
+            if isinstance(value, str) and value.strip():
+                match = _CALL_FIRST.search(value)
+                if match and _SAFE_TOOL_NAME.fullmatch(match.group(1)):
+                    return f"call {match.group(1)}"
+                return "provided"
+        return None
+
     match = _CALL_FIRST.search(text)
     if match:
-        return f"call {match.group(1)}"
+        tool = match.group(1)
+        return f"call {tool}" if _SAFE_TOOL_NAME.fullmatch(tool) else "provided"
     for marker in ("remedy:", "Next step:", "next_step"):
         index = text.find(marker)
         if index >= 0:
-            return text[index + len(marker) : index + len(marker) + 200].strip() or None
+            return "provided" if text[index + len(marker) :].strip() else None
     return None
 
 

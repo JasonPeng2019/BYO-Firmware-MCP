@@ -1,0 +1,44 @@
+BYO-Firmware-MCP 0.1.8rc1 opt-in live Codex/MCP monitor verification
+generated_utc=2026-10-11T22:22:17.193952Z
+base_git_head=955369e781747dc267851f969442a7931384a9d1
+working_tree_manifest_sha256=989875cccbbcda4cfb085e0e8b0fedb3193bcde385c5fa63f59bb4651115967f
+uv_lock_sha256=809229545c463b3870253e251f18773cb92fab4df8d0480b07c36d701e4869b7
+uv_version=uv 0.12.0 (x86_64-unknown-linux-gnu)
+python_version=Python 3.12.3
+command=BYO_RUN_CODEX_E2E=1 TMPDIR=/tmp uv run --locked --extra can python -m unittest tests.test_monitor_codex_e2e -v
+output_sanitization=absolute candidate root replaced with <candidate-root>
+--- output ---
+test_agent_can_file_an_issue_report (tests.test_monitor_codex_e2e.AgentAuthoredSubmissions.test_agent_can_file_an_issue_report) ... ok
+test_agent_can_submit_a_routine_checkin (tests.test_monitor_codex_e2e.AgentAuthoredSubmissions.test_agent_can_submit_a_routine_checkin) ... ok
+test_malformed_report_is_rejected_and_not_stored (tests.test_monitor_codex_e2e.AgentAuthoredSubmissions.test_malformed_report_is_rejected_and_not_stored) ... ok
+test_boot_record_survives_a_real_client_teardown (tests.test_monitor_codex_e2e.AgentSessionsAreRecorded.test_boot_record_survives_a_real_client_teardown)
+Durability comes from the append, not from any shutdown path. ... ok
+test_no_per_call_record_is_written_for_a_real_session (tests.test_monitor_codex_e2e.AgentSessionsAreRecorded.test_no_per_call_record_is_written_for_a_real_session)
+A real agent session produces occasion records, never one per call. ... ok
+test_real_agent_traffic_reaches_the_ledger (tests.test_monitor_codex_e2e.AgentSessionsAreRecorded.test_real_agent_traffic_reaches_the_ledger) ... ok
+test_records_carry_run_identity_and_cumulative_counts (tests.test_monitor_codex_e2e.AgentSessionsAreRecorded.test_records_carry_run_identity_and_cumulative_counts) ... ok
+test_a_session_of_correct_refusals_files_no_server_defect (tests.test_monitor_codex_e2e.CorrectRefusalsProduceNoDefectReports.test_a_session_of_correct_refusals_files_no_server_defect) ... ok
+test_refusals_are_counted_even_though_they_are_not_reported (tests.test_monitor_codex_e2e.CorrectRefusalsProduceNoDefectReports.test_refusals_are_counted_even_though_they_are_not_reported)
+A refusal is normal output: counted, never filed as an issue. ... ok
+test_agent_can_read_live_counts_back (tests.test_monitor_codex_e2e.HealthCheckIsAUsableOracle.test_agent_can_read_live_counts_back) ... ok
+test_health_readout_declares_transport_and_build_state (tests.test_monitor_codex_e2e.HealthCheckIsAUsableOracle.test_health_readout_declares_transport_and_build_state) ... ok
+test_a_model_with_no_recorded_migration_resolves_to_none (tests.test_monitor_codex_e2e.ModelMigrationLookupIsHermetic.test_a_model_with_no_recorded_migration_resolves_to_none) ... ok
+test_the_current_pin_has_no_further_migration (tests.test_monitor_codex_e2e.ModelMigrationLookupIsHermetic.test_the_current_pin_has_no_further_migration) ... ok
+test_the_mapping_is_exactly_whats_checked_in (tests.test_monitor_codex_e2e.ModelMigrationLookupIsHermetic.test_the_mapping_is_exactly_whats_checked_in)
+Guards against silent expansion of the accepted-name set: only the ... ok
+test_the_retired_model_migrates_to_the_current_pin (tests.test_monitor_codex_e2e.ModelMigrationLookupIsHermetic.test_the_retired_model_migrates_to_the_current_pin) ... ok
+test_the_harness_refuses_a_run_on_another_model (tests.test_monitor_codex_e2e.ModelPinningIsEnforced.test_the_harness_refuses_a_run_on_another_model)
+A silently downgraded run would test something other than the claim. ... ok
+test_all_three_actions_are_discoverable (tests.test_monitor_codex_e2e.MonitoringToolsAreOutsideTheSafetySurface.test_all_three_actions_are_discoverable) ... ok
+test_monitor_tools_are_refused_inside_a_batch (tests.test_monitor_codex_e2e.MonitoringToolsAreOutsideTheSafetySurface.test_monitor_tools_are_refused_inside_a_batch) ... ok
+test_a_full_session_keeps_the_protocol_intact (tests.test_monitor_codex_e2e.StdoutStaysClean.test_a_full_session_keeps_the_protocol_intact) ... ok
+test_agent_supplied_workspace_is_bound_and_anonymised (tests.test_monitor_codex_e2e.WorkspaceBindingThroughARealHandshake.test_agent_supplied_workspace_is_bound_and_anonymised) ... ok
+test_no_plaintext_project_path_is_stored (tests.test_monitor_codex_e2e.WorkspaceBindingThroughARealHandshake.test_no_plaintext_project_path_is_stored) ... ok
+test_nothing_is_written_into_the_project_directory (tests.test_monitor_codex_e2e.WorkspaceBindingThroughARealHandshake.test_nothing_is_written_into_the_project_directory) ... ok
+
+----------------------------------------------------------------------
+Ran 22 tests in 270.117s
+
+OK
+--- result ---
+exit_status=0

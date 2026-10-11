@@ -28,12 +28,9 @@ def tearDownModule() -> None:
     store_restore(_STORE_BEFORE)
 
 
-
 class AgentSessionsAreRecorded(CodexAgentTestCase):
     def test_real_agent_traffic_reaches_the_ledger(self) -> None:
-        result = self.run_agent(
-            "call server_health_check once. Reply with only the word DONE."
-        )
+        result = self.run_agent("call server_health_check once. Reply with only the word DONE.")
         self.assertEqual(result.returncode, 0, result.combined[-2000:])
         self.assertTrue(result.tool_calls, "the agent made no MCP tool calls")
 
@@ -64,9 +61,7 @@ class AgentSessionsAreRecorded(CodexAgentTestCase):
         check-ins, reports, and close -- and nothing keyed to an individual call.
         """
 
-        self.run_agent(
-            "call server_health_check three times. Reply with only DONE."
-        )
+        self.run_agent("call server_health_check three times. Reply with only DONE.")
         allowed = {"boot", "usage_snapshot", "checkin", "report", "close"}
         self.assertTrue(self.record_kinds())
         self.assertEqual(self.record_kinds() - allowed, set())
@@ -87,16 +82,13 @@ class AgentSessionsAreRecorded(CodexAgentTestCase):
                 self.assertTrue(record["detail"].get("cumulative"))
             self.assertGreater(self.call_count_recorded(), 0)
             self.assertTrue(
-                self.outcomes_recorded()
-                <= {"success", "policy_refusal", "unexpected_error"}
+                self.outcomes_recorded() <= {"success", "policy_refusal", "unexpected_error"}
             )
 
 
 class WorkspaceBindingThroughARealHandshake(CodexAgentTestCase):
     def test_agent_supplied_workspace_is_bound_and_anonymised(self) -> None:
-        result = self.run_agent(
-            "call server_health_check. Reply with only DONE."
-        )
+        result = self.run_agent("call server_health_check. Reply with only DONE.")
         self.assertEqual(result.returncode, 0, result.combined[-2000:])
         self.assertTrue(
             self.workspace_dir.exists() or self.delivered_dir.exists(),
@@ -136,9 +128,7 @@ class HealthCheckIsAUsableOracle(CodexAgentTestCase):
             f"agent did not report two counts; got {answer!r}",
         )
         first, second = (int(part) for part in answer.split(","))
-        self.assertLess(
-            first, second, "counts did not advance between the two health checks"
-        )
+        self.assertLess(first, second, "counts did not advance between the two health checks")
         # The model's reply alone could be a hallucination, so corroborate that a
         # real server really served this workspace. Note what corroboration is
         # *not* available: there is no per-call ledger record to count, by design.
@@ -164,9 +154,7 @@ class HealthCheckIsAUsableOracle(CodexAgentTestCase):
         # The filler must never claim a real send.
         self.assertNotEqual(payload["delivery"]["state"], "sent")
         self.assertFalse(payload["delivery"]["durable_off_box"])
-        self.assertIn(
-            payload["block"]["state"], ("dormant", "armed", "clock_unusable")
-        )
+        self.assertIn(payload["block"]["state"], ("dormant", "armed", "clock_unusable"))
 
 
 class CorrectRefusalsProduceNoDefectReports(CodexAgentTestCase):
@@ -291,9 +279,7 @@ class AgentAuthoredSubmissions(CodexAgentTestCase):
         )
         self.assertEqual(result.returncode, 0, result.combined[-2000:])
         recorded = [r for r in self.reports() if r.get("signal_type")]
-        self.assertEqual(
-            recorded, [], "an invalid model-authored report was recorded anyway"
-        )
+        self.assertEqual(recorded, [], "an invalid model-authored report was recorded anyway")
 
 
 class MonitoringToolsAreOutsideTheSafetySurface(CodexAgentTestCase):
@@ -353,12 +339,8 @@ class ModelPinningIsEnforced(CodexAgentTestCase):
         from tests.codex_harness import CodexResult
 
         with self.assertRaises(AssertionError):
-            self._assert_model_was_honoured(
-                CodexResult(0, "model: gpt-4o-mini\n", "")
-            )
-        self._assert_model_was_honoured(
-            CodexResult(0, f"model: {REQUIRED_MODEL}\n", "")
-        )
+            self._assert_model_was_honoured(CodexResult(0, "model: gpt-4o-mini\n", ""))
+        self._assert_model_was_honoured(CodexResult(0, f"model: {REQUIRED_MODEL}\n", ""))
 
 
 if __name__ == "__main__":

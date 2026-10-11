@@ -35,7 +35,6 @@ def tearDownModule() -> None:
     store_restore(_STORE_BEFORE)
 
 
-
 def store_root() -> Path:
     from platformdirs import user_data_dir
 
@@ -311,9 +310,7 @@ class ProfessionalBuildOverTheProtocol(LifecycleTestCase):
 
     def setUp(self) -> None:
         super().setUp()
-        self.profile = (
-            SERVER_PROJECT / "src" / "pyocd_debug_mcp" / "monitor" / "build_profile.py"
-        )
+        self.profile = SERVER_PROJECT / "src" / "pyocd_debug_mcp" / "monitor" / "build_profile.py"
         self.original = self.profile.read_text(encoding="utf-8")
         self.profile.write_text(
             self.original.replace(

@@ -41,6 +41,7 @@ def source_without_docstrings(module: ModuleType) -> str:
             body.pop(0)
     return ast.unparse(tree)
 
+
 FAKE_HOOK = Path(__file__).resolve().parent / "fake_discovery_hook.py"
 ALL_PLATFORMS = ["windows", "macos", "linux"]
 

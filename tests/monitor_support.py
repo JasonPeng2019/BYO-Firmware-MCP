@@ -8,8 +8,10 @@ while that directory is usable.
 
 from __future__ import annotations
 
+import json
 import shutil
 import tempfile
+import time
 import unittest
 from datetime import datetime, timezone
 from pathlib import Path
@@ -115,10 +117,34 @@ class MonitorTestCase(unittest.TestCase):
         the transport retained -- so counting files would double every report.
         """
 
-        by_id: dict[str, Path] = {}
-        for path in sorted(self.store_dir.rglob("rpt-*.json")):
-            by_id.setdefault(path.name, path)
-        return list(by_id.values())
+        deadline = time.monotonic() + 0.25
+        while True:
+            # Delivery writes the remote copy before unlinking the local one.
+            # Scan in that same order of causality: a local-first/remote-second
+            # pass cannot fall into the artificial gap produced by scanning the
+            # remote before it exists and the local after it is removed.
+            local = {path.name: path for path in sorted(self.server_data.rglob("rpt-*.json"))}
+            remote = {path.name: path for path in sorted(self.simulated_remote.rglob("rpt-*.json"))}
+            by_id = {**local, **remote}
+            if not (set(local) - set(remote)) or time.monotonic() >= deadline:
+                return list(by_id.values())
+            # If a report is still only local, briefly let the delivery worker
+            # publish its durable copy. This prevents returning a local Path
+            # that is unlinked immediately after this helper returns. A failed
+            # transport keeps the local path and reaches the bounded deadline.
+            time.sleep(0.005)
+
+    def read_report(self, path: Path) -> dict[str, Any]:
+        """Read a report across the ACK-driven local-to-remote handoff."""
+
+        try:
+            text = path.read_text(encoding="utf-8")
+        except FileNotFoundError:
+            candidates = list(self.simulated_remote.rglob(path.name))
+            if not candidates:
+                raise
+            text = candidates[0].read_text(encoding="utf-8")
+        return json.loads(text)
 
     def ledger_records(self) -> list[dict]:
         """Return every distinct ledger record across the whole store.

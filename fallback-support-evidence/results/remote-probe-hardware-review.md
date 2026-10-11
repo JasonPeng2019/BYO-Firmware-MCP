@@ -1,5 +1,12 @@
 # Review: remote probe endpoints (`register_remote_probe` / `unregister_remote_probe`)
 
+> **Historical pre-fix review.** The MUST-FIX race below describes the code as
+> it existed when this review was first written, not the current candidate.
+> The current registry serializes the full cross-process read/modify/write at
+> `src/pyocd_debug_mcp/remote_probes.py`, and the concurrent registration and
+> register/unregister regressions now pass. The original finding and falsification
+> transcript are retained as provenance for that fix.
+
 Reviewed against `REMOTE_PROBE_PLAN.md`, `.codex/design_charter.md`, and
 `reviews/REVIEW_POLICY.md`. Scope: `git diff` (`firmstore/store.py`,
 `hardware_inventory.py`, `server.py`, `tools/discovery.py`) plus the four new files
@@ -216,10 +223,10 @@ does not redirect it; this is not a production defect, just a fact about how to 
 it correctly, and I got it wrong on the first attempt -- which is also how R2 above
 got triggered and then cleaned up).
 
-## Hardware test -- verbatim
+## Hardware test — privacy-redacted transcript
 
 Ran `python tests/manual/manual_remote_probe_hardware_check.py` against the real
-ST-LINK (`0668FF514988525067213913`). Script did not need any fixes.
+ST-LINK (`<redacted-stlink-probe>`). Script did not need any fixes.
 
 ```
 Generic 'cortex_m' target type is selected by default; is this intentional? You will be able to debug most devices, but not program flash. To set the target type use the '--target' argument or 'target_override' option. Use 'pyocd list --targets' to see available targets types.
@@ -240,7 +247,7 @@ no board identity). PC readback `0x080015DE` matches the plan's own reference
 measurement (`0x80015de`) on this board. Confirmed no leftover `pyocd`/`python server`
 process after the run (`Get-Process` showed nothing matching).
 
-## Checks, verbatim tails
+## Checks — privacy-redacted tails
 
 `python -m unittest discover -s tests` (after adding the new smoke test file --
 the one failure is R1, left in deliberately):
@@ -251,7 +258,7 @@ FAIL: test_concurrent_registrations_do_not_lose_an_entry (test_remote_probe_smok
 Two independent `register_remote_probe` calls for two different endpoints,
 ----------------------------------------------------------------------
 Traceback (most recent call last):
-  File "C:\Users\Jason\Documents\Jason\FirmCLI-WIP\BYO-Firmware-MCP\tests\test_remote_probe_smoke.py", line 230, in test_concurrent_registrations_do_not_lose_an_entry
+  File "<redacted-home>\Documents\<redacted-user>\FirmCLI-WIP\BYO-Firmware-MCP\tests\test_remote_probe_smoke.py", line 230, in test_concurrent_registrations_do_not_lose_an_entry
     self.assertEqual(
 AssertionError: Items in the second set but not the first:
 'host-b' : a concurrent registration was silently lost even though its tool call reported 'remote_probe_registered' -- got: {'host-a'}

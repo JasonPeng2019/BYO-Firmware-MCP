@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 import os
+import subprocess
+import sys
 import tempfile
+import time
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -43,6 +46,12 @@ class MonitorStoreRootTests(unittest.TestCase):
         self.assertTrue(token)
         self.assertFalse(app_data.exists())
         self.assertFalse((artifact / paths.OPERATOR_SUBDIR).exists())
+
+        token_path = explicit / paths.SERVER_DATA / "workspace" / paths.TOKEN_FILE
+        token_path.write_bytes(b"\xff")
+        self.assertIsNone(paths.read_workspace_token(store, "workspace"))
+        replacement = paths.workspace_token(store, "workspace")
+        self.assertEqual(paths.read_workspace_token(store, "workspace"), replacement)
 
     def test_explicit_monitor_root_is_buffering_only_when_unusable(self) -> None:
         unusable = self.root / "not-a-directory"
@@ -130,6 +139,79 @@ class MonitorStoreRootTests(unittest.TestCase):
 
         self.assertEqual(store.root, override)
         self.assertFalse(explicit.exists())
+
+
+class MonitorIdentityRaceTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self._temporary = tempfile.TemporaryDirectory(prefix="byo-monitor-identity-race-")
+        self.root = Path(self._temporary.name)
+        self.addCleanup(self._temporary.cleanup)
+
+    def _race(self, expression: str, *, workers: int = 12) -> list[str]:
+        shared = self.root / "shared"
+        rendezvous = self.root / "rendezvous"
+        rendezvous.mkdir()
+        start = rendezvous / "start"
+        script = ";".join(
+            (
+                "import os,sys,time",
+                "from pathlib import Path",
+                "sys.path.insert(0, 'src')",
+                "from pyocd_debug_mcp.monitor import paths",
+                f"root=Path({str(shared)!r})",
+                f"rendezvous=Path({str(rendezvous)!r})",
+                "paths._reset_cache(root)",
+                "(rendezvous / f'ready-{os.getpid()}').write_text('')",
+                f"start=Path({str(start)!r})",
+                'exec("while not start.exists():\\n time.sleep(0.001)")',
+                f"print({expression}, flush=True)",
+            )
+        )
+        repository = Path(__file__).resolve().parents[1]
+        children = [
+            subprocess.Popen(
+                [sys.executable, "-c", script],
+                cwd=repository,
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+            )
+            for _ in range(workers)
+        ]
+        try:
+            deadline = time.monotonic() + 20.0
+            while len(list(rendezvous.glob("ready-*"))) != workers:
+                if time.monotonic() >= deadline:
+                    self.fail("identity-race workers did not reach the start barrier")
+                time.sleep(0.01)
+            start.write_text("go", encoding="ascii")
+            outputs: list[str] = []
+            for child in children:
+                stdout, stderr = child.communicate(timeout=30)
+                self.assertEqual(child.returncode, 0, stderr)
+                outputs.append(stdout.strip())
+            return outputs
+        finally:
+            for child in children:
+                if child.poll() is None:
+                    child.kill()
+                    child.wait(timeout=5)
+
+    def test_deployment_salt_first_use_is_one_cross_process_identity(self) -> None:
+        outputs = self._race("paths.deployment_salt().hex()")
+        self.assertEqual(len(set(outputs)), 1)
+        salt = self.root / "shared" / paths.SALT_FILE
+        self.assertEqual(salt.read_bytes().hex(), outputs[0])
+        if os.name == "posix":
+            self.assertEqual(salt.stat().st_mode & 0o777, 0o600)
+
+    def test_workspace_token_first_use_is_one_cross_process_identity(self) -> None:
+        outputs = self._race("paths.workspace_token(paths.resolve_store_root(), 'workspace')")
+        self.assertEqual(len(set(outputs)), 1)
+        token = self.root / "shared" / paths.SERVER_DATA / "workspace" / paths.TOKEN_FILE
+        self.assertEqual(token.read_text(encoding="ascii"), outputs[0])
+        if os.name == "posix":
+            self.assertEqual(token.stat().st_mode & 0o777, 0o600)
 
 
 if __name__ == "__main__":

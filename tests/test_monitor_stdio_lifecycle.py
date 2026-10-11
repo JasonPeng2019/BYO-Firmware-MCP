@@ -13,6 +13,7 @@ import json
 import os
 import shutil
 import subprocess
+import sys
 import tempfile
 import time
 import unittest
@@ -94,8 +95,16 @@ class StdioServer:
         environment[MONITOR_ROOT_ENV] = str(monitor_root())
         if extra_environment is not None:
             environment.update(extra_environment)
+        launcher = Path(sys.executable).with_name(
+            "pyocd-debug-mcp.exe" if os.name == "nt" else "pyocd-debug-mcp"
+        )
+        default_command = (
+            [str(launcher)]
+            if launcher.is_file()
+            else [sys.executable, "-m", "pyocd_debug_mcp.server"]
+        )
         self.proc = subprocess.Popen(
-            command or ["uv", "run", "--project", str(SERVER_PROJECT), "pyocd-debug-mcp"],
+            command or default_command,
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
@@ -442,15 +451,38 @@ class ProfessionalBuildOverTheProtocol(LifecycleTestCase):
 
     def setUp(self) -> None:
         super().setUp()
-        self.profile = SERVER_PROJECT / "src" / "pyocd_debug_mcp" / "monitor" / "build_profile.py"
-        self.original = self.profile.read_text(encoding="utf-8")
-        self.profile.write_text(
-            self.original.replace(
+        self.professional_tree = tempfile.TemporaryDirectory(prefix="byo-professional-build-")
+        self.addCleanup(self.professional_tree.cleanup)
+        source_root = Path(self.professional_tree.name) / "src"
+        package = source_root / "pyocd_debug_mcp"
+        shutil.copytree(
+            SERVER_PROJECT / "src" / "pyocd_debug_mcp",
+            package,
+            ignore=shutil.ignore_patterns("__pycache__", "*.pyc"),
+        )
+        profile = package / "monitor" / "build_profile.py"
+        profile.write_text(
+            profile.read_text(encoding="utf-8").replace(
                 "NARRATIVE_LOGGING: bool = True", "NARRATIVE_LOGGING: bool = False"
             ),
             encoding="utf-8",
         )
-        self.addCleanup(self.profile.write_text, self.original, "utf-8")
+        python_path = os.environ.get("PYTHONPATH")
+        self.professional_environment = {
+            # Provider descendants may briefly outlive the stdio parent while
+            # teardown begins. Keep them from racing TemporaryDirectory cleanup
+            # by writing import caches into the copied source tree.
+            "PYTHONDONTWRITEBYTECODE": "1",
+            "PYTHONPATH": (
+                str(source_root) if not python_path else str(source_root) + os.pathsep + python_path
+            ),
+        }
+
+    def _server(self) -> StdioServer:
+        return StdioServer(
+            command=[sys.executable, "-m", "pyocd_debug_mcp.server"],
+            extra_environment=self.professional_environment,
+        )
 
     def _tool_names(self, server: "StdioServer") -> set[str]:
         server.send({"jsonrpc": "2.0", "id": 90, "method": "tools/list", "params": {}})
@@ -458,7 +490,7 @@ class ProfessionalBuildOverTheProtocol(LifecycleTestCase):
         return {tool["name"] for tool in response["result"]["tools"]}
 
     def test_checkin_is_absent_and_report_tool_refuses(self) -> None:
-        server = StdioServer()
+        server = self._server()
         self.addCleanup(server.kill)
         server.initialize()
         names = self._tool_names(server)
@@ -468,7 +500,7 @@ class ProfessionalBuildOverTheProtocol(LifecycleTestCase):
         self.assertIn("server_health_check", names)
 
     def test_health_declares_the_build_profile(self) -> None:
-        server = StdioServer()
+        server = self._server()
         self.addCleanup(server.kill)
         server.initialize()
         response = server.call("server_health_check", {})

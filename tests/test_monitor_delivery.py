@@ -8,6 +8,7 @@ nothing ever left the machine.
 from __future__ import annotations
 
 import json
+import os
 import threading
 import time
 import unittest
@@ -49,9 +50,95 @@ class TransportStates(MonitorTestCase):
         result = transport.send_report({"report_id": "rpt-1", "title": "x"})
         self.assertFalse(result.is_durable_off_box)
 
+        escaped = transport.send_report({"report_id": "../../outside", "title": "x"})
+        self.assertIs(escaped.state, DeliveryState.FAILED)
+        assert store.simulated_remote is not None
+        self.assertFalse((store.simulated_remote / "outside.json").exists())
+
     def test_test_transport_can_fail_always(self) -> None:
         transport = TestTransport(fail_always=True)
         self.assertIs(transport.send_files([]).state, DeliveryState.FAILED)
+
+    def test_filler_ack_follows_file_replace_and_directory_fsync(self) -> None:
+        import os
+        from unittest.mock import patch
+
+        from pyocd_debug_mcp.monitor.transport import _fsync_directory
+
+        store = resolve_store_root()
+        ledger = SegmentLedger(store, "ws", "run-durable")
+        add_snapshot(ledger)
+        sealed = ledger.seal()
+        assert sealed is not None
+        transport = SimulatedRemoteTransport(store.simulated_remote, "ws")
+        transport._client = False
+        original_fsync = os.fsync
+        original_replace = os.replace
+
+        for label, send in (
+            ("segment", lambda: transport.send_files([(sealed.identity, sealed.path)])),
+            (
+                "report",
+                lambda: transport.send_report({"report_id": "rpt-durable", "title": "x"}),
+            ),
+        ):
+            events: list[str] = []
+            synced_directories = []
+
+            def file_fsync(descriptor: int) -> None:
+                events.append("file-fsync")
+                original_fsync(descriptor)
+
+            def replace(source, destination) -> None:  # type: ignore[no-untyped-def]
+                events.append("replace")
+                original_replace(source, destination)
+
+            def directory_fsync(directory) -> None:  # type: ignore[no-untyped-def]
+                events.append("directory-fsync")
+                synced_directories.append(directory)
+                _fsync_directory(directory)
+
+            with (
+                self.subTest(label=label),
+                patch("pyocd_debug_mcp.monitor.transport.os.fsync", side_effect=file_fsync),
+                patch("pyocd_debug_mcp.monitor.transport.os.replace", side_effect=replace),
+                patch(
+                    "pyocd_debug_mcp.monitor.transport._fsync_directory",
+                    side_effect=directory_fsync,
+                ),
+            ):
+                result = send()
+                self.assertIn("file-fsync", events)
+                self.assertLess(events.index("file-fsync"), events.index("replace"))
+                self.assertIn("directory-fsync", events[events.index("replace") + 1 :])
+                self.assertTrue(result.acked)
+                destination = (
+                    store.simulated_remote / "ws" / ("ledger" if label == "segment" else "reports")
+                )
+                self.assertIn(destination.parent, synced_directories)
+                self.assertIn(destination, synced_directories)
+                if label == "segment":
+                    self.assertIn(destination.parent.parent, synced_directories)
+
+    def test_filler_does_not_ack_when_destination_directory_fsync_fails(self) -> None:
+        from unittest.mock import patch
+
+        store = resolve_store_root()
+        ledger = SegmentLedger(store, "ws", "run-fsync-failure")
+        add_snapshot(ledger)
+        sealed = ledger.seal()
+        assert sealed is not None
+        transport = SimulatedRemoteTransport(store.simulated_remote, "ws")
+        transport._client = False
+
+        with patch(
+            "pyocd_debug_mcp.monitor.transport._fsync_directory",
+            side_effect=OSError("directory fsync failed"),
+        ):
+            segment = transport.send_files([(sealed.identity, sealed.path)])
+            report = transport.send_report({"report_id": "rpt-fsync-failure", "title": "x"})
+        self.assertFalse(segment.acked)
+        self.assertFalse(report.acked)
 
 
 class SentryEnvelopeMapping(unittest.TestCase):
@@ -100,9 +187,7 @@ class SelfDrainingSpool(MonitorTestCase):
 
     def test_ack_deletes_the_local_copy(self) -> None:
         sealed = self._sealed()
-        service = DeliveryService(
-            self.store, "ws", "run-1", TestTransport(), None
-        )
+        service = DeliveryService(self.store, "ws", "run-1", TestTransport(), None)
         service.enqueue_segments([sealed])
         service.start()
         self.addCleanup(service.stop)
@@ -116,9 +201,7 @@ class SelfDrainingSpool(MonitorTestCase):
 
     def test_unacked_file_is_never_deleted(self) -> None:
         sealed = self._sealed()
-        service = DeliveryService(
-            self.store, "ws", "run-1", TestTransport(fail_always=True), None
-        )
+        service = DeliveryService(self.store, "ws", "run-1", TestTransport(fail_always=True), None)
         service.drain_for_closeout([sealed], budget=1.0)
         self.assertTrue(sealed.path.exists())
 
@@ -132,11 +215,53 @@ class SelfDrainingSpool(MonitorTestCase):
         self.assertEqual(len(copies), 1)
 
     def test_delivery_progress_is_durable(self) -> None:
+        import os
+        from unittest.mock import patch
+
+        from pyocd_debug_mcp.monitor.delivery import _fsync_directory
+
         sealed = self._sealed()
         service = DeliveryService(self.store, "ws", "run-1", TestTransport(), None)
         service.drain_for_closeout([sealed], budget=5.0)
         state = json.loads((self.server_data / "delivery_state.json").read_text())
         self.assertIn(sealed.identity, state["acked"])
+
+        calls: list[str] = []
+        original_replace = os.replace
+
+        def replace_then_record(source, destination) -> None:
+            calls.append("replace")
+            original_replace(source, destination)
+
+        def sync_then_record(directory) -> None:
+            calls.append("directory-fsync")
+            _fsync_directory(directory)
+
+        with (
+            patch(
+                "pyocd_debug_mcp.monitor.delivery.os.replace",
+                side_effect=replace_then_record,
+            ),
+            patch(
+                "pyocd_debug_mcp.monitor.delivery._fsync_directory",
+                side_effect=sync_then_record,
+            ),
+        ):
+            self.assertTrue(service._save_state())
+        self.assertEqual(calls, ["replace", "directory-fsync"])
+        self.assertEqual(list(self.server_data.glob(".delivery_state.json.*.tmp")), [])
+
+    def test_two_services_merge_shared_delivery_progress(self) -> None:
+        first = DeliveryService(self.store, "ws-a", "run-a", TestTransport(), None)
+        second = DeliveryService(self.store, "ws-b", "run-b", TestTransport(), None)
+        first._acked.add("rpt-a")
+        second._acked.add("rpt-b")
+
+        self.assertTrue(first._save_state())
+        self.assertTrue(second._save_state())
+
+        state = json.loads((self.server_data / "delivery_state.json").read_text())
+        self.assertEqual(set(state["acked"]), {"rpt-a", "rpt-b"})
 
     def test_recovery_does_not_resend_acked_content(self) -> None:
         import time
@@ -164,6 +289,24 @@ class SelfDrainingSpool(MonitorTestCase):
         self.assertEqual(transport.sent_files, [pending.identity])
         self.assertNotIn(acked.identity, transport.sent_files)
 
+        # A second live process must never treat another process's open tail as
+        # prior-run recovery material. The OS lease is released by seal, at
+        # which point the complete segment becomes eligible.
+        live = SegmentLedger(self.store, "ws", "run-live-concurrent")
+        add_snapshot(live, total=300)
+        observer = DeliveryService(self.store, "ws", "run-observer", TestTransport(), None)
+        self.assertNotIn(
+            file_identity("ws", "run-live-concurrent", 1),
+            {identity for identity, _path in observer._prior_run_files()},
+        )
+        add_snapshot(live, total=400)
+        live_segment = live.seal()
+        assert live_segment is not None
+        self.assertIn(
+            live_segment.identity,
+            {identity for identity, _path in observer._prior_run_files()},
+        )
+
     def test_resend_is_tolerated_and_identity_is_stable(self) -> None:
         """Crash timing can always produce a resend, so identity must be stable."""
 
@@ -180,9 +323,7 @@ class SelfDrainingSpool(MonitorTestCase):
         self.assertEqual(transport.sent_files.count(sealed.identity), 2)
 
     def test_identity_is_stable_for_receiver_dedup(self) -> None:
-        self.assertEqual(
-            file_identity("ws", "run-1", 1), file_identity("ws", "run-1", 1)
-        )
+        self.assertEqual(file_identity("ws", "run-1", 1), file_identity("ws", "run-1", 1))
 
 
 class ReportDeleteOnACK(MonitorTestCase):
@@ -227,9 +368,11 @@ class ReportDeleteOnACK(MonitorTestCase):
 
             # With the delete patched out, the file should still exist
             # (this is what would happen if the implementation didn't delete)
-            self.assertTrue(report_file.exists(),
-                           "Falsification: file should NOT be deleted when unlink is patched"
-                           " (proving real test catches deletion)")
+            self.assertTrue(
+                report_file.exists(),
+                "Falsification: file should NOT be deleted when unlink is patched"
+                " (proving real test catches deletion)",
+            )
 
     def test_report_file_is_deleted_from_disk_once_acked(self) -> None:
         """Report file is deleted from disk once ACKed by the transport."""
@@ -261,8 +404,83 @@ class ReportDeleteOnACK(MonitorTestCase):
 
         self.assertFalse(report_file.exists(), "Report file should be deleted after ACK")
 
+        # One corrupt recovery body must not abort later valid-body recovery.
+        corrupt = report_dir / "rpt-a-corrupt.json"
+        deeply_nested = report_dir / "rpt-b-deeply-nested.json"
+        traversal = report_dir / "rpt-c-traversal.json"
+        recoverable = report_dir / "rpt-z-recoverable.json"
+        corrupt.write_bytes(b"\xff")
+        deeply_nested.write_text("[" * 20_000 + "]" * 20_000, encoding="utf-8")
+        traversal.write_text(
+            json.dumps({"report_id": "../../../../outside", "session_id": "prior"}),
+            encoding="utf-8",
+        )
+        recoverable.write_text(
+            json.dumps({"report_id": "rpt-z-recoverable", "session_id": "prior"}),
+            encoding="utf-8",
+        )
+        recovery_transport = TestTransport()
+        recovery = DeliveryService(self.store, "ws", "run-recovery", recovery_transport, None)
+        recovery.start()
+        self.addCleanup(recovery.stop)
+        recovery.enqueue_bootup()
+        for _ in range(200):
+            if not recoverable.exists():
+                break
+            time.sleep(0.02)
+        self.assertFalse(recoverable.exists())
+        self.assertTrue(corrupt.exists())
+        self.assertTrue(deeply_nested.exists())
+        self.assertTrue(traversal.exists())
+        self.assertFalse((self.store_dir.parent / "outside.json").exists())
+
+        # A parseable body can still fail transport serialization. It must stay
+        # resident without preventing a later valid sibling from draining.
+        surrogate = report_dir / "rpt-surrogate.json"
+        later = report_dir / "rpt-valid-after-surrogate.json"
+        surrogate.write_text(
+            '{"report_id":"rpt-surrogate","session_id":"prior","title":"\\ud800"}',
+            encoding="utf-8",
+        )
+        later.write_text(
+            json.dumps({"report_id": "rpt-valid-after-surrogate", "session_id": "prior"}),
+            encoding="utf-8",
+        )
+        simulated = DeliveryService(
+            self.store,
+            "ws",
+            "run-simulated-recovery",
+            SimulatedRemoteTransport(self.store.simulated_remote, "ws"),
+            None,
+        )
+        simulated.start()
+        self.addCleanup(simulated.stop)
+        simulated.enqueue_bootup()
+        for _ in range(200):
+            if not later.exists():
+                break
+            time.sleep(0.02)
+        self.assertTrue(surrogate.exists())
+        self.assertFalse(later.exists())
+
+        # A pre-bind worker may ACK after bind has moved its durable body. Its
+        # relocation record must delete the moved copy, not only the obsolete
+        # unbound source pathname.
+        moved_report = {"report_id": "rpt-late-prebind-ack", "session_id": "run-1"}
+        unbound = self.server_data / "unbound" / "reports" / "rpt-late-prebind-ack.json"
+        relocated = self.server_data / "ws" / "reports" / "rpt-late-prebind-ack.json"
+        unbound.parent.mkdir(parents=True, exist_ok=True)
+        unbound.write_text(json.dumps(moved_report), encoding="utf-8")
+        os.replace(unbound, relocated)
+        late = DeliveryService(self.store, "unbound", "run-1", TestTransport(), None)
+        late.track_report_relocation("rpt-late-prebind-ack", relocated)
+        late._send_report(moved_report, source_path=unbound)
+        self.assertFalse(relocated.exists())
+
     def test_report_file_is_not_deleted_before_ack(self) -> None:
         """Report file is not deleted if send fails or is not yet acknowledged."""
+
+        from unittest.mock import patch
 
         transport = TestTransport(fail_always=True)
         service = DeliveryService(self.store, "ws", "run-1", transport, None)
@@ -293,6 +511,14 @@ class ReportDeleteOnACK(MonitorTestCase):
 
         # Since the send failed (fail_always=True), the file should still exist
         self.assertTrue(report_file.exists(), "Report file should survive a failed send")
+
+        acknowledged = DeliveryService(self.store, "ws", "run-2", TestTransport(), None)
+        with patch.object(acknowledged, "_save_state", return_value=False):
+            acknowledged._send_report(report)
+        self.assertTrue(
+            report_file.exists(),
+            "Report file should survive when its acknowledgement cannot be persisted",
+        )
 
     def test_report_file_is_not_deleted_before_ack_falsified(self) -> None:
         """Falsification: patch _send_report to delete unconditionally.
@@ -328,9 +554,7 @@ class ReportDeleteOnACK(MonitorTestCase):
             """Buggy version that deletes regardless of ACK."""
             original_send_report(report_dict)
             # Bug: delete the file unconditionally (regardless of ACK)
-            identity = str(
-                report_dict.get("report_id") or report_dict.get("summary_id") or ""
-            )
+            identity = str(report_dict.get("report_id") or report_dict.get("summary_id") or "")
             if identity:
                 server_data = service._store.server_data
                 if server_data is not None:
@@ -350,9 +574,11 @@ class ReportDeleteOnACK(MonitorTestCase):
                 time.sleep(0.02)
 
         # With the buggy version, file would be deleted even though send failed
-        self.assertFalse(report_file.exists(),
-                        "Falsification: file was deleted unconditionally by buggy _send_report"
-                        " (proving real test catches the bug)")
+        self.assertFalse(
+            report_file.exists(),
+            "Falsification: file was deleted unconditionally by buggy _send_report"
+            " (proving real test catches the bug)",
+        )
 
 
 class DeliveryStatePruning(MonitorTestCase):
@@ -385,7 +611,7 @@ class DeliveryStatePruning(MonitorTestCase):
         self.assertIn(fake_identity, state["acked"])
 
         # Patch _prune_acked to do nothing (disable pruning)
-        with mock.patch.object(service, '_prune_acked', return_value=None):
+        with mock.patch.object(service, "_prune_acked", return_value=None):
             # Add entries to trigger the pruning boundary
             for i in range(210):
                 ledger = SegmentLedger(self.store, "ws", f"run-falsify-{i:03d}")
@@ -399,9 +625,10 @@ class DeliveryStatePruning(MonitorTestCase):
         # With pruning disabled, the fake entry should still be there
         state = json.loads(state_file.read_text())
         self.assertIn(
-            fake_identity, state["acked"],
+            fake_identity,
+            state["acked"],
             "Falsification: entry should NOT be pruned when _prune_acked is patched"
-            " (proving real test catches pruning)"
+            " (proving real test catches pruning)",
         )
 
     def test_segment_acked_entry_is_pruned_when_file_is_gone(self) -> None:
@@ -427,10 +654,9 @@ class DeliveryStatePruning(MonitorTestCase):
         state = json.loads(state_file.read_text())
         self.assertIn(fake_identity, state["acked"])
 
-        # Now create and deliver real segments to trigger pruning via _save_state.
-        # We need to cross the DELIVERY_STATE_PRUNE_INTERVAL boundary (200 entries).
-        # Add entries until we hit and pass the 200 boundary to trigger pruning.
-        for i in range(210):
+        # Reach 199 persisted entries, then add two acknowledgements in one
+        # save. The 199 -> 201 jump must still cross the 200-entry boundary.
+        for i in range(198):
             # Create a ledger for each segment
             ledger = SegmentLedger(self.store, "ws", f"run-{i:03d}")
             add_snapshot(ledger)
@@ -441,11 +667,20 @@ class DeliveryStatePruning(MonitorTestCase):
             service._acked.add(sealed.identity)
             service._save_state()
 
+        for i in range(198, 200):
+            ledger = SegmentLedger(self.store, "ws", f"run-{i:03d}")
+            add_snapshot(ledger)
+            sealed = ledger.seal()
+            assert sealed is not None
+            service._acked.add(sealed.identity)
+        service._save_state()
+
         # After hitting the prune boundary, the fake entry should be removed
         state = json.loads(state_file.read_text())
         self.assertNotIn(
-            fake_identity, state["acked"],
-            "Segment entry should be pruned when file is confirmed absent"
+            fake_identity,
+            state["acked"],
+            "Segment entry should be pruned when file is confirmed absent",
         )
 
     def test_acked_entry_is_never_pruned_if_file_still_exists_falsified(self) -> None:
@@ -474,8 +709,9 @@ class DeliveryStatePruning(MonitorTestCase):
 
         # Patch _identity_file_exists to lie and say the file doesn't exist
         with mock.patch.object(
-            service, '_identity_file_exists',
-            return_value=False  # Lie: pretend file is absent
+            service,
+            "_identity_file_exists",
+            return_value=False,  # Lie: pretend file is absent
         ):
             # Add entries to cross the pruning boundary
             for i in range(210):
@@ -492,9 +728,10 @@ class DeliveryStatePruning(MonitorTestCase):
         state_file = self.server_data / "delivery_state.json"
         state = json.loads(state_file.read_text())
         self.assertNotIn(
-            sealed.identity, state["acked"],
+            sealed.identity,
+            state["acked"],
             "Falsification: entry was pruned even though file still exists"
-            " when existence check was bypassed (proving real test catches regression)"
+            " when existence check was bypassed (proving real test catches regression)",
         )
 
     def test_acked_entry_is_never_pruned_if_file_still_exists(self) -> None:
@@ -538,8 +775,9 @@ class DeliveryStatePruning(MonitorTestCase):
         state_file = self.server_data / "delivery_state.json"
         state = json.loads(state_file.read_text())
         self.assertIn(
-            sealed.identity, state["acked"],
-            "Entry should never be pruned while file exists (crash-window protection)"
+            sealed.identity,
+            state["acked"],
+            "Entry should never be pruned while file exists (crash-window protection)",
         )
 
     def test_report_identity_is_checked_across_all_workspace_directories_falsified(self) -> None:
@@ -583,7 +821,7 @@ class DeliveryStatePruning(MonitorTestCase):
                 return False
             return (server_data / service._workspace / "reports" / f"{identity}.json").exists()
 
-        with mock.patch.object(service, '_identity_file_exists', side_effect=scoped_check_only):
+        with mock.patch.object(service, "_identity_file_exists", side_effect=scoped_check_only):
             # Add entries to trigger pruning
             for i in range(210):
                 ledger = SegmentLedger(self.store, "ws-1", f"run-falsify-{i:03d}")
@@ -598,9 +836,10 @@ class DeliveryStatePruning(MonitorTestCase):
         state_file = self.server_data / "delivery_state.json"
         state = json.loads(state_file.read_text())
         self.assertNotIn(
-            report_id, state["acked"],
+            report_id,
+            state["acked"],
             "Falsification: report was pruned when checking only self._workspace"
-            " (proving real test catches multi-workspace check)"
+            " (proving real test catches multi-workspace check)",
         )
 
     def test_report_identity_is_checked_across_all_workspace_directories(self) -> None:
@@ -647,8 +886,9 @@ class DeliveryStatePruning(MonitorTestCase):
         # Entry should NOT be pruned because it still exists in ws-2 and ws-3
         state = json.loads(state_file.read_text())
         self.assertIn(
-            report_id, state["acked"],
-            "Report entry should not be pruned while file exists in any workspace"
+            report_id,
+            state["acked"],
+            "Report entry should not be pruned while file exists in any workspace",
         )
 
         # Now delete from all workspaces
@@ -668,8 +908,9 @@ class DeliveryStatePruning(MonitorTestCase):
         # Now it should be pruned
         state = json.loads(state_file.read_text())
         self.assertNotIn(
-            report_id, state["acked"],
-            "Report entry should be pruned once absent from all workspaces"
+            report_id,
+            state["acked"],
+            "Report entry should be pruned once absent from all workspaces",
         )
 
 
@@ -706,6 +947,7 @@ class AStuckSenderIsInvisible(MonitorTestCase):
             transport=self.transport, usage_snapshot_every=2, checkin_every=99
         )
         monitor.bind_workspace(None)
+        self.assertIs(monitor._transport, self.transport)
         monitor.boot()  # queues a bootup drain that will wedge immediately
 
         started = time.monotonic()
@@ -821,6 +1063,9 @@ class ClosingOut(MonitorTestCase):
                 time.sleep(30)
                 return super().send_report(report)
 
+            def close(self) -> None:
+                time.sleep(30)
+
         service = DeliveryService(store, "ws", "run-1", HangingTransport(), None)
         service.start()
         # Occupy the daemon thread in a hanging send before measuring, so
@@ -881,9 +1126,7 @@ class ClosingOut(MonitorTestCase):
         transport._client = False  # simulate an unusable SDK
         result = transport.send_report({"report_id": "rpt-nosdk", "title": "x"})
         self.assertIs(result.state, DeliveryState.FILLER_SIMULATED)
-        self.assertTrue(
-            (store.simulated_remote / "ws" / "reports" / "rpt-nosdk.json").exists()
-        )
+        self.assertTrue((store.simulated_remote / "ws" / "reports" / "rpt-nosdk.json").exists())
 
     def test_no_transport_configured_still_reports_state(self) -> None:
         service = DeliveryService(resolve_store_root(), "ws", "run-1", NullTransport(), None)

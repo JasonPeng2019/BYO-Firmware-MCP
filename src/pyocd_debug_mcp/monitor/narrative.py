@@ -169,6 +169,8 @@ def validate_issue_form(form: Any) -> tuple[dict[str, Any], Signal]:
             raise ValueError(
                 f"{signal.value} requires signal_subcase to be one of {list(required)}"
             )
+    elif model.signal_subcase is not None:
+        raise ValueError(f"{signal.value} does not accept signal_subcase")
     return model.model_dump(mode="json"), signal
 
 

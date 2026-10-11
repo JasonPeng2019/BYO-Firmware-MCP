@@ -4,5 +4,5 @@ P1 stopped at its real CMSIS-Pack continuation. P2 then superseded it in the sam
 
 Reports:
 
-- [HIL_RESULTS.md](C:/Users/Jason/Documents/Jason/FirmCLI_Tester/Firmware-Test-Manual/MCP-Trial-3/BYO-Firmware-MCP/testing_folder/HIL_RESULTS.md)
-- [final-clean-run-summary.md](C:/Users/Jason/Documents/Jason/FirmCLI_Tester/Firmware-Test-Manual/MCP-Trial-3/BYO-Firmware-MCP/testing_folder/agent/final-clean-run-summary.md)
+- [HIL_RESULTS.md](<redacted-home>/Documents/<redacted-user>/FirmCLI_Tester/Firmware-Test-Manual/MCP-Trial-3/BYO-Firmware-MCP/testing_folder/HIL_RESULTS.md)
+- [final-clean-run-summary.md](<redacted-home>/Documents/<redacted-user>/FirmCLI_Tester/Firmware-Test-Manual/MCP-Trial-3/BYO-Firmware-MCP/testing_folder/agent/final-clean-run-summary.md)

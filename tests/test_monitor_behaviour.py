@@ -7,11 +7,20 @@ detection and reporting that unit tests of each component cannot reach.
 from __future__ import annotations
 
 import unittest
+import json
+import shutil
+import threading
+import time
+from dataclasses import replace
 from datetime import datetime, timedelta, timezone
-from pathlib import Path
 
 from pyocd_debug_mcp.monitor.block import Anchor, BlockState
-from pyocd_debug_mcp.monitor.monitor import CHECKIN_PROMPT, IssueMonitor, NullMonitor
+from pyocd_debug_mcp.monitor.monitor import (
+    CHECKIN_PROMPT,
+    ArtifactPersistence,
+    IssueMonitor,
+    NullMonitor,
+)
 from pyocd_debug_mcp.monitor.paths import StoreRoot, StoreState
 from pyocd_debug_mcp.monitor.trail import TRAIL_MAX_EVENTS
 from pyocd_debug_mcp.monitor.transport import TestTransport
@@ -21,7 +30,10 @@ from tests.monitor_support import MonitorTestCase, make_context
 class ReportingThroughTheMonitor(MonitorTestCase):
     def setUp(self) -> None:
         super().setUp()
-        self.monitor = self.make_monitor(transport=TestTransport())
+        # These tests inspect durable report bodies. TestTransport acknowledges
+        # reports without retaining a disk copy, so a delivery-thread race can
+        # otherwise remove the only readable file before the assertion.
+        self.monitor = self.make_monitor()
         self.monitor.bind_workspace(None)
 
     def observe_failure(self, tool: str = "read_memory", exc: BaseException | None = None):
@@ -36,6 +48,148 @@ class ReportingThroughTheMonitor(MonitorTestCase):
         self.assertEqual(len(defects), 1)
         self.assertEqual(defects[0]["signal_type"], "S-1")
         self.assertEqual(defects[0]["origin"], "server-auto")
+
+    def test_report_body_replacement_is_atomic_and_cleans_failed_temporary(self) -> None:
+        import os
+
+        from unittest.mock import patch
+
+        from pyocd_debug_mcp.monitor.monitor import _fsync_directory
+
+        identity = "rpt-atomic-regression"
+        creation_syncs = []
+
+        def record_creation_sync(directory) -> None:  # type: ignore[no-untyped-def]
+            creation_syncs.append(directory)
+            _fsync_directory(directory)
+
+        with patch(
+            "pyocd_debug_mcp.monitor.monitor._fsync_directory",
+            side_effect=record_creation_sync,
+        ):
+            self.assertIs(
+                self.monitor._write_artifact_file({"report_id": identity, "generation": 1}),
+                ArtifactPersistence.PERSISTED,
+            )
+        path = self.server_data / self.monitor._workspace / "reports" / f"{identity}.json"
+        self.assertIn(path.parent.parent, creation_syncs)
+        self.assertIn(path.parent, creation_syncs)
+        original = path.read_bytes()
+
+        with patch(
+            "pyocd_debug_mcp.monitor.monitor.os.replace",
+            side_effect=OSError("simulated interruption before atomic replacement"),
+        ):
+            self.assertIs(
+                self.monitor._write_artifact_file({"report_id": identity, "generation": 2}),
+                ArtifactPersistence.FAILED,
+            )
+
+        self.assertEqual(path.read_bytes(), original)
+        self.assertEqual(list(path.parent.glob(f".{identity}.*.tmp")), [])
+
+        calls: list[str] = []
+        original_replace = os.replace
+
+        def replace_then_record(source: str, destination: str) -> None:
+            if destination == path:
+                calls.append("replace")
+            original_replace(source, destination)
+
+        def sync_then_record(directory) -> None:
+            if directory == path.parent:
+                calls.append("directory-fsync")
+            _fsync_directory(directory)
+
+        with (
+            patch(
+                "pyocd_debug_mcp.monitor.monitor.os.replace",
+                side_effect=replace_then_record,
+            ),
+            patch(
+                "pyocd_debug_mcp.monitor.monitor._fsync_directory",
+                side_effect=sync_then_record,
+            ),
+        ):
+            self.assertIs(
+                self.monitor._write_artifact_file({"report_id": identity, "generation": 3}),
+                ArtifactPersistence.PERSISTED,
+            )
+        self.assertEqual(calls, ["replace", "directory-fsync"])
+
+        with patch(
+            "pyocd_debug_mcp.monitor.monitor._fsync_directory",
+            side_effect=OSError("simulated post-replace directory sync failure"),
+        ):
+            self.assertIs(
+                self.monitor._write_artifact_file({"report_id": identity, "generation": 4}),
+                ArtifactPersistence.UNCERTAIN,
+            )
+        self.assertEqual(json.loads(path.read_text(encoding="utf-8"))["generation"], 4)
+
+    def test_report_helper_waits_for_each_local_report_to_be_remote(self) -> None:
+        old_remote = self.simulated_remote / "workspace" / "reports" / "rpt-old.json"
+        new_local = self.server_data / "workspace" / "reports" / "rpt-new.json"
+        old_remote.parent.mkdir(parents=True, exist_ok=True)
+        new_local.parent.mkdir(parents=True, exist_ok=True)
+        old_remote.write_text(json.dumps({"report_id": "rpt-old"}), encoding="utf-8")
+        new_local.write_text(json.dumps({"report_id": "rpt-new"}), encoding="utf-8")
+
+        def deliver_new() -> None:
+            time.sleep(0.03)
+            destination = old_remote.with_name(new_local.name)
+            shutil.copyfile(new_local, destination)
+            new_local.unlink()
+
+        worker = threading.Thread(target=deliver_new)
+        worker.start()
+        try:
+            reports = {path.name: path for path in self.report_files()}
+        finally:
+            worker.join()
+        self.assertEqual(reports["rpt-new.json"].parent, old_remote.parent)
+        self.assertEqual(self.read_report(reports["rpt-new.json"])["report_id"], "rpt-new")
+
+    def test_runtime_error_report_omits_exception_secrets_payloads_and_paths(self) -> None:
+        secret = "SECRET_TOKEN_ABC"
+        windows_path = r"C:\Users\alice\private\fw.elf"
+        payload = "CAFE" * 40
+        self.observe_failure(exc=RuntimeError(f"{secret} {windows_path} {payload}"))
+
+        reports = [self.read_report(path) for path in self.report_files()]
+        self.assertEqual(len(reports), 1)
+        persisted = str(reports[0])
+        self.assertNotIn(secret, persisted)
+        self.assertNotIn("alice", persisted)
+        self.assertNotIn("fw.elf", persisted)
+        self.assertNotIn(payload, persisted)
+        self.assertIn("exception text was omitted", reports[0]["description"])
+
+    def test_same_arguments_cannot_be_correlated_across_persisted_reports(self) -> None:
+        self.observe_failure(exc=RuntimeError("first failure"))
+        self.observe_failure(exc=ValueError("second failure"))
+
+        reports = [self.read_report(path) for path in self.report_files()]
+        self.assertEqual(len(reports), 2)
+        self.assertEqual(len({report["args_fingerprint"] for report in reports}), 2)
+        self.assertNotEqual(reports[0]["trail"][-1]["args_fp"], reports[1]["trail"][-1]["args_fp"])
+
+    def test_raw_connection_identity_never_enters_trail_or_report(self) -> None:
+        raw_connection = "probeid:stlink:SYNTHETIC-CONNECTION-SECRET-1234"
+        context = replace(make_context(), connection_id=lambda board: raw_connection)
+        monitor = self.make_monitor(context=context)
+        monitor.bind_workspace(None)
+        observation = monitor.begin("read_memory", {"board_id": "b1"}, "b1")
+        assert observation is not None
+        observation.failed(RuntimeError("failure"))
+
+        reports = self.report_files()
+        self.assertEqual(len(reports), 1)
+        report = self.read_report(reports[0])
+        persisted = str(report)
+        self.assertNotIn(raw_connection, persisted)
+        self.assertNotIn("SYNTHETIC-CONNECTION-SECRET-1234", persisted)
+        self.assertRegex(str(report["trail"][-1]["connection"]), r"^[0-9a-f]{16}$")
 
     def test_environment_fault_is_tagged_not_a_code_defect(self) -> None:
         from pyocd_debug_mcp.target_errors import ProbeNotFoundError
@@ -131,18 +285,10 @@ class ReportingThroughTheMonitor(MonitorTestCase):
             observation = self.monitor.begin("read_memory", {"board_id": "b1"}, "b1")
             assert observation is not None
             observation.completed("Refused [plan/gate-closed]: Validate first.")
-        thrash = [
-            self.read_report(p)
-            for p in self.report_files()
-            if self.read_report(p)["signal_type"] == "S-2"
-        ]
+        reports = [self.read_report(path) for path in self.report_files()]
+        thrash = [report for report in reports if report["signal_type"] == "S-2"]
         self.assertEqual(len(thrash), 1)
         self.assertEqual(thrash[0]["origin"], "server-thrash-detector")
-
-    def read_report(self, path: Path) -> dict:
-        import json
-
-        return json.loads(path.read_text(encoding="utf-8"))
 
 
 class _TickingMonitor(MonitorTestCase):
@@ -159,7 +305,9 @@ class _TickingMonitor(MonitorTestCase):
     def setUp(self) -> None:
         super().setUp()
         self.monitor = self.make_monitor(
-            transport=TestTransport(),
+            # These tests inspect local segment history; a successful async ACK
+            # may legitimately delete older segments before the assertion.
+            transport=TestTransport(fail_always=True),
             usage_snapshot_every=self.SNAPSHOT_EVERY,
             checkin_every=self.CHECKIN_EVERY,
         )
@@ -398,6 +546,87 @@ class ProfessionalBuildSuppressesTheCheckInPrompt(MonitorTestCase):
 
 
 class GracefulDegradation(MonitorTestCase):
+    def test_uncertain_automatic_summary_is_recovered_only_after_restart(self) -> None:
+        from unittest.mock import patch
+
+        monitor = self.make_monitor(
+            context=make_context(run_id="run-auto-uncertain"),
+            usage_snapshot_every=1,
+        )
+        monitor.bind_workspace(None)
+        report_directory = self.server_data / monitor._workspace / "reports"
+        report_directory.mkdir(parents=True, exist_ok=True)
+        with (
+            patch(
+                "pyocd_debug_mcp.monitor.monitor._fsync_directory",
+                side_effect=OSError("simulated post-publish sync failure"),
+            ),
+            patch.object(monitor._delivery, "enqueue_report") as enqueue,
+        ):
+            observation = monitor.begin("get_state", {"board_id": "b"}, "b")
+            assert observation is not None
+            observation.completed("ok")
+        enqueue.assert_not_called()
+        snapshots = [
+            record
+            for record in self.ledger_records()
+            if record["kind"] == "usage_snapshot" and record["run_id"] == "run-auto-uncertain"
+        ]
+        self.assertEqual(len(snapshots), 1)
+        self.assertEqual(snapshots[0]["detail"]["body_persistence"], "uncertain")
+        self.assertFalse(snapshots[0]["detail"]["delivery_enqueued"])
+        summary_id = snapshots[0]["detail"]["summary_id"]
+        self.assertTrue((report_directory / f"{summary_id}.json").is_file())
+
+        monitor.closeout("simulated-restart")
+        restarted = self.make_monitor(context=make_context(run_id="run-auto-restart"))
+        restarted.bind_workspace(None)
+        recovered = self.simulated_remote / restarted._workspace / "reports" / f"{summary_id}.json"
+        deadline = time.monotonic() + 2.0
+        while not recovered.is_file() and time.monotonic() < deadline:
+            time.sleep(0.01)
+        self.assertTrue(recovered.is_file())
+
+    def test_unpersisted_automatic_bodies_are_disclaimed_and_not_enqueued(self) -> None:
+        from unittest.mock import patch
+
+        scenarios = (("success", 1, "usage_snapshot"), ("failure", 0, "report"))
+        for persistence in (ArtifactPersistence.FAILED, ArtifactPersistence.UNCERTAIN):
+            for outcome, cadence, record_kind in scenarios:
+                with self.subTest(outcome=outcome, persistence=persistence.value):
+                    run_id = f"run-{outcome}-{persistence.value}"
+                    monitor = self.make_monitor(
+                        context=make_context(run_id=run_id),
+                        transport=TestTransport(),
+                        usage_snapshot_every=cadence,
+                    )
+                    monitor.bind_workspace(None)
+                    with (
+                        patch.object(
+                            monitor,
+                            "_write_artifact_file",
+                            return_value=persistence,
+                        ),
+                        patch.object(monitor._delivery, "enqueue_report") as enqueue,
+                    ):
+                        observation = monitor.begin("get_state", {"board_id": "b"}, "b")
+                        assert observation is not None
+                        if outcome == "success":
+                            observation.completed("ok")
+                        else:
+                            observation.failed(RuntimeError("boom"))
+                    enqueue.assert_not_called()
+                    records = [
+                        record
+                        for record in self.ledger_records()
+                        if record["kind"] == record_kind and record["run_id"] == run_id
+                    ]
+                    self.assertEqual(len(records), 1)
+                    self.assertEqual(records[0]["detail"]["body_persistence"], persistence.value)
+                    self.assertFalse(records[0]["detail"]["body_persisted"])
+                    self.assertFalse(records[0]["detail"]["delivery_enqueued"])
+                    monitor.closeout("test")
+
     def test_monitor_degrades_when_the_store_is_unavailable(self) -> None:
         """If monitoring cannot write, tool execution proceeds unchanged."""
 
@@ -632,12 +861,33 @@ class CounterSurvivesBindWorkspace(MonitorTestCase):
         from pyocd_debug_mcp.monitor.transport import TestTransport
 
         monitor = self.make_monitor(
-            transport=TestTransport(),
+            transport=TestTransport(fail_always=True),
             usage_snapshot_every=3,
             checkin_every=99,
         )
-        monitor.bind_workspace(None)
         monitor.boot()
+        prebind_body = {
+            "report_id": "rpt-prebind-migration",
+            "kind": "test",
+            "session_id": monitor._ctx.run_id,
+        }
+        self.assertIs(monitor._write_artifact_file(prebind_body), ArtifactPersistence.PERSISTED)
+        unbound_body = self.server_data / "unbound" / "reports" / "rpt-prebind-migration.json"
+        self.assertTrue(unbound_body.is_file())
+        foreign_body = {
+            "report_id": "rpt-other-prebind-run",
+            "kind": "test",
+            "session_id": "another-live-run",
+        }
+        self.assertIs(monitor._write_artifact_file(foreign_body), ArtifactPersistence.PERSISTED)
+        foreign_unbound = self.server_data / "unbound" / "reports" / "rpt-other-prebind-run.json"
+        conflicting_body = {
+            "report_id": "rpt-prebind-conflict",
+            "kind": "source",
+            "session_id": monitor._ctx.run_id,
+        }
+        self.assertIs(monitor._write_artifact_file(conflicting_body), ArtifactPersistence.PERSISTED)
+        conflicting_unbound = self.server_data / "unbound" / "reports" / "rpt-prebind-conflict.json"
 
         # Make 2 calls
         for _ in range(2):
@@ -650,9 +900,38 @@ class CounterSurvivesBindWorkspace(MonitorTestCase):
 
         # Bind workspace (rebuilds ledger, delivery, etc.)
         import tempfile
+        from pathlib import Path
 
         with tempfile.TemporaryDirectory() as tmpdir:
-            monitor.bind_workspace(tmpdir)
+            project = Path(tmpdir)
+            from pyocd_debug_mcp.monitor import paths
+
+            target_workspace = paths.workspace_id(project)
+            prior_directory = self.server_data / target_workspace
+            prior_directory.mkdir(parents=True, exist_ok=True)
+            (prior_directory / "corrupt-prior.0001.jsonl").write_text(
+                '{"hash":"bad","prev":0}\n', encoding="utf-8"
+            )
+            conflicting_bound = prior_directory / "reports" / "rpt-prebind-conflict.json"
+            conflicting_bound.parent.mkdir(parents=True, exist_ok=True)
+            conflicting_bound.write_text('{"kind":"unrelated"}\n', encoding="utf-8")
+            monitor.bind_workspace(project)
+            self.assertTrue(monitor._bound)
+            self.assertEqual(
+                monitor._verification["corrupt-prior.0001.jsonl"],
+                "chain_invalid",
+            )
+            bound_body = (
+                self.server_data / monitor._workspace / "reports" / "rpt-prebind-migration.json"
+            )
+            self.assertTrue(bound_body.is_file())
+            self.assertFalse(unbound_body.exists())
+            self.assertTrue(foreign_unbound.is_file())
+            self.assertTrue(conflicting_unbound.is_file())
+            self.assertEqual(
+                json.loads(conflicting_bound.read_text(encoding="utf-8"))["kind"],
+                "unrelated",
+            )
 
         # Make 1 more call (total should be 3, cadence should trigger at 3)
         observation = monitor.begin("tool_b", {}, None)

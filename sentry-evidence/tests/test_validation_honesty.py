@@ -55,7 +55,9 @@ class ValidationHonestyTests(unittest.TestCase):
 
         constraints = result.to_payload()["constraints"]
 
-        self.assertTrue(any("enforced by the parent process" in constraint for constraint in constraints))
+        self.assertTrue(
+            any("enforced by the parent process" in constraint for constraint in constraints)
+        )
         self.assertTrue(any("reconnect and revalidate" in constraint for constraint in constraints))
         self.assertFalse(any("best-effort" in constraint for constraint in constraints))
 
@@ -221,9 +223,7 @@ class ValidationHonestyTests(unittest.TestCase):
                 close=Mock(),
             ),
             hooks=ValidationHooks(
-                load_safety_map=lambda _profile: SafetyMapSnapshot(
-                    True, True, "map-digest"
-                ),
+                load_safety_map=lambda _profile: SafetyMapSnapshot(True, True, "map-digest"),
                 stamp_session=stamp,
                 record_mismatch=lambda *_args: False,
             ),
@@ -290,9 +290,7 @@ class ValidationHonestyTests(unittest.TestCase):
                     replacement.append(
                         manager.assign(
                             "board-1",
-                            TargetSessionHandle(
-                                None, None, "replacement-probe", "worker", None
-                            ),
+                            TargetSessionHandle(None, None, "replacement-probe", "worker", None),
                             Mock(name="replacement_runtime"),
                         )
                     )
@@ -305,6 +303,7 @@ class ValidationHonestyTests(unittest.TestCase):
 
             threads = []
             for board_id in ("board-1", "board-2"):
+
                 def try_lock(selected: str = board_id) -> None:
                     lock = manager.lock_for(selected)
                     acquired = lock.acquire(blocking=False)
@@ -592,9 +591,7 @@ class ValidationHonestyTests(unittest.TestCase):
 
         self.assertIs(raised.exception, gate_failure)
         self.assertIsNone(manager.maybe_connection("board-1"))
-        gate.clear.assert_called_once_with(
-            "board-1", "validation connection was not stamped"
-        )
+        gate.clear.assert_called_once_with("board-1", "validation connection was not stamped")
         close_runtime.assert_called_once_with(runtime)
         close_session.assert_called_once_with(handle)
 
@@ -627,7 +624,9 @@ class ValidationHonestyTests(unittest.TestCase):
 
         self.assertIsNone(manager.maybe_connection("board-1"))
         self.assertIs(manager.maybe_connection("board-2"), other)
-        self.assertTrue(any("reset transport lost" in error for error in operation.resources.cleanup_errors))
+        self.assertTrue(
+            any("reset transport lost" in error for error in operation.resources.cleanup_errors)
+        )
         gate.clear.assert_called_once_with(
             "board-1",
             "target connection failed while releasing reset",

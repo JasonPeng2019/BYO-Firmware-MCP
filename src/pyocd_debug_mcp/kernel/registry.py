@@ -18,7 +18,8 @@ from mcp.server.fastmcp import FastMCP
 from mcp.server.fastmcp.exceptions import ToolError
 from mcp.server.lowlevel import NotificationOptions
 from mcp.server.stdio import stdio_server
-from mcp.types import Icon, ToolAnnotations
+from mcp.types import Icon, TextContent, ToolAnnotations
+from pydantic import ValidationError
 
 from pyocd_debug_mcp.kernel.operations import (
     BoardBusyError,
@@ -256,7 +257,10 @@ class RegistryFastMCP(FastMCP):
         self._guarded_dispatch: dict[str, GuardedDispatchPolicy] = {}
         self._layer2_tools: set[str] = set()
         self._json_refusal_tools: set[str] = set()
+        self._json_prehandler_tools: set[str] = set()
+        self._validation_first_tools: set[str] = set()
         self._json_refusal_context: dict[str, JsonRefusalContext] = {}
+        self._exact_json_response_tools: set[str] = set()
         self._operation_resource_binder: OperationResourceBinder | None = None
         self._finalizer_resolver: OperationFinalizerResolver | None = None
         self._monitor: DispatchMonitor | None = None
@@ -311,6 +315,24 @@ class RegistryFastMCP(FastMCP):
         if context is not None:
             self._json_refusal_context[name] = context
 
+    def configure_structured_prehandler_errors(self, name: str) -> None:
+        """Serialize lock/guard failures for one tool with the JSON refusal envelope."""
+
+        self.registry.definition(name)
+        self._json_prehandler_tools.add(name)
+
+    def configure_exact_json_response(self, name: str) -> None:
+        """Keep one handler's first content block as exact, parseable JSON."""
+
+        self.registry.definition(name)
+        self._exact_json_response_tools.add(name)
+
+    def configure_framework_validation_first(self, name: str) -> None:
+        """Validate one strict schema before routing, locks, or board serialization."""
+
+        self.registry.definition(name)
+        self._validation_first_tools.add(name)
+
     def _json_refusal(
         self,
         name: str,
@@ -349,7 +371,7 @@ class RegistryFastMCP(FastMCP):
                     pass
         if context is not None:
             payload.update(dict(context))
-        return json.dumps(payload, sort_keys=True)
+        return json.dumps(payload, sort_keys=True, separators=(",", ":"))
 
     @staticmethod
     def _exception_code(exc: BaseException) -> str:
@@ -433,12 +455,18 @@ class RegistryFastMCP(FastMCP):
 
         board_value = arguments.get("board_id")
         board_id = board_value if isinstance(board_value, str) and board_value else None
+        # A client controls the requested name. Only names resolved against the
+        # registry may cross the mechanical logging boundary; otherwise an
+        # attacker could turn an unknown name into counter keys, trail text, or
+        # a thrash-report title. Dispatch still receives the original value and
+        # therefore preserves FastMCP's public refusal verbatim.
+        observed_name = name if self.registry.is_registered(name) else "unknown-tool"
         observation = None
         monitor = self._monitor
         if monitor is not None:
             try:
-                observation = monitor.begin(name, arguments, board_id)
-            except BaseException:  # noqa: BLE001 - monitoring never alters dispatch
+                observation = monitor.begin(observed_name, arguments, board_id)
+            except Exception:  # noqa: BLE001 - operational monitor failures fail open
                 observation = None
         depth_token = _dispatch_depth.set(_dispatch_depth.get() + 1)
         try:
@@ -451,9 +479,9 @@ class RegistryFastMCP(FastMCP):
             _dispatch_depth.reset(depth_token)
         if observation is not None:
             observation.completed(result)
-        return self._maybe_append_checkin_prompt(result)
+        return self._maybe_append_checkin_prompt(result, name)
 
-    def _maybe_append_checkin_prompt(self, result: Any) -> Any:
+    def _maybe_append_checkin_prompt(self, result: Any, name: str) -> Any:
         """Append a due check-in request to the server's own response.
 
         This is the one place monitoring writes into a tool response instead of
@@ -464,27 +492,46 @@ class RegistryFastMCP(FastMCP):
         """
 
         monitor = self._monitor
-        if monitor is None or _dispatch_depth.get() > 0:
+        exact_json = name in self._exact_json_response_tools
+        if (
+            monitor is None
+            or _dispatch_depth.get() > 0
+            or (exact_json and not isinstance(result, list))
+        ):
             return result
         try:
             prompt = monitor.consume_checkin_prompt()
-        except BaseException:  # noqa: BLE001
+        except Exception:  # noqa: BLE001
             return result
         if not prompt:
             return result
+        if exact_json:
+            # The first content block is a public machine-readable contract.
+            # Deliver the required one-shot monitor prompt as a distinct block
+            # rather than corrupting those canonical JSON bytes or silently
+            # dropping the prompt for exact-JSON tools.
+            return [*result, TextContent(type="text", text=prompt)]
         try:
             for block in result if isinstance(result, list) else ():
                 text = getattr(block, "text", None)
                 if isinstance(text, str):
                     block.text = text + prompt
                     break
-        except BaseException:  # noqa: BLE001 - never damage a real response
+        except Exception:  # noqa: BLE001 - never damage a real response
             return result
         return result
 
     async def _call_tool_inner(  # type: ignore[no-untyped-def]
         self, name: str, arguments: dict[str, Any], board_id: str | None
     ):
+        if name in self._validation_first_tools:
+            tool = self._tool_manager.get_tool(name)
+            if tool is None:
+                raise ToolError(f"Unknown tool: {name}")
+            try:
+                tool.fn_metadata.arg_model.model_validate(arguments)
+            except ValidationError as exc:
+                raise ToolError(f"Error executing tool {name}: {exc}") from exc
         route_guard = self._route_guards.get(name)
         if route_guard is not None:
             if board_id is None:
@@ -521,6 +568,16 @@ class RegistryFastMCP(FastMCP):
         try:
             self.registry.require_unlocked(name, board_id)
         except ToolError as exc:
+            if name in self._json_prehandler_tools:
+                raise ToolError(
+                    self._json_refusal(
+                        name,
+                        board_id,
+                        str(exc),
+                        code="plan/tool-locked",
+                        remedies=(f"Call {name}-plan first.",),
+                    )
+                ) from exc
             if name in self._layer2_tools:
                 raise ToolError(wrap_layer2_response(str(exc))) from exc
             raise
@@ -618,6 +675,22 @@ class RegistryFastMCP(FastMCP):
                 finalizer=finalizer,
             )
         except (OperationTimeoutError, BoardBusyError) as exc:
+            if name in self._json_prehandler_tools:
+                busy = isinstance(exc, BoardBusyError)
+                raise ToolError(
+                    self._json_refusal(
+                        name,
+                        board_id,
+                        str(exc),
+                        code="can/board-busy" if busy else "can/operation-timeout",
+                        remedies=(
+                            "Retry after the active board operation finishes."
+                            if busy
+                            else "Inspect CAN status and cleanup state before retrying.",
+                        ),
+                        context={"ok": False, "status": "refused" if busy else "failed"},
+                    )
+                ) from exc
             message = str(exc)
             if name in self._layer2_tools:
                 message = wrap_layer2_response(message)
@@ -638,6 +711,17 @@ class RegistryFastMCP(FastMCP):
                 raise ToolError(wrap_layer2_response(str(exc))) from exc
             raise
         except Exception as exc:
+            if name in self._json_prehandler_tools:
+                raise ToolError(
+                    self._json_refusal(
+                        name,
+                        board_id,
+                        str(exc),
+                        code=self._exception_code(exc),
+                        remedies=self._exception_remedies(exc),
+                        context=self._exception_context(exc),
+                    )
+                ) from exc
             if name in self._layer2_tools:
                 raise ToolError(wrap_layer2_response(str(exc))) from exc
             raise

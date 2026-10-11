@@ -46,9 +46,7 @@ def parse_finalizer(tool_name: str, value: object) -> OnExitFinalizer | None:
     if value is None:
         return None
     if tool_name not in ELIGIBLE_FINALIZER_TOOLS:
-        raise FinalizerValidationError(
-            f"Tool '{tool_name}' does not accept an on_exit finalizer."
-        )
+        raise FinalizerValidationError(f"Tool '{tool_name}' does not accept an on_exit finalizer.")
     if not isinstance(value, Mapping):
         raise FinalizerValidationError(
             "on_exit must be a structured uart_write or reset_and_run object; shell strings "

@@ -1,0 +1,276 @@
+{
+  "file_count": 62,
+  "files": [
+    {
+      "path": "sentry-evidence/results/HIL_RESULTS.md",
+      "sha256": "d34bf0f3c2d790eeba06b35000cc6458c97673f064d0c5f2ab4e8c8bc35b7cda"
+    },
+    {
+      "path": "sentry-evidence/results/artifacts/.firm/boards/nucleo_l476rg.yaml",
+      "sha256": "1537b93c548af0fdfaba2e22f0c409264b300a9130e214968ba088098f200b0a"
+    },
+    {
+      "path": "sentry-evidence/results/artifacts/.firm/evidence/datasheets/a45a857e3aa75ac166dd532c76d76d5dd8377b9c5bf6f15c03c9cf85aeec0f65.pdf",
+      "sha256": "a45a857e3aa75ac166dd532c76d76d5dd8377b9c5bf6f15c03c9cf85aeec0f65"
+    },
+    {
+      "path": "sentry-evidence/results/artifacts/.firm/packs/files/Keil.STM32L4xx_DFP.3.1.0.pack",
+      "sha256": "5672383c07fbdcee0e471a33f4f8beb2e1f3200bc999244dcd6858e0e8e8203f"
+    },
+    {
+      "path": "sentry-evidence/results/artifacts/.firm/packs/manifest.yaml",
+      "sha256": "bfe246369f78bf207510779988575bb2fff9c96595557542c0bbf7affb59b461"
+    },
+    {
+      "path": "sentry-evidence/results/artifacts/.firm/runs/20260724T005447Z-1cf4bb09/run-metadata/session.json",
+      "sha256": "3a524a4995d6b80d0cac6589b57b8635f542ff2a9fcf3d1635983ec68fd0cb76"
+    },
+    {
+      "path": "sentry-evidence/results/artifacts/.firm/runs/20260724T005505Z-e2020fd9/logs/events.jsonl",
+      "sha256": "1aad9a58bfae1ed43544398d7073f2444c3a8591bf9dc7a9520218c66b2c75c3"
+    },
+    {
+      "path": "sentry-evidence/results/artifacts/.firm/runs/20260724T005505Z-e2020fd9/run-metadata/session.json",
+      "sha256": "853d383169011231c2dd0dbc4ffc00d8d64ae523e5a00c2fc7f280a08f9c9062"
+    },
+    {
+      "path": "sentry-evidence/results/artifacts/.firm/runs/server-events.jsonl",
+      "sha256": "47d2c53c0da29b8081b128549b44ab07fac63856452e0db0d6b89893e2392436"
+    },
+    {
+      "path": "sentry-evidence/results/artifacts/.firm/safety/nucleo_l476rg/memory_map.yaml",
+      "sha256": "c961c45cd52bd3a5e2f728772e9315c75a7fb7f529b662a2fdf78e120b238579"
+    },
+    {
+      "path": "sentry-evidence/results/artifacts/.firm/setup/setup-attempt-12531771a9bf0d00/events.jsonl",
+      "sha256": "2b01d090f0de030bb88081a2c7cec9e7aaec1bf49e65e9343847e703b5258526"
+    },
+    {
+      "path": "sentry-evidence/results/artifacts/.firm/setup/setup-attempt-12531771a9bf0d00/report.json",
+      "sha256": "fc14b5340b08119f3ae8b81237e0a3f2a35e297271a26c7368dc3c734280063f"
+    },
+    {
+      "path": "sentry-evidence/results/artifacts/.firm/setup/setup-attempt-20bd62a3bd715a6c/events.jsonl",
+      "sha256": "56dec99f05cf23becdff238ab254d495f1b6c918071556cd1739f4d016895a0a"
+    },
+    {
+      "path": "sentry-evidence/results/artifacts/.firm/setup/setup-attempt-20bd62a3bd715a6c/report.json",
+      "sha256": "3f9c1e46d146c6f16d46868a8ea2426693b2c607c9520c5c3898951bb874d141"
+    },
+    {
+      "path": "sentry-evidence/results/artifacts/.firm/setup/setup-attempt-4ed5b6e8000cacef/events.jsonl",
+      "sha256": "b5b49f39683c676fb660e67c679353814de206ecdfaf99028fff540d45ea7e07"
+    },
+    {
+      "path": "sentry-evidence/results/artifacts/.firm/setup/setup-attempt-4ed5b6e8000cacef/report.json",
+      "sha256": "4678d25ba785dae9140ba2ea41ad1b76aa585c654d3e9672773704e1dc8f2969"
+    },
+    {
+      "path": "sentry-evidence/results/artifacts/.firm/setup/setup-attempt-8fb718f3aed47bd6/events.jsonl",
+      "sha256": "aeeeb50f8cc6a4569b781a089588d0e7005f20d9a81b462d31f064a7a2d064f5"
+    },
+    {
+      "path": "sentry-evidence/results/artifacts/.firm/setup/setup-attempt-8fb718f3aed47bd6/report.json",
+      "sha256": "4b2b0bb0e5eb4b6ad16f15fffc6d3281d300fdc5a670606db2fb85d559ed9967"
+    },
+    {
+      "path": "sentry-evidence/results/artifacts/.firm/setup/setup-attempt-d963b1bc82820b91/events.jsonl",
+      "sha256": "33a36eef712af8378f6eae6e1cce292f4864abf9b3ad814bc734215841d0ee9c"
+    },
+    {
+      "path": "sentry-evidence/results/artifacts/.firm/setup/setup-attempt-d963b1bc82820b91/report.json",
+      "sha256": "2415586b16c387c3a6e08db9df26b98f6e15d20ba05b5b39bd9d3d087885795a"
+    },
+    {
+      "path": "sentry-evidence/results/artifacts/.firm/validation/validation-7a746e50d6e44b99/events.jsonl",
+      "sha256": "65c5dab3568dba6e29514f519df3af4ab30645f63074f2cfd518fb9e2a216f36"
+    },
+    {
+      "path": "sentry-evidence/results/artifacts/.firm/validation/validation-7a746e50d6e44b99/report.json",
+      "sha256": "127880d2b16803b29085efdce37855aef8745bc1f6aa6c7260abb6ed924c23c3"
+    },
+    {
+      "path": "sentry-evidence/results/artifacts/.firm/validation/validation-a5ef699a5ddc28ce/events.jsonl",
+      "sha256": "8fb2f9c9d5b1b250797324427274d67b32a79252531e038d950033fecc9e5ac9"
+    },
+    {
+      "path": "sentry-evidence/results/artifacts/.firm/validation/validation-a5ef699a5ddc28ce/report.json",
+      "sha256": "fcbbd0b256f0092fe0e001355dc7200cb1fae13d85376fa7aa1dc08441fd2d92"
+    },
+    {
+      "path": "sentry-evidence/results/final-clean-run-summary.md",
+      "sha256": "911b33cbaf3ee088f9cfe905def0532a9b3bf1d0292fbfedb58ce8154fb806ec"
+    },
+    {
+      "path": "sentry-evidence/results/final-clean-run.jsonl",
+      "sha256": "3710b90399876e0eb268427c2e794e1f88b78b916f2c0b4c5018184c5a91b70c"
+    },
+    {
+      "path": "sentry-evidence/results/final-clean-run.txt",
+      "sha256": "af6c61ffb7a359fa9b8fe8c22ba3789839dac7c8373990bb6bdf7471dc18a829"
+    },
+    {
+      "path": "sentry-evidence/results/final3-pyright.log",
+      "sha256": "823c1722166559eadb475d9ee245b4b431d72cea083d0715c968438a7114a1fe"
+    },
+    {
+      "path": "sentry-evidence/results/final3-ruff.log",
+      "sha256": "732cfd557d0c871d8f6906ed2f30e9fdf4d98d81a45e14496c531b5f573d92fb"
+    },
+    {
+      "path": "sentry-evidence/results/final3-unittest-discovery.log",
+      "sha256": "9e8e2379df3f50b3fdb1b756cf05e95445b8c13caa963deb430fa445a2900e8a"
+    },
+    {
+      "path": "sentry-evidence/results/practical-boundary-test-summary.md",
+      "sha256": "445ed5d83aaca50ae2bed0a4ac68ecf2d923912a70551a3857eab38b9a8b0e05"
+    },
+    {
+      "path": "sentry-evidence/results/retest-e2e-checkin-iteration-5.log",
+      "sha256": "54bb26f94a1f6575f870f430c91bed2522c6c805b569527ffe17f8b438cd772d"
+    },
+    {
+      "path": "sentry-evidence/results/stale-setup-allowance-test-report.md",
+      "sha256": "f6fd29ff091dd6037e0b41789544a0e967dbfc4e07a859101e11d7f83dc40552"
+    },
+    {
+      "path": "fallback-support-evidence/results/hil-artifacts/.firm/boards/nucleo_l476rg.yaml",
+      "sha256": "1537b93c548af0fdfaba2e22f0c409264b300a9130e214968ba088098f200b0a"
+    },
+    {
+      "path": "fallback-support-evidence/results/hil-artifacts/.firm/evidence/datasheets/a45a857e3aa75ac166dd532c76d76d5dd8377b9c5bf6f15c03c9cf85aeec0f65.pdf",
+      "sha256": "a45a857e3aa75ac166dd532c76d76d5dd8377b9c5bf6f15c03c9cf85aeec0f65"
+    },
+    {
+      "path": "fallback-support-evidence/results/hil-artifacts/.firm/packs/files/Keil.STM32L4xx_DFP.3.1.0.pack",
+      "sha256": "5672383c07fbdcee0e471a33f4f8beb2e1f3200bc999244dcd6858e0e8e8203f"
+    },
+    {
+      "path": "fallback-support-evidence/results/hil-artifacts/.firm/packs/manifest.yaml",
+      "sha256": "bfe246369f78bf207510779988575bb2fff9c96595557542c0bbf7affb59b461"
+    },
+    {
+      "path": "fallback-support-evidence/results/hil-artifacts/.firm/runs/20260724T005447Z-1cf4bb09/run-metadata/session.json",
+      "sha256": "3a524a4995d6b80d0cac6589b57b8635f542ff2a9fcf3d1635983ec68fd0cb76"
+    },
+    {
+      "path": "fallback-support-evidence/results/hil-artifacts/.firm/runs/20260724T005505Z-e2020fd9/logs/events.jsonl",
+      "sha256": "1aad9a58bfae1ed43544398d7073f2444c3a8591bf9dc7a9520218c66b2c75c3"
+    },
+    {
+      "path": "fallback-support-evidence/results/hil-artifacts/.firm/runs/20260724T005505Z-e2020fd9/run-metadata/session.json",
+      "sha256": "853d383169011231c2dd0dbc4ffc00d8d64ae523e5a00c2fc7f280a08f9c9062"
+    },
+    {
+      "path": "fallback-support-evidence/results/hil-artifacts/.firm/runs/server-events.jsonl",
+      "sha256": "47d2c53c0da29b8081b128549b44ab07fac63856452e0db0d6b89893e2392436"
+    },
+    {
+      "path": "fallback-support-evidence/results/hil-artifacts/.firm/safety/nucleo_l476rg/memory_map.yaml",
+      "sha256": "c961c45cd52bd3a5e2f728772e9315c75a7fb7f529b662a2fdf78e120b238579"
+    },
+    {
+      "path": "fallback-support-evidence/results/hil-artifacts/.firm/setup/setup-attempt-12531771a9bf0d00/events.jsonl",
+      "sha256": "2b01d090f0de030bb88081a2c7cec9e7aaec1bf49e65e9343847e703b5258526"
+    },
+    {
+      "path": "fallback-support-evidence/results/hil-artifacts/.firm/setup/setup-attempt-12531771a9bf0d00/report.json",
+      "sha256": "fc14b5340b08119f3ae8b81237e0a3f2a35e297271a26c7368dc3c734280063f"
+    },
+    {
+      "path": "fallback-support-evidence/results/hil-artifacts/.firm/setup/setup-attempt-20bd62a3bd715a6c/events.jsonl",
+      "sha256": "56dec99f05cf23becdff238ab254d495f1b6c918071556cd1739f4d016895a0a"
+    },
+    {
+      "path": "fallback-support-evidence/results/hil-artifacts/.firm/setup/setup-attempt-20bd62a3bd715a6c/report.json",
+      "sha256": "3f9c1e46d146c6f16d46868a8ea2426693b2c607c9520c5c3898951bb874d141"
+    },
+    {
+      "path": "fallback-support-evidence/results/hil-artifacts/.firm/setup/setup-attempt-4ed5b6e8000cacef/events.jsonl",
+      "sha256": "b5b49f39683c676fb660e67c679353814de206ecdfaf99028fff540d45ea7e07"
+    },
+    {
+      "path": "fallback-support-evidence/results/hil-artifacts/.firm/setup/setup-attempt-4ed5b6e8000cacef/report.json",
+      "sha256": "4678d25ba785dae9140ba2ea41ad1b76aa585c654d3e9672773704e1dc8f2969"
+    },
+    {
+      "path": "fallback-support-evidence/results/hil-artifacts/.firm/setup/setup-attempt-8fb718f3aed47bd6/events.jsonl",
+      "sha256": "aeeeb50f8cc6a4569b781a089588d0e7005f20d9a81b462d31f064a7a2d064f5"
+    },
+    {
+      "path": "fallback-support-evidence/results/hil-artifacts/.firm/setup/setup-attempt-8fb718f3aed47bd6/report.json",
+      "sha256": "4b2b0bb0e5eb4b6ad16f15fffc6d3281d300fdc5a670606db2fb85d559ed9967"
+    },
+    {
+      "path": "fallback-support-evidence/results/hil-artifacts/.firm/setup/setup-attempt-d963b1bc82820b91/events.jsonl",
+      "sha256": "33a36eef712af8378f6eae6e1cce292f4864abf9b3ad814bc734215841d0ee9c"
+    },
+    {
+      "path": "fallback-support-evidence/results/hil-artifacts/.firm/setup/setup-attempt-d963b1bc82820b91/report.json",
+      "sha256": "2415586b16c387c3a6e08db9df26b98f6e15d20ba05b5b39bd9d3d087885795a"
+    },
+    {
+      "path": "fallback-support-evidence/results/hil-artifacts/.firm/validation/validation-7a746e50d6e44b99/events.jsonl",
+      "sha256": "65c5dab3568dba6e29514f519df3af4ab30645f63074f2cfd518fb9e2a216f36"
+    },
+    {
+      "path": "fallback-support-evidence/results/hil-artifacts/.firm/validation/validation-7a746e50d6e44b99/report.json",
+      "sha256": "127880d2b16803b29085efdce37855aef8745bc1f6aa6c7260abb6ed924c23c3"
+    },
+    {
+      "path": "fallback-support-evidence/results/hil-artifacts/.firm/validation/validation-a5ef699a5ddc28ce/events.jsonl",
+      "sha256": "8fb2f9c9d5b1b250797324427274d67b32a79252531e038d950033fecc9e5ac9"
+    },
+    {
+      "path": "fallback-support-evidence/results/hil-artifacts/.firm/validation/validation-a5ef699a5ddc28ce/report.json",
+      "sha256": "fcbbd0b256f0092fe0e001355dc7200cb1fae13d85376fa7aa1dc08441fd2d92"
+    },
+    {
+      "path": "fallback-support-evidence/results/hil-results.md",
+      "sha256": "d34bf0f3c2d790eeba06b35000cc6458c97673f064d0c5f2ab4e8c8bc35b7cda"
+    },
+    {
+      "path": "fallback-support-evidence/results/opus-final-clean-run-summary.md",
+      "sha256": "911b33cbaf3ee088f9cfe905def0532a9b3bf1d0292fbfedb58ce8154fb806ec"
+    },
+    {
+      "path": "fallback-support-evidence/results/opus-final-handoff.md",
+      "sha256": "0476233bc7fbcdf4e9f52faccb7b9e07f8cee811b1072e849af15d78e8d2e368"
+    },
+    {
+      "path": "fallback-support-evidence/results/opus-final-status.md",
+      "sha256": "30c93b24376f8898d4b27ce2b89fd5279e23d692c9e131f25f85a2cf4b9211cd"
+    },
+    {
+      "path": "fallback-support-evidence/results/opus-review-ledger.md",
+      "sha256": "95421d555f4de57d8ab6e02b31205b66403b9bd2819ee98caaf6a3192888630c"
+    },
+    {
+      "path": "fallback-support-evidence/results/remote-probe-hardware-review.md",
+      "sha256": "c0c59839ddce856656e59d71e836ef95c6fb75a1aa63e2babeff64eaf8c77770"
+    }
+  ],
+  "generated_release_logs": "scanned but not transformed or hash-manifested",
+  "schema_version": 1,
+  "scope": "privacy-redacted legacy evidence derivatives",
+  "source_capture_policy": "private originals are intentionally not retained",
+  "transformations": [
+    {
+      "class": "operator-home-or-workspace-path",
+      "replacement_markers": [
+        "<redacted-home>",
+        "<redacted-user>",
+        "/workspace/redacted"
+      ]
+    },
+    {
+      "class": "physical-debug-probe-identifier",
+      "replacement_markers": [
+        "redacted-stlink-probe",
+        "redacted-jlink-probe-a",
+        "redacted-jlink-probe-b",
+        "identifier redacted"
+      ]
+    }
+  ]
+}

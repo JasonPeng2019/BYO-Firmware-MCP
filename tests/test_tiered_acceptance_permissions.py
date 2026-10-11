@@ -104,6 +104,9 @@ class TieredManualPermissionAcceptanceTests(unittest.TestCase):
         """AT07: a second public server run cannot consume a first-run manual grant."""
 
         with isolated_project() as root, tiered_test_server(root) as server:
+            workspace = root / ".agent-workspace"
+            workspace.mkdir(exist_ok=True)
+            (workspace / ".gitignore").write_text("/runtime/\n", encoding="utf-8")
             policies = CapabilityPolicyRepository(root)
             committed = policies.commit(
                 BOARD,

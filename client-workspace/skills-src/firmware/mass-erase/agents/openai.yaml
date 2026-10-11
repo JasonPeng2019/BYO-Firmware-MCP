@@ -1,0 +1,4 @@
+interface:
+  display_name: "Authorize mass erase"
+  short_description: "Human-only one-use mass-erase permission"
+  default_prompt: "Authorize the exact current mass-erase disclosure for the named board."

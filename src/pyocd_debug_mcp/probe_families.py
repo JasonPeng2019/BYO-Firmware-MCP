@@ -54,7 +54,9 @@ def load_probe_family_registry(path: Path | None = None) -> ProbeFamilyRegistry:
         text = (
             path.read_text(encoding="utf-8")
             if path is not None
-            else resources.files(__package__).joinpath(_RESOURCE_NAME).read_text(encoding="utf-8")
+            else resources.files("pyocd_debug_mcp")
+            .joinpath(_RESOURCE_NAME)
+            .read_text(encoding="utf-8")
         )
         document = json.loads(text)
     except (OSError, json.JSONDecodeError) as exc:

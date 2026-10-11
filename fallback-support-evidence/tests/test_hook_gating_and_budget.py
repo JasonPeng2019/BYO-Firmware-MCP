@@ -86,9 +86,7 @@ class GatingTests(unittest.TestCase):
     ) -> HardwareInventoryService:
         snapshot = hooks if hooks is not None else self._both_kinds_snapshot()
 
-        def run_hooks(
-            hook_snapshot: DiscoveryHookSnapshot, kind: str
-        ) -> tuple[HookExecution, ...]:
+        def run_hooks(hook_snapshot: DiscoveryHookSnapshot, kind: str) -> tuple[HookExecution, ...]:
             # Records the launch, then genuinely executes, so this counts real
             # subprocess starts rather than intentions.
             self.launched.append(kind)
@@ -191,9 +189,7 @@ class GatingTests(unittest.TestCase):
         ports: list[SimpleNamespace] = [_port("COM3")]
         hooks = self._both_kinds_snapshot()
 
-        def run_hooks(
-            hook_snapshot: DiscoveryHookSnapshot, kind: str
-        ) -> tuple[HookExecution, ...]:
+        def run_hooks(hook_snapshot: DiscoveryHookSnapshot, kind: str) -> tuple[HookExecution, ...]:
             self.launched.append(kind)
             return execute_eligible_hooks(hook_snapshot, kind, platform="linux")
 
@@ -308,9 +304,7 @@ class UartHotPathNeverListsProbesTests(unittest.TestCase):
             probe_calls.append("listed")
             return EMPTY_NATIVE_PROBE_LISTING
 
-        def run_hooks(
-            hook_snapshot: DiscoveryHookSnapshot, kind: str
-        ) -> tuple[HookExecution, ...]:
+        def run_hooks(hook_snapshot: DiscoveryHookSnapshot, kind: str) -> tuple[HookExecution, ...]:
             launched.append(kind)
             return execute_eligible_hooks(hook_snapshot, kind, platform="linux")
 
@@ -575,9 +569,7 @@ class BudgetTests(unittest.TestCase):
 
         self.assertAlmostEqual(after - before, self.ONE_HOOK, places=6)
         store.clear()
-        self.assertEqual(
-            ops.operation_timeout_seconds("read_serial", {"read_seconds": 3}), before
-        )
+        self.assertEqual(ops.operation_timeout_seconds("read_serial", {"read_seconds": 3}), before)
 
     def test_uart_action_tools_are_not_in_the_probe_inventory_set(self) -> None:
         """The whole point of the new group: these were never covered."""
@@ -621,9 +613,12 @@ class BudgetTests(unittest.TestCase):
             # + 0 for hooks: BudgetTests.setUp resets the eligible-hook provider.
         )
 
-        with patch.object(
-            ops, "configured_probe_cli_commands", return_value=("pyocd", "pyocd", "pyocd")
-        ), patch.object(ops, "SERIAL_FALLBACKS", ()):
+        with (
+            patch.object(
+                ops, "configured_probe_cli_commands", return_value=("pyocd", "pyocd", "pyocd")
+            ),
+            patch.object(ops, "SERIAL_FALLBACKS", ()),
+        ):
             actual = ops.operation_timeout_seconds("setup_overview", {})
 
         self.assertAlmostEqual(actual, expected, places=6)
@@ -679,9 +674,7 @@ class BudgetTests(unittest.TestCase):
             before_plain = ops.operation_timeout_seconds("read_serial", plain_arguments)
 
         with patch.object(ops, "SERIAL_FALLBACKS", ("nrfjprog_spec",)):
-            after_with_finalizer = ops.operation_timeout_seconds(
-                "read_serial", finalizer_arguments
-            )
+            after_with_finalizer = ops.operation_timeout_seconds("read_serial", finalizer_arguments)
             after_plain = ops.operation_timeout_seconds("read_serial", plain_arguments)
 
         self.assertAlmostEqual(
@@ -706,9 +699,7 @@ class BudgetTests(unittest.TestCase):
             after = ops.operation_timeout_seconds("get_discovery_hook_contract", {"kind": "probe"})
 
         self.assertEqual(after, before)
-        self.assertEqual(
-            ops._UART_ACTION_TOOLS, {"read_serial", "write_serial", "serial_exchange"}
-        )
+        self.assertEqual(ops._UART_ACTION_TOOLS, {"read_serial", "write_serial", "serial_exchange"})
 
 
 if __name__ == "__main__":  # pragma: no cover

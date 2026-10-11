@@ -224,7 +224,9 @@ class AttachmentCache:
         if not probe.is_stable:
             raise AttachmentCacheError("A stable probe family and USB serial are required")
         if not uart.has_stable_identity:
-            raise AttachmentCacheError("Stable UART USB serial, vendor ID, and product ID are required")
+            raise AttachmentCacheError(
+                "Stable UART USB serial, vendor ID, and product ID are required"
+            )
         assert probe.usb_serial is not None
         uart_key = uart.stable_key()
         assert uart_key is not None

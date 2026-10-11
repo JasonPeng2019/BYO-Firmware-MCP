@@ -34,6 +34,8 @@ from elftools.common.exceptions import ELFError
 
 from pyocd_debug_mcp import __version__
 from pyocd_debug_mcp.adapters.swd_interface import TargetSessionHandle, session_metadata
+from pyocd_debug_mcp.can_errors import CanError
+from pyocd_debug_mcp.can_startup import load_can_startup
 from pyocd_debug_mcp.board_config import (
     BoardConfig,
     ConfigError,
@@ -61,7 +63,9 @@ from pyocd_debug_mcp.kernel.operations import (
     ManagedOperation,
     cancellation_checkpoint,
     current_operation,
+    operation_timeout_seconds,
     run_if_not_cancelled,
+    run_stage_if_not_cancelled,
     set_eligible_hook_count_provider,
 )
 from pyocd_debug_mcp.kernel.finalizers import build_finalizer
@@ -132,6 +136,7 @@ from pyocd_debug_mcp.services.session_runtime import (
     ToolOutcome,
     utc_now_text,
 )
+from pyocd_debug_mcp.services.can_session import CanSessionManager
 from pyocd_debug_mcp.services import target_control
 from pyocd_debug_mcp.capabilities.manual_permissions import (
     ManualPermissionError,
@@ -305,6 +310,7 @@ from pyocd_debug_mcp.monitor.counters import (
     resolve_snapshot_cadence,
 )
 from pyocd_debug_mcp.tools.handshake import register_initialization_handshake
+from pyocd_debug_mcp.tools.can import CanToolServices, build_can_handlers
 from pyocd_debug_mcp.tools.artifacts import build_artifact_handlers
 from pyocd_debug_mcp.tools.breakpoints import (
     BreakpointToolServices,
@@ -368,22 +374,127 @@ _project_root = (
     else Path.cwd().resolve()
 )
 
-mcp = RegistryFastMCP("pyocd-debug")
+
+def _manual_runtime_is_ignored(project_root: Path) -> bool:
+    """Return whether creating the project-local grant protocol is Git-safe.
+
+    A server-only install must not invent an untracked client workspace merely by
+    starting. The source-handoff attachment writes ``.agent-workspace/.gitignore``;
+    repositories that manage the runtime themselves can instead carry the exact
+    root-level ignore used by this project.
+    """
+
+    candidates = (
+        (
+            project_root / ".gitignore",
+            {"/.agent-workspace/runtime/", ".agent-workspace/runtime/"},
+        ),
+        (project_root / ".agent-workspace" / ".gitignore", {"/runtime/", "runtime/"}),
+    )
+    declared = False
+    for path, accepted in candidates:
+        try:
+            lines = path.read_text(encoding="utf-8").splitlines()
+        except (OSError, UnicodeError):
+            continue
+        for line in lines:
+            rule = line.strip()
+            if not rule or rule.startswith("#"):
+                continue
+            if rule in accepted:
+                declared = True
+            elif rule.startswith("!") and rule[1:] in accepted:
+                declared = False
+    if not declared:
+        return False
+
+    # An earlier ignore can be cancelled by a later ``!`` rule, including one
+    # in the very file that declared it. Ask Git for the effective result rather
+    # than treating the presence of a line as permission to create local grant
+    # state. ``--no-index`` also works before the representative path exists.
+    try:
+        effective = subprocess.run(
+            [
+                "git",
+                "check-ignore",
+                "--no-index",
+                "--quiet",
+                "--",
+                ".agent-workspace/runtime/manual-permissions/epoch.json",
+            ],
+            cwd=project_root,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            check=False,
+            timeout=2.0,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    if effective.returncode == 0:
+        return True
+    if effective.returncode != 128:
+        return False
+
+    # ``git check-ignore`` requires a repository even with ``--no-index``.
+    # An explicitly attached workspace may legitimately precede ``git init``;
+    # its own canonical ignore file is still future-safe. Only use the parsed
+    # result when no ancestor or environment variable supplies hidden Git
+    # context. Any ambiguous repository failure remains fail closed.
+    if os.environ.get("GIT_DIR") or os.environ.get("GIT_WORK_TREE"):
+        return False
+    for ancestor in (project_root, *project_root.parents):
+        if os.path.lexists(ancestor / ".git"):
+            return False
+    # Before ``git init`` there is no authoritative engine for root-level Git
+    # wildcard/negation semantics. Accept only the attachment-owned nested
+    # ignore file in its exact canonical form. A deeper .gitignore remains
+    # authoritative if the project later becomes a repository; a root-level
+    # approximation can be silently undone by wildcard negations.
+    nested_ignore = project_root / ".agent-workspace" / ".gitignore"
+    try:
+        return nested_ignore.read_bytes() == b"/runtime/\n"
+    except OSError:
+        return False
+
+
+server_run = create_server_run()
+_can_startup = load_can_startup(
+    snapshot_dir=_project_root / ".firm" / "runs" / server_run.run_id / "can-profile"
+)
+
+
+def _server_operation_timeout_seconds(
+    tool_name: str, arguments: Mapping[str, object] | None = None
+) -> float:
+    fixture = _can_startup.fixture
+    return operation_timeout_seconds(
+        tool_name,
+        arguments,
+        can_read_default_seconds=_can_startup.runtime.effective_read_seconds,
+        can_send_default_seconds=(
+            fixture.config.transmit.default_send_timeout_seconds if fixture is not None else None
+        ),
+    )
+
+
+mcp = RegistryFastMCP("pyocd-debug", timeout_resolver=_server_operation_timeout_seconds)
 mcp.set_server_version(__version__)
 tool_registry = mcp.registry
-server_run = create_server_run()
+_can_manager = CanSessionManager(_can_startup)
 assignment_store = RunAssignmentStore(server_run.assignments)
 _capability_policies = CapabilityPolicyRepository(_project_root)
 _tier_router = TierRouter(_capability_policies)
 _manual_permissions = ManualPermissionRepository(_project_root, server_run.run_id)
 _tiered_auto_target_resolver: Callable[[str], str | None] | None = None
-try:
-    _manual_permissions.reset_startup()
-except Exception:
-    # Startup reset failure is deliberately scoped to manual authorization.
-    # Raw discovery/connection must remain available and the manual repository
-    # will return its stable reset-failed refusal if asked to consume authority.
-    pass
+if _manual_runtime_is_ignored(_project_root):
+    try:
+        _manual_permissions.reset_startup()
+    except Exception:
+        # Startup reset failure is deliberately scoped to manual authorization.
+        # Raw discovery/connection must remain available and the manual repository
+        # will return its stable reset-failed refusal if asked to consume authority.
+        pass
 
 
 def configure_tiered_test_seams(
@@ -524,6 +635,12 @@ def _validate_plan_scope(
     board_id: str,
     session_id: str | None,
 ) -> None:
+    # When CAN is disabled there is no hardware route to authorize.  A valid
+    # CAN plan must still be enforced and consumed so the handler can return
+    # the canonical `can/not-configured` response, but doing so must not turn a
+    # disabled optional subsystem into a Layer-0 connection requirement.
+    if definition.action_name in {"read_can", "send_can"} and not _can_manager.configured:
+        return
     connection = connection_manager.maybe_connection(board_id)
     if definition.action_name == "board_setup":
         tier_state = _capability_policies.resolve(board_id)
@@ -584,6 +701,22 @@ def _validate_plan_scope(
             f"Board '{board_id}' no longer has the session bound by this plan.",
             session_id=session_id,
         )
+    if definition.action_name in {"read_can", "send_can"}:
+        _require_can_open_for_plan(board_id, session_id=session_id)
+
+
+def _require_can_open_for_plan(board_id: str, *, session_id: str | None) -> None:
+    """Translate CAN ownership/phase state into a pre-consumption plan refusal."""
+
+    try:
+        _can_manager.require_open_owner(board_id)
+    except CanError as exc:
+        raise PlanRefusal(
+            exc.code,
+            exc.message,
+            session_id=session_id,
+            remedies=("get_can_status", "connect_can"),
+        ) from exc
 
 
 plan_engine = PlanEngine(
@@ -594,7 +727,7 @@ plan_engine = PlanEngine(
 )
 permission_store.set_revocation_handler(plan_engine.invalidate)
 
-_GUARDED_READ_ACTIONS = frozenset({"read_memory_address", "read_serial"})
+_GUARDED_READ_ACTIONS = frozenset({"read_memory_address", "read_serial", "read_can"})
 _WRITE_CAPABLE_ACTIONS = frozenset(
     {
         "write_memory",
@@ -606,6 +739,7 @@ _WRITE_CAPABLE_ACTIONS = frozenset(
         "flash_bootloader",
         "write_serial",
         "serial_exchange",
+        "send_can",
     }
 )
 _safety_policy: SafetyPolicy
@@ -1293,6 +1427,88 @@ def _enforce_tier_route(tool_name: str, board_id: str, arguments: Mapping[str, o
         ) from exc
 
 
+def _enforce_can_full_route(
+    tool_name: str,
+    board_id: str,
+    arguments: Mapping[str, object],
+) -> None:
+    """Require setup-full plus current identity validation for CAN bus access."""
+
+    del arguments
+    if not _can_manager.configured:
+        return
+    state = _tier_router.state_for(board_id)
+    if state.tier is not Tier.SETUP_FULL:
+        raise PlanRefusal(
+            "tier/wrong-route",
+            "CAN requires a setup-full board with current identity validation.",
+            session_id=_active_session_id(board_id),
+            remedies=("board_setup-plan", "board_setup", "board_validate"),
+        )
+    connection = connection_manager.connection_for(board_id)
+    try:
+        gate_manager.require_validated(board_id, connection.connection_id)
+    except GateRefusal as exc:
+        raise PlanRefusal(
+            exc.code,
+            str(exc),
+            session_id=_active_session_id(board_id),
+            remedies=exc.remedy,
+        ) from exc
+    _monitor.check_block()
+
+
+def _enforce_guarded_can_invocation(
+    tool_name: str,
+    board_id: str,
+    arguments: Mapping[str, object],
+) -> None:
+    """Recheck CAN-only authority under the dispatch board lock.
+
+    The route guard provides an early, useful refusal before lock/plan handling,
+    but tier policy and validation can change while dispatch waits for that
+    lock.  Recheck both at the locked pre-execution boundary before the ordinary
+    plan guard can consume a call or the CAN manager can charge process quota.
+    """
+
+    _enforce_can_full_route(tool_name, board_id, arguments)
+    if not _can_manager.configured:
+        _monitor.check_block()
+        parameters = {name: value for name, value in arguments.items() if name != "board_id"}
+        active_plan = plan_engine.active_plan(tool_name, board_id)
+        plan_engine.enforce(
+            tool_name,
+            board_id,
+            parameters,
+            session_id=active_plan.session_id if active_plan is not None else None,
+        )
+        return
+    _require_can_open_for_plan(board_id, session_id=_active_session_id(board_id))
+    _enforce_guarded_invocation(tool_name, board_id, arguments)
+
+
+def _serialize_can_lifecycle(
+    tool_name: str,
+    board_id: str,
+    arguments: Mapping[str, object],
+) -> None:
+    """No-op guard used solely to put lifecycle calls under the board lock."""
+
+    del tool_name, board_id, arguments
+
+
+def _can_operational_identity(board_id: str) -> str | None:
+    """Return the immutable live probe identity after the dispatch guard succeeds."""
+
+    return session_metadata(connection_manager.connection_for(board_id).handle).probe_uid
+
+
+def _can_refusal_context(_tool_name: str, board_id: str) -> Mapping[str, object]:
+    """Complete dispatcher refusals with the same CAN state as handler results."""
+
+    return {"ok": False, "can": _can_manager.status(board_id)}
+
+
 def _enforce_raw_invocation(
     tool_name: str,
     board_id: str,
@@ -1789,6 +2005,46 @@ def _promote_open_session(
         raise
 
 
+def _promote_open_session_if_live(
+    board_id: str,
+    handle: TargetSessionHandle,
+    *,
+    gate_reason: str,
+    complete_operation: bool = True,
+) -> ManagedConnection:
+    """Cancellation-linearize promotion and close an uncommitted open handle.
+
+    ``complete_operation`` is false for validation bootstrap: promotion is only
+    an intermediate stage there, so later validation checkpoints must remain
+    cancellable until the validation authority itself is committed.
+    """
+
+    promotion_started = False
+
+    def promote() -> ManagedConnection:
+        nonlocal promotion_started
+        promotion_started = True
+        return _promote_open_session(board_id, handle, gate_reason=gate_reason)
+
+    try:
+        guard = run_if_not_cancelled if complete_operation else run_stage_if_not_cancelled
+        return guard(promote)
+    except BaseException as primary:
+        # Once ``promote`` starts, _promote_open_session owns the handle and
+        # rolls it back on every failure. If cancellation won before that short
+        # commit, ownership never transferred, so close the already-open handle
+        # here rather than allowing a late assignment after server shutdown.
+        if not promotion_started:
+            try:
+                target_control.close_session(handle)
+            except BaseException as cleanup_error:
+                raise primary from RuntimeError(
+                    "Cancelled pre-promotion connection cleanup reported: "
+                    f"{type(cleanup_error).__name__}: {cleanup_error}"
+                )
+        raise
+
+
 def _connect_impl(
     board_id: str,
     unique_id: str | None = None,
@@ -1966,7 +2222,7 @@ def _connect_impl(
             raise
 
         try:
-            assignment = _promote_open_session(
+            assignment = _promote_open_session_if_live(
                 board_id,
                 handle,
                 gate_reason="new connection requires board_validate",
@@ -2125,7 +2381,7 @@ def _connect_under_reset_impl(
                 pack_sha256=(selected_pack.spec.sha256 if selected_pack is not None else None),
                 pdsc_device=selected_pdsc_device,
             )
-            assignment = _promote_open_session(
+            assignment = _promote_open_session_if_live(
                 board_id,
                 handle,
                 gate_reason="new connection requires board_validate",
@@ -2161,58 +2417,111 @@ def _connect_under_reset_impl(
 
 @mcp.tool()
 def disconnect(board_id: str) -> str:
-    """Close only the named board's debug session and release its probe."""
+    """Close named-board CAN first, then its debug/UART session and probe.
 
-    with connection_manager.lock_for(board_id):
-        connection = connection_manager.maybe_connection(board_id)
+    If CAN cleanup cannot be proven, the call fails with debug authority and
+    resources intact so the same named-board disconnect can be retried safely.
+    """
+
+    normalized_board_id = board_id.strip()
+    if not normalized_board_id:
+        raise ValueError("board_id must be a non-empty string")
+    with connection_manager.lock_for(normalized_board_id):
+        # CAN owns an independent worker but is attached to this exact logical
+        # board.  Prove that resource closed before invalidating any debug
+        # authority or releasing SWD; a cleanup failure leaves all state intact
+        # so an explicit retry is safe.
+        if _can_manager.owner_board_id == normalized_board_id:
+            _can_manager.disconnect_sync(normalized_board_id)
+        return _disconnect_debug_only(normalized_board_id)
+
+
+def _disconnect_debug_only(board_id: str) -> str:
+    """Clear authority and explicitly close debug resources, without touching CAN.
+
+    The public ``disconnect`` proves CAN closure before entering this helper. The
+    process-shutdown path has already made its one bounded CAN shutdown attempt;
+    it uses this helper even when that attempt remains uncertain so a CAN failure
+    can never suppress explicit pyOCD handle and runtime-session teardown.
+    Callers must hold the board's connection-manager lock.
+    """
+
+    started = time.monotonic()
+    connection = connection_manager.maybe_connection(board_id)
+    failures: list[tuple[str, BaseException]] = []
+
+    def attempt(stage: str, action: Callable[[], object]) -> None:
+        try:
+            action()
+        except BaseException as exc:  # terminal cleanup must keep progressing
+            failures.append((stage, exc))
+
+    attempt("assignment clear", lambda: assignment_store.clear_board(board_id))
+    attempt("gate clear", lambda: gate_manager.clear(board_id, "board disconnected"))
+    attempt(
+        "plan invalidation",
+        lambda: plan_engine.invalidate_board(board_id, "board disconnected"),
+    )
+    unlock = globals().get("_unlock_coordinator")
+    if isinstance(unlock, UnlockCoordinator):
+        attempt("unlock invalidation", lambda: unlock.invalidate_board(board_id))
+    workflow = globals().get("_setup_workflow")
+    if isinstance(workflow, SetupWorkflow):
         if connection is None:
-            assignment_store.clear_board(board_id)
-            gate_manager.clear(board_id, "disconnect requested")
-            plan_engine.invalidate_board(board_id, "board disconnected")
-            unlock = globals().get("_unlock_coordinator")
-            if isinstance(unlock, UnlockCoordinator):
-                unlock.invalidate_board(board_id)
-            workflow = globals().get("_setup_workflow")
-            if isinstance(workflow, SetupWorkflow):
-                workflow.revoke(board_id)
-            loader = globals().get("setup_tool_loader")
-            if isinstance(loader, SetupToolLoadState):
-                loader.clear_allowance(board_id)
-            _clear_setup_continuation(board_id)
-            started = time.monotonic()
-            result = "Not connected."
-            _record_event(
-                "disconnect",
-                {"board_id": board_id},
-                outcome_kind=ToolOutcome.SUCCESS,
-                error_code=None,
-                duration_ms=_duration_ms(started),
-                details={"status": "not-connected"},
-                board_id=board_id,
+            attempt("workflow revocation", lambda: workflow.revoke(board_id))
+        else:
+            attempt(
+                "workflow disconnect",
+                lambda: workflow.disconnect(connection.connection_id),
             )
-            return result
+    loader = globals().get("setup_tool_loader")
+    if isinstance(loader, SetupToolLoadState):
+        attempt("setup allowance clear", lambda: loader.clear_allowance(board_id))
+    attempt("setup continuation clear", lambda: _clear_setup_continuation(board_id))
 
-        started = time.monotonic()
-        gate_manager.clear(board_id, "board disconnected")
-        assignment_store.clear_board(board_id)
-        plan_engine.invalidate_board(board_id, "board disconnected")
-        unlock = globals().get("_unlock_coordinator")
-        if isinstance(unlock, UnlockCoordinator):
-            unlock.invalidate_board(board_id)
-        workflow = globals().get("_setup_workflow")
-        if isinstance(workflow, SetupWorkflow):
-            workflow.disconnect(connection.connection_id)
-        loader = globals().get("setup_tool_loader")
-        if isinstance(loader, SetupToolLoadState):
-            loader.clear_allowance(board_id)
-        _clear_setup_continuation(board_id)
+    if connection is None:
+        if failures:
+            if len(failures) == 1:
+                raise failures[0][1]
+            raise RuntimeError(
+                "Disconnect cleanup reported: "
+                + "; ".join(
+                    f"{stage}: {type(error).__name__}: {error}" for stage, error in failures
+                )
+            ) from failures[0][1]
+        _record_event(
+            "disconnect",
+            {"board_id": board_id},
+            outcome_kind=ToolOutcome.SUCCESS,
+            error_code=None,
+            duration_ms=_duration_ms(started),
+            details={"status": "not-connected"},
+            board_id=board_id,
+        )
+        return "Not connected."
+
+    cleared: ManagedConnection | None = None
+    try:
         cleared = connection_manager.clear_if_current(board_id, connection)
         if cleared is None:
-            raise RuntimeError(
-                f"Board '{board_id}' connection changed while disconnecting; retry disconnect."
+            failures.append(
+                (
+                    "connection clear",
+                    RuntimeError(
+                        f"Board '{board_id}' connection changed while disconnecting; "
+                        "retry disconnect."
+                    ),
+                )
             )
-        _finish_disconnect_cleanup(board_id, cleared, started=started)
-        return f"Disconnected board '{board_id}'."
+    except BaseException as exc:  # resource closes remain mandatory
+        failures.append(("connection clear", exc))
+    _finish_disconnect_cleanup(
+        board_id,
+        cleared or connection,
+        started=started,
+        prior_failures=tuple(failures),
+    )
+    return f"Disconnected board '{board_id}'."
 
 
 def _finish_disconnect_cleanup(
@@ -2220,17 +2529,18 @@ def _finish_disconnect_cleanup(
     connection: ManagedConnection,
     *,
     started: float,
+    prior_failures: tuple[tuple[str, BaseException], ...] = (),
 ) -> None:
-    """Close both resources and report success only after both are confirmed closed."""
+    """Close both resources and report success only after all cleanup succeeds."""
 
-    failures: list[tuple[str, Exception]] = []
+    failures: list[tuple[str, BaseException]] = list(prior_failures)
     try:
         target_control.close_session(connection.handle)
-    except Exception as exc:  # noqa: BLE001 - runtime cleanup must still run
+    except BaseException as exc:  # runtime cleanup must still run
         failures.append(("worker close", exc))
     try:
         _session_store.close_session(connection.runtime_session)
-    except Exception as exc:  # noqa: BLE001 - preserve and report cleanup uncertainty
+    except BaseException as exc:  # preserve and report cleanup uncertainty
         failures.append(("runtime close", exc))
 
     if failures:
@@ -2243,14 +2553,19 @@ def _finish_disconnect_cleanup(
                     f"{stage}: {type(error).__name__}: {error}" for stage, error in failures
                 )
             )
+        recorded_failure = (
+            failure
+            if isinstance(failure, Exception)
+            else RuntimeError("Disconnect cleanup was interrupted during terminal teardown.")
+        )
         try:
             _record_event(
                 "disconnect",
                 {"board_id": board_id},
                 outcome_kind=ToolOutcome.FAILED,
-                error_code=_error_code(failure),
+                error_code=_error_code(recorded_failure),
                 duration_ms=_duration_ms(started),
-                details={"message": str(failure)},
+                details={"message": str(recorded_failure)},
                 board_id=board_id,
                 session=connection.runtime_session,
             )
@@ -3500,6 +3815,12 @@ misc_tool_handlers = build_misc_handlers(
     )
 )
 artifact_tool_handlers = build_artifact_handlers()
+can_tool_handlers = build_can_handlers(
+    CanToolServices(
+        manager=_can_manager,
+        operational_identity=_can_operational_identity,
+    )
+)
 
 for _legacy_name in (
     "connect",
@@ -3534,6 +3855,7 @@ for _handler_name, _handler in (
     | breakpoint_tool_handlers
     | misc_tool_handlers
     | artifact_tool_handlers
+    | can_tool_handlers
 ).items():
     mcp.add_tool(
         _handler,
@@ -3722,6 +4044,36 @@ for _direct_hardware_action in route_names("direct"):
     mcp.configure_guarded_dispatch(
         _direct_hardware_action,
         guard=_enforce_direct_tiered_hardware,
+        lock_for_board=lambda board_id: connection_manager.lock_for(board_id),
+    )
+
+# CAN lifecycle and bus calls share the board lock but deliberately do not use
+# Layer-2 SWD resource binding: cancelling CAN must retire CAN, not evict the
+# independently managed debug connection.
+for _can_name in can_tool_handlers:
+    forbid_unknown_tool_arguments(mcp, _can_name, strict=True)
+    mcp.configure_json_refusals(_can_name, context=_can_refusal_context)
+    mcp.configure_structured_prehandler_errors(_can_name)
+    mcp.configure_framework_validation_first(_can_name)
+    mcp.configure_exact_json_response(_can_name)
+
+mcp.configure_route_guard("connect_can", guard=_enforce_can_full_route)
+mcp.configure_guarded_dispatch(
+    "connect_can",
+    guard=_enforce_can_full_route,
+    lock_for_board=lambda board_id: connection_manager.lock_for(board_id),
+)
+for _can_cleanup_name in ("get_can_status", "disconnect_can"):
+    mcp.configure_guarded_dispatch(
+        _can_cleanup_name,
+        guard=_serialize_can_lifecycle,
+        lock_for_board=lambda board_id: connection_manager.lock_for(board_id),
+    )
+for _can_bus_action in ("read_can", "send_can"):
+    mcp.configure_route_guard(_can_bus_action, guard=_enforce_can_full_route)
+    mcp.configure_guarded_dispatch(
+        _can_bus_action,
+        guard=_enforce_guarded_can_invocation,
         lock_for_board=lambda board_id: connection_manager.lock_for(board_id),
     )
 
@@ -3960,10 +4312,11 @@ def _validation_connect(profile, probe: ValidationProbe, timeout: float) -> obje
     if handle is None:
         assert last_error is not None
         raise last_error
-    assignment = _promote_open_session(
+    assignment = _promote_open_session_if_live(
         profile.board_id,
         handle,
         gate_reason="validation connection not yet stamped",
+        complete_operation=False,
     )
     return _ValidationConnection(
         handle,
@@ -8127,7 +8480,6 @@ for _monitor_name, _monitor_handler in build_monitor_tools(_monitor).items():
 def main() -> None:
     """Console entry point. Runs the server over stdio transport by default."""
     require_clean_startup()
-    _monitor.boot()
     shutdown = threading.Event()
 
     def _shutdown_handler(signum: int, frame: object) -> None:
@@ -8137,34 +8489,80 @@ def main() -> None:
         # interrupted, which would burn the client's kill grace and get the
         # process killed with nothing saved.
         del signum, frame
+        if shutdown.is_set():
+            # The first invocation marks shutdown *before* raising. A repeated
+            # signal can therefore interrupt entry to ``finally`` (including
+            # SIG_IGN installation) without aborting the ordered cleanup.
+            return
         shutdown.set()
         raise KeyboardInterrupt
 
-    for _sig in (signal.SIGINT, signal.SIGTERM):
-        try:
-            signal.signal(_sig, _shutdown_handler)
-        except (AttributeError, OSError, ValueError):
-            # Not the main thread, or the platform does not deliver this signal.
-            # Closeout is best-effort by design; the append plus bootup recovery
-            # is the real safety net.
-            pass
     try:
+        for _sig in (signal.SIGINT, signal.SIGTERM):
+            try:
+                signal.signal(_sig, _shutdown_handler)
+            except (AttributeError, OSError, ValueError):
+                # Not the main thread, or the platform does not deliver this signal.
+                # Closeout is best-effort by design; the append plus bootup recovery
+                # is the real safety net.
+                pass
+        # Boot can start recovery delivery, so it belongs inside the same
+        # signal-protected lifetime as the transport and hardware cleanup.
+        _monitor.boot()
         mcp.run()
     except KeyboardInterrupt:
         pass
     finally:
+        # Once ordered shutdown starts, repeated SIGINT/SIGTERM must not abort
+        # one board's resource closes or skip later boards. The first signal has
+        # already selected this path; ignore duplicates until cleanup completes.
+        for _sig in (signal.SIGINT, signal.SIGTERM):
+            try:
+                signal.signal(_sig, signal.SIG_IGN)
+            except (AttributeError, OSError, ValueError, KeyboardInterrupt):
+                pass
         # Order is the requirement: release the hardware and terminate owned
         # children first, so a slow or hung send can never strand a board. The
         # close record is written inside closeout before any delivery is
         # attempted, so a failed send cannot cost the record.
+        _can_owner_before_cleanup = _can_manager.owner_board_id
+        _can_cleanup_started = time.monotonic()
+        try:
+            _can_clean = _can_manager.shutdown_sync()
+        except BaseException:  # cleanup failure is represented, never exposed verbatim
+            _can_clean = False
+        # An admitted connect can publish its owner while shutdown retires the
+        # active submission. On failure, the post-cleanup owner is authoritative;
+        # the pre-cleanup value is only a fallback for an exceptional manager.
+        _can_owner_after_cleanup = _can_manager.owner_board_id
+        _can_retained_owner = (
+            (_can_owner_after_cleanup or _can_owner_before_cleanup) if not _can_clean else None
+        )
+        if _can_retained_owner is not None:
+            try:
+                _record_event(
+                    "disconnect_can",
+                    {"board_id": _can_retained_owner},
+                    outcome_kind=ToolOutcome.FAILED,
+                    error_code="can/cleanup-failed",
+                    duration_ms=_duration_ms(_can_cleanup_started),
+                    details={"message": "CAN cleanup remained uncertain at process shutdown."},
+                    board_id=_can_retained_owner,
+                    session=_runtime_for(_can_retained_owner),
+                )
+            except BaseException:
+                pass
         for _board_id in connection_manager.assigned_board_ids():
             try:
-                disconnect(_board_id)
-            except Exception:
+                with connection_manager.lock_for(_board_id):
+                    _disconnect_debug_only(_board_id)
+            except BaseException:
                 pass
         plan_engine.close_run()
         tool_registry.reset()
         _monitor.closeout("signal" if shutdown.is_set() else "eof")
+        if not _can_clean:
+            raise SystemExit(1)
 
 
 if __name__ == "__main__":

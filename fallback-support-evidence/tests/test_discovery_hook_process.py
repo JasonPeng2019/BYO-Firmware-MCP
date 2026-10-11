@@ -111,9 +111,7 @@ class _HookProcessCase(unittest.TestCase):
         kind: str = "probe",
         timeout_seconds: float = 15.0,
     ) -> discovery_hooks.DiscoveryHookSpec:
-        return single_spec(
-            self.root, kind, [mode, *extra], timeout_seconds=timeout_seconds
-        )
+        return single_spec(self.root, kind, [mode, *extra], timeout_seconds=timeout_seconds)
 
     def run_hook(self, *args: str, **kwargs: object) -> discovery_hooks.HookExecution:
         spec = self.spec(*args, **kwargs)  # type: ignore[arg-type]
@@ -375,9 +373,7 @@ class CleanupFailureTests(_HookProcessCase):
         self.assertEqual(execution.failure_code, "discovery/hook-failed")
         self.assertIn("cleanup could not be confirmed", execution.failure_detail)
         self.assertIsNone(execution.output, "unconfirmed cleanup must not yield rows")
-        self.assertEqual(
-            len(self.marker_files()), 1, "the recovery marker must be retained"
-        )
+        self.assertEqual(len(self.marker_files()), 1, "the recovery marker must be retained")
 
     def test_confirmed_cleanup_removes_the_marker(self) -> None:
         spec = self.spec("probe")
@@ -418,16 +414,15 @@ class CleanupFailureTests(_HookProcessCase):
                 raise _Cancelled
             return original_wait(self_, timeout=timeout)
 
-        with patch.object(
-            discovery_hooks, "terminate_process_group", recording_terminate
-        ), patch.object(subprocess.Popen, "wait", cancel_once):
+        with (
+            patch.object(discovery_hooks, "terminate_process_group", recording_terminate),
+            patch.object(subprocess.Popen, "wait", cancel_once),
+        ):
             with self.assertRaises(_Cancelled):
                 execute_hook(spec, marker_store=self.marker_store)
 
         self.assertEqual(len(observed), 1, "cancellation did not terminate the group")
-        self.assertEqual(
-            self.marker_files(), [], "a confirmed cancellation cleanup left a marker"
-        )
+        self.assertEqual(self.marker_files(), [], "a confirmed cancellation cleanup left a marker")
         descendant = int((self.root / "descendant.pid").read_text(encoding="utf-8"))
         deadline = time.monotonic() + 5.0
         while time.monotonic() < deadline and DeadlineTests._alive(descendant):
@@ -647,9 +642,7 @@ class PlatformSpecificTests(_HookProcessCase):
         snapshot = load_hook_snapshot(
             self.root,
             environ={
-                discovery_hooks.DISCOVERY_HOOK_REGISTRY_ENV: str(
-                    registry_root / "registry.json"
-                )
+                discovery_hooks.DISCOVERY_HOOK_REGISTRY_ENV: str(registry_root / "registry.json")
             },
         )
 
@@ -679,9 +672,7 @@ class PlatformSpecificTests(_HookProcessCase):
         snapshot = load_hook_snapshot(
             self.root,
             environ={
-                discovery_hooks.DISCOVERY_HOOK_REGISTRY_ENV: str(
-                    registry_root / "registry.json"
-                )
+                discovery_hooks.DISCOVERY_HOOK_REGISTRY_ENV: str(registry_root / "registry.json")
             },
         )
 

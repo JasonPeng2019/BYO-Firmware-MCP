@@ -14,8 +14,8 @@ import subprocess
 import sys
 import threading
 import time
-from collections.abc import Awaitable, Callable, Mapping
-from contextlib import ContextDecorator, nullcontext
+from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
+from contextlib import ContextDecorator, asynccontextmanager, nullcontext
 from contextvars import ContextVar, copy_context
 from dataclasses import dataclass, field
 from enum import Enum
@@ -24,6 +24,10 @@ from pathlib import Path
 from typing import Any, ContextManager, TypeVar, cast
 
 import anyio
+from pyocd_debug_mcp.can_config import (
+    MAX_READ_SECONDS as MAX_CAN_READ_SECONDS,
+    MAX_SEND_TIMEOUT_SECONDS as MAX_CAN_SEND_TIMEOUT_SECONDS,
+)
 from pyocd_debug_mcp.kernel.processes import (
     MAX_OWNED_PROCESS_CLEANUP_SECONDS,
     ProcessMarkerStore,
@@ -85,6 +89,11 @@ _UART_ACTION_TOOLS = frozenset({"read_serial", "write_serial", "serial_exchange"
 # `refresh_discovery_hooks` executes every eligible hook of both kinds.
 # `get_discovery_hook_contract` executes nothing and keeps the default budget.
 _DISCOVERY_HOOK_TOOLS = frozenset({"refresh_discovery_hooks"})
+_CAN_FIXED_TIMEOUTS: Mapping[str, float] = {
+    "get_can_status": 5.0,
+    "connect_can": 16.0,
+    "disconnect_can": 6.0,
+}
 
 
 def _default_eligible_hook_counts() -> Mapping[str, int]:
@@ -151,6 +160,7 @@ def _vendor_uart_budget() -> float:
     return len(SERIAL_FALLBACKS) * (
         DEFAULT_EXTERNAL_COMMAND_TIMEOUT_SECONDS + MAX_OWNED_PROCESS_CLEANUP_SECONDS
     )
+
 
 T = TypeVar("T")
 BeforeExecution = Callable[[], None]
@@ -349,6 +359,13 @@ class ManagedOperation:
             self.completion_committed = True
             return result
 
+    def run_stage_if_not_cancelled(self, action: Callable[[], T]) -> T:
+        """Linearize an intermediate stage without committing the final result."""
+
+        with self._guard:
+            self.checkpoint()
+            return action()
+
     def mark_running(self) -> None:
         with self._guard:
             self.state = OperationState.RUNNING
@@ -514,6 +531,15 @@ def run_if_not_cancelled(action: Callable[[], T]) -> T:
     return operation.run_if_not_cancelled(action)
 
 
+def run_stage_if_not_cancelled(action: Callable[[], T]) -> T:
+    """Run an intermediate stage atomically against a cancellation request."""
+
+    operation = current_operation()
+    if operation is None:
+        return action()
+    return operation.run_stage_if_not_cancelled(action)
+
+
 def operation_resources() -> OperationResources:
     operation = current_operation()
     if operation is None:
@@ -532,13 +558,27 @@ def wrap_layer2_response(result: str) -> str:
 def _positive_finite_number(value: object) -> float | None:
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         return None
-    number = float(value)
+    try:
+        number = float(value)
+    except OverflowError:
+        return None
     return number if number > 0 and math.isfinite(number) else None
+
+
+def add_exception_note(error: BaseException, note: str) -> None:
+    """Attach cleanup context when the running Python supports PEP 678 notes."""
+
+    add_note = getattr(error, "add_note", None)
+    if callable(add_note):
+        add_note(note)
 
 
 def operation_timeout_seconds(
     tool_name: str,
     arguments: Mapping[str, object] | None = None,
+    *,
+    can_read_default_seconds: float | None = None,
+    can_send_default_seconds: float | None = None,
 ) -> float:
     """Return the finite A-11 timeout budget for a tool invocation."""
 
@@ -602,6 +642,8 @@ def operation_timeout_seconds(
                     operation_timeout_seconds(
                         child_name,
                         child_arguments if isinstance(child_arguments, Mapping) else None,
+                        can_read_default_seconds=can_read_default_seconds,
+                        can_send_default_seconds=can_send_default_seconds,
                     )
                 )
             if child_timeouts:
@@ -611,9 +653,9 @@ def operation_timeout_seconds(
                         sum(child_timeouts) + BATCH_TIMEOUT_GRACE_SECONDS,
                     )
                 )
-    # Planned actions publish their timeout as part of the immutable plan
-    # definition.  Runtime dispatch must use that same value so the guidance
-    # shown to an agent cannot drift from the actual operation deadline.
+    # Planned actions publish the immutable base timeout used by dispatch.
+    # Argument-sized operations below add their documented finite formula on
+    # top of that floor (including startup-bound CAN defaults).
     try:
         from pyocd_debug_mcp.guardrails.plan_defs import definition_for_action
 
@@ -626,6 +668,8 @@ def operation_timeout_seconds(
         resolved_timeout = VALIDATION_OPERATION_TIMEOUT_SECONDS
     elif tool_name in _RECOVERY_TOOLS:
         resolved_timeout = RECOVERY_OPERATION_TIMEOUT_SECONDS
+    elif tool_name in _CAN_FIXED_TIMEOUTS:
+        resolved_timeout = _CAN_FIXED_TIMEOUTS[tool_name]
     elif planned_timeout is not None:
         resolved_timeout = float(planned_timeout)
     else:
@@ -654,6 +698,22 @@ def operation_timeout_seconds(
         )
     if tool_name in _UART_ACTION_TOOLS:
         resolved_timeout += _vendor_uart_budget() + _hook_budget("uart")
+    if tool_name == "read_can":
+        requested = _positive_finite_number(values.get("read_seconds")) or _positive_finite_number(
+            can_read_default_seconds
+        )
+        if requested is not None and requested <= MAX_CAN_READ_SECONDS:
+            candidate = requested + ARGUMENT_TIMEOUT_GRACE_SECONDS
+            if math.isfinite(candidate):
+                return max(resolved_timeout, candidate)
+    if tool_name == "send_can":
+        requested = _positive_finite_number(
+            values.get("timeout_seconds")
+        ) or _positive_finite_number(can_send_default_seconds)
+        if requested is not None and requested <= MAX_CAN_SEND_TIMEOUT_SECONDS:
+            candidate = 2 * requested + ARGUMENT_TIMEOUT_GRACE_SECONDS
+            if math.isfinite(candidate):
+                return max(resolved_timeout, candidate)
     if tool_name == "read_serial":
         requested = _positive_finite_number(values.get("read_seconds"))
         if requested is not None:
@@ -731,6 +791,35 @@ def _acquire_worker_lock(
     return _CooperativeLock()
 
 
+@asynccontextmanager
+async def _acquire_async_lock(
+    lock: ContextManager[object], operation: ManagedOperation
+) -> AsyncIterator[None]:
+    """Acquire a thread lock without blocking the event loop.
+
+    Guarded async handlers use the same per-board ``threading.RLock`` as the
+    synchronous debug lifecycle.  Entering that context manager directly would
+    block the event-loop thread and make the operation deadline ineffective.
+    Poll native thread locks instead so cancellation and the outer deadline stay
+    observable.  Non-lock context managers retain normal ``with`` semantics.
+    """
+
+    native_lock_types = (type(threading.Lock()), type(threading.RLock()))
+    if not isinstance(lock, native_lock_types):
+        with lock:
+            yield
+        return
+
+    concrete_lock = cast(Any, lock)
+    while not concrete_lock.acquire(blocking=False):
+        operation.checkpoint()
+        await anyio.sleep(BOARD_LOCK_POLL_SECONDS)
+    try:
+        yield
+    finally:
+        concrete_lock.release()
+
+
 async def dispatch(
     tool_name: str,
     board_id: str | None,
@@ -766,29 +855,35 @@ async def dispatch(
         acquired_reservation = False
         reservation_token = None
         try:
-            if not owns_reservation and isinstance(reservation, type(threading.Lock())):
-                concrete_reservation = cast(Any, reservation)
-                while not concrete_reservation.acquire(blocking=False):
-                    managed.checkpoint()
-                    await anyio.sleep(BOARD_LOCK_POLL_SECONDS)
-                acquired_reservation = True
-            if tool_name == "action_batch" and board_id is not None:
-                reservation_token = _reserved_batch_boards.set(
-                    _reserved_batch_boards.get() | {board_id}
-                )
-            managed.mark_running()
-            if before_execution is not None:
-                before_execution()
-            managed.mark_handler_started()
             with anyio.fail_after(timeout):
-                async_operation = cast(Callable[[], Awaitable[T]], operation)
-                result = await async_operation()
+                if not owns_reservation and isinstance(reservation, type(threading.Lock())):
+                    concrete_reservation = cast(Any, reservation)
+                    while not concrete_reservation.acquire(blocking=False):
+                        managed.checkpoint()
+                        await anyio.sleep(BOARD_LOCK_POLL_SECONDS)
+                    acquired_reservation = True
+                if tool_name == "action_batch" and board_id is not None:
+                    reservation_token = _reserved_batch_boards.set(
+                        _reserved_batch_boards.get() | {board_id}
+                    )
+                async with _acquire_async_lock(execution_lock or nullcontext(), managed):
+                    managed.mark_running()
+                    if before_execution is not None:
+                        before_execution()
+                    managed.mark_handler_started()
+                    async_operation = cast(Callable[[], Awaitable[T]], operation)
+                    result = await async_operation()
             managed.result = result
             managed.finish(OperationState.COMPLETED)
             return result
         except TimeoutError as exc:
+            was_queued = managed.execution_started_at is None
             managed.request_cancel("operation timeout")
             managed.finish(OperationState.TIMED_OUT)
+            if was_queued:
+                if board_id is None:  # pragma: no cover - no board lock means no queue
+                    raise OperationTimeoutError(tool_name, timeout) from exc
+                raise BoardBusyError(tool_name, board_id, timeout) from exc
             raise OperationTimeoutError(tool_name, timeout, board_id=board_id) from exc
         except anyio.get_cancelled_exc_class():
             managed.request_cancel("MCP request cancelled or client disconnected")
@@ -799,7 +894,7 @@ async def dispatch(
             managed.finish(OperationState.FAILED)
             raise
         finally:
-            active_error = sys.exception()
+            active_error = sys.exc_info()[1]
             managed.run_finalizer(finalizer)
             was_completed = managed.state is OperationState.COMPLETED
             managed.cleanup()

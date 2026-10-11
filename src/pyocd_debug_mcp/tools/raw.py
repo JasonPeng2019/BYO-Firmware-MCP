@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any
 
 from pyocd_debug_mcp.capabilities.routing import TierRouter
+from pyocd_debug_mcp.kernel.operations import add_exception_note
 from pyocd_debug_mcp.services.uart_exchange_schema import (
     MAX_UART_SECONDS,
     MAX_UART_TEXT_BYTES,
@@ -420,8 +421,8 @@ def build_raw_handlers(services: RawToolServices) -> dict[str, Callable[..., str
                         services.finalize_recovery(board_id)
                     except Exception as cleanup_error:
                         if backend_error is not None:
-                            backend_error.add_note(
-                                f"raw recovery cleanup also failed: {cleanup_error}"
+                            add_exception_note(
+                                backend_error, f"raw recovery cleanup also failed: {cleanup_error}"
                             )
                         else:
                             raise

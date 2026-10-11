@@ -23,9 +23,16 @@ from pyocd_debug_mcp.services.connections import BoardNotConnectedError, Connect
 
 def _board() -> BoardConfig:
     return BoardConfig(
-        board_id="profile-board", display_name="profile board", mcu_family="test",
-        probe_family="test", pyocd_target="profile-target", probe_type="test",
-        probe_hint_terms=(), serial_hint_terms=(), test_addr=0, source_path=Path("profile.yaml"),
+        board_id="profile-board",
+        display_name="profile board",
+        mcu_family="test",
+        probe_family="test",
+        pyocd_target="profile-target",
+        probe_type="test",
+        probe_hint_terms=(),
+        serial_hint_terms=(),
+        test_addr=0,
+        source_path=Path("profile.yaml"),
     )
 
 
@@ -36,12 +43,18 @@ class ChangeLoopSpecTests(unittest.TestCase):
 
         session = SimpleNamespace(
             probe=SimpleNamespace(unique_id=None, assert_reset=Mock()),
-            target=SimpleNamespace(halt=Mock(), get_state=Mock(return_value=SimpleNamespace(name="HALTED"))),
+            target=SimpleNamespace(
+                halt=Mock(), get_state=Mock(return_value=SimpleNamespace(name="HALTED"))
+            ),
             open=Mock(),
         )
         interface = swd_pyocd.PyOCDSWDInterface()
         with (
-            patch.dict("os.environ", {"PYOCD_PROBE_UID": "ambient-probe", "PYOCD_TARGET": "ambient-target"}, clear=False),
+            patch.dict(
+                "os.environ",
+                {"PYOCD_PROBE_UID": "ambient-probe", "PYOCD_TARGET": "ambient-target"},
+                clear=False,
+            ),
             patch.object(interface, "_choose_session", return_value=session) as choose,
             patch.object(interface, "_verify_session_pack_source"),
         ):
@@ -58,7 +71,11 @@ class ChangeLoopSpecTests(unittest.TestCase):
         session = SimpleNamespace(probe=SimpleNamespace(unique_id=None), open=Mock())
         interface = swd_pyocd.PyOCDSWDInterface()
         with (
-            patch.dict("os.environ", {"PYOCD_PROBE_UID": "ambient-probe", "PYOCD_TARGET": "ambient-target"}, clear=False),
+            patch.dict(
+                "os.environ",
+                {"PYOCD_PROBE_UID": "ambient-probe", "PYOCD_TARGET": "ambient-target"},
+                clear=False,
+            ),
             patch.object(interface, "_choose_session", return_value=session) as choose,
             patch.object(interface, "_open_and_verify_session"),
         ):
@@ -79,23 +96,36 @@ class ChangeLoopSpecTests(unittest.TestCase):
         assignment = SimpleNamespace(runtime_session=runtime)
         control = SimpleNamespace(connect_under_reset=Mock(return_value=handle))
         with (
-            patch.dict("os.environ", {
-                "PYOCD_BOARD_CONFIG": "ambient.yaml", "PYOCD_PROBE_UID": "ambient-probe",
-                "PYOCD_TARGET": "ambient-target",
-            }, clear=False),
+            patch.dict(
+                "os.environ",
+                {
+                    "PYOCD_BOARD_CONFIG": "ambient.yaml",
+                    "PYOCD_PROBE_UID": "ambient-probe",
+                    "PYOCD_TARGET": "ambient-target",
+                },
+                clear=False,
+            ),
             patch.object(server, "connection_manager", manager),
             patch.object(server, "resolve_board_config", return_value=board) as resolve_board,
-            patch.object(server, "_resolve_probe_uid_for_connect", return_value="profile-probe") as resolve_uid,
+            patch.object(
+                server, "_resolve_probe_uid_for_connect", return_value="profile-probe"
+            ) as resolve_uid,
             patch.object(server, "target_control", control),
             patch.object(server, "_promote_open_session", return_value=assignment),
             patch.object(server, "_record_event"),
-            patch.object(server, "session_metadata", return_value=SimpleNamespace(route_used="fake")),
-            patch.object(server._profile_repository, "load", side_effect=server.ProfileError("absent")),
+            patch.object(
+                server, "session_metadata", return_value=SimpleNamespace(route_used="fake")
+            ),
+            patch.object(
+                server._profile_repository, "load", side_effect=server.ProfileError("absent")
+            ),
         ):
             reply = server._connect_under_reset_impl("profile-board", None, None)
 
         self.assertIn("target halted", reply)
-        resolve_board.assert_called_once_with("profile-board", None, allow_environment_overrides=False)
+        resolve_board.assert_called_once_with(
+            "profile-board", None, allow_environment_overrides=False
+        )
         resolve_uid.assert_called_once_with(board, None, allow_environment_override=False)
         self.assertEqual(control.connect_under_reset.call_args.kwargs["unique_id"], "profile-probe")
         self.assertEqual(control.connect_under_reset.call_args.kwargs["target"], "profile-target")
@@ -107,7 +137,9 @@ class ChangeLoopSpecTests(unittest.TestCase):
             root = Path(directory)
             for name in ("z.elf", "a.elf", "z.map", "a.map"):
                 (root / name).write_bytes(b"map" if name.endswith(".map") else b"elf")
-            with patch.object(native_build, "_is_loadable_elf", side_effect=lambda p: p.suffix == ".elf"):
+            with patch.object(
+                native_build, "_is_loadable_elf", side_effect=lambda p: p.suffix == ".elf"
+            ):
                 artifacts = native_build._artifact_paths(root)
 
         self.assertIsNone(artifacts["elf"])
@@ -131,18 +163,30 @@ class ChangeLoopSpecTests(unittest.TestCase):
                 build.mkdir()
                 for name in names:
                     (build / name).write_bytes(b"elf" if name.endswith(".elf") else b"map")
-                with patch.object(native_build, "_is_loadable_elf", side_effect=lambda p: p.suffix == ".elf"):
+                with patch.object(
+                    native_build, "_is_loadable_elf", side_effect=lambda p: p.suffix == ".elf"
+                ):
                     artifacts = native_build._artifact_paths(build)
                     self.assertEqual(
                         {role: artifacts[role] for role in ("elf", "hex", "map")},
                         {"elf": None, "hex": None, "map": None},
                     )
                     args = native_build.build_parser().parse_args(
-                        ["--project-dir", str(project), "--build-dir", str(build), "--", "native-build"]
+                        [
+                            "--project-dir",
+                            str(project),
+                            "--build-dir",
+                            str(build),
+                            "--",
+                            "native-build",
+                        ]
                     )
                     output = io.StringIO()
-                    with contextlib.redirect_stdout(output), patch.object(
-                        native_build, "run_owned", return_value=SimpleNamespace(returncode=0)
+                    with (
+                        contextlib.redirect_stdout(output),
+                        patch.object(
+                            native_build, "run_owned", return_value=SimpleNamespace(returncode=0)
+                        ),
                     ):
                         self.assertEqual(native_build.run_build(args), 0)
                 evidence = json.loads(output.getvalue())
@@ -150,9 +194,13 @@ class ChangeLoopSpecTests(unittest.TestCase):
                     {role: evidence["artifacts"][role] for role in ("elf", "hex", "map")},
                     {"elf": None, "hex": None, "map": None},
                 )
-                self.assertEqual(evidence["artifacts"]["artifact_selection"], "explicit_declaration_required")
+                self.assertEqual(
+                    evidence["artifacts"]["artifact_selection"], "explicit_declaration_required"
+                )
                 self.assertEqual(len(evidence["artifacts"][ambiguous_role]), 2)
-                singleton_role = "map_candidates" if ambiguous_role == "elf_candidates" else "elf_candidates"
+                singleton_role = (
+                    "map_candidates" if ambiguous_role == "elf_candidates" else "elf_candidates"
+                )
                 self.assertEqual(len(artifacts[singleton_role]), 1)
                 self.assertEqual(
                     evidence["artifacts"][singleton_role],
@@ -180,7 +228,10 @@ class ChangeLoopSpecTests(unittest.TestCase):
         interface = swd_pyocd.PyOCDSWDInterface()
         handle = TargetSessionHandle(session, _board(), "probe", "fake", None)
         with patch.object(swd_pyocd, "FileProgrammer") as programmer:
-            self.assertEqual(interface.flash(handle, Path("firmware.hex"), halt_after_reset=False), "reset_state_unconfirmed")
+            self.assertEqual(
+                interface.flash(handle, Path("firmware.hex"), halt_after_reset=False),
+                "reset_state_unconfirmed",
+            )
         programmer.return_value.program.assert_called_once_with("firmware.hex")
         target.get_state.assert_not_called()
 
@@ -193,7 +244,9 @@ class ChangeLoopSpecTests(unittest.TestCase):
             reset=Mock(side_effect=OSError("reset transport vanished")),
             get_state=Mock(),
         )
-        handle = TargetSessionHandle(SimpleNamespace(target=target), _board(), "probe", "fake", None)
+        handle = TargetSessionHandle(
+            SimpleNamespace(target=target), _board(), "probe", "fake", None
+        )
         with patch.object(swd_pyocd, "FileProgrammer") as programmer:
             self.assertEqual(
                 swd_pyocd.PyOCDSWDInterface().flash(
@@ -209,7 +262,9 @@ class ChangeLoopSpecTests(unittest.TestCase):
         from pyocd_debug_mcp.target_errors import TargetConnectionError
 
         target = SimpleNamespace(reset_and_halt=Mock(), reset=Mock(), get_state=Mock())
-        handle = TargetSessionHandle(SimpleNamespace(target=target), _board(), "probe", "fake", None)
+        handle = TargetSessionHandle(
+            SimpleNamespace(target=target), _board(), "probe", "fake", None
+        )
         with patch.object(swd_pyocd, "FileProgrammer") as programmer:
             programmer.return_value.program.side_effect = OSError("verify failed")
             with self.assertRaisesRegex(TargetConnectionError, "verify failed"):
@@ -223,13 +278,18 @@ class ChangeLoopSpecTests(unittest.TestCase):
         from pyocd_debug_mcp.adapters import swd_pyocd
 
         target = SimpleNamespace(
-            reset_and_halt=Mock(), reset=Mock(),
+            reset_and_halt=Mock(),
+            reset=Mock(),
             get_state=Mock(return_value=SimpleNamespace(name="HALTED")),
         )
         interface = swd_pyocd.PyOCDSWDInterface()
-        handle = TargetSessionHandle(SimpleNamespace(target=target), _board(), "probe", "fake", None)
+        handle = TargetSessionHandle(
+            SimpleNamespace(target=target), _board(), "probe", "fake", None
+        )
         with patch.object(swd_pyocd, "FileProgrammer"):
-            self.assertEqual(interface.flash(handle, Path("firmware.hex"), halt_after_reset=True), "halted")
+            self.assertEqual(
+                interface.flash(handle, Path("firmware.hex"), halt_after_reset=True), "halted"
+            )
 
         target.get_state.side_effect = OSError("state unreadable")
         with patch.object(swd_pyocd, "FileProgrammer"):
@@ -238,23 +298,42 @@ class ChangeLoopSpecTests(unittest.TestCase):
                 "reset_state_unconfirmed",
             )
 
-    def test_cl003_flash_tool_logs_and_explains_unconfirmed_state_without_running_claim(self) -> None:
-        from pyocd_debug_mcp.services.session_runtime import ActionContext, SessionRecord, ToolOutcome
+    def test_cl003_flash_tool_logs_and_explains_unconfirmed_state_without_running_claim(
+        self,
+    ) -> None:
+        from pyocd_debug_mcp.services.session_runtime import (
+            ActionContext,
+            SessionRecord,
+            ToolOutcome,
+        )
         from pyocd_debug_mcp.tools.flash import FlashToolServices, build_flash_handlers
 
         root = Path("test-run")
-        runtime = SessionRecord("session", "profile-board", "connection", "probe", "fake", "now", root, root / "events", root / "summary")
+        runtime = SessionRecord(
+            "session",
+            "profile-board",
+            "connection",
+            "probe",
+            "fake",
+            "now",
+            root,
+            root / "events",
+            root / "summary",
+        )
         events: list[dict[str, object]] = []
         request = SimpleNamespace(
             artifact_path=Path("firmware.elf"),
             identity=SimpleNamespace(as_log_fields=lambda: {"artifact_sha256": "digest"}),
         )
         services = FlashToolServices(
-            runtime_for=lambda _board: runtime, active_session_id=lambda _board: "session",
-            duration_ms=lambda _started: 1, record_event=lambda *_args, **kwargs: events.append(kwargs),
+            runtime_for=lambda _board: runtime,
+            active_session_id=lambda _board: "session",
+            duration_ms=lambda _started: 1,
+            record_event=lambda *_args, **kwargs: events.append(kwargs),
             format_refusal=lambda refusal, **_kwargs: str(refusal),
             action_context=lambda tool, board: ActionContext("test", tool, board),
-            maybe_handle_for=lambda _board: None, handle_for=lambda _board: object(),
+            maybe_handle_for=lambda _board: None,
+            handle_for=lambda _board: object(),
             resolve_request=lambda *_args: request,
             flash_target=lambda *_args: (Path("firmware.elf"), "reset_state_unconfirmed"),
             error_code=lambda _exc: "flash/backend",
@@ -264,7 +343,10 @@ class ChangeLoopSpecTests(unittest.TestCase):
         self.assertIn("reset state is unconfirmed", reply)
         self.assertNotIn("target left running", reply)
         self.assertEqual(events[-1]["outcome_kind"], ToolOutcome.SUCCESS)
-        self.assertEqual(events[-1]["details"], {"target_state": "reset_state_unconfirmed", "safety_map_checked": True})
+        self.assertEqual(
+            events[-1]["details"],
+            {"target_state": "reset_state_unconfirmed", "safety_map_checked": True},
+        )
 
     def test_cl004_recovery_finalization_revokes_assignment_even_when_close_fails(self) -> None:
         from pyocd_debug_mcp import server
@@ -275,8 +357,15 @@ class ChangeLoopSpecTests(unittest.TestCase):
 
         root = Path("test-run")
         runtime = SessionRecord(
-            "runtime", "profile-board", "connection", "probe", "fake", "now",
-            root, root / "events", root / "summary",
+            "runtime",
+            "profile-board",
+            "connection",
+            "probe",
+            "fake",
+            "now",
+            root,
+            root / "events",
+            root / "summary",
         )
         manager.assign("profile-board", handle, runtime)
         gate = SimpleNamespace(clear=Mock())
@@ -285,9 +374,12 @@ class ChangeLoopSpecTests(unittest.TestCase):
         control = SimpleNamespace(close_session=Mock(side_effect=OSError("worker stuck")))
         sessions = SimpleNamespace(mark_recover_completed=Mock(), close_session=Mock())
         with (
-            patch.object(server, "connection_manager", manager), patch.object(server, "gate_manager", gate),
-            patch.object(server, "assignment_store", assignments), patch.object(server, "plan_engine", plans),
-            patch.object(server, "target_control", control), patch.object(server, "_session_store", sessions),
+            patch.object(server, "connection_manager", manager),
+            patch.object(server, "gate_manager", gate),
+            patch.object(server, "assignment_store", assignments),
+            patch.object(server, "plan_engine", plans),
+            patch.object(server, "target_control", control),
+            patch.object(server, "_session_store", sessions),
         ):
             with self.assertRaisesRegex(RuntimeError, "worker close"):
                 server._finalize_unlock_recovery("profile-board")

@@ -14,6 +14,7 @@ import json
 import shutil
 import tempfile
 import threading
+import time
 import unittest
 from pathlib import Path
 
@@ -31,6 +32,33 @@ def _fresh_server(store: Path):
     import pyocd_debug_mcp.server as server
 
     return importlib.reload(server)
+
+
+def _stored_reports(store: Path) -> list[dict]:
+    """Read each report once across the asynchronous local-to-remote handoff."""
+
+    deadline = time.monotonic() + 0.25
+    server_data = store / "server_data"
+    simulated_remote = store / "simulated_remote"
+    while True:
+        local = {path.name: path for path in sorted(server_data.rglob("rpt-*.json"))}
+        remote = {path.name: path for path in sorted(simulated_remote.rglob("rpt-*.json"))}
+        paths_by_name = {**local, **remote}
+        if not (set(local) - set(remote)) or time.monotonic() >= deadline:
+            break
+        time.sleep(0.005)
+
+    reports: list[dict] = []
+    for name, path in paths_by_name.items():
+        try:
+            text = path.read_text(encoding="utf-8")
+        except FileNotFoundError:
+            replacements = list(simulated_remote.rglob(name))
+            if not replacements:
+                raise
+            text = replacements[0].read_text(encoding="utf-8")
+        reports.append(json.loads(text))
+    return reports
 
 
 class ServerIntegrationCase(unittest.TestCase):
@@ -80,12 +108,10 @@ class CorrectRefusalsProduceNoDefects(ServerIntegrationCase):
         with self.assertRaises(Exception):
             self.call("flash_application", {})
 
-        reports = list(self.store.rglob("rpt-*.json"))
         defects = [
-            json.loads(path.read_text(encoding="utf-8"))
-            for path in reports
-            if json.loads(path.read_text(encoding="utf-8"))["triage_class"]
-            == "server_defect"
+            report
+            for report in _stored_reports(self.store)
+            if report["triage_class"] == "server_defect"
         ]
         self.assertEqual(defects, [], f"unexpected server-defect reports: {defects}")
 
@@ -96,6 +122,23 @@ class CorrectRefusalsProduceNoDefects(ServerIntegrationCase):
         after = self.health()
         self.assertGreater(after["counters"]["total"], before)
         self.assertIn("policy_refusal", after["counters"]["per_outcome"])
+
+    def test_unknown_tool_names_never_cross_the_mechanical_boundary(self) -> None:
+        injected = "password=hunter2"
+        for _ in range(4):
+            with self.assertRaises(Exception):
+                self.call(injected, {})
+        self.server._monitor._usage_snapshot_tick()
+        deadline = time.monotonic() + 2.0
+        while not list(self.store.rglob("rpt-*.json")) and time.monotonic() < deadline:
+            time.sleep(0.01)
+        persisted = "\n".join(
+            path.read_text(encoding="utf-8", errors="replace")
+            for path in self.store.rglob("*")
+            if path.is_file()
+        )
+        self.assertNotIn(injected, persisted)
+        self.assertIn("unknown-tool", persisted)
 
 
 class ObservationIsPassive(ServerIntegrationCase):
@@ -368,7 +411,9 @@ class ExactHealthCheckBoundaries(unittest.TestCase):
         datetime.fromisoformat(summary["run_started_at"].replace("Z", "+00:00"))
         self.assertGreaterEqual(summary["uptime_seconds"], 0)
         self.assertEqual(activity["total"], 100)
-        self.assertEqual(activity["per_tool"], {"initialization_handshake": 1, "server_health_check": 99})
+        self.assertEqual(
+            activity["per_tool"], {"initialization_handshake": 1, "server_health_check": 99}
+        )
         self.assertEqual(activity["per_outcome"], {"success": 100})
         self.assertEqual(activity["per_error_class"], {})
         self.assertEqual(sum(activity["per_tool"].values()), activity["total"])
@@ -382,16 +427,12 @@ class ExactHealthCheckBoundaries(unittest.TestCase):
         self.assertGreaterEqual(ledger["total_appended"], 0)
         self.assertGreaterEqual(ledger["resident_files"], 0)
         self.assertTrue(ledger["chain_head"])
-        self.assertIn(
-            ledger["hardening"], {"applied", "unsupported", "failed", "not_attempted"}
-        )
+        self.assertIn(ledger["hardening"], {"applied", "unsupported", "failed", "not_attempted"})
         self.assertIsInstance(ledger["verification"], dict)
         self.assertIsNone(ledger["last_write_error"])
         self.assertEqual(delivery["transport"], "test")
         self.assertEqual(delivery["origin"], "test")
-        self.assertIn(
-            delivery["state"], {"sent", "failed", "not_configured", "filler_simulated"}
-        )
+        self.assertIn(delivery["state"], {"sent", "failed", "not_configured", "filler_simulated"})
         self.assertIsInstance(delivery["acked_files"], int)
         self.assertGreaterEqual(delivery["undelivered_files"], 0)
         self.assertTrue(delivery["store_state"])
@@ -435,9 +476,7 @@ class ExactHealthCheckBoundaries(unittest.TestCase):
                 {
                     "codebase_summary": "A firmware MCP server under test.",
                     "work_summary": "Exercised the health-check monitoring boundary.",
-                    "tools_used": [
-                        {"tool": "server_health_check", "purpose": "monitor boundary"}
-                    ],
+                    "tools_used": [{"tool": "server_health_check", "purpose": "monitor boundary"}],
                     "effectiveness_observed": "The boundary produced its requested record.",
                 },
             )[0].text
@@ -450,11 +489,7 @@ class ExactHealthCheckBoundaries(unittest.TestCase):
         self.assertIn("agent_narrative", checkin_summary)
         self.assertEqual(checkin_summary["activity"]["total"], 500)
         self.assertNotIn("signal_type", checkin_summary)
-        checkins = [
-            record
-            for record in self._ledger_records()
-            if record.get("kind") == "checkin"
-        ]
+        checkins = [record for record in self._ledger_records() if record.get("kind") == "checkin"]
         self.assertEqual(len(checkins), 1)
         self.assertEqual(checkins[0]["detail"]["summary_id"], checkin["summary_id"])
         for forbidden in ("signal_type", "severity", "grouping_key"):
@@ -470,9 +505,7 @@ class WorkspaceBinding(ServerIntegrationCase):
         self.assertIn("workspace_path", signature.parameters)
 
     def test_invalid_path_is_ignored_not_refused(self) -> None:
-        blocks = self.call(
-            "initialization_handshake", {"workspace_path": "not/absolute"}
-        )
+        blocks = self.call("initialization_handshake", {"workspace_path": "not/absolute"})
         text = blocks[0].text
         self.assertIn("operating guidance", text)
         self.assertIn("unbound", text)
@@ -507,10 +540,7 @@ class ErrorsAreReported(ServerIntegrationCase):
         assert observation is not None
         observation.failed(RuntimeError("kaboom in the handler"))
 
-        reports = [
-            json.loads(path.read_text(encoding="utf-8"))
-            for path in self.store.rglob("rpt-*.json")
-        ]
+        reports = _stored_reports(self.store)
         defects = [r for r in reports if r["triage_class"] == "server_defect"]
         self.assertTrue(defects)
         report = defects[-1]
@@ -529,14 +559,35 @@ class ErrorsAreReported(ServerIntegrationCase):
         assert beta is not None
         beta.failed(RuntimeError("beta blew up"))
 
-        reports = [
-            json.loads(path.read_text(encoding="utf-8"))
-            for path in self.store.rglob("rpt-*.json")
-        ]
+        reports = _stored_reports(self.store)
         beta_reports = [r for r in reports if r.get("tool_name") == "t_beta"]
         self.assertTrue(beta_reports)
         boards = {entry["board"] for entry in beta_reports[-1]["trail"]}
-        self.assertEqual(boards, {"beta"})
+        self.assertEqual(len(boards), 1)
+        self.assertNotIn("beta", boards)
+        self.assertRegex(next(iter(boards)), r"^[0-9a-f]{8}$")
+        self.assertNotEqual(
+            beta_reports[-1]["board_scope"]["board_id"],
+            "beta",
+        )
+
+    def test_echoed_rejection_text_never_enters_mechanical_remedies(self) -> None:
+        needle = "next_step password=synthetic-secret UART=OK_READY probe=synthetic-id"
+        for _ in range(4):
+            self.call("get_discovery_hook_contract", {"kind": f"invalid {needle}"})
+
+        reports = _stored_reports(self.store)
+        matching = [
+            report
+            for report in reports
+            if report.get("tool_name") == "get_discovery_hook_contract"
+            and report.get("signal_type") == "S-2"
+        ]
+        self.assertTrue(matching)
+        report = matching[-1]
+        self.assertIsNone(report["named_remedy"])
+        self.assertTrue(all(entry["remedy"] is None for entry in report["trail"]))
+        self.assertNotIn(needle, json.dumps(report))
 
 
 if __name__ == "__main__":

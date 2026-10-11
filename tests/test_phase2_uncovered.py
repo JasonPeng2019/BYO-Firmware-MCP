@@ -120,72 +120,86 @@ class ParseHookDeclarationTests(unittest.TestCase):
         """Missing required fields are rejected."""
         # Missing 'kind'
         with self.assertRaisesRegex(DiscoveryHookError, "must be non-empty text"):
-            parse_hook_declaration({
-                "hook_id": "test",
-                "runner": "executable",
-                "entrypoint": "/bin/true",
-            })
+            parse_hook_declaration(
+                {
+                    "hook_id": "test",
+                    "runner": "executable",
+                    "entrypoint": "/bin/true",
+                }
+            )
 
         # Missing 'runner'
         with self.assertRaisesRegex(DiscoveryHookError, "must be non-empty text"):
-            parse_hook_declaration({
-                "hook_id": "test",
-                "kind": "probe",
-                "entrypoint": "/bin/true",
-            })
+            parse_hook_declaration(
+                {
+                    "hook_id": "test",
+                    "kind": "probe",
+                    "entrypoint": "/bin/true",
+                }
+            )
 
     def test_unknown_kind_raises_error(self) -> None:
         """Unknown kind values are rejected."""
         with self.assertRaisesRegex(DiscoveryHookError, "kind must be one of"):
-            parse_hook_declaration({
-                "hook_id": "test",
-                "kind": "unknown_kind",
-                "runner": "executable",
-                "entrypoint": "/bin/true",
-            })
+            parse_hook_declaration(
+                {
+                    "hook_id": "test",
+                    "kind": "unknown_kind",
+                    "runner": "executable",
+                    "entrypoint": "/bin/true",
+                }
+            )
 
     def test_unknown_runner_raises_error(self) -> None:
         """Unknown runner values are rejected."""
         with self.assertRaisesRegex(DiscoveryHookError, "runner must be one of"):
-            parse_hook_declaration({
-                "hook_id": "test",
-                "kind": "probe",
-                "runner": "unknown_runner",
-                "entrypoint": "/bin/true",
-            })
+            parse_hook_declaration(
+                {
+                    "hook_id": "test",
+                    "kind": "probe",
+                    "runner": "unknown_runner",
+                    "entrypoint": "/bin/true",
+                }
+            )
 
     def test_extra_fields_raise_error(self) -> None:
         """Extra unknown fields are rejected."""
         with self.assertRaisesRegex(DiscoveryHookError, "unknown field"):
-            parse_hook_declaration({
-                "hook_id": "test",
-                "kind": "probe",
-                "runner": "executable",
-                "entrypoint": "/bin/true",
-                "extra_field": "not allowed",
-            })
+            parse_hook_declaration(
+                {
+                    "hook_id": "test",
+                    "kind": "probe",
+                    "runner": "executable",
+                    "entrypoint": "/bin/true",
+                    "extra_field": "not allowed",
+                }
+            )
 
     def test_wrong_type_fields_raise_error(self) -> None:
         """Wrong-typed fields are rejected."""
         # kind should be a string, not a number
         with self.assertRaisesRegex(DiscoveryHookError, "must be non-empty text"):
-            parse_hook_declaration({
-                "hook_id": "test",
-                "kind": 123,
-                "runner": "executable",
-                "entrypoint": "/bin/true",
-            })
+            parse_hook_declaration(
+                {
+                    "hook_id": "test",
+                    "kind": 123,
+                    "runner": "executable",
+                    "entrypoint": "/bin/true",
+                }
+            )
 
     def test_hook_id_validation(self) -> None:
         """hook_id with invalid characters are rejected."""
         # hook_id must match certain pattern (e.g., no spaces)
         with self.assertRaisesRegex(DiscoveryHookError, "hook_id"):
-            parse_hook_declaration({
-                "hook_id": "test hook",  # Space not allowed
-                "kind": "probe",
-                "runner": "executable",
-                "entrypoint": "/bin/true",
-            })
+            parse_hook_declaration(
+                {
+                    "hook_id": "test hook",  # Space not allowed
+                    "kind": "probe",
+                    "runner": "executable",
+                    "entrypoint": "/bin/true",
+                }
+            )
 
 
 class ResolveDeclarationTests(unittest.TestCase):
@@ -617,18 +631,18 @@ class VendorUartRowsTests(unittest.TestCase):
         )
 
         stlink_output = """
-===== ST-LINK/V2-1 :  ST-LINK SN  : 0673FE733248495034303254
+===== ST-LINK/V2-1 :  ST-LINK SN  : ABCD00000000000000000003
 ===== DFU interface : 0x0483:0x2244
 ===== JTAG interface : available
 ===== SWD interface : available
 ===== UART interface #1 :
-ST-LINK SN: 0673FE733248495034303254
+ST-LINK SN: ABCD00000000000000000003
 Port: COM10
 Location: on board
 Description: STM32 Virtual COM Port in FS Mode
 
 ===== UART interface #2 :
-ST-LINK SN: 0673FE733248495034303254
+ST-LINK SN: ABCD00000000000000000003
 Port: COM11
 Location: on board
 Description: STM32 Virtual COM Port in HS Mode

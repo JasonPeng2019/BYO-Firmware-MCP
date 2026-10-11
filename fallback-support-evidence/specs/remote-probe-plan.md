@@ -20,10 +20,10 @@ This is the escape hatch for:
 - a probe physically attached to a different machine.
 
 **Verified working on this machine before this document was written.** With
-`pyocd server -p 5555 -u 0668FF514988525067213913` running against the attached
-ST-LINK, `ConnectHelper.session_with_chosen_probe(unique_id="remote:localhost:5555")`
+`pyocd server -p 5555 -u <probe-uid>` running against the attached ST-LINK,
+`ConnectHelper.session_with_chosen_probe(unique_id="remote:localhost:5555")`
 opened a session and read the core program counter back as `0x80015de`. This is not a
-theoretical route.
+theoretical route. The checked-in derivative redacts the physical probe identifier.
 
 ## 2. What exists today, and the actual gap
 
@@ -247,8 +247,8 @@ Required coverage:
 
 ## 6. Practical hardware test
 
-There is a real ST-LINK on this machine (`0668FF514988525067213913`), and it is
-natively discoverable -- which makes it *ideal* for this, because `pyocd server` can
+There was a real, natively discoverable ST-LINK on the original verification
+machine -- which made it *ideal* for this, because `pyocd server` could
 serve it and the client half is exercised for real.
 
 Write this as a **manually-run script, not part of the default suite** (it needs
@@ -257,7 +257,7 @@ such as `scripts/` or `tests/manual/`, and document how to run it.
 
 It should:
 
-1. Start `pyocd server -p <port> -u 0668FF514988525067213913` as a subprocess with
+1. Start `pyocd server -p <port> -u <probe-uid>` as a subprocess with
    `PYTHONIOENCODING=utf-8` in its environment (**required on Windows** -- without it
    the server dies with a `charmap` codec error while printing its probe table).
 2. Poll the port with `socket.create_connection` until it accepts. Do not sleep a fixed

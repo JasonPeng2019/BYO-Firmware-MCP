@@ -25,7 +25,7 @@ from pyocd_debug_mcp.probe_inventory import (
 PROBE_TABLE = (
     "#   Probe/Board          Unique ID                  State\n"
     "-------------------------------------------------------\n"
-    "0   J-Link probe          683710208                  \n"
+    "0   J-Link probe          111222333                  \n"
 )
 NO_PROBES_TABLE = "No available debug probes were found.\n"
 
@@ -59,7 +59,7 @@ class DetailedListingTests(unittest.TestCase):
             listing = list_connected_probes_detailed(runner)
 
         self.assertEqual(len(listing.probes), 1)
-        self.assertEqual(listing.probes[0].uid, "683710208")
+        self.assertEqual(listing.probes[0].uid, "111222333")
         self.assertEqual(listing.command, ("pyocd", "list", "--probes"))
         self.assertEqual(listing.exit_code, 0)
         self.assertTrue(listing.available)

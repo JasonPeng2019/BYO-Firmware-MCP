@@ -310,9 +310,7 @@ class SignaturesGroupAcrossRuns(unittest.TestCase):
         self.assertEqual(first, second)
 
     def test_signature_keeps_the_exception_identity(self) -> None:
-        self.assertNotEqual(
-            error_signature(RuntimeError("x")), error_signature(ValueError("x"))
-        )
+        self.assertNotEqual(error_signature(RuntimeError("x")), error_signature(ValueError("x")))
 
 
 if __name__ == "__main__":

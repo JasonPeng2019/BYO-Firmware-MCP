@@ -68,7 +68,7 @@ class NoManifestTests(_TempRoot):
         """Trap 6: serial_resolver reads its registry at import; hooks must not."""
 
         source = Path(discovery_hooks.__file__).read_text(encoding="utf-8")
-        marker = f'os.environ.get({DISCOVERY_HOOK_REGISTRY_ENV!r}'
+        marker = f"os.environ.get({DISCOVERY_HOOK_REGISTRY_ENV!r}"
         self.assertNotIn(marker, source)
         # The name appears only as a constant and inside the load function.
         module_level_env_reads = [
@@ -292,12 +292,13 @@ class ContainmentTests(_TempRoot):
 
         def fake_realpath(path: object, *args: object, **kwargs: object) -> str:
             resolved = original_realpath(path, *args, **kwargs)  # type: ignore[arg-type]
-            # `Path.resolve()` delegates here too, so let the resolution pass through
-            # and only divert the containment re-check that follows it.
-            if resolved == entrypoint:
+            # Python 3.12 delegates ``Path.resolve()`` to ``realpath`` with a
+            # ``strict`` keyword while Python 3.10 uses pathlib's internal
+            # resolver.  Divert only our explicit, keyword-free containment
+            # re-check so the test exercises the same boundary on both runtimes.
+            if resolved == entrypoint and not args and not kwargs:
                 seen[resolved] = seen.get(resolved, 0) + 1
-                if seen[resolved] > 1:
-                    return escaped
+                return escaped
             return resolved
 
         with unittest.mock.patch.object(os.path, "realpath", fake_realpath):
@@ -305,7 +306,7 @@ class ContainmentTests(_TempRoot):
                 load_hook_snapshot(self.root, environ={})
 
         self.assertIn("outside the hook directory", str(caught.exception))
-        self.assertGreater(seen.get(entrypoint, 0), 1, "the realpath re-check never ran")
+        self.assertGreater(seen.get(entrypoint, 0), 0, "the realpath re-check never ran")
 
     def test_oversized_hook_file_is_refused(self) -> None:
         big = self.root / "big_hook.py"
@@ -459,9 +460,7 @@ class DocumentValidationTests(_TempRoot):
             hook_entry(f"hook-{index}", "probe")
             for index in range(discovery_hooks.MAX_HOOKS_PER_MANIFEST + 1)
         ]
-        self._expect_document_refusal(
-            {"schema_version": 1, "hooks": entries}, "more than"
-        )
+        self._expect_document_refusal({"schema_version": 1, "hooks": entries}, "more than")
 
     def test_too_many_argv_entries_is_refused(self) -> None:
         argv = [f"a{index}" for index in range(discovery_hooks.MAX_ARGV_ITEMS + 1)]
@@ -541,7 +540,8 @@ class OperatorRegistryTests(_TempRoot):
 
     def test_operator_entrypoint_is_resolved_against_the_registry_directory(self) -> None:
         write_manifest(
-            self.operator, [hook_entry("operator-hook", "probe", argv=["probe"])],
+            self.operator,
+            [hook_entry("operator-hook", "probe", argv=["probe"])],
             filename="registry.json",
         )
 
@@ -560,9 +560,7 @@ class OperatorRegistryTests(_TempRoot):
     def test_blank_environment_variable_is_ignored(self) -> None:
         write_manifest(self.project, [hook_entry("project-hook", "probe", argv=["probe"])])
 
-        snapshot = load_hook_snapshot(
-            self.project, environ={DISCOVERY_HOOK_REGISTRY_ENV: "   "}
-        )
+        snapshot = load_hook_snapshot(self.project, environ={DISCOVERY_HOOK_REGISTRY_ENV: "   "})
 
         self.assertEqual([hook.hook_id for hook in snapshot.hooks], ["project-hook"])
 
@@ -584,11 +582,7 @@ class OperatorRegistryTests(_TempRoot):
         elsewhere.write_text("print()", encoding="utf-8")
         write_manifest(
             self.operator,
-            [
-                hook_entry(
-                    "vendor-exe", "probe", runner="executable", entrypoint=str(elsewhere)
-                )
-            ],
+            [hook_entry("vendor-exe", "probe", runner="executable", entrypoint=str(elsewhere))],
             filename="registry.json",
         )
 
@@ -775,7 +769,10 @@ class OrderingTests(_TempRoot):
 
         snapshot = snapshot_for(
             self.root,
-            [hook_entry("a-uart", "uart", argv=["uart"]), hook_entry("z-probe", "probe", argv=["probe"])],
+            [
+                hook_entry("a-uart", "uart", argv=["uart"]),
+                hook_entry("z-probe", "probe", argv=["probe"]),
+            ],
         )
 
         self.assertEqual([hook.kind for hook in snapshot.hooks], ["probe", "uart"])
@@ -833,7 +830,7 @@ class HashDriftTests(_TempRoot):
         first = load_hook_snapshot(self.root, environ={})
         original = first.hooks[0].file_sha256
         (self.root / "hook.py").write_text(
-            '\n'.join(
+            "\n".join(
                 [
                     "import json, sys",
                     'json.dump({"schema_version": 1, "kind": "probe", "probes": []}, sys.stdout)',

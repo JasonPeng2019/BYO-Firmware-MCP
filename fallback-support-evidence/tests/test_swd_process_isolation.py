@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import json
 import subprocess
@@ -19,7 +19,7 @@ from pyocd_debug_mcp.timeouts import DEFAULT_EXTERNAL_COMMAND_TIMEOUT_SECONDS
 
 class ProcessIsolationContractTests(unittest.TestCase):
     def test_worker_bootstrap_isolates_import_and_between_request_stdout(self) -> None:
-        script = r'''
+        script = r"""
 import builtins
 import json
 import os
@@ -60,7 +60,7 @@ def injected_import(name, globals=None, locals=None, fromlist=(), level=0):
 
 builtins.__import__ = injected_import
 provider_worker.main()
-'''
+"""
         requests = (
             '{"version":1,"request_id":1,"operation":"one","arguments":{}}\n'
             '{"version":1,"request_id":2,"operation":"two","arguments":{}}\n'
@@ -94,7 +94,7 @@ provider_worker.main()
         self.assertIs(sys.stdout, before)
 
     def test_backend_stdout_is_forwarded_to_inherited_stderr_at_both_layers(self) -> None:
-        script = r'''
+        script = r"""
 import os
 import sys
 from pyocd_debug_mcp.adapters.swd_pyocd import _backend_stdout_to_stderr
@@ -104,7 +104,7 @@ with _backend_stdout_to_stderr():
     os.write(1, b"fd-stdout\n")
     print("python-stderr", file=sys.stderr, flush=True)
     os.write(2, b"fd-stderr\n")
-'''
+"""
         result = subprocess.run(
             [sys.executable, "-c", script],
             capture_output=True,
@@ -119,7 +119,7 @@ with _backend_stdout_to_stderr():
             self.assertIn(marker, result.stderr)
 
     def test_selection_and_discovery_chatter_cannot_corrupt_protocol_result(self) -> None:
-        script = r'''
+        script = r"""
 import json
 import os
 from unittest.mock import patch
@@ -163,7 +163,7 @@ with (
     payload["visible"] = swd_pyocd._single_matching_probe_visible_for_board_family(board)
 
 print(json.dumps(payload, separators=(",", ":")))
-'''
+"""
         result = subprocess.run(
             [sys.executable, "-c", script],
             capture_output=True,
@@ -602,8 +602,9 @@ print(json.dumps(payload, separators=(",", ":")))
     def test_parent_deadlines_use_explicit_or_managed_remaining_budget(self) -> None:
         from pyocd_debug_mcp.adapters import swd_process
 
-        with patch.object(swd_process.time, "monotonic", return_value=100.0), patch.object(
-            swd_process, "current_operation", return_value=None
+        with (
+            patch.object(swd_process.time, "monotonic", return_value=100.0),
+            patch.object(swd_process, "current_operation", return_value=None),
         ):
             self.assertEqual(swd_process._operation_deadline(5.0), 105.0)
             self.assertEqual(
@@ -612,8 +613,9 @@ print(json.dumps(payload, separators=(",", ":")))
             )
 
         managed = SimpleNamespace(started_at=90.0, timeout_seconds=20.0)
-        with patch.object(swd_process.time, "monotonic", return_value=100.0), patch.object(
-            swd_process, "current_operation", return_value=managed
+        with (
+            patch.object(swd_process.time, "monotonic", return_value=100.0),
+            patch.object(swd_process, "current_operation", return_value=managed),
         ):
             self.assertEqual(
                 swd_process._operation_deadline(),
@@ -876,4 +878,3 @@ print(json.dumps(payload, separators=(",", ":")))
 
 if __name__ == "__main__":
     unittest.main()
-

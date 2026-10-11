@@ -9,23 +9,25 @@ Model is pinned to ``gpt-5.6-luna`` and the run fails rather than silently
 downgrading: a test that quietly used a different model would be testing
 something other than what it claims.
 
-Isolation: the monitoring store resolves to the per-user application-data
-directory through the platform's shell API, which no environment variable can
-redirect. Each run therefore uses a unique temporary project directory, whose
-anonymized workspace digest gives it a private folder inside the real store. The
-harness removes exactly those folders afterwards.
+Isolation: each test gives the server a unique explicit monitor root and a
+unique temporary project directory. The parent computes the anonymized
+workspace digest against that same private root, so the test neither depends on
+nor mutates the developer's per-user application-data directory.
 """
 
 from __future__ import annotations
 
 import json
 import os
+import secrets
 import shutil
 import subprocess
 import tempfile
 import unittest
 from dataclasses import dataclass, field
 from pathlib import Path
+
+import psutil
 
 from pyocd_debug_mcp.monitor.counters import (
     CHECKIN_CADENCE_ENV,
@@ -36,6 +38,7 @@ REQUIRED_MODEL = "gpt-5.6-luna"
 SERVER_PROJECT = Path(__file__).resolve().parents[1]
 SERVER_NAME = "byo_monitor_itest"
 DEFAULT_TIMEOUT = 600
+RUN_CODEX_E2E_ENV = "BYO_RUN_CODEX_E2E"
 
 # Scaled down from the shipped 100/500 so a handful of real agent calls crosses a
 # boundary. The ratio is kept -- the check-in cadence is a multiple of the snapshot
@@ -114,22 +117,16 @@ class CodexResult:
         return any(tool in entry for entry in self.tool_calls)
 
 
-def _store_root() -> Path:
-    from platformdirs import user_data_dir
-
-    return Path(user_data_dir("BYO", appauthor=False, roaming=False))
-
-
-def _workspace_digest(project: Path) -> str:
+def _workspace_digest(project: Path, store: Path) -> str:
     """Compute the store folder name this project maps to.
 
     Imported in-process purely to locate the folder for assertions and cleanup;
-    the salt is shared because both use the same per-user store.
+    the salt is shared because both use the same explicit test store.
     """
 
     from pyocd_debug_mcp.monitor import paths
 
-    paths._reset_cache(None)
+    paths._reset_cache(store)
     return paths.workspace_id(project)
 
 
@@ -138,6 +135,10 @@ class CodexAgentTestCase(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls) -> None:
+        if os.environ.get(RUN_CODEX_E2E_ENV) != "1":
+            raise unittest.SkipTest(
+                f"live model/MCP integration is opt-in; set {RUN_CODEX_E2E_ENV}=1"
+            )
         available, reason = codex_available()
         if not available:
             raise unittest.SkipTest(reason)
@@ -149,11 +150,13 @@ class CodexAgentTestCase(unittest.TestCase):
             encoding="utf-8",
         )
         self.addCleanup(shutil.rmtree, self.project, True)
-        self.store = _store_root()
-        self.workspace = _workspace_digest(self.project)
+        self.store = Path(tempfile.mkdtemp(prefix="byo-codex-monitor-"))
+        self.addCleanup(shutil.rmtree, self.store, True)
+        self.workspace = _workspace_digest(self.project, self.store)
         self.addCleanup(self._clean_workspace)
         self.codex_home = self._isolated_codex_home()
         self.addCleanup(shutil.rmtree, self.codex_home, True)
+        self.addCleanup(self._terminate_owned_servers)
 
     def _isolated_codex_home(self) -> Path:
         """Build a codex home containing only this test's MCP server.
@@ -170,6 +173,80 @@ class CodexAgentTestCase(unittest.TestCase):
         if source_auth.exists():
             shutil.copy2(source_auth, home / "auth.json")
         project = str(SERVER_PROJECT).replace("\\", "/")
+        launcher = home / "server_launcher.py"
+        pid_directory = home / "server-pids"
+        self._server_owner_token = secrets.token_hex(16)
+        launcher.write_text(
+            "\n".join(
+                [
+                    "from __future__ import annotations",
+                    "",
+                    "import json",
+                    "import os",
+                    "import signal",
+                    "import sys",
+                    "import threading",
+                    "import time",
+                    "from pathlib import Path",
+                    "",
+                    "import psutil",
+                    "",
+                    "from pyocd_debug_mcp.cli import main",
+                    "",
+                    f"_PID_DIRECTORY = Path({str(pid_directory)!r})",
+                    "_PID_DIRECTORY.mkdir(mode=0o700, parents=True, exist_ok=True)",
+                    "_PID_RECORD = _PID_DIRECTORY / str(os.getpid())",
+                    "_PARENT_PID = os.getppid()",
+                    "try:",
+                    "    _PARENT_CREATE_TIME = psutil.Process(_PARENT_PID).create_time()",
+                    "except psutil.Error:",
+                    "    _PARENT_CREATE_TIME = None",
+                    f"_OWNER_TOKEN = {self._server_owner_token!r}",
+                    "_PID_RECORD.write_text(",
+                    "    json.dumps({",
+                    "        'parent_pid': _PARENT_PID,",
+                    "        'create_time': psutil.Process().create_time(),",
+                    "        'owner_token': _OWNER_TOKEN,",
+                    "    }, sort_keys=True),",
+                    "    encoding='ascii',",
+                    ")",
+                    "",
+                    "def _retire(_signum: int, _frame: object) -> None:",
+                    "    _PID_RECORD.unlink(missing_ok=True)",
+                    "    raise SystemExit(0)",
+                    "",
+                    "signal.signal(signal.SIGTERM, _retire)",
+                    "",
+                    "def _watch_parent() -> None:",
+                    "    while True:",
+                    "        try:",
+                    "            parent = psutil.Process(_PARENT_PID)",
+                    "            same_parent = (",
+                    "                _PARENT_CREATE_TIME is not None",
+                    "                and abs(parent.create_time() - _PARENT_CREATE_TIME) <= 0.01",
+                    "                and parent.is_running()",
+                    "            )",
+                    "        except psutil.Error:",
+                    "            same_parent = False",
+                    "        if not same_parent:",
+                    "            os.kill(os.getpid(), signal.SIGTERM)",
+                    "            return",
+                    "        time.sleep(0.1)",
+                    "",
+                    "threading.Thread(target=_watch_parent, daemon=True).start()",
+                    "try:",
+                    "    if '--harness-lifecycle-probe' in sys.argv:",
+                    "        while True:",
+                    "            time.sleep(60)",
+                    "    else:",
+                    "        main()",
+                    "finally:",
+                    "    _PID_RECORD.unlink(missing_ok=True)",
+                    "",
+                ]
+            ),
+            encoding="utf-8",
+        )
         (home / "config.toml").write_text(
             "\n".join(
                 [
@@ -178,7 +255,7 @@ class CodexAgentTestCase(unittest.TestCase):
                     "",
                     f"[mcp_servers.{SERVER_NAME}]",
                     "command = 'uv'",
-                    f"args = ['run','--project','{project}','pyocd-debug-mcp']",
+                    f"args = ['run','--project','{project}','python',{launcher.as_posix()!r}]",
                     f"cwd = '{project}'",
                     "startup_timeout_sec = 180",
                     "tool_timeout_sec = 120",
@@ -192,12 +269,56 @@ class CodexAgentTestCase(unittest.TestCase):
                     f"[mcp_servers.{SERVER_NAME}.env]",
                     f'{SNAPSHOT_CADENCE_ENV} = "{E2E_SNAPSHOT_CADENCE}"',
                     f'{CHECKIN_CADENCE_ENV} = "{E2E_CHECKIN_CADENCE}"',
+                    f'BYO_MCP_MONITOR_ROOT = "{self.store.as_posix()}"',
                     "",
                 ]
             ),
             encoding="utf-8",
         )
         return home
+
+    def _terminate_owned_servers(self) -> None:
+        """Retire only MCP processes launched through this test's private shim."""
+
+        pid_directory = self.codex_home / "server-pids"
+        if not pid_directory.is_dir():
+            return
+        launcher = str((self.codex_home / "server_launcher.py").resolve())
+        for record in pid_directory.iterdir():
+            try:
+                pid = int(record.name)
+                payload = json.loads(record.read_text(encoding="ascii"))
+                create_time = float(payload["create_time"])
+                owner_token = str(payload["owner_token"])
+            except (ValueError, KeyError, TypeError, json.JSONDecodeError, OSError):
+                continue
+            if owner_token != self._server_owner_token:
+                continue
+            try:
+                process = psutil.Process(pid)
+                if abs(process.create_time() - create_time) > 0.01:
+                    continue
+                command_line = [str(Path(argument).resolve()) for argument in process.cmdline()]
+                if launcher not in command_line:
+                    continue
+            except psutil.NoSuchProcess:
+                record.unlink(missing_ok=True)
+                continue
+            try:
+                process.terminate()
+                process.wait(timeout=5.0)
+            except psutil.TimeoutExpired:
+                process.kill()
+                process.wait(timeout=5.0)
+            except (psutil.NoSuchProcess, psutil.AccessDenied):
+                if psutil.pid_exists(pid):
+                    continue
+            finally:
+                if not psutil.pid_exists(pid):
+                    record.unlink(missing_ok=True)
+            if psutil.pid_exists(pid):
+                continue
+            record.unlink(missing_ok=True)
 
     def _clean_workspace(self) -> None:
         for base in ("server_data", "simulated_remote"):
@@ -235,8 +356,8 @@ class CodexAgentTestCase(unittest.TestCase):
             "--model",
             REQUIRED_MODEL,
             "--skip-git-repo-check",
-            # The server writes to the per-user data directory, which sits
-            # outside any workspace sandbox, so it needs filesystem access.
+            # The server writes to the explicit test monitor root, which sits
+            # outside the agent's temporary project sandbox, so it needs filesystem access.
             # Approvals stay enforced; only the filesystem policy is widened.
             "-s",
             "danger-full-access",
@@ -260,6 +381,7 @@ class CodexAgentTestCase(unittest.TestCase):
                 # still reaches a snapshot boundary.
                 SNAPSHOT_CADENCE_ENV: str(E2E_SNAPSHOT_CADENCE),
                 CHECKIN_CADENCE_ENV: str(E2E_CHECKIN_CADENCE),
+                "BYO_MCP_MONITOR_ROOT": str(self.store),
             },
         )
         result = CodexResult(
