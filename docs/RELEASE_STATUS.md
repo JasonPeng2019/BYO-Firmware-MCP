@@ -4,6 +4,11 @@
 software evaluation candidate, not a claim that the planned open-source and
 commercial product split is complete and not a public production release.
 
+The CAN integration is currently proposed through draft, testing-only
+[BYO-Firmware-MCP pull request #2](https://github.com/JasonPeng2019/BYO-Firmware-MCP/pull/2),
+from `feature/canbus-integration` into `release/0.1.8-preview`. The pull request
+does not target or publish to a BYO Releases repository.
+
 The preview is intended to make the current source tree and its optional
 Classical CAN integration reproducible on software-only hosts. The default
 installation excludes CAN backend libraries. Install the `can` extra and stage
@@ -28,9 +33,9 @@ seven-name MCP registration without importing `python-can`.
 | --- | --- | --- |
 | Ubuntu 24.04 x86_64, Python 3.12 | Full default 1,397-test software suite (14 platform/class-level opt-in skips in a normal run; evidence generation defers its one self-referential retained-log case and runs all 4 release-evidence cases against the immutable staged set before publication; 1,415 discovered cases), Ruff, Pyright, package inventory, privacy/evidence consistency, and clean-install verifier | Locally verified |
 | Opt-in Codex/MCP monitor module, pinned `gpt-5.6-luna` | 17 live agent/MCP cases passed against isolated explicit monitor roots, plus 5 harness/unit cases (22 module tests total) | Locally verified |
-| CPython 3.10.20 | All 222 source files parsed with the 3.10 interpreter; the runtime suite was not executed under 3.10 locally | Runtime unqualified locally |
-| GitHub-hosted Ubuntu, Python 3.10 and 3.12 | Locked workflow is present in the candidate working tree at `.github/workflows/software-can.yml` | Configured; no hosted run until pushed |
-| GitHub-hosted Windows, Python 3.12 | Off-mode contract and configured-mode fail-closed guard lane is present in the same workflow | Configured; no hosted run until pushed |
+| CPython 3.10.20 | All 222 source files parsed locally with the 3.10 interpreter; the full 1,397-test runtime suite passed in the hosted Ubuntu 3.10 lane | Local parse and hosted runtime verified |
+| GitHub-hosted Ubuntu, Python 3.10 and 3.12 | Locked lint, format, type, privacy, evidence, test, clean-install, and artifact workflow completed on the feature branch; both runtime lanes passed | Hosted verification passed ([branch runs](https://github.com/JasonPeng2019/BYO-Firmware-MCP/actions/workflows/software-can.yml?query=branch%3Afeature%2Fcanbus-integration)) |
+| GitHub-hosted Windows, Python 3.12 | Six focused off-mode, configured-mode fail-closed, registry-concurrency, and junction-containment checks passed | Hosted verification passed ([branch runs](https://github.com/JasonPeng2019/BYO-Firmware-MCP/actions/workflows/software-can.yml?query=branch%3Afeature%2Fcanbus-integration)) |
 | macOS, any supported Python | Configured CAN fails closed before profile loading; no native runtime lane | Disabled pending qualification |
 | Linux `vcan`, physical CAN, or pyOCD/J-Link HIL | Requires privileged interfaces or attached hardware | External qualification gate |
 

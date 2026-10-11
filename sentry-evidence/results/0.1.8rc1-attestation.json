@@ -1,21 +1,21 @@
 {
-  "candidate_manifest_sha256": "1e59f7281881304597f75d2a4b8664a2c19ab4dd4287d5555fef5ff3cbc1dc3d",
+  "candidate_manifest_sha256": "2edbe35ee46a503ff30a443137ca920d724280c41b0d17f3dd9ad5c02afa60a3",
   "release_logs": [
     {
       "path": "sentry-evidence/results/0.1.8rc1-static.log",
-      "sha256": "4d1d67ca289142b3b10b6fcf2a2e31c0e9f793a1dcc3bb5487fcf8da96cf3630"
+      "sha256": "7e96805d1559bbf70e0a4ee2d00c130306952605ebc85a6977a674f0dc3e75d0"
     },
     {
       "path": "sentry-evidence/results/0.1.8rc1-python310-parse.log",
-      "sha256": "406d58e5b8f955078e40db92cc5bfc24d6973420754a35ce99518ec86b6c10a0"
+      "sha256": "0289c0a85fb693debcb2abe0690a3f8e417ec1e694f70fc80b813551ff233c5d"
     },
     {
       "path": "sentry-evidence/results/0.1.8rc1-software-suite.log",
-      "sha256": "e9d4689d2c735c872ee0ef80f845982ec1c40dba9320bcd021be621e280bbfc1"
+      "sha256": "b6bdb2ecd86f37e301b9d3ca26a8d6e5bf8630f4dc55a7d2bb374e6552d22bc3"
     },
     {
       "path": "sentry-evidence/results/0.1.8rc1-monitor-codex-e2e.log",
-      "sha256": "f01fb05189ce5816e346697be03d23f3fa9645c0b22f9ff1eeb52169e295fd90"
+      "sha256": "a6e27a38f80277b82e372aaac2a2a8b8fd02695b8f4357947472cb9d2962cd04"
     }
   ],
   "schema_version": 1

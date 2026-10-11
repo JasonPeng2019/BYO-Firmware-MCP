@@ -40,6 +40,7 @@ evidence.
   3 skipped; Ruff and Pyright passed; the final E2E check-in test passed. See
   `sentry-evidence/results/`.
 - [x] The baseline monitor source, tests, and evidence were committed before
-  this review. The current `0.1.8rc1` release-remediation slice is implemented
-  and locally verified in the working tree but remains intentionally
-  uncommitted until the maintainer requests a commit.
+  this review. The current `0.1.8rc1` release-remediation slice is implemented,
+  committed, pushed, and hosted-CI verified on `feature/canbus-integration`.
+  Draft [BYO-Firmware-MCP pull request #2](https://github.com/JasonPeng2019/BYO-Firmware-MCP/pull/2)
+  is explicitly testing-only and does not target a BYO Releases repository.
