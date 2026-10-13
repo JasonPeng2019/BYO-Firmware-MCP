@@ -158,6 +158,40 @@ while not (base / 'exit').exists(): time.sleep(.005)
 """
 
 
+# Like clangd's --query-driver probes: short-lived owned children whose own
+# children outlive them, so ancestry proposals retire or reparent mid-walk.
+CHURN = r"""
+import os, pathlib, sys, time
+base, generations = pathlib.Path(sys.argv[1]), 0
+while not (base / "exit").exists():
+    middle = os.fork()
+    if middle == 0:
+        if os.fork() == 0:
+            time.sleep(.002)
+            os._exit(0)
+        os._exit(0)
+    os.waitpid(middle, 0)
+    generations += 1
+    if generations == 100:
+        (base / "churning").touch()
+"""
+
+# A live owned parent with one exact child for direct ancestry contracts.
+PARENT = r"""
+import os, pathlib, sys, time
+base = pathlib.Path(sys.argv[1])
+child = os.fork()
+if child == 0:
+    while not (base / "exit").exists(): time.sleep(.01)
+    os._exit(0)
+(base / "child-ready.tmp").write_text(str(child))
+os.replace(base / "child-ready.tmp", base / "child-ready")
+os.waitpid(child, 0)
+(base / "reaped").touch()
+while not (base / "exit-parent").exists(): time.sleep(.01)
+"""
+
+
 @unittest.skipUnless(os.name == "posix", "Actual POSIX process ownership; Windows Jobs separate")
 class NativePosixOwnership(unittest.TestCase):
     def setUp(self) -> None:
@@ -1109,6 +1143,74 @@ class NativePosixOwnership(unittest.TestCase):
         self.assertEqual(receipt["uncertainties"], [])
         self.store.remove(marker)
         self.assertFalse(marker.exists())
+
+    def test_retired_or_absent_ancestry_proposals_grant_nothing_without_uncertainty(self) -> None:
+        posix = production("kernel._analysis_posix")
+        directory = self.base / "ancestry-parent"
+        directory.mkdir()
+        parent = subprocess.Popen(
+            [sys.executable, "-c", PARENT, str(directory)],
+            start_new_session=True,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        self.owned.append((parent, None))
+        self.addCleanup((directory / "exit-parent").touch)
+        self.addCleanup((directory / "exit").touch)
+        parent_token = f"psutil:{psutil.Process(parent.pid).create_time():.9f}"
+        self.observe(parent.pid)
+        self.until(lambda: (directory / "child-ready").exists())
+        child = int((directory / "child-ready").read_text())
+        self.observe(child)
+        child_token = f"psutil:{psutil.Process(child).create_time():.9f}"
+        deadline = time.monotonic() + 5
+        identity = (parent.pid, parent_token)
+        # Positive control: fresh exact ancestry through a live owned parent.
+        self.assertEqual(posix._descendant_chain(child, identity, deadline), {(child, child_token)})
+        for state in ("gone", "reused"):
+            with self.subTest(parent_state=state):
+                # A positively retired parent cannot authorize acquisition, and
+                # its retirement is not uncertain ownership.
+                self.assertEqual(
+                    posix._descendant_chain(
+                        child, identity, deadline, parent_state=lambda state=state: state
+                    ),
+                    set(),
+                )
+        with self.assertRaisesRegex(RuntimeError, "Owned parent identity lost"):
+            posix._descendant_chain(child, identity, deadline, parent_state=lambda: "unknown")
+        (directory / "exit").touch()
+        self.until(lambda: (directory / "reaped").exists())
+        self.assertEqual(posix._process_state(child, child_token), "gone")
+        # The stale proposal is now absent; it grants nothing and never raises.
+        self.assertEqual(posix._descendant_chain(child, identity, deadline), set())
+
+    def test_churning_short_lived_descendants_keep_scoped_cleanup_confirmed(self) -> None:
+        for exit_first in (True, False):
+            with self.subTest(exit_first=exit_first):
+                directory = self.base / f"churn-{exit_first}"
+                directory.mkdir()
+                process, marker = self.spawn([sys.executable, "-c", CHURN, str(directory)])
+                self.until(lambda: (directory / "churning").exists())
+                # Let the live observer race real retirement and reparenting.
+                time.sleep(0.5)
+                self.assertIsNone(process.poll())
+                if exit_first:
+                    (directory / "exit").touch()
+                    self.assertEqual(
+                        self.until(lambda: native_retained_exit(process.pid)),
+                        (process.pid, 1, 0),
+                    )
+                confirmed = self.processes.terminate_process_group(process, grace_seconds=0.5)
+                receipt = process.cleanup_receipt
+                self.assertEqual(receipt["uncertainties"], [], receipt)
+                self.assertTrue(confirmed, receipt)
+                self.assert_scoped_receipt(receipt)
+                self.assertIs(receipt["leader_reaped"], True)
+                if exit_first:
+                    self.assertEqual(receipt["leader_exit"], 0)
+                self.store.remove(marker)
 
     def test_captured_detached_descendant_cannot_survive_normal_exit(self) -> None:
         peer, peer_token = self.peer()

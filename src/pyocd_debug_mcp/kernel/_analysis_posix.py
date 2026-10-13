@@ -20,7 +20,7 @@ import sys
 import threading
 import time
 from _thread import LockType
-from typing import Any
+from typing import Any, Callable
 
 import psutil
 
@@ -136,8 +136,21 @@ def _darwin_group_members(group: int, deadline: float) -> set[int]:
     raise RuntimeError("Darwin complete group snapshot exceeded member limit")
 
 
+def _ancestry(pid: int) -> tuple[str, int]:
+    """Fresh birth/PPID; a zombie's unreadable identity is never absence."""
+    try:
+        process = psutil.Process(pid)  # Never reuse a cached Process birth time.
+        return f"psutil:{process.create_time():.9f}", process.ppid()
+    except psutil.ZombieProcess as exc:
+        raise RuntimeError("Descendant birth/liveness unavailable at acquisition") from exc
+
+
 def _descendant_chain(
-    candidate: int, parent: tuple[int, str], deadline: float
+    candidate: int,
+    parent: tuple[int, str],
+    deadline: float,
+    *,
+    parent_state: Callable[[], str] | None = None,
 ) -> set[tuple[int, str]]:
     """Treat a children() result only as a proposal; acquire fresh ancestry."""
     chain: dict[int, tuple[str, int]] = {}
@@ -147,9 +160,10 @@ def _descendant_chain(
             raise _ObservationDeadline("Exact descendant ancestry exceeded bounded phase")
         if current <= 1 or current in chain:
             return set()  # Stale PPID proposal or ancestry outside this owner.
-        process = psutil.Process(current)
-        token = f"psutil:{process.create_time():.9f}"
-        ppid = process.ppid()
+        try:
+            token, ppid = _ancestry(current)
+        except psutil.NoSuchProcess:
+            return set()  # An absent proposal grants no ownership.
         state = _process_state(current, token)
         if state == "unknown":
             raise RuntimeError("Descendant birth/liveness unavailable at acquisition")
@@ -160,19 +174,28 @@ def _descendant_chain(
     # Recheck every exact child and PPID edge after reaching the known parent's
     # identity. New birth tokens from recycled unrelated proposals never grant
     # ownership merely because a previous global PPID map named their PID.
-    if _process_state(*parent) not in {"live", "zombie"}:
+    state = parent_state() if parent_state is not None else _process_state(*parent)
+    if state in {"gone", "reused"}:
+        return set()  # Retired known parent cannot authorize a new acquisition.
+    if state not in {"live", "zombie"}:
         raise RuntimeError("Owned parent identity lost during ancestry acquisition")
-    for pid, (token, ppid) in chain.items():
+    for pid, edge in chain.items():
         if time.monotonic() >= deadline:
             raise _ObservationDeadline("Exact descendant ancestry exceeded bounded phase")
-        process = psutil.Process(pid)
-        if (
-            f"psutil:{process.create_time():.9f}" != token
-            or process.ppid() != ppid
-            or _process_state(pid, token) not in {"live", "zombie"}
-        ):
-            raise RuntimeError("Exact descendant relationship changed during acquisition")
-    if _process_state(*parent) not in {"live", "zombie"}:
+        try:
+            if _ancestry(pid) != edge:
+                return set()  # A recycled/reparented proposal was never acquired.
+        except psutil.NoSuchProcess:
+            return set()
+        state = _process_state(pid, edge[0])
+        if state in {"gone", "reused"}:
+            return set()  # Positive retirement/reuse is not uncertain ownership.
+        if state not in {"live", "zombie"}:
+            raise RuntimeError("Descendant birth/liveness unavailable at acquisition")
+    state = parent_state() if parent_state is not None else _process_state(*parent)
+    if state in {"gone", "reused"}:
+        return set()
+    if state not in {"live", "zombie"}:
         raise RuntimeError("Owned parent identity lost during ancestry acquisition")
     return {(pid, token) for pid, (token, _) in chain.items()}
 
@@ -386,12 +409,27 @@ class AnalysisPopen(subprocess.Popen[Any]):
                     parent = psutil.Process(pid)
                     if f"psutil:{parent.create_time():.9f}" != token:
                         continue
+                    # Only this exact unreaped direct child can lose its live
+                    # metadata while retained waitid still proves its identity.
+                    parent_state = (
+                        self._leader_state
+                        if (pid, token) == (self.pid, self._leader_token)
+                        else None
+                    )
                     for child in parent.children(recursive=True):
                         # Each returned chain already rechecked every exact
                         # birth/PPID edge and its parent. Retain that acquisition
                         # even if a later proposal exceeds this phase.
-                        candidates.update(_descendant_chain(child.pid, (pid, token), deadline))
-                    if _process_state(pid, token) not in {"live", "zombie"}:
+                        candidates.update(
+                            _descendant_chain(
+                                child.pid, (pid, token), deadline, parent_state=parent_state
+                            )
+                        )
+                    # Fresh gone/reused proves retirement of this captured
+                    # identity; unknown still prevents scoped cleanup proof.
+                    if (
+                        parent_state() if parent_state is not None else _process_state(pid, token)
+                    ) not in {"live", "zombie", "gone", "reused"}:
                         self._uncertainties.add(
                             "parent identity lost during descendant observation"
                         )
@@ -401,12 +439,17 @@ class AnalysisPopen(subprocess.Popen[Any]):
                     raise
                 except (psutil.AccessDenied, OSError):
                     self._uncertainties.add("descendant identities unavailable")
+            if time.monotonic() >= deadline:
+                self._note_incomplete_observation(
+                    "complete ownership snapshot exceeded bounded phase"
+                )
+                return False
             return True
         except _ObservationDeadline as exc:
             self._note_incomplete_observation(str(exc))
             return False
         except (psutil.Error, OSError, RuntimeError) as exc:
-            self._uncertainties.add(f"ownership observation failed: {type(exc).__name__}")
+            self._uncertainties.add(f"ownership observation failed: {type(exc).__name__}: {exc}")
             return False
         finally:
             # Preserve only acquisitions already completed with exact proof;
