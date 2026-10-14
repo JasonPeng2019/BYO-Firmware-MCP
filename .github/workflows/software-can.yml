@@ -84,8 +84,7 @@ jobs:
       matrix:
         os: [ubuntu-latest, macos-latest, windows-latest]
     env:
-      TMPDIR: ${{ runner.temp }}
-      PYOCD_MCP_RUNS_ROOT: ${{ runner.temp }}/byo-can-owned-runs
+      PYOCD_MCP_RUNS_ROOT: ${{ github.workspace }}/byo-can-owned-runs
       BYO_CAN_ACCEPTANCE_EVIDENCE_DIR: ${{ github.workspace }}/native-can-evidence
 
     steps:
@@ -101,6 +100,8 @@ jobs:
       - name: Install locked CAN test environment
         run: uv sync --locked --extra can --group dev
       - name: Run native simulation and MCP acceptance
+        env:
+          TMPDIR: ${{ runner.temp }}
         run: >-
           uv run --locked --extra can python -m unittest -v
           tests.test_can_native_sim tests.test_can_mcp_sim_e2e
