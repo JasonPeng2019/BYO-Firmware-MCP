@@ -83,6 +83,14 @@ def main() -> None:
     import faulthandler
 
     with (root / "startup-threads.log").open("w") as diagnostics:
+        if os.name == "nt":
+            import inspect
+            import multiprocessing.popen_spawn_win32 as win_spawn
+            import sys
+
+            diagnostics.write(inspect.getsource(win_spawn.Popen.__init__))
+            diagnostics.write(f"\nexecutable={sys.executable}\n")
+            diagnostics.flush()
         faulthandler.dump_traceback_later(4, file=diagnostics)
         try:
             server.main()
