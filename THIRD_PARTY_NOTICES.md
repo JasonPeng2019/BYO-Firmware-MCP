@@ -1,5 +1,13 @@
 # Third-party notices
 
+## CPython Windows worker startup
+
+`services/can_windows_spawn.py` adapts CPython's Windows multiprocessing startup
+to isolate CAN worker standard handles from the MCP protocol. CPython is
+copyright the Python Software Foundation and its contributors; its license
+and historical notices are retained in `LICENSES/Python.txt` (installed as
+`pyocd_debug_mcp/licenses/Python.txt`).
+
 ## Firmware-CLI CAN support
 
 The CAN transport implementation under `src/pyocd_debug_mcp/` contains code

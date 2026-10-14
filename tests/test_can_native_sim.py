@@ -262,6 +262,43 @@ class CaptureRetentionTests(NativeSimulatorFixture):
 
 
 class StartupDeadlineTests(unittest.TestCase):
+    @unittest.skipUnless(sys.platform == "win32", "native Windows handle ownership")
+    def test_windows_post_create_failures_retain_reapable_owner(self) -> None:
+        from pyocd_debug_mcp.services import can_windows_spawn as native
+
+        for stage in ("thread-close", "serialize"):
+            process = native.CanSpawnProcess(target=time.sleep, args=(30,), daemon=True)
+            original_close = native.winapi.CloseHandle
+            failed = False
+
+            def close_once(handle):
+                nonlocal failed
+                if not failed:
+                    failed = True
+                    raise RuntimeError("injected post-create close failure")
+                return original_close(handle)
+
+            seam = (
+                patch.object(native.winapi, "CloseHandle", close_once)
+                if stage == "thread-close"
+                else patch.object(
+                    native.context.reduction,
+                    "dump",
+                    side_effect=RuntimeError("injected serialization failure"),
+                )
+            )
+            try:
+                with self.subTest(stage=stage), seam, self.assertRaises(RuntimeError):
+                    process.start()
+                self.assertIsNotNone(process.pid, "native child ownership was lost")
+            finally:
+                if process.pid is not None:
+                    if process.is_alive():
+                        process.terminate()
+                    process.join(3)
+                    self.assertFalse(process.is_alive())
+                    process.close()
+
     def test_pipe_allocation_failure_closes_previously_allocated_endpoints(self) -> None:
         import multiprocessing
         from unittest.mock import Mock
@@ -273,9 +310,7 @@ class StartupDeadlineTests(unittest.TestCase):
         worker = CanWorkerClient(
             load_can_fixture_config(ROOT / "fixtures/can/virtual_tx_allowed.yaml")
         )
-        with patch(
-            "pyocd_debug_mcp.services.can_worker.multiprocessing.get_context", return_value=fake
-        ):
+        with patch("pyocd_debug_mcp.services.can_worker._spawn_context", return_value=fake):
             with self.assertRaises(CanError):
                 worker.open(timeout_seconds=0.2)
         self.assertTrue(all(item.closed for item in pair))
@@ -343,7 +378,11 @@ class StartupDeadlineTests(unittest.TestCase):
             finally:
                 release.set()
 
-        with patch.object(context, "Pipe", pipe), patch.object(threading.Thread, "start", delayed):
+        with (
+            patch("pyocd_debug_mcp.services.can_worker._spawn_context", return_value=context),
+            patch.object(context, "Pipe", pipe),
+            patch.object(threading.Thread, "start", delayed),
+        ):
             caller = threading.Thread(target=request)
             caller.start()
             self.assertTrue(ready.wait(1))

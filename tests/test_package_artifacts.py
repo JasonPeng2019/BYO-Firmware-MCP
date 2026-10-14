@@ -106,6 +106,7 @@ class ReleaseArtifactInventoryTests(unittest.TestCase):
         self.assertTrue(CAN_MODULES.issubset(names))
         self.assertIn("pyocd_debug_mcp/examples/can/virtual_rx_only.yaml", names)
         self.assertIn("pyocd_debug_mcp/licenses/Apache-2.0.txt", names)
+        self.assertIn("pyocd_debug_mcp/licenses/Python.txt", names)
         self.assertIn("pyocd_debug_mcp/licenses/THIRD_PARTY_NOTICES.md", names)
         self.assertIn("pyocd_debug_mcp/docs/SERVER_GUIDE.md", names)
         self.assertIn("pyocd_debug_mcp/docs/client-contract.md", names)
@@ -150,6 +151,7 @@ class ReleaseArtifactInventoryTests(unittest.TestCase):
             prefix + "SERVER_GUIDE.md",
             prefix + "THIRD_PARTY_NOTICES.md",
             prefix + "LICENSES/Apache-2.0.txt",
+            prefix + "LICENSES/Python.txt",
             prefix + "fixtures/can/virtual_rx_only.yaml",
             prefix + "docs/client-contract.md",
             prefix + "docs/server-reference.md",

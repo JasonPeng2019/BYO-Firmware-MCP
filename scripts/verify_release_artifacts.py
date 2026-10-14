@@ -191,6 +191,7 @@ root = importlib.resources.files("pyocd_debug_mcp")
 for relative in (
     "examples/can/virtual_rx_only.yaml",
     "licenses/Apache-2.0.txt",
+    "licenses/Python.txt",
     "licenses/THIRD_PARTY_NOTICES.md",
     "docs/SERVER_GUIDE.md",
     "docs/client-contract.md",
@@ -805,6 +806,7 @@ def _source_archive_mappings() -> tuple[dict[str, Path], dict[str, Path]]:
         "SERVER_GUIDE.md": ROOT / "SERVER_GUIDE.md",
         "THIRD_PARTY_NOTICES.md": ROOT / "THIRD_PARTY_NOTICES.md",
         "LICENSES/Apache-2.0.txt": ROOT / "LICENSES/Apache-2.0.txt",
+        "LICENSES/Python.txt": ROOT / "LICENSES/Python.txt",
         "fixtures/can/virtual_rx_only.yaml": ROOT / "fixtures/can/virtual_rx_only.yaml",
         "pyproject.toml": ROOT / "pyproject.toml",
         "uv.lock": ROOT / "uv.lock",
@@ -817,6 +819,7 @@ def _source_archive_mappings() -> tuple[dict[str, Path], dict[str, Path]]:
             "pyocd_debug_mcp/docs/SERVER_GUIDE.md": ROOT / "SERVER_GUIDE.md",
             "pyocd_debug_mcp/licenses/THIRD_PARTY_NOTICES.md": (ROOT / "THIRD_PARTY_NOTICES.md"),
             "pyocd_debug_mcp/licenses/Apache-2.0.txt": ROOT / "LICENSES/Apache-2.0.txt",
+            "pyocd_debug_mcp/licenses/Python.txt": ROOT / "LICENSES/Python.txt",
             "pyocd_debug_mcp/examples/can/virtual_rx_only.yaml": (
                 ROOT / "fixtures/can/virtual_rx_only.yaml"
             ),

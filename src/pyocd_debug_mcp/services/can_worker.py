@@ -42,6 +42,16 @@ from pyocd_debug_mcp.can_errors import (
 
 
 MAX_WORKER_OPERATION_SECONDS = 30.0
+
+
+def _spawn_context():
+    if os.name == "nt":
+        from pyocd_debug_mcp.services.can_windows_spawn import CanSpawnContext
+
+        return CanSpawnContext()
+    return multiprocessing.get_context("spawn")
+
+
 # One caller-visible budget covers OS spawn and child readiness. A pending
 # spawn remains owned and explicitly uncertain after the caller times out.
 MAX_WORKER_READINESS_SECONDS = 5.0
@@ -646,7 +656,7 @@ class CanWorkerClient:
                     self._failure = "CAN worker exited unexpectedly"
                     raise CanWorkerError(self._failure)
                 return False
-            context = multiprocessing.get_context("spawn")
+            context = _spawn_context()
             allocated: list[_Connection] = []
 
             def new_pipe(*, duplex: bool) -> tuple[_Connection, _Connection]:
