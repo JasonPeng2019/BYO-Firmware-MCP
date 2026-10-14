@@ -91,6 +91,28 @@ def main() -> None:
             diagnostics.write(inspect.getsource(win_spawn.Popen.__init__))
             diagnostics.write(f"\nexecutable={sys.executable}\n")
             diagnostics.flush()
+            import builtins
+
+            class TracedBootstrapFile:
+                def __init__(self, *args, **kwargs):
+                    diagnostics.write(f"bootstrap open begin: {args}\n")
+                    diagnostics.flush()
+                    self.file = builtins.open(*args, **kwargs)
+                    diagnostics.write("bootstrap open returned\n")
+                    diagnostics.flush()
+
+                def __enter__(self):
+                    return self.file.__enter__()
+
+                def __exit__(self, *args):
+                    diagnostics.write("bootstrap flush/close begin\n")
+                    diagnostics.flush()
+                    result = self.file.__exit__(*args)
+                    diagnostics.write("bootstrap flush/close returned\n")
+                    diagnostics.flush()
+                    return result
+
+            win_spawn.open = TracedBootstrapFile
         faulthandler.dump_traceback_later(4, file=diagnostics)
         try:
             server.main()
