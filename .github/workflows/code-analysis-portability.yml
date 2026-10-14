@@ -3,8 +3,7 @@ name: Native code analysis contracts
 on:
   push:
     branches:
-      - validation/portability/server-20261010
-      - integration/portability/server-20261010
+      - chore/Proto-0.03
   workflow_dispatch:
 
 permissions:
