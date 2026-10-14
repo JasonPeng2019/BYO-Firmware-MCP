@@ -146,7 +146,10 @@ def _retire_process_group(group_id: int) -> None:
 def _verification_workspace() -> Iterator[Path]:
     """Create and reliably remove a private verifier workspace."""
 
-    workspace = Path(tempfile.mkdtemp(prefix="byo-release-verify-"))
+    # macOS exposes its default temporary directory through the /var symlink.
+    # Use the canonical directory we just created so secure profile loading
+    # can continue to reject symlinks in user-supplied paths.
+    workspace = Path(tempfile.mkdtemp(prefix="byo-release-verify-")).resolve()
     try:
         yield workspace
     finally:

@@ -2,9 +2,9 @@
 # Derived from Firmware-CLI commit 0e8a45d; modified for BYO-Firmware-MCP.
 """Spawned owner for blocking CAN backend operations.
 
-Portable deadlines begin after synchronous OS process creation returns. Readiness,
-backend operations, and retirement are bounded; ``Process.start()`` itself is not
-portably interruptible or deadline-bounded.
+Caller deadlines include worker creation and readiness. A daemon launch owner
+retains a stalled OS spawn and retires any late child; cleanup remains unknown
+until that owner has proved retirement. The OS spawn itself cannot be interrupted.
 """
 
 from __future__ import annotations
@@ -42,9 +42,8 @@ from pyocd_debug_mcp.can_errors import (
 
 
 MAX_WORKER_OPERATION_SECONDS = 30.0
-# This bounds the child's readiness acknowledgement after Process.start()
-# returns. Python does not provide a portable, interruptible deadline around
-# the OS-level process-creation call itself.
+# One caller-visible budget covers OS spawn and child readiness. A pending
+# spawn remains owned and explicitly uncertain after the caller times out.
 MAX_WORKER_READINESS_SECONDS = 5.0
 WORKER_POLL_SLICE_SECONDS = 0.05
 MAX_CANCEL_ACK_SECONDS = 0.1
@@ -186,6 +185,12 @@ def _build_python_can_adapter() -> CANInterface:
     from pyocd_debug_mcp.adapters.can_pythoncan import PythonCanAdapter
 
     return PythonCanAdapter()
+
+
+def _build_tcp_sim_adapter() -> CANInterface:
+    from pyocd_debug_mcp.adapters.can_sim import TcpSimAdapter
+
+    return TcpSimAdapter()
 
 
 def _error_record(exc: BaseException) -> dict[str, str]:
@@ -471,7 +476,9 @@ def _worker_main(
         readiness_connection,
         loaded,
         expected_parent_pid,
-        _build_python_can_adapter,
+        _build_tcp_sim_adapter
+        if loaded.config.adapter.kind == "tcp_sim"
+        else _build_python_can_adapter,
     )
 
 
@@ -533,6 +540,8 @@ class CanWorkerClient:
         )
         self._loaded = loaded
         self._terminate_grace_seconds = terminate_grace_seconds
+        self._launch_done: threading.Event | None = None
+        self._launch_error: BaseException | None = None
         self._process: BaseProcess | None = None
         self._connection: _Connection | None = None
         self._cancellation_sender: _Connection | None = None
@@ -604,7 +613,9 @@ class CanWorkerClient:
             with self._lifecycle_lock:
                 if self._request_owner is owner:
                     self._request_owner = None
-                if owner.cancellation_epoch != self._cancellation_epoch:
+                if owner.cancellation_epoch != self._cancellation_epoch and (
+                    self._launch_done is None or self._launch_done.is_set()
+                ):
                     if self._connection is not None:
                         close_after_cancel.append(self._connection)
                         self._connection = None
@@ -620,47 +631,35 @@ class CanWorkerClient:
             owner.done.set()
 
     def _start(self, owner: _RequestOwnership) -> bool:
-        """Start the child and prove interpreter/adapter readiness.
+        """Bound the caller's wait while retaining ownership of a late OS spawn.
 
-        Returns ``True`` only for the request that synchronously created the
-        process and then completed the separately bounded readiness phase.
-        ``multiprocessing.Process.start()`` has no portable application deadline
-        or cancellation hook, so cancellation waits for that call to resolve.
-        The backend-operation deadline begins after the readiness handshake.
+        No backend command is submitted until startup succeeds. If cancellation
+        wins, the launch owner closes/reaps the late child and cannot revive the
+        cancelled generation. Pending launch cleanup is never reported clean.
         """
 
-        readiness_receiver: _Connection | None = None
+        startup_deadline = time.monotonic() + MAX_WORKER_READINESS_SECONDS
         with self._lifecycle_lock:
-            if self._failure is not None:
-                raise CanWorkerError(self._failure)
+            self._raise_if_owner_cancelled(owner)
             if self._process is not None:
                 if not self._process.is_alive():
                     self._failure = "CAN worker exited unexpectedly"
                     raise CanWorkerError(self._failure)
                 return False
-            # Process creation is deliberately synchronous while lifecycle state
-            # is locked. Python exposes no portable way to interrupt or deadline
-            # Process.start(); publishing a generation before it returns would
-            # falsely imply that cancellation can already identify and reap it.
-            next_generation = self._generation + 1
             context = multiprocessing.get_context("spawn")
-            parent_connection: _Connection | None = None
-            child_connection: _Connection | None = None
-            cancellation_receiver: _Connection | None = None
-            cancellation_sender: _Connection | None = None
-            cleanup_receiver: _Connection | None = None
-            cleanup_sender: _Connection | None = None
-            readiness_sender: _Connection | None = None
-            process: BaseProcess | None = None
+            allocated: list[_Connection] = []
+
+            def new_pipe(*, duplex: bool) -> tuple[_Connection, _Connection]:
+                pair = context.Pipe(duplex=duplex)
+                allocated.extend(pair)
+                return pair
+
             try:
-                parent_connection, child_connection = context.Pipe(duplex=True)
-                cancellation_receiver, cancellation_sender = context.Pipe(duplex=False)
-                cleanup_receiver, cleanup_sender = context.Pipe(duplex=False)
-                readiness_receiver, readiness_sender = context.Pipe(duplex=False)
-                control_channels = _WorkerControlChannels(
-                    cancellation_receiver=cancellation_receiver,
-                    cleanup_sender=cleanup_sender,
-                )
+                parent_connection, child_connection = new_pipe(duplex=True)
+                cancellation_receiver, cancellation_sender = new_pipe(duplex=False)
+                cleanup_receiver, cleanup_sender = new_pipe(duplex=False)
+                readiness_receiver, readiness_sender = new_pipe(duplex=False)
+                control_channels = _WorkerControlChannels(cancellation_receiver, cleanup_sender)
                 process = context.Process(
                     target=self._worker_process_target(),
                     args=(
@@ -674,87 +673,95 @@ class CanWorkerClient:
                     name="byo-can-worker",
                     daemon=True,
                 )
-                process.start()
-            except BaseException as exc:
-                for endpoint in (
-                    parent_connection,
-                    child_connection,
-                    cancellation_receiver,
-                    cancellation_sender,
-                    cleanup_receiver,
-                    cleanup_sender,
-                    readiness_receiver,
-                    readiness_sender,
-                ):
-                    if endpoint is not None:
-                        try:
+                self._generation += 1
+                owner.generation = self._generation
+                self._last_cleanup_outcome = "none"
+                self._last_escalation_stage = "none"
+                self._last_cleanup_generation = None
+                self._connection = parent_connection
+                self._cancellation_sender = cancellation_sender
+                self._cleanup_receiver = cleanup_receiver
+                self._readiness_receiver = readiness_receiver
+                launch_done = threading.Event()
+                self._launch_done = launch_done
+                self._launch_error = None
+
+                def launch() -> None:
+                    # Thread.start can raise after creating its OS thread. The
+                    # creator holds this lock through the start/exception path;
+                    # only a still-authorized launcher may take endpoint ownership.
+                    with self._lifecycle_lock:
+                        revoked = (
+                            owner.cancellation_epoch != self._cancellation_epoch
+                            or self._failure is not None
+                        )
+                        if revoked:
+                            for endpoint in (
+                                child_connection,
+                                cancellation_receiver,
+                                cleanup_sender,
+                                readiness_sender,
+                            ):
+                                endpoint.close()
+                            self._last_cleanup_outcome = "not-running"
+                            launch_done.set()
+                    if revoked:
+                        self._terminate(self._failure or "CAN startup cancelled before OS launch")
+                        return
+                    error: BaseException | None = None
+                    try:
+                        process.start()
+                    except BaseException as exc:
+                        error = exc
+                    finally:
+                        # These endpoints must remain valid throughout spawn's
+                        # serialization/handle duplication, even after cancellation.
+                        for endpoint in (
+                            child_connection,
+                            cancellation_receiver,
+                            cleanup_sender,
+                            readiness_sender,
+                        ):
                             endpoint.close()
-                        except OSError:
-                            pass
-                if process is not None:
-                    try:
-                        alive = process.is_alive()
-                    except (AssertionError, ValueError):
-                        alive = False
-                    if alive:
-                        process.join(self._terminate_grace_seconds)
-                    try:
-                        alive = process.is_alive()
-                    except (AssertionError, ValueError):
-                        alive = False
-                    if alive:
-                        process.terminate()
-                        process.join(self._terminate_grace_seconds)
-                    try:
-                        alive = process.is_alive()
-                    except (AssertionError, ValueError):
-                        alive = False
-                    if alive:
-                        process.kill()
-                        process.join(MAX_WORKER_EXIT_SECONDS)
-                    if getattr(process, "pid", None) is not None:
-                        # A start() implementation may raise after creating the
-                        # child. Publish that now-controllable identity and its
-                        # generation so cleanup cannot classify it as never-run.
-                        self._generation = next_generation
-                        owner.generation = next_generation
-                        self._last_cleanup_outcome = "none"
-                        self._last_escalation_stage = "none"
-                        self._last_cleanup_generation = None
-                        self._process = process
-                self._failure = f"CAN worker process failed to start: {type(exc).__name__}: {exc}"
+                    with self._lifecycle_lock:
+                        self._launch_error = error
+                        if process.pid is not None:
+                            self._process = process
+                        cancelled = owner.cancellation_epoch != self._cancellation_epoch
+                        if error is not None:
+                            self._failure = f"CAN worker process failed to start: {type(error).__name__}: {error}"
+                        launch_done.set()
+                    if cancelled or error is not None:
+                        self._terminate(self._failure or "CAN late startup was cancelled")
+
+                threading.Thread(target=launch, name="byo-can-launch-owner", daemon=True).start()
+
+            except BaseException as exc:
+                self._cancellation_epoch += 1
+                for endpoint in allocated:
+                    endpoint.close()
+                if self._launch_done is not None:
+                    self._launch_done.set()
+                self._connection = None
+                self._cancellation_sender = None
+                self._cleanup_receiver = None
+                self._readiness_receiver = None
+                self._failure = f"CAN worker launch allocation failed: {type(exc).__name__}: {exc}"
+                self._last_cleanup_outcome = "not-running"
                 raise CanWorkerError(self._failure) from exc
-            assert (
-                process is not None
-                and parent_connection is not None
-                and child_connection is not None
-                and cancellation_receiver is not None
-                and cancellation_sender is not None
-                and cleanup_receiver is not None
-                and cleanup_sender is not None
-                and readiness_receiver is not None
-                and readiness_sender is not None
-            )
-            # Bind cleanup evidence only after Process.start() has returned and
-            # supplied a controllable process identity. A later worker must never
-            # inherit this generation's cleanup receipt.
-            self._generation = next_generation
-            owner.generation = next_generation
-            self._last_cleanup_outcome = "none"
-            self._last_escalation_stage = "none"
-            self._last_cleanup_generation = None
-            child_connection.close()
-            cancellation_receiver.close()
-            cleanup_sender.close()
-            readiness_sender.close()
-            self._connection = parent_connection
-            self._cancellation_sender = cancellation_sender
-            self._cleanup_receiver = cleanup_receiver
-            self._readiness_receiver = readiness_receiver
-            self._process = process
+
+        while not launch_done.wait(WORKER_POLL_SLICE_SECONDS):
+            self._raise_if_owner_cancelled(owner)
+            if time.monotonic() >= startup_deadline:
+                self._terminate("CAN worker startup deadline expired", initiating_owner=owner)
+                raise CanTimeoutError(
+                    f"CAN worker startup exceeded {MAX_WORKER_READINESS_SECONDS} seconds; "
+                    "late launch remains owned and cleanup is pending"
+                )
+        self._raise_if_owner_cancelled(owner)
         assert readiness_receiver is not None
         try:
-            readiness_deadline = time.monotonic() + MAX_WORKER_READINESS_SECONDS
+            readiness_deadline = startup_deadline
             while True:
                 self._raise_if_owner_cancelled(owner)
                 remaining = readiness_deadline - time.monotonic()
@@ -803,6 +810,14 @@ class CanWorkerClient:
                 readiness = self._readiness_receiver
                 request_owner = self._request_owner
                 self._failure = reason
+                if self._launch_done is not None and not self._launch_done.is_set():
+                    # Do not close handles that Process.start may still be
+                    # duplicating. No command can be sent by this revoked owner;
+                    # the daemon launcher retains all handles and reaps later.
+                    self._last_cleanup_outcome = "unknown"
+                    self._last_escalation_stage = "startup-pending"
+                    self._last_cleanup_generation = self._generation
+                    return "unknown"
 
             cleanup_outcome = "not-running"
             receipt_valid = False
@@ -1160,12 +1175,19 @@ class CanWorkerClient:
             MAX_WORKER_OPERATION_SECONDS,
         )
         with self._lifecycle_lock:
-            if self._process is None:
+            pending_launch = self._launch_done is not None and not self._launch_done.is_set()
+            if self._process is None and not pending_launch:
                 return
             terminate_reason = (
-                self._failure or "CAN worker was not alive during close"
-                if self._failure is not None or not self._process.is_alive()
-                else None
+                "CAN worker close cancelled pending startup"
+                if pending_launch
+                else (
+                    self._failure or "CAN worker was not alive during close"
+                    if self._failure is not None
+                    or self._process is None
+                    or not self._process.is_alive()
+                    else None
+                )
             )
         if terminate_reason is not None:
             cleanup_outcome = self._terminate(terminate_reason)

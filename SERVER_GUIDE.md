@@ -81,23 +81,46 @@ with `PYOCD_CAN_RUNTIME_SHA256=<64-lowercase-hex>`. A finite
 but cannot exceed its maximum. Unknown non-empty `PYOCD_CAN_*` variables,
 legacy FirmwareCLI fixture-proof variables, `required` mode, symlinks, malformed
 profiles, and physical `socketcan` profiles all fail startup on supported POSIX
-hosts. Configured CAN fails startup on every non-Linux platform until native
-profile-loading, worker, and cleanup behavior is qualified there.
+hosts. Software `virtual` and `tcp_sim` profiles can load on Linux, macOS and
+Windows. SocketCAN remains Linux-only. Windows software simulation has a native
+CI lane; a configured lane is not itself a passing qualification result.
 Compatibility health-check declarations from a shared FirmwareCLI profile are
 strictly parsed and remain part of its canonical hash, but BYO does not execute
 or claim terminal/health proof from them.
 
-The shipped preview proof rung is software only:
+The preview is software only:
 
-- `virtual` uses `python-can`'s process-local interface inside an isolated
-  worker. Tests use a child-hosted peer to prove exact RX/TX, policy, and
-  cleanup behavior; a peer in another process cannot join that channel, so
-  this is a software contract proof rather than an integration transport;
-- `socketcan_vcan` is implemented for Linux when the named `vcan` link already
-  exists and passes capability inspection, but remains experimental and
-  unqualified until a privileged CI/HIL lane exercises it;
-- configured non-Linux CAN is disabled pending native qualification; and
-- physical CAN adapters are not supported or qualified by this release.
+- `virtual` is python-can's process-local bus. Separate programs cannot join it.
+- `tcp_sim` is a localhost-only Classical CAN simulator that independent processes
+  can join natively on Linux, macOS and Windows. It preserves per-sender order,
+  exact identifiers and payloads, and marks own echoes as TX. It does not model
+  CAN arbitration, bit timing, electrical faults or physical TX quiescence.
+- `socketcan_vcan` uses a real Linux kernel virtual interface; its dedicated
+  integration suite requires a pre-existing `vcan` link and mutation opt-in.
+- Physical CAN profiles remain disabled.
+
+Start a simulator with the optional dependencies installed:
+
+```sh
+uv run --locked --extra can python -m pyocd_debug_mcp.adapters.can_sim --port 43113
+```
+
+Use `fixtures/can/tcp_sim.yaml` as the profile template. The channel must match
+`127.0.0.1:<port>`; port zero on the simulator command chooses and prints a free
+port. Stop it with Ctrl-C. Each broker port is one simulated bus. Successful
+send means local socket submission, not peer acknowledgement. Reconnect after
+broker loss; an existing session never silently joins a replacement broker.
+
+For a software-only acceptance run, including a fixture-seeded setup-full policy,
+simulated SWD, public board validation and the MCP stdio path:
+
+```sh
+uv run --locked --extra can python -m unittest tests.test_can_native_sim tests.test_can_mcp_sim_e2e -v
+```
+
+These test seams do not bypass the production board/validation prerequisites.
+Native Windows execution still needs a passing Windows runner result before it
+can be called qualified. macOS and Linux results must name their tested versions.
 
 Seven names are always registered: `get_can_status`, `connect_can`,
 `disconnect_can`, `read_can-plan`, `read_can`, `send_can-plan`, and `send_can`.
@@ -112,12 +135,23 @@ allows a later sequential rebind, but process quotas do not reset. Normal debug
 `disconnect` closes CAN before clearing validation or releasing SWD. If cleanup
 cannot be proven, ownership is retained for bounded retry and debug authority is
 left intact rather than claiming success. Process shutdown makes the same
-bounded cleanup attempts once the worker identity exists and exits non-zero if
-the CAN generation remains uncertain. The preceding synchronous
-`multiprocessing.Process.start()` call is not portably interruptible or
-deadline-bounded: an initial `connect_can` or concurrent shutdown can wait for
-OS process creation to return rather than orphaning an as-yet unidentified
-child.
+bounded cleanup attempts and exits non-zero if the CAN generation remains uncertain.
+CAN startup has a five-second caller budget covering OS spawn and readiness.
+`multiprocessing.Process.start()` itself cannot be interrupted portably; a daemon
+launch owner retains a stalled call and retires any late child. Cancellation and
+startup deadlines no longer wait on a spawn-held lifecycle lock. Until retirement
+is proven, status reports `startup-pending`/`unknown`, never a clean close. No
+backend command is submitted after startup authority is revoked. This bounds the
+application's startup wait, not OS process creation, interpreter exit, or stalled
+filesystem I/O during evidence persistence.
+
+Every server `read_can` now retains a private immutable JSON capture in
+`.firm/runs/<run-id>/can-captures/` and returns an `artifact` reference containing
+its name, SHA-256 and byte count. Capture payload disclosure follows
+`evidence.artifact_payloads`, independently of `provider_payloads`. Artifact count
+and byte quotas apply across reconnects; failed persistence is a failed read, and
+its reserved budget is not refunded. Direct library managers without a persisted
+profile snapshot return `artifact: null` and make no retention claim.
 
 The five operational CAN routes return canonical JSON; the two `*-plan` routes
 retain the standard textual plan workflow. Payload bytes are returned only when the

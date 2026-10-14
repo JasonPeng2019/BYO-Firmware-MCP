@@ -666,7 +666,9 @@ class _WindowsApi:
             raise OSError("Windows CAN run root must be on NTFS")
         return Path(volume.value)
 
-    def open_existing(self, path: Path, *, directory: bool, read: bool = False) -> int:
+    def open_existing(
+        self, path: Path, *, directory: bool, read: bool = False, lock_rename: bool = False
+    ) -> int:
         # pragma: no cover - Windows only
         access = self.READ_CONTROL | self.FILE_READ_ATTRIBUTES
         if read:
@@ -677,7 +679,9 @@ class _WindowsApi:
         handle = self.kernel32.CreateFileW(
             str(path),
             access,
-            self.FILE_SHARE_READ | self.FILE_SHARE_WRITE | self.FILE_SHARE_DELETE,
+            self.FILE_SHARE_READ
+            | self.FILE_SHARE_WRITE
+            | (0 if lock_rename else self.FILE_SHARE_DELETE),
             None,
             self.OPEN_EXISTING,
             flags,
@@ -980,10 +984,10 @@ def _read_private_posix(path: Path, maximum_bytes: int) -> bytes:
 
 
 def read_regular_file_no_symlinks(path: Path, *, maximum_bytes: int) -> bytes:
-    """Read a bounded source file; configured Windows profiles are disabled upstream.
+    """Read a bounded profile without following POSIX links or Windows reparse points.
 
-    Supported POSIX callers get component-by-component ancestor no-follow
-    enforcement plus a no-follow final open and stable descriptor identity.
+    Windows pins each ancestor against rename while reading the source handle;
+    profiles are public configuration, so private evidence ACLs are not required.
     """
 
     if maximum_bytes < 0:
@@ -992,12 +996,42 @@ def read_regular_file_no_symlinks(path: Path, *, maximum_bytes: int) -> bytes:
     flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
     inspected: os.stat_result | None = None
     if _is_windows():
-        inspected = absolute.lstat()
-        if stat.S_ISLNK(inspected.st_mode) or not stat.S_ISREG(inspected.st_mode):
-            raise OSError("CAN source path is not a non-symlink regular file")
-        if inspected.st_size > maximum_bytes:
-            raise OSError("CAN source file exceeds its size bound")
-        descriptor = os.open(absolute, flags)
+        api = _windows_api()
+        root = api.validate_volume(absolute)
+        handles: list[int] = []
+        try:
+            current = root
+            for component in (None, *absolute.parent.relative_to(root).parts):
+                if component is not None:
+                    current = current / component
+                handle = api.open_existing(current, directory=True, lock_rename=True)
+                handles.append(handle)
+                api.validate_handle(
+                    handle, directory=True, exact_acl=False, validate_security=False
+                )
+            handle = api.open_existing(absolute, directory=False, read=True, lock_rename=True)
+            handles.append(handle)
+            before_identity = api.validate_handle(
+                handle,
+                directory=False,
+                exact_acl=False,
+                validate_security=False,
+            )
+            data = api.read_bounded(handle, maximum_bytes)
+            after_identity = api.validate_handle(
+                handle,
+                directory=False,
+                exact_acl=False,
+                validate_security=False,
+            )
+            if len(data) > maximum_bytes or before_identity != after_identity:
+                raise OSError(
+                    "CAN source file changed while it was being read or exceeds its size bound"
+                )
+            return data
+        finally:
+            for handle in reversed(handles):
+                api.close(handle)
     else:
         flags |= getattr(os, "O_NONBLOCK", 0)
         parent_descriptor = _open_directory_chain_posix(absolute.parent)

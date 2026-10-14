@@ -28,7 +28,8 @@ checks on Windows. Its remaining boundaries are intentional:
 - Physical `socketcan` profiles are parsed but are rejected during startup. The generic Linux
   inspector also leaves physical bounded-operation and transmit-quiescence capabilities
   unproven. Do not bypass either control merely to make a laboratory test pass.
-- Configured CAN is rejected before profile loading on non-Linux platforms.
+- Physical profiles remain disabled. Software `virtual` and `tcp_sim` profiles
+  now load on native Linux/macOS/Windows; Windows execution evidence remains a gate.
 - Monitor delivery uses the local `simulated_remote/` filler. It has no OAuth/OpenID identity,
   authenticated upload, or durable off-box acknowledgement.
 - The Apache-2.0 material under `LICENSES/` records the provenance of CAN code adapted from
@@ -346,9 +347,11 @@ physical CAN support from one adapter.
 
 ## Track C: native Windows and macOS qualification
 
-The current code deliberately rejects configured CAN before reading a profile on non-Linux
-systems. The existing Windows CI lane proves this fail-closed behavior; it does not prove native
-configured CAN.
+The software update enables `virtual` and `tcp_sim` on native macOS/Windows.
+Run `tests.test_can_native_sim` and `tests.test_can_mcp_sim_e2e` on each native
+runner and retain the results; adding CI configuration is not execution evidence.
+The earlier Windows disabled-mode results do not qualify these new backends.
+Physical native backends remain separate work.
 
 Use separate native Windows and macOS machines or hosted runners. A compatibility layer, Linux
 container, Wine environment, or virtual machine with a Linux kernel is not native evidence.

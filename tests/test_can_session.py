@@ -427,7 +427,7 @@ class CanSessionManagerTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(limits["max_target_policy_refusals"], 128)
             self.assertEqual(limits["max_tx_attempts_per_process"], 100)
             self.assertNotIn("max_health_transactions", limits)
-            self.assertNotIn("max_capture_artifacts", limits)
+            self.assertEqual(limits["max_capture_artifacts"], 256)
             self.assertEqual(remaining["can_tool_calls"], 512)
             self.assertEqual(remaining["target_policy_refusals"], 128)
             self.assertEqual(remaining["tx_attempts"], 100)

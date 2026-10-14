@@ -216,6 +216,7 @@ def build_can_handlers(services: CanToolServices) -> dict[str, Callable[..., obj
                 {
                     "observed_frames": result.observed_frames,
                     "returned_frames": len(result.frames),
+                    "artifact": result.artifact,
                     "elapsed_seconds": result.elapsed_seconds,
                     "stop_reason": result.stop_reason,
                     "truncated": result.truncated,

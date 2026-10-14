@@ -833,7 +833,7 @@ except SystemExit:
 
 
 class CanSpawnBoundaryDocumentationTests(unittest.TestCase):
-    def test_public_can_docs_disclose_unbounded_synchronous_process_start(self) -> None:
+    def test_public_can_docs_disclose_os_spawn_limit_and_owned_caller_deadline(self) -> None:
         for relative in (
             "SERVER_GUIDE.md",
             "docs/architecture.md",

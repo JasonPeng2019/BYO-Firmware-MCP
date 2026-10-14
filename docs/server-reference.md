@@ -1079,13 +1079,14 @@ unparseable prose in the first content block.
 The two `*-plan` handlers instead retain the standard textual plan workflow;
 their all-NULL initialization response is client guidance rather than JSON.
 
-Those portable CAN deadlines start after synchronous
-`multiprocessing.Process.start()` returns. The OS process-creation call itself
-has no portable Python cancellation/deadline hook, so the first `connect_can`
-and a concurrent shutdown can wait beyond the outer deadline if creation
-stalls. After the worker identity exists, readiness, operations, cancellation,
-and retirement are bounded. Waiting at this boundary avoids claiming cleanup
-or orphaning a child that the parent cannot yet identify.
+CAN startup has a five-second caller budget covering OS spawn and readiness.
+`multiprocessing.Process.start()` itself cannot be interrupted portably; a daemon
+launch owner retains a stalled call and retires any late child. Cancellation and
+startup deadlines no longer wait on a spawn-held lifecycle lock. Until retirement
+is proven, status reports `startup-pending`/`unknown`, never a clean close. No
+backend command is submitted after startup authority is revoked. This bounds the
+application's startup wait, not OS process creation, interpreter exit, or stalled
+filesystem I/O during evidence persistence.
 
 The base package does not install backend libraries. Off mode retains the
 static registration without `python-can`; configured mode requires
@@ -1093,10 +1094,17 @@ the `can` package extra and otherwise fails closed with an install remedy. The
 virtual backend is process-local inside the isolated worker. Its child-hosted
 test peer proves exact software RX/TX and lifecycle behavior, but another
 process cannot join the channel, so it is not an end-to-end integration
-transport. Configured CAN is enabled only on qualified Linux hosts; every
-non-Linux platform fails closed before profile loading. Linux `vcan`, physical
-adapters, and physical bus behavior are not qualified by this release.
-Physical profiles are rejected at startup.
+transport. `tcp_sim` adds localhost cross-process simulation on Linux/macOS/Windows;
+its native Windows tests must pass before claiming Windows qualification. Linux
+`socketcan_vcan` has dedicated integration tests; neither backend establishes
+physical behavior. Physical profiles are rejected at startup.
+
+Read success also returns `artifact`: the retained file name, SHA-256, byte count,
+format and payload policy. Files live under `.firm/runs/<run-id>/can-captures/`.
+Artifact count/byte budgets are charged before writing and survive reconnects.
+Private immutable writes enforce the profile's artifact payload policy; failures
+are reported as failures. Library-only managers without a snapshot do not retain
+captures and return a null artifact reference.
 
 ## I. Monitor and Sentry implementation detail
 

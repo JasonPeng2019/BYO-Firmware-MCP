@@ -20,6 +20,25 @@ def validate_can_capabilities(
 
     config = loaded.config
     kind = config.adapter.kind
+    if kind == "tcp_sim":
+        if capabilities.physical is not False or capabilities.driver != "tcp_sim":
+            raise _unproven("TCP simulator must be positively attested as software-only.")
+        if capabilities.observed_channel != config.adapter.channel:
+            raise _unproven("TCP simulator endpoint does not match the profile.")
+        if any(
+            status is not CapabilityStatus.SUPPORTED
+            for status in (
+                capabilities.bounded_open,
+                capabilities.bounded_send,
+                capabilities.bounded_receive,
+                capabilities.bounded_close,
+            )
+        ):
+            raise _unproven("Bounded TCP simulation operations are unproven.")
+        # TCP submission is not peer delivery. No physical resource exists, and
+        # buffered simulator frames are not a physical TX-quiescence guarantee.
+        return
+
     if kind == "virtual":
         if capabilities.physical is not False:
             raise _unproven("Virtual CAN backend was not positively attested as virtual.")

@@ -704,6 +704,16 @@ class CanAvailableIntegrationTests(unittest.TestCase):
             clear=False,
         )
         environment.start()
+        # Other regression modules may retain a monitor cache for a simulated
+        # historical run. This integration owns its private monitor root.
+        from pyocd_debug_mcp.monitor import paths as monitor_paths
+
+        previous_monitor_cache = (
+            monitor_paths._cached_root,
+            monitor_paths._cached_salt,
+            monitor_paths._override_root,
+        )
+        monitor_paths._reset_cache()
         sys.modules.pop("pyocd_debug_mcp.server", None)
         server = importlib.import_module("pyocd_debug_mcp.server")
         try:
@@ -912,6 +922,12 @@ class CanAvailableIntegrationTests(unittest.TestCase):
             server._monitor.closeout("test")
             sys.modules.pop("pyocd_debug_mcp.server", None)
             environment.stop()
+            monitor_paths._reset_cache()
+            (
+                monitor_paths._cached_root,
+                monitor_paths._cached_salt,
+                monitor_paths._override_root,
+            ) = previous_monitor_cache
             shutil.rmtree(root, ignore_errors=True)
 
 

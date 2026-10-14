@@ -11,9 +11,10 @@ import re
 import stat
 import subprocess
 import sys
-import tempfile
+import secrets
 from collections.abc import Callable, Iterator, Sequence
 from contextlib import contextmanager
+from contextvars import ContextVar
 from pathlib import Path
 
 
@@ -45,11 +46,49 @@ def _attestation(results_dir: Path) -> Path:
     return results_dir / ATTESTATION.name
 
 
+# Context-local anchors let Path-shaped callers keep their names while all I/O
+# uses openat-style APIs. Unlike /dev/fd/<fd>/leaf, dir_fd works on macOS.
+_ANCHORS: ContextVar[tuple[tuple[Path, int], ...]] = ContextVar("release_anchors", default=())
+
+
+def _location(path: Path) -> tuple[str, int | None]:
+    for root, descriptor in reversed(_ANCHORS.get()):
+        try:
+            return str(path.relative_to(root)), descriptor
+        except ValueError:
+            continue
+    return str(path), None
+
+
+def _lstat(path: Path) -> os.stat_result:
+    name, descriptor = _location(path)
+    return os.stat(name, dir_fd=descriptor, follow_symlinks=False)
+
+
+def replace_release_file(source: Path, destination: Path) -> None:
+    source_name, source_fd = _location(source)
+    destination_name, destination_fd = _location(destination)
+    os.replace(source_name, destination_name, src_dir_fd=source_fd, dst_dir_fd=destination_fd)
+
+
+def unlink_release_file(path: Path) -> None:
+    name, descriptor = _location(path)
+    try:
+        os.unlink(name, dir_fd=descriptor)
+    except FileNotFoundError:
+        pass
+
+
+def mkdir_release_directory(path: Path) -> None:
+    name, descriptor = _location(path)
+    os.mkdir(name, dir_fd=descriptor)
+
+
 def _regular_file_error(path: Path, description: str) -> str | None:
     """Reject missing, symlinked, and non-regular release evidence paths."""
 
     try:
-        mode = path.lstat().st_mode
+        mode = _lstat(path).st_mode
     except FileNotFoundError:
         return f"missing {description}: {path}"
     except OSError as exc:
@@ -57,7 +96,7 @@ def _regular_file_error(path: Path, description: str) -> str | None:
     if stat.S_ISLNK(mode):
         return f"{description} must not be a symlink: {path}"
     try:
-        metadata = path.lstat()
+        metadata = _lstat(path)
     except OSError as exc:
         return f"cannot inspect {description} {path}: {exc}"
     if _is_reparse_point(metadata):
@@ -77,12 +116,13 @@ def _read_regular_file(path: Path, description: str) -> bytes:
         raise ValueError(error)
     flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
     try:
-        descriptor = os.open(path, flags)
+        name, parent_fd = _location(path)
+        descriptor = os.open(name, flags, dir_fd=parent_fd)
     except OSError as exc:
         raise ValueError(f"cannot open {description} {path}: {exc}") from exc
     try:
         opened = os.fstat(descriptor)
-        current = path.lstat()
+        current = _lstat(path)
         if (
             not stat.S_ISREG(opened.st_mode)
             or opened.st_nlink != 1
@@ -108,17 +148,6 @@ def _is_reparse_point(metadata: os.stat_result) -> bool:
     return bool(attributes & marker) or bool(getattr(metadata, "st_reparse_tag", 0))
 
 
-def _descriptor_directory() -> Path | None:
-    """Return a pathname view of open descriptors, when safely available."""
-
-    if os.name != "posix":
-        return None
-    for candidate in (Path("/proc/self/fd"), Path("/dev/fd")):
-        if candidate.is_dir():
-            return candidate
-    return None
-
-
 def _directory_chain_error(path: Path, description: str) -> str | None:
     """Reject a results root (or ancestor) that can redirect evidence access."""
 
@@ -141,46 +170,12 @@ def _directory_chain_error(path: Path, description: str) -> str | None:
 
 @contextmanager
 def pinned_release_directory(directory: Path, *, create: bool = False) -> Iterator[Path]:
-    """Yield a no-follow, identity-pinned directory path for evidence I/O.
+    """Pin evidence I/O with directory descriptors, including native macOS."""
 
-    POSIX operations use ``/proc/self/fd`` or ``/dev/fd`` so replacing the public
-    results path cannot redirect an in-flight read or publication. Platforms
-    without descriptor-path support fail closed before evidence access.
-    """
-
-    public = Path(os.path.abspath(directory))
     if create:
-        public.mkdir(parents=True, exist_ok=True)
-    error = _directory_chain_error(public, "release results directory")
-    if error is not None:
-        raise ValueError(error)
-    before = public.lstat()
-    identity = (before.st_dev, before.st_ino)
-    descriptor_directory = _descriptor_directory()
-    if descriptor_directory is None:
-        raise OSError(
-            "safe release evidence access requires POSIX descriptor-path support "
-            "(/proc/self/fd or /dev/fd)"
-        )
-    descriptor = os.open(
-        public,
-        os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0),
-    )
-    opened = os.fstat(descriptor)
-    if (opened.st_dev, opened.st_ino) != identity:
-        os.close(descriptor)
-        raise ValueError("release results directory changed while it was opened")
-    access = descriptor_directory / str(descriptor)
-    try:
-        yield access
-        error = _directory_chain_error(public, "release results directory")
-        if error is not None:
-            raise ValueError(error)
-        after = public.lstat()
-        if (after.st_dev, after.st_ino) != identity:
-            raise ValueError("release results directory changed during evidence access")
-    finally:
-        os.close(descriptor)
+        directory.mkdir(parents=True, exist_ok=True)
+    with pinned_release_directories((directory,)) as (pinned,):
+        yield pinned
 
 
 @contextmanager
@@ -189,22 +184,18 @@ def pinned_release_directories(
     *,
     on_validation_failure: Callable[[], None] | None = None,
 ) -> Iterator[tuple[Path, ...]]:
-    """Pin several directories and keep every anchor open through validation.
+    """Hold every POSIX directory fd through validation and optional rollback.
 
-    A multi-directory publication may need both its staging and destination
-    handles to roll back if either public pathname is exchanged at the final
-    identity check. Nested single-directory context managers close the inner
-    handle too early for that rollback, so this transaction-oriented variant
-    validates the full set before closing any descriptor.
+    Public paths are checked before/after the transaction. All leaf I/O and
+    rollback uses dir_fd, so renaming a directory cannot redirect the operation.
+    Windows release publication remains unsupported; native CAN simulation does
+    not depend on this release-maintainer tool.
     """
 
-    pins: list[tuple[Path, Path, tuple[int, int], int]] = []
-    descriptor_directory = _descriptor_directory()
-    if descriptor_directory is None:
-        raise OSError(
-            "safe release evidence access requires POSIX descriptor-path support "
-            "(/proc/self/fd or /dev/fd)"
-        )
+    if os.name != "posix" or os.open not in os.supports_dir_fd:
+        raise OSError("release evidence publication requires POSIX dir_fd support")
+    pins: list[tuple[Path, tuple[int, int], int]] = []
+    token = None
     try:
         for directory in directories:
             public = Path(os.path.abspath(directory))
@@ -213,21 +204,16 @@ def pinned_release_directories(
                 raise ValueError(error)
             before = public.lstat()
             identity = (before.st_dev, before.st_ino)
-            descriptor = os.open(
-                public,
-                os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0),
-            )
+            descriptor = os.open(public, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
             opened = os.fstat(descriptor)
             if (opened.st_dev, opened.st_ino) != identity:
                 os.close(descriptor)
                 raise ValueError("release results directory changed while it was opened")
-            access = descriptor_directory / str(descriptor)
-            pins.append((public, access, identity, descriptor))
-
-        yield tuple(access for _public, access, _identity, _descriptor in pins)
-
+            pins.append((public, identity, descriptor))
+        token = _ANCHORS.set((*_ANCHORS.get(), *((p, fd) for p, _, fd in pins)))
+        yield tuple(public for public, _, _ in pins)
         try:
-            for public, _access, identity, _descriptor in pins:
+            for public, identity, _ in pins:
                 error = _directory_chain_error(public, "release results directory")
                 if error is not None:
                     raise ValueError(error)
@@ -239,36 +225,29 @@ def pinned_release_directories(
                 on_validation_failure()
             raise
     finally:
-        for _public, _access, _identity, descriptor in reversed(pins):
+        if token is not None:
+            _ANCHORS.reset(token)
+        for _, _, descriptor in reversed(pins):
             os.close(descriptor)
 
 
 def _write_release_text_in(directory: Path, name: str, content: str) -> None:
-    """Atomically replace ``name`` below an already pinned directory."""
+    """Atomically replace a leaf relative to its still-open directory handle."""
 
     path = directory / name
-    temporary: Path | None = None
+    temporary = directory / f".{name}.{secrets.token_hex(8)}.tmp"
+    temporary_name, parent_fd = _location(temporary)
+    descriptor = os.open(
+        temporary_name, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o644, dir_fd=parent_fd
+    )
     try:
-        with tempfile.NamedTemporaryFile(
-            mode="w",
-            encoding="utf-8",
-            dir=directory,
-            prefix=f".{name}.",
-            suffix=".tmp",
-            delete=False,
-        ) as handle:
-            temporary = Path(handle.name)
+        with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
             handle.write(content)
             handle.flush()
             os.fsync(handle.fileno())
-            fchmod = getattr(os, "fchmod", None)
-            if fchmod is not None:
-                fchmod(handle.fileno(), 0o644)
-        os.replace(temporary, path)
-        temporary = None
+        replace_release_file(temporary, path)
     finally:
-        if temporary is not None:
-            temporary.unlink(missing_ok=True)
+        unlink_release_file(temporary)
 
 
 def write_release_text(path: Path, content: str) -> None:
@@ -437,7 +416,12 @@ def _verify_release_logs_in(results_dir: Path) -> list[str]:
     errors: list[str] = []
     release_logs = _release_logs(results_dir)
     attestation_path = _attestation(results_dir)
-    unexpected_logs = sorted(set(results_dir.glob(RELEASE_LOG_PATTERN)) - set(release_logs))
+    _, directory_fd = _location(results_dir)
+    names = os.listdir(directory_fd if directory_fd is not None else results_dir)
+    unexpected_logs = sorted(
+        {results_dir / name for name in names if Path(name).match(RELEASE_LOG_PATTERN)}
+        - set(release_logs)
+    )
     for path in unexpected_logs:
         try:
             shown = path.relative_to(ROOT)

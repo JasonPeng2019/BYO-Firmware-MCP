@@ -20,6 +20,10 @@ try:
         ATTESTATION,
         RELEASE_LOGS,
         pinned_release_directories,
+        replace_release_file,
+        unlink_release_file,
+        mkdir_release_directory,
+        _lstat,
         verify_release_logs,
         working_tree_manifest_sha256,
         write_attestation,
@@ -30,6 +34,10 @@ except ModuleNotFoundError:  # Direct ``python scripts/generate_release_evidence
         ATTESTATION,
         RELEASE_LOGS,
         pinned_release_directories,
+        replace_release_file,
+        unlink_release_file,
+        mkdir_release_directory,
+        _lstat,
         verify_release_logs,
         working_tree_manifest_sha256,
         write_attestation,
@@ -113,9 +121,9 @@ def _publish_with_rollback(staging: Path) -> None:
             return
         rolled_back = True
         for destination in reversed(published):
-            _remove_path(destination)
+            unlink_release_file(destination)
         for prior, destination in reversed(saved):
-            os.replace(prior, destination)
+            replace_release_file(prior, destination)
 
     with pinned_release_directories(
         (staging, RELEASE_LOGS[0].parent),
@@ -124,20 +132,20 @@ def _publish_with_rollback(staging: Path) -> None:
         staged = [staging_root / path.name for path in (*RELEASE_LOGS, ATTESTATION)]
         destinations = [results_root / path.name for path in (*RELEASE_LOGS, ATTESTATION)]
         backup = staging_root / "previous"
-        backup.mkdir()
+        mkdir_release_directory(backup)
         try:
             for destination in destinations:
                 try:
-                    mode = destination.lstat().st_mode
+                    mode = _lstat(destination).st_mode
                 except FileNotFoundError:
                     continue
                 if not (stat.S_ISREG(mode) or stat.S_ISLNK(mode)):
                     raise OSError(f"refusing to replace non-file release path: {destination}")
                 prior = backup / destination.name
-                os.replace(destination, prior)
+                replace_release_file(destination, prior)
                 saved.append((prior, destination))
             for source, destination in zip(staged, destinations, strict=True):
-                os.replace(source, destination)
+                replace_release_file(source, destination)
                 published.append(destination)
 
             errors = verify_release_logs()

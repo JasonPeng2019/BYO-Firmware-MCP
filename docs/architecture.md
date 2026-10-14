@@ -140,13 +140,14 @@ workers under their exact session-local connection tokens rather than fabricatin
 Noninteractive probe-inventory CLI children receive null stdin, so neither they nor descendant
 launchers can read or wait on the MCP stdio protocol pipe.
 
-The CAN worker has one explicit portability boundary before those deadlines:
-Python's synchronous `multiprocessing.Process.start()` has no portable
-interrupt or deadline API. The first CAN connection and concurrent shutdown can
-therefore wait for OS process creation to return. Once `start()` returns and the
-child identity is known, readiness, operations, cancellation, and retirement
-use the documented finite bounds; the server does not publish an unidentified
-generation or pretend it can safely reap one.
+CAN startup has a five-second caller budget covering OS spawn and readiness.
+`multiprocessing.Process.start()` itself cannot be interrupted portably; a daemon
+launch owner retains a stalled call and retires any late child. Cancellation and
+startup deadlines no longer wait on a spawn-held lifecycle lock. Until retirement
+is proven, status reports `startup-pending`/`unknown`, never a clean close. No
+backend command is submitted after startup authority is revoked. This bounds the
+application's startup wait, not OS process creation, interpreter exit, or stalled
+filesystem I/O during evidence persistence.
 
 Raw and symbol memory checks cover the exact bytes accessed. UNKNOWN spans fail
 closed, while authoritative PROHIBITED spans remain readable for deliberate

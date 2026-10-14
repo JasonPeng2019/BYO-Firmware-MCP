@@ -55,7 +55,7 @@ _BOARD_ID = re.compile(r"[a-z0-9][a-z0-9_]{0,63}")
 _CHANNEL = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}")
 _SHA256 = re.compile(r"[0-9a-f]{64}")
 _HEX = re.compile(r"[0-9a-fA-F]*")
-_SUPPORTED_ADAPTERS = frozenset({"virtual", "socketcan_vcan", "socketcan"})
+_SUPPORTED_ADAPTERS = frozenset({"virtual", "tcp_sim", "socketcan_vcan", "socketcan"})
 
 _T = TypeVar("_T")
 
@@ -417,6 +417,13 @@ def _parse_adapter(value: object, path: str) -> CanAdapterConfig:
     else:
         raw = _mapping(value, path, required=frozenset({"kind", "channel"}))
         identity = None
+    if kind == "tcp_sim":
+        from pyocd_debug_mcp.adapters.can_sim import endpoint
+
+        try:
+            endpoint(str(raw["channel"]))
+        except ValueError as exc:
+            raise _error(f"{path}.channel", str(exc)) from exc
     return CanAdapterConfig(
         kind=kind,
         channel=_string(raw["channel"], f"{path}.channel", pattern=_CHANNEL),
@@ -977,11 +984,6 @@ def load_can_fixture_config(
     expected_sha256: str | None = None,
     snapshot_dir: Path | None = None,
 ) -> LoadedCanFixtureConfig:
-    if not sys.platform.startswith("linux"):
-        raise CanConfigError(
-            "Configured CAN is supported only on qualified Linux hosts; this platform is "
-            "disabled until native profile-loading and worker tests pass"
-        )
     source_path, source_bytes = _read_profile_once(Path(path))
     source_sha256 = hashlib.sha256(source_bytes).hexdigest()
     if expected_sha256 is not None:
@@ -999,6 +1001,10 @@ def load_can_fixture_config(
     else:
         raise CanConfigError("CAN profile must use .json, .yaml, or .yml")
     config = make_can_fixture_config(raw)
+    if config.adapter.kind in {"socketcan", "socketcan_vcan"} and not sys.platform.startswith(
+        "linux"
+    ):
+        raise CanConfigError("SocketCAN profiles are available only on Linux")
     canonical = _canonical_bytes(config)
     canonical_sha256 = hashlib.sha256(canonical).hexdigest()
     snapshot_path = None

@@ -108,19 +108,22 @@ treat a timeout as proof of absence, or treat virtual observations as physical
 timing, arbitration, wiring, or fault evidence. The virtual backend is
 process-local inside the isolated worker and has child-hosted-peer software
 contract coverage; it cannot communicate with a virtual peer in another
-process and is not integration evidence. Configured CAN is enabled only on
-qualified Linux hosts; Windows, Cygwin/MSYS, and macOS fail closed before
-profile loading. Linux `vcan` and all physical CAN behavior remain unqualified
-in `0.1.8rc1`.
+process. For independent peers use `tcp_sim`, a localhost socket simulator on
+Linux/macOS/Windows, or Linux `socketcan_vcan`. Native Windows verification is
+tracked separately from implementation; physical profiles remain disabled.
+`read_can` includes `artifact` (name, SHA-256, bytes, format and payload policy)
+for its immutable private capture. The file's payload policy is independent of
+the provider response policy. Artifact-budget exhaustion refuses publication;
+a write failure returns an operation failure, not captured success.
 
-Portable CAN deadlines begin only after synchronous
-`multiprocessing.Process.start()` returns and a worker identity exists. Python
-does not provide a portable way to interrupt or deadline-bound that OS process
-creation call. Consequently, the first `connect_can` can exceed the advertised
-outer deadline if process creation itself stalls, and shutdown waits for that
-call to return rather than risk orphaning a child whose identity was never
-published. Readiness, backend calls, cancellation, and retirement are bounded
-after process creation returns.
+CAN startup has a five-second caller budget covering OS spawn and readiness.
+`multiprocessing.Process.start()` itself cannot be interrupted portably; a daemon
+launch owner retains a stalled call and retires any late child. Cancellation and
+startup deadlines no longer wait on a spawn-held lifecycle lock. Until retirement
+is proven, status reports `startup-pending`/`unknown`, never a clean close. No
+backend command is submitted after startup authority is revoked. This bounds the
+application's startup wait, not OS process creation, interpreter exit, or stalled
+filesystem I/O during evidence persistence.
 
 ## Connection routing
 

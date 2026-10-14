@@ -76,9 +76,17 @@ jobs:
           if-no-files-found: error
           retention-days: 30
 
-  windows-can-disabled:
-    runs-on: windows-latest
-    timeout-minutes: 15
+  native-can-simulation:
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    env:
+      TMPDIR: ${{ runner.temp }}
+      PYOCD_MCP_RUNS_ROOT: ${{ runner.temp }}/byo-can-owned-runs
+      BYO_CAN_ACCEPTANCE_EVIDENCE_DIR: ${{ github.workspace }}/native-can-evidence
 
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -92,12 +100,43 @@ jobs:
           enable-cache: true
       - name: Install locked CAN test environment
         run: uv sync --locked --extra can --group dev
-      - name: Verify Windows off mode and configured-mode startup guard
+      - name: Run native simulation and MCP acceptance
         run: >-
           uv run --locked --extra can python -m unittest -v
-          tests.test_can_config_gate.CanStartupTests.test_off_contract_has_frozen_canonical_bytes_and_digest
-          tests.test_can_config_gate.CanStartupTests.test_native_windows_configured_can_is_disabled
-          tests.test_can_server_contract.CanServerContractTests.test_static_inventory_and_non_layer2_binding
-          tests.test_can_server_contract.CanServerContractTests.test_off_status_disconnect_and_connect_are_canonical_json
+          tests.test_can_native_sim tests.test_can_mcp_sim_e2e
+          tests.test_can_config_gate tests.test_can_worker_virtual
+          tests.test_can_session tests.test_can_tools tests.test_can_server_contract
+      - name: Preserve Windows registry and junction regressions
+        if: runner.os == 'Windows'
+        run: >-
+          uv run --locked --extra can python -m unittest -v
           tests.test_remote_probes.LoadSaveTests.test_cross_process_registrations_do_not_lose_acknowledged_entries
           tests.test_tiered_acceptance_workspace.TieredWorkspaceAcceptanceTests.test_native_windows_workspace_junction_is_rejected_without_external_writes
+      - name: Verify native macOS and Linux evidence I/O
+        if: runner.os != 'Windows'
+        env:
+          BYO_RELEASE_EVIDENCE_GENERATING: "1"
+        run: uv run --locked --extra can python -m unittest tests.test_release_evidence -v
+      - name: Provision dedicated Linux vcan
+        if: runner.os == 'Linux'
+        run: |
+          sudo modprobe vcan
+          sudo ip link add dev byovcan0 type vcan
+          sudo ip link set dev byovcan0 up
+      - name: Run kernel vcan integration
+        if: runner.os == 'Linux'
+        env:
+          BYO_VCAN_TEST_INTERFACE: byovcan0
+          BYO_VCAN_ALLOW_LINK_MUTATION: "1"
+        run: uv run --locked --extra can python -m unittest tests.test_can_vcan_integration -v
+      - name: Remove dedicated Linux vcan
+        if: always() && runner.os == 'Linux'
+        run: sudo ip link delete byovcan0 2>/dev/null || true
+      - name: Retain software simulation evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: native-can-${{ matrix.os }}
+          path: native-can-evidence/
+          if-no-files-found: warn
+          retention-days: 30

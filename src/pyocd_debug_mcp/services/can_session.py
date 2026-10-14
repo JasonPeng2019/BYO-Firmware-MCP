@@ -18,7 +18,7 @@ import threading
 import time
 from collections import deque
 from collections.abc import Callable, Coroutine
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from typing import Any, Generic, NoReturn, Protocol, TypeVar, cast
 
 from pyocd_debug_mcp.adapters.can_interface import (
@@ -37,11 +37,13 @@ from pyocd_debug_mcp.can_errors import (
     CanConnectionError,
     CanError,
     CanNotConfiguredError,
+    CanOperationError,
     CanPolicyError,
     CanTimeoutError,
     CanWorkerError,
 )
 from pyocd_debug_mcp.can_startup import LoadedCanStartup
+from pyocd_debug_mcp.can_secure_files import ensure_private_directory, write_immutable_private_file
 from pyocd_debug_mcp.guardrails.can_gate import CanGate
 from pyocd_debug_mcp.services.can_worker import (
     AsyncCanWorkerClient,
@@ -94,6 +96,8 @@ class CanBudgetSnapshot:
     received_frames: int
     tx_attempts: int
     recent_tx_attempts: int
+    capture_artifacts: int
+    capture_bytes: int
 
 
 class CanProcessBudget:
@@ -114,6 +118,8 @@ class CanProcessBudget:
         self._read_calls = 0
         self._received_frames = 0
         self._tx_attempts = 0
+        self._capture_artifacts = 0
+        self._capture_bytes = 0
         self._tx_timestamps: deque[float] = deque()
 
     def _require_fixture(self) -> CanProcessLimits:
@@ -175,6 +181,20 @@ class CanProcessBudget:
                 )
             self._received_frames += 1
 
+    def charge_capture(self, size: int) -> None:
+        limits = self._require_fixture()
+        with self._lock:
+            if (
+                self._capture_artifacts >= limits.max_capture_artifacts
+                or self._capture_bytes + size > limits.max_capture_bytes
+            ):
+                raise CanPolicyError(
+                    "can/process-artifact-limit", "CAN capture retention budget is exhausted."
+                )
+            # Charge before publication. Failed writes cannot reset a process budget.
+            self._capture_artifacts += 1
+            self._capture_bytes += size
+
     def charge_tx(self, *, per_second: int, process_maximum: int) -> float:
         now = self._monotonic()
         with self._lock:
@@ -204,6 +224,8 @@ class CanProcessBudget:
                 received_frames=self._received_frames,
                 tx_attempts=self._tx_attempts,
                 recent_tx_attempts=recent,
+                capture_artifacts=self._capture_artifacts,
+                capture_bytes=self._capture_bytes,
             )
 
 
@@ -224,6 +246,7 @@ class CanCaptureResult:
     elapsed_seconds: float
     stop_reason: str
     truncated: bool
+    artifact: dict[str, object] | None = None
 
 
 @dataclass(slots=True)
@@ -247,6 +270,7 @@ _ESCALATION_STAGES = frozenset(
         "invalid-cleanup-ack",
         "dead-without-cleanup-ack",
         "request-retirement-timeout",
+        "startup-pending",
         "term",
         "term-after-cleanup",
         "term-after-cleanup-failure",
@@ -653,6 +677,11 @@ class CanSessionManager:
     ) -> None:
         self.startup = startup
         fixture = startup.fixture
+        self._capture_directory = (
+            fixture.snapshot_path.parent.parent / "can-captures"
+            if fixture is not None and fixture.snapshot_path is not None
+            else None
+        )
         self.budget = CanProcessBudget(fixture.config.process_limits if fixture else None)
         self._worker_factory = worker_factory
         self._service = (
@@ -952,6 +981,47 @@ class CanSessionManager:
 
         return await self._submit(operation)
 
+    def _retain_capture(self, board_id: str, result: CanCaptureResult) -> CanCaptureResult:
+        fixture = self.startup.fixture
+        directory = self._capture_directory
+        if directory is None or fixture is None:
+            return result
+        frame_records = [can_frame_record(frame, include_payload=True) for frame in result.frames]
+        if fixture.config.evidence.artifact_payloads == "hash_only":
+            for record in frame_records:
+                record.pop("data_hex", None)
+        document = {
+            "schema_version": 1,
+            "board_id": board_id,
+            "profile_sha256": fixture.canonical_sha256,
+            "runtime_sha256": self.startup.runtime.canonical_sha256,
+            "backend": fixture.config.adapter.kind,
+            "software_simulation": not fixture.config.adapter.physical,
+            "observed_frames": result.observed_frames,
+            "stop_reason": result.stop_reason,
+            "truncated": result.truncated,
+            "frames": frame_records,
+        }
+        data = (canonical_can_json(document) + "\n").encode("utf-8")
+        self.budget.charge_capture(len(data))
+        digest = hashlib.sha256(data).hexdigest()
+        name = f"capture-{secrets.token_hex(16)}.json"
+        try:
+            ensure_private_directory(directory, parents=True)
+            write_immutable_private_file(directory / name, data, maximum_bytes=len(data))
+        except OSError as exc:
+            raise CanOperationError("Unable to retain CAN capture artifact") from exc
+        return replace(
+            result,
+            artifact={
+                "name": name,
+                "sha256": digest,
+                "bytes": len(data),
+                "format": "json",
+                "payloads": fixture.config.evidence.artifact_payloads,
+            },
+        )
+
     async def read(
         self,
         board_id: str,
@@ -962,7 +1032,13 @@ class CanSessionManager:
         async def operation() -> CanCaptureResult:
             service = self._require_owner(board_id)
             try:
-                return await service.read(read_seconds=read_seconds, max_frames=max_frames)
+                result = await service.read(read_seconds=read_seconds, max_frames=max_frames)
+                retained, interrupted = await await_cleanup_uninterruptibly(
+                    asyncio.to_thread(self._retain_capture, board_id, result)
+                )
+                if interrupted:
+                    raise asyncio.CancelledError
+                return retained
             except BaseException:
                 self._reconcile_operation_end(board_id, service)
                 raise
@@ -1100,6 +1176,8 @@ class CanSessionManager:
                 "max_target_policy_refusals": (config.process_limits.max_target_policy_refusals),
                 "max_read_calls": config.process_limits.max_read_calls,
                 "max_received_frames": config.process_limits.max_received_frames,
+                "max_capture_artifacts": config.process_limits.max_capture_artifacts,
+                "max_capture_bytes": config.process_limits.max_capture_bytes,
                 "max_tx_attempts_per_process": config.transmit.max_tx_attempts_per_process,
                 "max_frames_per_second": config.transmit.max_frames_per_second,
             }
@@ -1115,6 +1193,12 @@ class CanSessionManager:
                     0,
                     config.process_limits.max_target_policy_refusals
                     - budget.target_policy_refusals,
+                ),
+                "capture_artifacts": max(
+                    0, config.process_limits.max_capture_artifacts - budget.capture_artifacts
+                ),
+                "capture_bytes": max(
+                    0, config.process_limits.max_capture_bytes - budget.capture_bytes
                 ),
                 "read_calls": max(0, config.process_limits.max_read_calls - budget.read_calls),
                 "received_frames": max(

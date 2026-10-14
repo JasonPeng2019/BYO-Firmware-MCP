@@ -7,7 +7,6 @@ import json
 import os
 import tempfile
 import unittest
-import sys
 from pathlib import Path
 from unittest.mock import patch
 
@@ -72,25 +71,28 @@ class CanStartupTests(unittest.TestCase):
         ):
             load_can_startup({"PYOCD_CAN_MODE": "available", "PYOCD_CAN_CONFIG": str(RX_PROFILE)})
 
-    def test_non_linux_configured_can_is_rejected_before_profile_read(self) -> None:
-        for platform in ("win32", "cygwin", "msys", "darwin"):
-            with (
-                self.subTest(platform=platform),
-                patch("pyocd_debug_mcp.can_config.sys.platform", platform),
-                patch(
-                    "pyocd_debug_mcp.can_config._read_profile_once",
-                    side_effect=AssertionError("profile path must not be opened off Linux"),
-                ),
-                self.assertRaisesRegex(CanConfigError, "qualified Linux hosts"),
-            ):
-                load_can_startup(
-                    {"PYOCD_CAN_MODE": "available", "PYOCD_CAN_CONFIG": str(RX_PROFILE)}
-                )
+    def test_native_virtual_profile_load_and_snapshot(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            loaded = load_can_startup(
+                {"PYOCD_CAN_MODE": "available", "PYOCD_CAN_CONFIG": str(RX_PROFILE)},
+                snapshot_dir=Path(temporary).resolve() / "snapshot",
+            )
+            assert loaded.fixture is not None
+            self.assertEqual(loaded.fixture.config.adapter.kind, "virtual")
+            self.assertIsNotNone(loaded.fixture.snapshot_path)
 
-    @unittest.skipUnless(sys.platform.startswith("win"), "native Windows CAN startup guard")
-    def test_native_windows_configured_can_is_disabled(self) -> None:
-        with self.assertRaisesRegex(CanConfigError, "qualified Linux hosts"):
-            load_can_startup({"PYOCD_CAN_MODE": "available", "PYOCD_CAN_CONFIG": str(RX_PROFILE)})
+    def test_socketcan_remains_linux_only(self) -> None:
+        for platform in ("win32", "darwin"):
+            with tempfile.TemporaryDirectory() as temporary:
+                profile = Path(temporary).resolve() / "vcan.yaml"
+                profile.write_text(
+                    RX_PROFILE.read_text().replace("kind: virtual", "kind: socketcan_vcan")
+                )
+                with patch("pyocd_debug_mcp.can_config.sys.platform", platform):
+                    with self.assertRaisesRegex(CanConfigError, "only on Linux"):
+                        load_can_startup(
+                            {"PYOCD_CAN_MODE": "available", "PYOCD_CAN_CONFIG": str(profile)}
+                        )
 
     def test_off_rejects_authority_bearing_values(self) -> None:
         for name, value in (

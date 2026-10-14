@@ -11,6 +11,9 @@ from unittest.mock import patch
 from scripts import generate_release_evidence
 from scripts.verify_release_evidence import (
     RESULTS,
+    _read_regular_file,
+    pinned_release_directory,
+    write_release_text,
     _manifest_mode,
     _valid_base_git_head,
     verify_release_logs,
@@ -23,6 +26,17 @@ def release_results_dir() -> Path:
 
 
 class ReleaseEvidenceTests(unittest.TestCase):
+    def test_native_directory_relative_read_and_atomic_write(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            path = root / "capture.log"
+            write_release_text(path, "actual evidence\n")
+            with pinned_release_directory(root) as pinned:
+                self.assertEqual(
+                    _read_regular_file(pinned / path.name, "test log"), b"actual evidence\n"
+                )
+            self.assertEqual(path.read_text(), "actual evidence\n")
+
     def test_tracked_index_mode_makes_manifest_portable_across_checkouts(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             path = Path(temporary) / "ordinary.txt"
@@ -64,7 +78,7 @@ class ReleaseEvidenceTests(unittest.TestCase):
 
     def test_release_paths_reject_symlinks_and_non_regular_files(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
-            results = Path(temporary)
+            results = Path(temporary).resolve()
             real_results = results / "real-results"
             linked_results = results / "linked-results"
             real_results.mkdir()
@@ -102,7 +116,7 @@ class ReleaseEvidenceTests(unittest.TestCase):
                 )
 
         with tempfile.TemporaryDirectory() as temporary:
-            root = Path(temporary)
+            root = Path(temporary).resolve()
             staging = root / "staging"
             results = root / "results"
             displaced = root / "displaced-results"
