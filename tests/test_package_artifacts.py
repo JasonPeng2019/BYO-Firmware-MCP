@@ -207,11 +207,11 @@ class ReleaseArtifactInventoryTests(unittest.TestCase):
 
         workflow = (ROOT / ".github/workflows/software-can.yml").read_text(encoding="utf-8")
         self.assertIn(f"name: pyocd-debug-mcp-{VERSION}", workflow)
-        self.assertEqual(workflow.count("retention-days: 30"), 1)
 
         upload_step = workflow.split("- name: Retain exact verified release handoff bytes", 1)[
             1
-        ].split("\n  windows-can-disabled:", 1)[0]
+        ].split("\n  native-can-simulation:", 1)[0]
+        self.assertEqual(upload_step.count("retention-days: 30"), 1)
         self.assertIn(
             "uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02",
             upload_step,

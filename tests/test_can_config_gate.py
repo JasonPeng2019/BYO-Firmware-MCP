@@ -54,7 +54,7 @@ class CanStartupTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             loaded = load_can_startup(
                 {"PYOCD_CAN_MODE": "available", "PYOCD_CAN_CONFIG": str(RX_PROFILE)},
-                snapshot_dir=Path(temporary),
+                snapshot_dir=Path(temporary).resolve() / "snapshot",
             )
         self.assertIs(loaded.runtime.mode, CanMode.AVAILABLE)
         self.assertIsNotNone(loaded.fixture)
@@ -132,7 +132,7 @@ class CanStartupTests(unittest.TestCase):
         )
         for overrides in rejected_environments:
             with self.subTest(overrides=overrides), tempfile.TemporaryDirectory() as temporary:
-                snapshot_dir = Path(temporary) / "snapshot"
+                snapshot_dir = Path(temporary).resolve() / "snapshot"
                 environment = {
                     "PYOCD_CAN_MODE": "available",
                     "PYOCD_CAN_CONFIG": str(RX_PROFILE),
@@ -154,7 +154,7 @@ class CanStartupTests(unittest.TestCase):
                 }
             )
         with tempfile.TemporaryDirectory() as temporary:
-            linked = Path(temporary) / "linked.yaml"
+            linked = Path(temporary).resolve() / "linked.yaml"
             try:
                 os.symlink(RX_PROFILE, linked)
             except (NotImplementedError, OSError):
@@ -165,7 +165,7 @@ class CanStartupTests(unittest.TestCase):
     @unittest.skipIf(os.name == "nt", "POSIX directory-fd no-follow contract")
     def test_profile_below_symlinked_ancestor_is_rejected(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
-            root = Path(temporary)
+            root = Path(temporary).resolve()
             linked_parent = root / "profiles"
             linked_parent.symlink_to(RX_PROFILE.parent, target_is_directory=True)
 
@@ -175,7 +175,7 @@ class CanStartupTests(unittest.TestCase):
     @unittest.skipUnless(hasattr(os, "mkfifo"), "POSIX FIFO coverage")
     def test_profile_and_private_reads_reject_fifos_without_blocking(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
-            root = Path(temporary)
+            root = Path(temporary).resolve()
             profile = root / "profile.yaml"
             os.mkfifo(profile, 0o600)
             with self.assertRaises(CanConfigError):
@@ -212,9 +212,9 @@ class CanStartupTests(unittest.TestCase):
             "    serial: adapter-1",
         )
         with tempfile.TemporaryDirectory() as temporary:
-            path = Path(temporary) / "physical.yaml"
+            path = Path(temporary).resolve() / "physical.yaml"
             path.write_text(raw, encoding="utf-8")
-            snapshot_dir = Path(temporary) / "snapshot"
+            snapshot_dir = Path(temporary).resolve() / "snapshot"
             with self.assertRaises(CanConfigError):
                 load_can_startup(
                     {"PYOCD_CAN_MODE": "available", "PYOCD_CAN_CONFIG": str(path)},

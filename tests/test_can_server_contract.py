@@ -38,7 +38,15 @@ class CanServerContractTests(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls) -> None:
-        cls.root = Path(tempfile.mkdtemp(prefix="byo-can-server-"))
+        from pyocd_debug_mcp.monitor import paths as monitor_paths
+
+        cls.previous_monitor_cache = (
+            monitor_paths._cached_root,
+            monitor_paths._cached_salt,
+            monitor_paths._override_root,
+        )
+        monitor_paths._reset_cache()
+        cls.root = Path(tempfile.mkdtemp(prefix="byo-can-server-")).resolve()
         cls.environment = patch.dict(
             os.environ,
             {
@@ -64,6 +72,14 @@ class CanServerContractTests(unittest.TestCase):
         finally:
             sys.modules.pop("pyocd_debug_mcp.server", None)
             cls.environment.stop()
+            from pyocd_debug_mcp.monitor import paths as monitor_paths
+
+            monitor_paths._reset_cache()
+            (
+                monitor_paths._cached_root,
+                monitor_paths._cached_salt,
+                monitor_paths._override_root,
+            ) = cls.previous_monitor_cache
             shutil.rmtree(cls.root, ignore_errors=True)
 
     def call(self, name: str, arguments: dict[str, object]) -> object:
@@ -386,7 +402,12 @@ class CanServerContractTests(unittest.TestCase):
             boundary = self.call("get_can_status", {"board_id": "board"})
             self.assertIsInstance(boundary, list)
             assert isinstance(boundary, list)
-            self.assertEqual(len(boundary), 2)
+            self.assertEqual(
+                len(boundary),
+                2,
+                f"monitor total={monitor._counters.snapshot().total}, "
+                f"initial={current_total}, internal_failures={monitor._internal_failures}",
+            )
             json.loads(boundary[0].text)
             self.assertIn("[routine check-in due]", boundary[1].text)
 
@@ -680,7 +701,7 @@ class CanServerContractTests(unittest.TestCase):
 
 class CanAvailableIntegrationTests(unittest.TestCase):
     def test_setup_full_validated_board_can_attach_and_close_real_virtual_worker(self) -> None:
-        root = Path(tempfile.mkdtemp(prefix="byo-can-available-"))
+        root = Path(tempfile.mkdtemp(prefix="byo-can-available-")).resolve()
         profile = root / "can.yaml"
         source = (
             Path(__file__).resolve().parents[1] / "fixtures" / "can" / "virtual_tx_allowed.yaml"

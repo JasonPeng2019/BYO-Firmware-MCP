@@ -40,6 +40,7 @@ def main() -> None:
     )
     captured = capture_datasheet_evidence(FirmStore(root), datasheet)
     profile.update(
+        probe_family="cmsisdap",
         mcu_part_number="nRF52840-QIAA",
         device_support=candidate.to_authority_document(),
         datasheet_sha256=captured.sha256,
@@ -67,8 +68,8 @@ def main() -> None:
         probes=(
             ValidationProbe(
                 "SIMULATED-PROBE",
-                "Simulated CAN acceptance J-Link",
-                "jlink",
+                "Simulated CAN acceptance CMSIS-DAP",
+                "cmsisdap",
                 "SIMULATED-PROBE",
             ),
         )
