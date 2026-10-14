@@ -20,16 +20,18 @@ publish, or upload artifacts to an official BYO Releases repository as part of t
 
 ## Current boundary
 
-The current candidate has already passed the software-only suite on Linux and its CAN-disabled
-checks on Windows. Its remaining boundaries are intentional:
+The test branch has passed native CAN simulation on hosted Linux, macOS, and Windows,
+plus privileged Linux vcan. See the dated evidence in `RELEASE_STATUS.md` for the
+exact tested scope and remaining whole-product failures. Its boundaries include:
 
-- `socketcan_vcan` is implemented, but has not been exercised against a real, privileged Linux
-  `vcan` network interface.
+- `socketcan_vcan` passed 15 tests against privileged Linux kernel interfaces;
+  this provides software-bus evidence, not physical adapter qualification.
 - Physical `socketcan` profiles are parsed but are rejected during startup. The generic Linux
   inspector also leaves physical bounded-operation and transmit-quiescence capabilities
   unproven. Do not bypass either control merely to make a laboratory test pass.
 - Physical profiles remain disabled. Software `virtual` and `tcp_sim` profiles
-  now load on native Linux/macOS/Windows; Windows execution evidence remains a gate.
+  passed native Linux/macOS/Windows communication, timeout, cancellation, cleanup,
+  and simulated MCP acceptance checks.
 - Monitor delivery uses the local `simulated_remote/` filler. It has no OAuth/OpenID identity,
   authenticated upload, or durable off-box acknowledgement.
 - The Apache-2.0 material under `LICENSES/` records the provenance of CAN code adapted from
@@ -350,7 +352,8 @@ physical CAN support from one adapter.
 The software update enables `virtual` and `tcp_sim` on native macOS/Windows.
 Run `tests.test_can_native_sim` and `tests.test_can_mcp_sim_e2e` on each native
 runner and retain the results; adding CI configuration is not execution evidence.
-The earlier Windows disabled-mode results do not qualify these new backends.
+The dated native jobs linked in `RELEASE_STATUS.md` qualify the tested software
+backends; the earlier Windows disabled-mode results alone do not.
 Physical native backends remain separate work.
 
 Use separate native Windows and macOS machines or hosted runners. A compatibility layer, Linux

@@ -27,20 +27,37 @@ seven-name MCP registration without importing `python-can`.
   canonical CAN results; and
 - local simulated monitor delivery, which never claims off-box durability.
 
-## Software simulation changes under local verification
+## Software simulation verification (2026-10-14)
 
-The current working changes add native `tcp_sim` and `virtual` profile loading,
+The test branch adds native `tcp_sim` and `virtual` profile loading,
 bounded caller startup with late-child ownership, macOS directory-relative release
 evidence I/O, and immutable quota-bound `read_can` capture files. Dedicated tests
 exercise native sockets and the public MCP stdio path with simulated SWD and a
 fixture-seeded generic setup-full policy. Physical profiles remain disabled.
 
-Native Windows CI is configured but has not been executed in this local macOS
-session. Do not describe Windows as qualified until its runner passes. The older
-retained release logs below describe the pre-change candidate; their source
+The native CAN jobs passed on hosted Windows, macOS, and Ubuntu with Python 3.12
+at `16db6e3` ([run and retained simulation artifacts](https://github.com/JasonPeng2019/BYO-Firmware-MCP/actions/runs/38648726195)).
+Each ran 98 tests: Windows skipped three POSIX-only cases; macOS and Linux skipped
+one Windows-only handle-ownership case. Windows also passed the two existing
+registry/junction regressions. Linux passed all 15 privileged kernel-vcan tests.
+macOS and Linux each passed four release-evidence I/O cases, deferring the one
+self-referential historical-attestation check. The MCP test uses real stdio,
+real CAN worker processes, independent TCP traffic, public validation/plans,
+verified capture bytes, and a final cleanup receipt; SWD and setup policy remain
+explicitly simulated. Independent review found no remaining blocker in this scope.
+
+Local macOS clean wheel/sdist installs and all 28 package-regression tests passed.
+The Linux VM ran 1,430 tests; three fixture/inventory failures were corrected and
+all 72 targeted follow-ups passed. A broader local macOS run still exposed
+separate workspace-attachment `/dev/fd` and SWD-cleanup failures outside this CAN
+change; this is not whole-product native platform qualification.
+
+The older retained release logs below describe the pre-change candidate; their source
 manifest intentionally becomes stale after implementation edits. Regenerate the
 complete release evidence before a release, including its opt-in live-agent lane.
-Focused and regression logs for this local change are separate evidence.
+Focused and regression logs for this change are separate evidence. The aggregate
+release CI remains red at its stale-attestation gate; native simulation job success
+must not be presented as release approval.
 
 ## Retained baseline verification matrix (before these changes)
 
@@ -57,8 +74,8 @@ Focused and regression logs for this local change are separate evidence.
 The virtual interface is a python-can process-local queue. The production CAN
 adapter remains isolated in a spawned worker, so a virtual bus opened by an
 unrelated process is not its peer. Software tests put an independent peer in
-that worker solely to prove exact send/receive behavior; use Linux `vcan` or
-physical hardware for real cross-process or bus integration evidence.
+that worker solely to prove exact send/receive behavior. Native `tcp_sim` and Linux
+`vcan` now provide cross-process simulation evidence; neither proves a physical bus.
 
 CAN startup has a five-second caller budget covering OS spawn and readiness.
 `multiprocessing.Process.start()` itself cannot be interrupted portably; a daemon
@@ -101,9 +118,8 @@ candidate:
 - the documented open-source/commercial repository and package split;
 - real OAuth/OpenID identity, authenticated remote upload, and off-box ACKs;
 - physical CAN adapter/bus qualification and hardware-in-the-loop evidence;
-- Linux `vcan` qualification in a privileged environment; and
-- native Windows simulation qualification and platform-specific physical backend
-  qualification, plus physical pyOCD/J-Link regression coverage.
+- whole-product native platform regression closure and platform-specific physical
+  backend qualification, plus physical pyOCD/J-Link regression coverage.
 
 The machine requirements, execution sequence, evidence rules, and completion
 criteria for these gates are documented in the

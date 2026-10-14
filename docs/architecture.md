@@ -141,6 +141,10 @@ Noninteractive probe-inventory CLI children receive null stdin, so neither they 
 launchers can read or wait on the MCP stdio protocol pipe.
 
 CAN startup has a five-second caller budget covering OS spawn and readiness.
+Windows CAN children use a private spawn context with null standard handles;
+their owned IPC pipes carry all commands and results. This prevents child Python
+startup from waiting on the MCP transport's active stdin reader. It does not
+change the parent process's standard handles or global multiprocessing settings.
 `multiprocessing.Process.start()` itself cannot be interrupted portably; a daemon
 launch owner retains a stalled call and retires any late child. Cancellation and
 startup deadlines no longer wait on a spawn-held lifecycle lock. Until retirement

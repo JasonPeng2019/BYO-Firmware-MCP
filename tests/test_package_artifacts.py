@@ -57,7 +57,7 @@ class ReleaseArtifactInventoryTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
         cls._temporary = tempfile.TemporaryDirectory(prefix="byo-package-test-")
-        cls.dist = Path(cls._temporary.name)
+        cls.dist = Path(cls._temporary.name).resolve()
         subprocess.run(
             ["uv", "build", "--out-dir", str(cls.dist)],
             cwd=ROOT,
@@ -226,7 +226,7 @@ class ReleaseArtifactInventoryTests(unittest.TestCase):
     @unittest.skipUnless(os.name == "posix", "process-group cleanup is POSIX-specific")
     def test_verifier_runner_retires_spawned_descendants(self) -> None:
         with tempfile.TemporaryDirectory(prefix="byo-verifier-descendant-") as temporary:
-            root = Path(temporary)
+            root = Path(temporary).resolve()
             pid_path = root / "descendant.pid"
             script = (
                 "import subprocess,sys; from pathlib import Path; "
@@ -249,7 +249,7 @@ class ReleaseArtifactInventoryTests(unittest.TestCase):
 
     def test_same_version_stale_wheel_is_rejected(self) -> None:
         with tempfile.TemporaryDirectory(prefix="byo-stale-wheel-") as temporary:
-            stale = Path(temporary) / self.wheel.name
+            stale = Path(temporary).resolve() / self.wheel.name
             with zipfile.ZipFile(self.wheel) as source, zipfile.ZipFile(stale, "w") as destination:
                 for info in source.infolist():
                     content = source.read(info.filename)
@@ -262,7 +262,7 @@ class ReleaseArtifactInventoryTests(unittest.TestCase):
             ):
                 _verify_source_alignment(stale, self.sdist)
 
-            stale_entry_points = Path(temporary) / ("entry-points-" + self.wheel.name)
+            stale_entry_points = Path(temporary).resolve() / ("entry-points-" + self.wheel.name)
             with (
                 zipfile.ZipFile(self.wheel) as source,
                 zipfile.ZipFile(stale_entry_points, "w") as destination,
@@ -278,7 +278,7 @@ class ReleaseArtifactInventoryTests(unittest.TestCase):
 
     def test_same_version_archives_with_deleted_source_files_are_rejected(self) -> None:
         with tempfile.TemporaryDirectory(prefix="byo-stale-extra-") as temporary:
-            root = Path(temporary)
+            root = Path(temporary).resolve()
             stale_wheel = root / self.wheel.name
             with (
                 zipfile.ZipFile(self.wheel) as source,
@@ -312,7 +312,7 @@ class ReleaseArtifactInventoryTests(unittest.TestCase):
 
     def test_sdist_non_regular_members_are_rejected(self) -> None:
         with tempfile.TemporaryDirectory(prefix="byo-unsafe-sdist-") as temporary:
-            unsafe = Path(temporary) / self.sdist.name
+            unsafe = Path(temporary).resolve() / self.sdist.name
             with (
                 tarfile.open(self.sdist, "r:gz") as source,
                 tarfile.open(unsafe, "w:gz") as destination,
@@ -330,7 +330,7 @@ class ReleaseArtifactInventoryTests(unittest.TestCase):
 
     def test_wheel_symlink_member_is_rejected_even_when_bytes_match(self) -> None:
         with tempfile.TemporaryDirectory(prefix="byo-unsafe-wheel-") as temporary:
-            unsafe = Path(temporary) / self.wheel.name
+            unsafe = Path(temporary).resolve() / self.wheel.name
             target = "pyocd_debug_mcp/server.py"
             with zipfile.ZipFile(self.wheel) as source, zipfile.ZipFile(unsafe, "w") as destination:
                 for info in source.infolist():
@@ -344,7 +344,7 @@ class ReleaseArtifactInventoryTests(unittest.TestCase):
 
     def test_wheel_dos_member_without_regular_type_is_rejected(self) -> None:
         with tempfile.TemporaryDirectory(prefix="byo-dos-wheel-") as temporary:
-            unsafe = Path(temporary) / self.wheel.name
+            unsafe = Path(temporary).resolve() / self.wheel.name
             target = "pyocd_debug_mcp/server.py"
             with zipfile.ZipFile(self.wheel) as source, zipfile.ZipFile(unsafe, "w") as destination:
                 for info in source.infolist():
@@ -359,7 +359,7 @@ class ReleaseArtifactInventoryTests(unittest.TestCase):
 
     def test_oversized_generated_wheel_member_is_rejected_before_content_checks(self) -> None:
         with tempfile.TemporaryDirectory(prefix="byo-oversized-wheel-") as temporary:
-            unsafe = Path(temporary) / self.wheel.name
+            unsafe = Path(temporary).resolve() / self.wheel.name
             with zipfile.ZipFile(self.wheel) as source, zipfile.ZipFile(unsafe, "w") as destination:
                 for info in source.infolist():
                     content = source.read(info.filename)
@@ -372,7 +372,7 @@ class ReleaseArtifactInventoryTests(unittest.TestCase):
 
     def test_oversized_generated_sdist_member_is_rejected_before_body_read(self) -> None:
         with tempfile.TemporaryDirectory(prefix="byo-oversized-sdist-") as temporary:
-            unsafe = Path(temporary) / self.sdist.name
+            unsafe = Path(temporary).resolve() / self.sdist.name
             oversized = b"X" * (2 * 1024 * 1024 + 1)
             with tarfile.open(unsafe, "w:gz") as destination:
                 member = tarfile.TarInfo(f"pyocd_debug_mcp-{VERSION}/PKG-INFO")
@@ -385,7 +385,7 @@ class ReleaseArtifactInventoryTests(unittest.TestCase):
 
     def test_paired_tampered_core_metadata_is_rejected_against_fresh_build(self) -> None:
         with tempfile.TemporaryDirectory(prefix="byo-metadata-pair-") as temporary:
-            root = Path(temporary)
+            root = Path(temporary).resolve()
             altered_wheel = root / self.wheel.name
             metadata_name = f"pyocd_debug_mcp-{VERSION}.dist-info/METADATA"
             record_name = f"pyocd_debug_mcp-{VERSION}.dist-info/RECORD"
@@ -436,7 +436,7 @@ class ReleaseArtifactInventoryTests(unittest.TestCase):
 
     def test_non_reference_zip_and_tar_member_metadata_is_rejected(self) -> None:
         with tempfile.TemporaryDirectory(prefix="byo-member-metadata-") as temporary:
-            root = Path(temporary)
+            root = Path(temporary).resolve()
             altered_wheel = root / self.wheel.name
             with (
                 zipfile.ZipFile(self.wheel) as source,
@@ -478,7 +478,7 @@ class ReleaseArtifactInventoryTests(unittest.TestCase):
 
     def test_private_pair_snapshot_is_unchanged_when_originals_are_replaced(self) -> None:
         with tempfile.TemporaryDirectory(prefix="byo-artifact-snapshot-") as temporary:
-            root = Path(temporary)
+            root = Path(temporary).resolve()
             original_wheel = root / self.wheel.name
             original_sdist = root / self.sdist.name
             original_wheel.write_bytes(self.wheel.read_bytes())
@@ -510,7 +510,7 @@ class ReleaseArtifactInventoryTests(unittest.TestCase):
 
     def test_raw_archive_prefixes_and_trailers_cannot_match_a_fresh_build(self) -> None:
         with tempfile.TemporaryDirectory(prefix="byo-artifact-raw-bytes-") as temporary:
-            root = Path(temporary)
+            root = Path(temporary).resolve()
             mutations = (
                 (b"untrusted-prefix\n", b""),
                 (b"", b"\nuntrusted-trailer"),
@@ -530,7 +530,7 @@ class ReleaseArtifactInventoryTests(unittest.TestCase):
 
     def test_main_rejects_raw_mismatch_before_candidate_archive_parsing(self) -> None:
         with tempfile.TemporaryDirectory(prefix="byo-artifact-parser-order-") as temporary:
-            root = Path(temporary)
+            root = Path(temporary).resolve()
 
             def build_reference(arguments, **_kwargs):
                 output = Path(arguments[arguments.index("--out-dir") + 1])
@@ -575,7 +575,7 @@ class ReleaseArtifactInventoryTests(unittest.TestCase):
 
     def test_publication_failure_restores_the_complete_previous_pair(self) -> None:
         with tempfile.TemporaryDirectory(prefix="byo-publish-rollback-") as temporary:
-            destination = Path(temporary) / "dist"
+            destination = Path(temporary).resolve() / "dist"
             destination.mkdir()
             old_wheel = destination / self.wheel.name
             old_sdist = destination / self.sdist.name
@@ -607,7 +607,7 @@ class ReleaseArtifactInventoryTests(unittest.TestCase):
 
     def test_destination_swap_cannot_redirect_publication_writes(self) -> None:
         with tempfile.TemporaryDirectory(prefix="byo-publish-swap-") as temporary:
-            root = Path(temporary)
+            root = Path(temporary).resolve()
             destination = root / "dist"
             destination.mkdir()
             (destination / self.wheel.name).write_bytes(b"previous wheel")
@@ -642,7 +642,7 @@ class ReleaseArtifactInventoryTests(unittest.TestCase):
 
     def test_symlinked_destination_ancestor_cannot_redirect_publication(self) -> None:
         with tempfile.TemporaryDirectory(prefix="byo-publish-ancestor-") as temporary:
-            root = Path(temporary)
+            root = Path(temporary).resolve()
             outside = root / "outside"
             outside.mkdir()
             redirected_parent = root / "redirected-parent"
@@ -662,7 +662,7 @@ class ReleaseArtifactInventoryTests(unittest.TestCase):
 
     def test_concurrent_extra_archive_prevents_successful_publication(self) -> None:
         with tempfile.TemporaryDirectory(prefix="byo-publish-inventory-") as temporary:
-            destination = Path(temporary) / "dist"
+            destination = Path(temporary).resolve() / "dist"
             destination.mkdir()
             original_snapshot = release_verifier._snapshot_artifact_at
             injected = False
@@ -700,7 +700,7 @@ class ReleaseArtifactInventoryTests(unittest.TestCase):
 
     def test_concurrent_publishers_are_serialized_and_leave_one_complete_pair(self) -> None:
         with tempfile.TemporaryDirectory(prefix="byo-publish-concurrent-") as temporary:
-            root = Path(temporary)
+            root = Path(temporary).resolve()
             destination = root / "dist"
             source_a = root / "source-a"
             source_b = root / "source-b"
@@ -748,7 +748,7 @@ class ReleaseArtifactInventoryTests(unittest.TestCase):
 
     def test_publication_lock_release_between_probe_and_stat_is_retried(self) -> None:
         with tempfile.TemporaryDirectory(prefix="byo-publish-lock-race-") as temporary:
-            parent = Path(temporary)
+            parent = Path(temporary).resolve()
             destination_name = "dist"
             lock_name = f".{destination_name}.release-publication.lock"
             (parent / lock_name).mkdir()
@@ -779,7 +779,7 @@ class ReleaseArtifactInventoryTests(unittest.TestCase):
 class ExactReleasePairSelectionTests(unittest.TestCase):
     def test_exact_pair_is_selected_and_any_stale_archive_is_rejected(self) -> None:
         with tempfile.TemporaryDirectory(prefix="byo-pair-selection-") as temporary:
-            directory = Path(temporary)
+            directory = Path(temporary).resolve()
             wheel = directory / f"pyocd_debug_mcp-{VERSION}-py3-none-any.whl"
             sdist = directory / f"pyocd_debug_mcp-{VERSION}.tar.gz"
             wheel.touch()
@@ -793,7 +793,7 @@ class ExactReleasePairSelectionTests(unittest.TestCase):
 
     def test_unrelated_archive_in_release_directory_is_rejected(self) -> None:
         with tempfile.TemporaryDirectory(prefix="byo-pair-selection-") as temporary:
-            directory = Path(temporary)
+            directory = Path(temporary).resolve()
             (directory / f"pyocd_debug_mcp-{VERSION}-py3-none-any.whl").touch()
             (directory / f"pyocd_debug_mcp-{VERSION}.tar.gz").touch()
             (directory / "other-malware.whl").touch()
@@ -803,7 +803,7 @@ class ExactReleasePairSelectionTests(unittest.TestCase):
 
     def test_symlinked_candidate_is_rejected(self) -> None:
         with tempfile.TemporaryDirectory(prefix="byo-pair-selection-") as temporary:
-            directory = Path(temporary)
+            directory = Path(temporary).resolve()
             real_wheel = directory / "real-wheel.bin"
             real_wheel.touch()
             wheel = directory / f"pyocd_debug_mcp-{VERSION}-py3-none-any.whl"
