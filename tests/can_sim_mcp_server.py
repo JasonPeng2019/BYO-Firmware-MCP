@@ -78,7 +78,16 @@ def main() -> None:
         snapshot=lambda: snapshot_from_validation_inventory(inventory),
         validation_inventory=lambda: inventory,
     )
-    server.main()
+    # Retain thread stacks when a hosted platform stalls in native startup.
+    # This is a test-only file, never an MCP response or product artifact.
+    import faulthandler
+
+    with (root / "startup-threads.log").open("w") as diagnostics:
+        faulthandler.dump_traceback_later(4, file=diagnostics)
+        try:
+            server.main()
+        finally:
+            faulthandler.cancel_dump_traceback_later()
     # main returns only after the real ordered teardown has completed. The
     # client checks this receipt after EOF rather than inferring cleanup merely
     # from the stdio transport context closing.

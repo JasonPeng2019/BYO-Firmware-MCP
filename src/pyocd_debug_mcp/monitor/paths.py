@@ -117,10 +117,12 @@ def _identity_file_lock(path: Path) -> Iterator[None]:
     descriptor = os.open(lock_path, os.O_RDWR | os.O_CREAT, 0o600)
     locked = False
     try:
-        try:
-            os.fchmod(descriptor, 0o600)
-        except OSError:
-            pass
+        fchmod = getattr(os, "fchmod", None)
+        if fchmod is not None:
+            try:
+                fchmod(descriptor, 0o600)
+            except OSError:
+                pass
         _fsync_directory(lock_path.parent)
         if os.name == "posix":
             import fcntl
@@ -159,10 +161,12 @@ def _durable_private_replace(path: Path, payload: bytes) -> None:
     )
     temporary = Path(temporary_name)
     try:
-        try:
-            os.fchmod(descriptor, 0o600)
-        except OSError:
-            pass
+        fchmod = getattr(os, "fchmod", None)
+        if fchmod is not None:
+            try:
+                fchmod(descriptor, 0o600)
+            except OSError:
+                pass
         with os.fdopen(descriptor, "wb") as stream:
             stream.write(payload)
             stream.flush()

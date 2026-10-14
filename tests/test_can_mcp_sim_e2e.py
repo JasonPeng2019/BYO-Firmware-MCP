@@ -67,7 +67,11 @@ class CanMcpSimulationE2E(NativeSimulatorFixture):
                     self.assertEqual(validated["status"], "validation_passed", validated)
                     evidence["validation_status"] = validated["status"]
                     attached = await call("connect_can", board)
-                    self.assertEqual(attached["status"], "connected", attached)
+                    self.assertEqual(
+                        attached["status"],
+                        "connected",
+                        f"{attached}\n{(self.root / 'startup-threads.log').read_text()}",
+                    )
                     self.assertEqual(attached["can"]["capabilities"]["driver"], "tcp_sim")
                     common = {
                         **board,

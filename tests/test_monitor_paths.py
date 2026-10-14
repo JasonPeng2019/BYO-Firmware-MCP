@@ -22,6 +22,18 @@ class MonitorStoreRootTests(unittest.TestCase):
         self.addCleanup(paths._reset_cache)
         self.addCleanup(self._temporary.cleanup)
 
+    def test_identity_persists_without_optional_fchmod(self) -> None:
+        paths._reset_cache(self.root)
+        with patch.object(paths.os, "fchmod", None, create=True):
+            salt = paths.deployment_salt()
+            store = paths.resolve_store_root()
+            token = paths.workspace_token(store, "workspace")
+            self.assertEqual((self.root / paths.SALT_FILE).read_bytes(), salt)
+            self.assertEqual(paths.read_workspace_token(store, "workspace"), token)
+            paths._reset_cache(self.root)
+            self.assertEqual(paths.deployment_salt(), salt)
+            self.assertEqual(paths.workspace_token(store, "workspace"), token)
+
     def test_explicit_monitor_root_precedes_app_data_and_artifact_root_and_holds_writes(
         self,
     ) -> None:
