@@ -22,7 +22,11 @@ from unittest.mock import patch
 from pyocd_debug_mcp.adapters.can_interface import CanFrame, CanDirection
 from pyocd_debug_mcp.can_config import load_can_fixture_config
 from pyocd_debug_mcp.can_errors import CanCleanupError, CanError, CanTimeoutError
-from pyocd_debug_mcp.services.can_worker import AsyncCanWorkerClient, CanWorkerClient
+from pyocd_debug_mcp.services.can_worker import (
+    AsyncCanWorkerClient,
+    CanWorkerClient,
+    _RequestOwnership,
+)
 
 ROOT = Path(__file__).resolve().parents[1]
 FRAME = struct.Struct("!IBB8s")
@@ -91,6 +95,49 @@ class NativeSimulatorFixture(unittest.TestCase):
 
 
 class NativeSimulatorTests(NativeSimulatorFixture):
+    def test_request_error_retires_when_concurrent_cancel_owns_termination(self) -> None:
+        self.open_worker()
+        worker = self.worker
+        owner = _RequestOwnership(
+            generation=worker._generation,
+            cancellation_epoch=worker._cancellation_epoch,
+        )
+        worker._request_owner = owner
+        waiting_for_request = threading.Event()
+        original_wait = owner.done.wait
+        cancellation_errors: list[BaseException] = []
+
+        def observed_wait(timeout=None):
+            waiting_for_request.set()
+            return original_wait(timeout)
+
+        def cancel() -> None:
+            try:
+                worker.cancel()
+            except BaseException as exc:
+                cancellation_errors.append(exc)
+
+        with patch.object(owner.done, "wait", side_effect=observed_wait):
+            canceller = threading.Thread(target=cancel)
+            canceller.start()
+            try:
+                self.assertTrue(waiting_for_request.wait(3), "canceller never reached retirement")
+                # A request error can race cancellation after its initial epoch
+                # check. It must retire, not wait on the canceller's lock while
+                # that canceller is itself waiting for this request to retire.
+                try:
+                    worker._terminate("racing request error", initiating_owner=owner)
+                except CanError:
+                    pass
+            finally:
+                worker._finish_request_owner(owner)
+                canceller.join(3)
+        self.assertFalse(canceller.is_alive())
+        self.assertEqual(cancellation_errors, [])
+        self.assertEqual(worker.last_cleanup_outcome, "closed")
+        self.assertFalse(worker.is_alive)
+        self.assertIsNone(worker._request_owner)
+
     def test_cross_process_exact_tx_rx_and_format_filters(self) -> None:
         self.open_worker()
         sent = self.worker.send(

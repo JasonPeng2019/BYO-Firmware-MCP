@@ -19,6 +19,8 @@ from __future__ import annotations
 
 import json
 import os
+import re
+import sys
 import secrets
 import shutil
 import subprocess
@@ -117,6 +119,30 @@ class CodexResult:
         return any(tool in entry for entry in self.tool_calls)
 
 
+def completed_mcp_calls(stderr: str) -> list[str]:
+    """Recognize paired tool events, excluding startup chatter and unfinished calls.
+
+    Keep text mode because its model banner independently verifies the requested
+    pin. Unknown CLI event formats fail closed instead of counting readiness.
+    """
+    pending: dict[str, int] = {}
+    completed: list[str] = []
+    pattern = re.compile(
+        rf"mcp: {re.escape(SERVER_NAME)}/([\w-]+) (started|\(completed\)|\(failed\))"
+    )
+    for line in stderr.splitlines():
+        match = pattern.fullmatch(line.strip())
+        if match is None:
+            continue
+        tool, status = match.groups()
+        if status == "started":
+            pending[tool] = pending.get(tool, 0) + 1
+        elif pending.get(tool, 0):
+            pending[tool] -= 1
+            completed.append(f"{tool} {status}")
+    return completed
+
+
 def _workspace_digest(project: Path, store: Path) -> str:
     """Compute the store folder name this project maps to.
 
@@ -212,7 +238,7 @@ class CodexAgentTestCase(unittest.TestCase):
                     ")",
                     "",
                     "def _retire(_signum: int, _frame: object) -> None:",
-                    "    _PID_RECORD.unlink(missing_ok=True)",
+                    "    signal.signal(signal.SIGTERM, signal.SIG_IGN)",
                     "    raise SystemExit(0)",
                     "",
                     "signal.signal(signal.SIGTERM, _retire)",
@@ -234,14 +260,12 @@ class CodexAgentTestCase(unittest.TestCase):
                     "        time.sleep(0.1)",
                     "",
                     "threading.Thread(target=_watch_parent, daemon=True).start()",
-                    "try:",
-                    "    if '--harness-lifecycle-probe' in sys.argv:",
-                    "        while True:",
-                    "            time.sleep(60)",
-                    "    else:",
-                    "        main()",
-                    "finally:",
-                    "    _PID_RECORD.unlink(missing_ok=True)",
+                    "# The harness removes the receipt only after proving process exit.",
+                    "if '--harness-lifecycle-probe' in sys.argv:",
+                    "    while True:",
+                    "        time.sleep(60)",
+                    "else:",
+                    "    main()",
                     "",
                 ]
             ),
@@ -257,6 +281,7 @@ class CodexAgentTestCase(unittest.TestCase):
                     "command = 'uv'",
                     f"args = ['run','--project','{project}','python',{launcher.as_posix()!r}]",
                     f"cwd = '{project}'",
+                    "required = true",
                     "startup_timeout_sec = 180",
                     "tool_timeout_sec = 120",
                     "",
@@ -291,34 +316,43 @@ class CodexAgentTestCase(unittest.TestCase):
                 payload = json.loads(record.read_text(encoding="ascii"))
                 create_time = float(payload["create_time"])
                 owner_token = str(payload["owner_token"])
-            except (ValueError, KeyError, TypeError, json.JSONDecodeError, OSError):
-                continue
+            except (ValueError, KeyError, TypeError, json.JSONDecodeError, OSError) as exc:
+                raise AssertionError(
+                    "Unreadable owned-server receipt; retirement unproven"
+                ) from exc
             if owner_token != self._server_owner_token:
-                continue
+                raise AssertionError("Owned-server receipt token mismatch; retirement unproven")
             try:
                 process = psutil.Process(pid)
                 if abs(process.create_time() - create_time) > 0.01:
+                    # The original identity is gone. Never touch its replacement.
+                    record.unlink(missing_ok=True)
                     continue
                 command_line = [str(Path(argument).resolve()) for argument in process.cmdline()]
                 if launcher not in command_line:
-                    continue
+                    raise AssertionError("Owned-server command mismatch; retirement unproven")
             except psutil.NoSuchProcess:
                 record.unlink(missing_ok=True)
                 continue
             try:
-                process.terminate()
-                process.wait(timeout=5.0)
+                # Allow EOF/parent-death shutdown to flush the monitor first.
+                try:
+                    process.wait(timeout=2.0)
+                except psutil.TimeoutExpired:
+                    process.terminate()
+                    process.wait(timeout=5.0)
             except psutil.TimeoutExpired:
                 process.kill()
                 process.wait(timeout=5.0)
+                raise AssertionError("Owned MCP server required a forced kill; evidence incomplete")
             except (psutil.NoSuchProcess, psutil.AccessDenied):
                 if psutil.pid_exists(pid):
-                    continue
+                    raise AssertionError("Could not retire the owned MCP server")
             finally:
                 if not psutil.pid_exists(pid):
                     record.unlink(missing_ok=True)
             if psutil.pid_exists(pid):
-                continue
+                raise AssertionError("Owned MCP server remains alive")
             record.unlink(missing_ok=True)
 
     def _clean_workspace(self) -> None:
@@ -364,35 +398,53 @@ class CodexAgentTestCase(unittest.TestCase):
             "danger-full-access",
             prompt,
         ]
-        completed = subprocess.run(
-            command,
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            timeout=timeout,
-            cwd=str(self.project),
-            stdin=subprocess.DEVNULL,
-            env={
-                **os.environ,
-                "RUST_LOG": "error",
-                # Isolated home: only this test's MCP server is visible.
-                "CODEX_HOME": str(self.codex_home),
-                # Inherited by the MCP server codex spawns, so a short session
-                # still reaches a snapshot boundary.
-                SNAPSHOT_CADENCE_ENV: str(E2E_SNAPSHOT_CADENCE),
-                CHECKIN_CADENCE_ENV: str(E2E_CHECKIN_CADENCE),
-                "BYO_MCP_MONITOR_ROOT": str(self.store),
-            },
-        )
+        try:
+            completed = subprocess.run(
+                command,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=timeout,
+                cwd=str(self.project),
+                stdin=subprocess.DEVNULL,
+                env={
+                    **os.environ,
+                    "RUST_LOG": "error",
+                    # Isolated home: only this test's MCP server is visible.
+                    "CODEX_HOME": str(self.codex_home),
+                    # Inherited by the MCP server codex spawns, so a short session
+                    # still reaches a snapshot boundary.
+                    SNAPSHOT_CADENCE_ENV: str(E2E_SNAPSHOT_CADENCE),
+                    CHECKIN_CADENCE_ENV: str(E2E_CHECKIN_CADENCE),
+                    "BYO_MCP_MONITOR_ROOT": str(self.store),
+                },
+            )
+        finally:
+            self._terminate_owned_servers()
         result = CodexResult(
             returncode=completed.returncode,
             stdout=completed.stdout or "",
             stderr=completed.stderr or "",
         )
-        result.tool_calls = [
-            line.strip() for line in result.combined.splitlines() if line.strip().startswith("mcp:")
-        ]
+        result.tool_calls = completed_mcp_calls(result.stderr)
+        # Retain only test event names/counts, never raw prompts, credentials,
+        # paths, or tool payloads, in the release runner's captured output.
+        print(
+            "CODEX_TEST_EVIDENCE="
+            + json.dumps(
+                {
+                    "test": self.id(),
+                    "returncode": result.returncode,
+                    "completed_calls": result.tool_calls,
+                    "record_kinds": sorted(self.record_kinds()),
+                    "outcomes": sorted(self.outcomes_recorded()),
+                    "call_count": self.call_count_recorded(),
+                },
+                sort_keys=True,
+            ),
+            file=sys.stderr,
+        )
         self._assert_model_was_honoured(result)
         return result
 
@@ -411,7 +463,7 @@ class CodexAgentTestCase(unittest.TestCase):
         if migrated:
             expected.append(migrated)
         self.assertTrue(
-            any(f"model: {name}" in result.combined for name in expected),
+            any(f"model: {name}" in result.stderr.splitlines() for name in expected),
             "codex did not report the pinned model "
             f"({' or its known migration '.join(expected)}); refusing to accept the run",
         )

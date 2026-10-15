@@ -430,9 +430,18 @@ def terminate_marked_group(pid: int, start_token: str) -> bool:
         return False
     if current_token is None:
         # Windows Job Objects kill descendants when the owning helper closes.
-        # A leaderless POSIX PGID has no remaining identity authority and may
-        # have been reused, so startup must retain the marker rather than signal.
-        return os.name == "nt"
+        if os.name == "nt":
+            return True
+        # An absent leader does not authorize signalling a possibly reused
+        # group. A non-mutating probe can still prove that no group remains.
+        # This retires stale process ownership, not historical device state.
+        try:
+            os.killpg(pid, 0)
+        except ProcessLookupError:
+            return True
+        except OSError:
+            return False
+        return False
     try:
         if os.name == "nt":
             if current_token is None:

@@ -110,6 +110,11 @@ jobs:
           tests.test_can_config_gate tests.test_can_worker_virtual
           tests.test_can_session tests.test_can_tools tests.test_can_server_contract
           tests.test_monitor_paths.MonitorStoreRootTests.test_identity_persists_without_optional_fchmod
+      - name: Verify recovery, shutdown isolation, and harness evidence
+        run: >-
+          uv run --locked --extra can python -m unittest -v
+          tests.test_process_cleanup tests.test_can_shutdown
+          tests.test_monitor_codex_e2e.HarnessEvidenceTests
       - name: Preserve Windows registry and junction regressions
         if: runner.os == 'Windows'
         run: >-

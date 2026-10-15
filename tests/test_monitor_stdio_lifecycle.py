@@ -260,6 +260,29 @@ class StdoutIsOnlyProtocolFraming(LifecycleTestCase):
             self.assertIn("result", response)
 
 
+class RefusalSnapshotCadence(LifecycleTestCase):
+    def test_two_completed_calls_record_refusal_before_server_shutdown(self) -> None:
+        from pyocd_debug_mcp.monitor.counters import SNAPSHOT_CADENCE_ENV, CHECKIN_CADENCE_ENV
+
+        server = StdioServer(
+            extra_environment={SNAPSHOT_CADENCE_ENV: "2", CHECKIN_CADENCE_ENV: "4"}
+        )
+        self.addCleanup(server.kill)
+        server.initialize()
+        handshake = server.call("initialization_handshake", {"workspace_path": str(self.project)})
+        self.assertFalse(handshake["result"].get("isError", False))
+        refusal = server.call("get_state", {"board_id": "ghost-board"}, request_id=3)
+        self.assertTrue(refusal["result"]["isError"])
+        snapshots = [r for r in self.records() if r["kind"] == "usage_snapshot"]
+        self.assertTrue(
+            snapshots, "completed calls did not synchronously publish the cadence-2 snapshot"
+        )
+        outcomes = snapshots[-1]["detail"]["per_outcome"]
+        self.assertEqual(outcomes.get("policy_refusal"), 1)
+        self.assertIsNone(server.proc.poll())
+        self.assertEqual(server.close_stdin_and_wait(), 0)
+
+
 class CleanShutdownWritesACloseRecord(LifecycleTestCase):
     def test_stdin_eof_exits_cleanly_and_records_close(self) -> None:
         server = StdioServer()

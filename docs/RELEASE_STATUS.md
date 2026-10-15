@@ -66,6 +66,36 @@ unresolved process markers cannot disable the test server. CAN fixtures canonica
 their newly allocated temporary roots before passing them to no-symlink profile
 reads; supplied-path checks remain intact.
 
+### Follow-up recovery and intermittence fixes
+
+Startup now retires a stale POSIX process marker when both its leader is absent
+and a non-signalling process-group probe proves the group absent. Existing or
+inaccessible groups remain unresolved; identity mismatches never authorize a
+signal. The real-stdio shutdown regression uses a private runs root and reports
+missing scenario output explicitly, including a poisoned-operator-root regression.
+
+A deterministic cancellation regression reproduced a lock cycle: the canceller
+held the termination lock while waiting for request retirement, and a request
+error waited for that lock before retiring. Revoked requests now unwind while
+waiting for termination ownership. The regression uses a real TCP simulator and
+worker and requires a closed receipt, process exit, and released request ownership.
+
+The live-agent harness now counts paired completed/failed MCP tool events from
+its own server, excluding readiness and unfinished calls. It retains text mode
+so the CLI's exact model banner still independently enforces the model pin.
+The server is required to start, and its ownership receipt remains until the
+harness proves exit before reading evidence. Timeout/error paths also retire the
+owned server; forced kills fail evidence collection. The refusal stimulus uses
+visible tools and verifies completion before checking recorded outcomes. Sanitized
+event names, record kinds, and counters are retained in test output. A real-stdio
+cadence-2 regression proves refusal persistence before shutdown without a model.
+
+These are reproduced defects and regression-tested fixes. The precise cause of
+the earlier intermittent cleanup-receipt and live-refusal failures cannot be
+reconstructed from their limited historical logs; later passes alone are not
+proof of those historical causes. Current qualification requires the deterministic
+regressions, live evidence, and current-revision native CI to pass.
+
 ## Retained candidate verification matrix
 
 The four retained logs and their attestation describe one complete source manifest.
@@ -74,8 +104,8 @@ The consistency and privacy gates remain mandatory in CI.
 
 | Environment | Evidence in this candidate | Status |
 | --- | --- | --- |
-| macOS 26.6.2 x86_64, Python 3.12.13 | Full default 1,439-test software suite (30 skips during generation: platform/opt-in cases plus one self-referential retained-log case; all 5 release-evidence cases then run against the immutable staged logs), Ruff, Pyright, lock and privacy checks | Retained generator logs |
-| Opt-in Codex/MCP monitor module, pinned `gpt-5.6-luna` | 17 live agent/MCP cases plus 5 harness/unit cases, 22 module tests total; private monitor and process roots | Retained generator log |
+| macOS 26.6.2 x86_64, Python 3.12.13 | Full default 1,452-test software suite (30 skips during generation: platform/opt-in cases plus one self-referential retained-log case; all 5 release-evidence cases then run against the immutable staged logs), Ruff, Pyright, lock and privacy checks | Retained generator logs |
+| Opt-in Codex/MCP monitor module, pinned `gpt-5.6-luna` | 17 live agent/MCP cases plus 12 harness/unit cases, 29 module tests total; private monitor and process roots | Retained generator log |
 | CPython 3.10.20 | All 228 source files parsed with the 3.10 interpreter | Retained parse log |
 | GitHub-hosted Ubuntu, Python 3.10 and 3.12 | Complete runtime suites, clean installs, evidence checks, and exact wheel/sdist handoff verification | Required CI gates; consult the current branch run |
 | GitHub-hosted Linux/macOS/Windows, Python 3.12 | Native software CAN, public simulated MCP, retained captures, and cleanup; macOS attachment/SWD regressions; Linux kernel vcan | Prior CAN/vcan success linked above; added macOS regression lane must pass on the current revision |

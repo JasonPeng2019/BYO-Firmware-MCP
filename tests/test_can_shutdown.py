@@ -621,6 +621,15 @@ class CanRegistryOuterBoundaryTests(unittest.IsolatedAsyncioTestCase):
 
 
 class CanSubprocessShutdownTests(unittest.TestCase):
+    def test_real_stdio_ignores_poisoned_operator_runtime(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            marker = Path(directory) / "owned-processes" / "unresolved.json"
+            marker.parent.mkdir()
+            marker.write_text("not a valid recovery marker", encoding="utf-8")
+            with patch.dict(os.environ, {"PYOCD_MCP_RUNS_ROOT": directory}):
+                self.test_uncertain_cleanup_real_stdio_retains_owner_and_records_failure()
+            self.assertEqual(marker.read_text(encoding="utf-8"), "not a valid recovery marker")
+
     def test_uncertain_cleanup_real_stdio_retains_owner_and_records_failure(self) -> None:
         script = r"""
 import asyncio
@@ -750,6 +759,7 @@ except SystemExit:
                     "PYTHONPATH": os.pathsep.join((str(ROOT / "src"), str(ROOT))),
                     "BYO_MCP_ARTIFACT_ROOT": str(root),
                     "BYO_MCP_MONITOR_ROOT": str(root / "monitor"),
+                    "PYOCD_MCP_RUNS_ROOT": str(root / "owned-runs"),
                     "BYO_MCP_TEST_SEAMS": "1",
                     "PYOCD_CAN_MODE": "available",
                     "PYOCD_CAN_CONFIG": str(profile),
@@ -770,11 +780,17 @@ except SystemExit:
             )
 
             self.assertEqual(result.returncode, 1, result.stderr)
-            marker = next(
+            markers = [
                 line
                 for line in result.stderr.splitlines()
                 if line.startswith("CAN_SHUTDOWN_STATE=")
+            ]
+            self.assertEqual(
+                len(markers),
+                1,
+                f"Child did not reach the shutdown scenario. stderr:\n{result.stderr}",
             )
+            marker = markers[0]
             state = json.loads(marker.removeprefix("CAN_SHUTDOWN_STATE="))
             self.assertEqual(state["closed_debug_sessions"], ["owner", "other"])
             self.assertEqual(state["assigned_boards"], [])

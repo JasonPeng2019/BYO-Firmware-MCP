@@ -46,11 +46,11 @@ except ModuleNotFoundError:  # Direct ``python scripts/generate_release_evidence
 
 
 ROOT = Path(__file__).resolve().parents[1]
-EXPECTED_DEFAULT_TESTS = 1439
+EXPECTED_DEFAULT_TESTS = 1452
 # Default evidence excludes opt-in kernel vcan on both Linux and macOS.
 # The native CI job provisions and qualifies that interface separately.
 EXPECTED_DEFAULT_SKIPS = 30
-EXPECTED_LIVE_TESTS = 22
+EXPECTED_LIVE_TESTS = 29
 RELEASE_TMPDIR = "/tmp"
 
 

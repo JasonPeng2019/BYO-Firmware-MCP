@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import gc
+import json
 import os
 import subprocess
 import sys
 import tempfile
 import unittest
 import warnings
+from dataclasses import asdict
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, cast
@@ -17,6 +19,57 @@ from pyocd_debug_mcp.kernel import processes
 
 @unittest.skipUnless(os.name == "posix", "POSIX process groups")
 class PosixProcessCleanupTests(unittest.TestCase):
+    def test_missing_marker_leader_requires_confirmed_group_absence(self) -> None:
+        for probe_result, expected in (
+            (ProcessLookupError(), True),
+            (None, False),
+            (PermissionError(), False),
+            (OSError("probe unavailable"), False),
+        ):
+            with self.subTest(probe_result=probe_result):
+                with (
+                    patch.object(processes, "_start_token", return_value=None),
+                    patch.object(processes.os, "killpg", side_effect=probe_result) as probe,
+                ):
+                    self.assertEqual(processes.terminate_marked_group(42, "old"), expected)
+                probe.assert_called_once_with(42, 0)
+
+    def test_reused_marker_identity_never_signals_the_new_process_group(self) -> None:
+        with (
+            patch.object(processes, "_start_token", return_value="replacement"),
+            patch.object(processes.os, "killpg") as probe,
+        ):
+            self.assertFalse(processes.terminate_marked_group(42, "old"))
+        probe.assert_not_called()
+
+    def test_startup_retires_absent_group_but_retains_uncertain_markers(self) -> None:
+        from pyocd_debug_mcp.kernel.hygiene import require_clean_startup
+
+        for probe_result in (ProcessLookupError(), None, PermissionError()):
+            with (
+                self.subTest(probe_result=probe_result),
+                tempfile.TemporaryDirectory() as directory,
+            ):
+                root = Path(directory)
+                marker = processes.ProcessMarker(
+                    2, "old", 10, "owner", 20, "child", "hash", "tool", "now"
+                )
+                path = root / "old.json"
+                path.write_text(json.dumps(asdict(marker)), encoding="utf-8")
+                with (
+                    patch("pyocd_debug_mcp.kernel.hygiene._start_token", return_value=None),
+                    patch.object(processes, "_start_token", return_value=None),
+                    patch.object(processes.os, "killpg", side_effect=probe_result) as probe,
+                ):
+                    if isinstance(probe_result, ProcessLookupError):
+                        self.assertEqual(require_clean_startup(root).stale_removed, 1)
+                        self.assertFalse(path.exists())
+                    else:
+                        with self.assertRaisesRegex(RuntimeError, "1 unresolved marker"):
+                            require_clean_startup(root)
+                        self.assertTrue(path.exists())
+                probe.assert_called_once_with(20, 0)
+
     def test_exited_worker_eperm_is_reaped_before_group_absence_is_confirmed(self) -> None:
         process = Mock(pid=42)
         with patch.object(

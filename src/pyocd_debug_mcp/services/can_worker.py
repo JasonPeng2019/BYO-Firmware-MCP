@@ -17,7 +17,8 @@ import os
 import signal
 import threading
 import time
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass, field, replace
 from multiprocessing.process import BaseProcess
 from typing import Any, Protocol, TypeVar, cast
@@ -811,6 +812,25 @@ class CanWorkerClient:
         self._raise_if_owner_cancelled(owner)
         return True
 
+    @contextmanager
+    def _termination_guard(self, owner: _RequestOwnership | None) -> Iterator[None]:
+        if owner is None:
+            with self._termination_lock:
+                yield
+            return
+        # A competing canceller waits for this request's retirement while it
+        # holds the termination lock. Never wait on that lock after the request
+        # has been revoked: unwind so its finally block can release its IPC.
+        while True:
+            self._raise_if_owner_cancelled(owner)
+            if self._termination_lock.acquire(timeout=WORKER_POLL_SLICE_SECONDS):
+                break
+        try:
+            self._raise_if_owner_cancelled(owner)
+            yield
+        finally:
+            self._termination_lock.release()
+
     def _terminate(
         self,
         reason: str,
@@ -819,7 +839,7 @@ class CanWorkerClient:
     ) -> str:
         """Cancel, reap, and classify one generation without stealing owner IPC."""
 
-        with self._termination_lock:
+        with self._termination_guard(initiating_owner):
             termination_deadline = time.monotonic() + MAX_WORKER_EXIT_SECONDS
             with self._lifecycle_lock:
                 # This is the cancellation linearization point. A request may

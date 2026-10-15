@@ -10,8 +10,11 @@ from __future__ import annotations
 import json
 import subprocess
 import sys
+import tempfile
 import time
 import unittest
+from pathlib import Path
+from unittest.mock import Mock, patch
 
 import psutil
 
@@ -160,23 +163,21 @@ class CorrectRefusalsProduceNoDefectReports(CodexAgentTestCase):
 
     def test_a_session_of_correct_refusals_files_no_server_defect(self) -> None:
         result = self.run_agent(
-            "deliberately do these "
-            "four things and do not stop when they fail: (1) call get_state with "
-            "board_id 'ghost-board'; (2) call flash_application with board_id "
-            "'ghost-board' and artifact_path 'nope.elf'; (3) call the tool named "
-            "flash_application-plan with every parameter set to null; (4) call "
-            "server_health_check. Then reply with only DONE."
+            "call the visible tool get_state with board_id 'ghost-board'. "
+            "This is an intentional refusal test; perform the call even though "
+            "no board is attached. After that call returns, call server_health_check. "
+            "Then reply with only DONE."
         )
         self.assertEqual(result.returncode, 0, result.combined[-2000:])
-
-        # Guard against passing vacuously: if the agent never actually got
-        # refused, "no defects" would hold trivially and prove nothing. The
-        # evidence is the snapshot's cumulative outcome distribution, since
-        # individual calls are not recorded.
+        for tool in ("initialization_handshake", "get_state", "server_health_check"):
+            self.assertTrue(
+                result.called(tool), f"Agent did not complete {tool}: {result.tool_calls}"
+            )
         self.assertIn(
             "policy_refusal",
             self.outcomes_recorded(),
-            "the session produced no recorded refusals, so this proves nothing",
+            f"Completed calls {result.tool_calls} produced no recorded refusal; "
+            f"ledger kinds={sorted(self.record_kinds())}, counts={self.call_count_recorded()}",
         )
 
         defects = [r for r in self.reports() if r["triage_class"] == "server_defect"]
@@ -359,6 +360,134 @@ class ModelMigrationLookupIsHermetic(unittest.TestCase):
         self.assertEqual(_KNOWN_MODEL_MIGRATIONS, {"gpt-5.4-mini": REQUIRED_MODEL})
 
 
+class HarnessEvidenceTests(unittest.TestCase):
+    def test_readiness_and_unfinished_calls_are_not_completed_traffic(self) -> None:
+        from tests.codex_harness import completed_mcp_calls
+
+        self.assertEqual(
+            completed_mcp_calls(
+                "mcp: byo_monitor_itest starting\n"
+                "mcp: byo_monitor_itest ready\nmcp: startup: ready: byo_monitor_itest\n"
+                "mcp: byo_monitor_itest/get_state started\n"
+                "mcp: byo_monitor_itest/server_health_check (completed)\n"
+            ),
+            [],
+        )
+
+    def test_only_paired_completed_and_failed_calls_on_our_server_count(self) -> None:
+        from tests.codex_harness import completed_mcp_calls
+
+        self.assertEqual(
+            completed_mcp_calls(
+                "mcp: other/get_state started\nmcp: other/get_state (completed)\n"
+                "mcp: byo_monitor_itest/get_state started\n"
+                "mcp: byo_monitor_itest/get_state (failed)\n"
+                "mcp: byo_monitor_itest/server_health_check started\n"
+                "mcp: byo_monitor_itest/server_health_check (completed)\n"
+                "mcp: byo_monitor_itest/server_health_check (completed)\n"
+            ),
+            ["get_state (failed)", "server_health_check (completed)"],
+        )
+
+    def test_model_pin_requires_exact_stderr_banner(self) -> None:
+        from tests.codex_harness import CodexResult
+
+        case = CodexAgentTestCase()
+        for stdout, stderr in (
+            (f"model: {REQUIRED_MODEL}", ""),
+            ("", f"model: {REQUIRED_MODEL}-other"),
+        ):
+            with self.subTest(stdout=stdout, stderr=stderr), self.assertRaises(AssertionError):
+                case._assert_model_was_honoured(CodexResult(0, stdout, stderr))
+        case._assert_model_was_honoured(CodexResult(0, "", f"model: {REQUIRED_MODEL}\n"))
+
+    def test_owned_server_retires_before_evidence_is_read(self) -> None:
+        case = CodexAgentTestCase()
+        with tempfile.TemporaryDirectory() as directory:
+            case.project = case.codex_home = Path(directory)
+            case.store = Path(directory)
+            case.workspace = "workspace"
+            with (
+                patch("tests.codex_harness.codex_executable", return_value="codex"),
+                patch(
+                    "tests.codex_harness.subprocess.run",
+                    return_value=subprocess.CompletedProcess(
+                        [], 0, "DONE", f"model: {REQUIRED_MODEL}\n"
+                    ),
+                ),
+                patch.object(case, "_terminate_owned_servers") as retire,
+                patch.object(
+                    case, "record_kinds", side_effect=lambda: retire.assert_called_once() or set()
+                ),
+            ):
+                case.run_agent("test")
+
+    def test_uncertain_receipts_prevent_evidence_reads_without_signalling(self) -> None:
+        for defect in ("malformed", "token", "command"):
+            with self.subTest(defect=defect), tempfile.TemporaryDirectory() as directory:
+                case = CodexAgentTestCase()
+                case.project = case.codex_home = case.store = Path(directory)
+                case._server_owner_token = "owned"
+                records = case.codex_home / "server-pids"
+                records.mkdir()
+                payload = {
+                    "create_time": 100.0,
+                    "owner_token": "other" if defect == "token" else "owned",
+                }
+                (records / "42").write_text("{" if defect == "malformed" else json.dumps(payload))
+                process = Mock()
+                process.create_time.return_value = 100.0
+                process.cmdline.return_value = ["unverified-launcher"]
+                with (
+                    patch("tests.codex_harness.codex_executable", return_value="codex"),
+                    patch(
+                        "tests.codex_harness.subprocess.run",
+                        return_value=subprocess.CompletedProcess([], 0, "", ""),
+                    ),
+                    patch("tests.codex_harness.psutil.Process", return_value=process),
+                    patch.object(case, "record_kinds") as read_evidence,
+                ):
+                    with self.assertRaisesRegex(AssertionError, "retirement unproven"):
+                        case.run_agent("test")
+                    read_evidence.assert_not_called()
+                process.terminate.assert_not_called()
+                process.kill.assert_not_called()
+                self.assertTrue((records / "42").exists())
+
+    def test_reused_pid_retires_stale_receipt_without_touching_replacement(self) -> None:
+        case = CodexAgentTestCase()
+        case._server_owner_token = "owned"
+        with tempfile.TemporaryDirectory() as directory:
+            case.codex_home = Path(directory)
+            records = case.codex_home / "server-pids"
+            records.mkdir()
+            receipt = records / "42"
+            receipt.write_text(json.dumps({"create_time": 100.0, "owner_token": "owned"}))
+            process = Mock()
+            process.create_time.return_value = 200.0
+            with patch("tests.codex_harness.psutil.Process", return_value=process):
+                case._terminate_owned_servers()
+            process.terminate.assert_not_called()
+            process.kill.assert_not_called()
+            process.wait.assert_not_called()
+            self.assertFalse(receipt.exists())
+
+    def test_agent_failure_still_retires_owned_server(self) -> None:
+        case = CodexAgentTestCase()
+        case.project = case.codex_home = case.store = Path(".")
+        with (
+            patch("tests.codex_harness.codex_executable", return_value="codex"),
+            patch(
+                "tests.codex_harness.subprocess.run",
+                side_effect=subprocess.TimeoutExpired("codex", 1),
+            ),
+            patch.object(case, "_terminate_owned_servers") as retire,
+        ):
+            with self.assertRaises(subprocess.TimeoutExpired):
+                case.run_agent("test")
+            retire.assert_called_once()
+
+
 class ModelPinningIsEnforced(CodexAgentTestCase):
     def test_the_harness_refuses_a_run_on_another_model(self) -> None:
         """A silently downgraded run would test something other than the claim."""
@@ -366,8 +495,8 @@ class ModelPinningIsEnforced(CodexAgentTestCase):
         from tests.codex_harness import CodexResult
 
         with self.assertRaises(AssertionError):
-            self._assert_model_was_honoured(CodexResult(0, "model: gpt-4o-mini\n", ""))
-        self._assert_model_was_honoured(CodexResult(0, f"model: {REQUIRED_MODEL}\n", ""))
+            self._assert_model_was_honoured(CodexResult(0, "", "model: gpt-4o-mini\n"))
+        self._assert_model_was_honoured(CodexResult(0, "", f"model: {REQUIRED_MODEL}\n"))
         config = (self.codex_home / "config.toml").read_text(encoding="utf-8")
         launcher = self.codex_home / "server_launcher.py"
         self.assertIn(launcher.as_posix(), config)
@@ -434,6 +563,7 @@ class ModelPinningIsEnforced(CodexAgentTestCase):
         while psutil.pid_exists(orphan_pid) and time.monotonic() < deadline:
             time.sleep(0.02)
         self.assertFalse(psutil.pid_exists(orphan_pid), "parent-death watcher left a server alive")
+        self._terminate_owned_servers()
         self.assertFalse((self.codex_home / "server-pids" / str(orphan_pid)).exists())
 
 
