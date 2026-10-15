@@ -464,13 +464,22 @@ if __name__ == "__main__":
                 )
             )
             await _wait_for_active_worker_request(worker)
+            cancelled_at = time.monotonic()
             receive.cancel()
             with self.assertRaises(asyncio.CancelledError):
                 await receive
 
             self.assertFalse(worker.is_alive)
             self.assertTrue(client.cleanup_uncertain)
-            self.assertEqual(worker.last_cleanup_outcome, "failed")
+            self.assertEqual(
+                worker.last_cleanup_outcome,
+                "failed",
+                {
+                    "stage": worker.last_escalation_stage,
+                    "exitcode": worker._process.exitcode if worker._process else None,
+                    "elapsed": time.monotonic() - cancelled_at,
+                },
+            )
             self.assertIn(
                 worker.last_escalation_stage,
                 {
