@@ -5,20 +5,23 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import signal
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import unittest
 from collections.abc import Callable
 from pathlib import Path
+from unittest import mock
 
 import can
 
 from pyocd_debug_mcp.adapters.can_interface import CanBusHandle, CanDirection, CanFrame
 from pyocd_debug_mcp.adapters.can_pythoncan import PythonCanAdapter
 from pyocd_debug_mcp.can_config import LoadedCanFixtureConfig, load_can_fixture_config
-from pyocd_debug_mcp.can_errors import CanOperationError
+from pyocd_debug_mcp.can_errors import CanCleanupError, CanOperationError
 from pyocd_debug_mcp.can_startup import load_can_startup
 from pyocd_debug_mcp.services.can_session import CanSessionManager
 from pyocd_debug_mcp.services.can_worker import (
@@ -39,6 +42,34 @@ class _FailingCloseVirtualAdapter(PythonCanAdapter):
     def close(self, handle: CanBusHandle) -> None:
         super().close(handle)
         raise RuntimeError("injected cleanup receipt failure")
+
+
+class _BlockedCloseVirtualAdapter(PythonCanAdapter):
+    def close(self, handle: CanBusHandle) -> None:
+        while True:
+            time.sleep(0.05)
+
+
+def _run_with_cleanup_signals(*args, adapter_factory) -> None:
+    original_join = threading.Thread.join
+
+    def signalled_join(thread, timeout=None):
+        if os.name == "posix" and thread.name == "byo-can-parent-watchdog":
+            # Reproduce the late watchdog/parent TERM at the finalizer boundary.
+            os.kill(os.getpid(), signal.SIGTERM)
+            os.kill(os.getpid(), signal.SIGTERM)
+        return original_join(thread, timeout)
+
+    with mock.patch.object(threading.Thread, "join", signalled_join):
+        _run_worker(*args, adapter_factory)
+
+
+def _signalled_cleanup_worker(*args) -> None:
+    _run_with_cleanup_signals(*args, adapter_factory=PythonCanAdapter)
+
+
+def _blocked_cleanup_worker(*args) -> None:
+    _run_worker(*args, _BlockedCloseVirtualAdapter)
 
 
 class _PeerCheckingVirtualAdapter(PythonCanAdapter):
@@ -125,13 +156,13 @@ def _failing_cleanup_worker(
 ) -> None:
     """Spawn-safe worker target exercising the production cleanup protocol."""
 
-    _run_worker(
+    _run_with_cleanup_signals(
         connection,
         control_channels,
         readiness_connection,
         loaded,
         expected_parent_pid,
-        _FailingCloseVirtualAdapter,
+        adapter_factory=_FailingCloseVirtualAdapter,
     )
 
 
@@ -159,6 +190,16 @@ class _FailingCleanupClient(CanWorkerClient):
         return _failing_cleanup_worker
 
 
+class _SignalledCleanupClient(CanWorkerClient):
+    def _worker_process_target(self) -> Callable[..., None]:
+        return _signalled_cleanup_worker
+
+
+class _BlockedCleanupClient(CanWorkerClient):
+    def _worker_process_target(self) -> Callable[..., None]:
+        return _blocked_cleanup_worker
+
+
 class _PeerCheckingClient(CanWorkerClient):
     def _worker_process_target(self) -> Callable[..., None]:
         return _peer_checking_worker
@@ -174,6 +215,15 @@ async def _wait_for_active_worker_request(
         if asyncio.get_running_loop().time() >= deadline:
             raise AssertionError("spawned CAN worker request did not become active")
         await asyncio.sleep(0.01)
+
+
+def _retire_test_worker(worker: CanWorkerClient) -> None:
+    try:
+        worker.cancel()
+    except CanCleanupError:
+        # Negative receipts are intentional fixtures, but leaked children are not.
+        if worker.is_alive:
+            raise
 
 
 class VirtualCanWorkerTests(unittest.TestCase):
@@ -351,9 +401,9 @@ if __name__ == "__main__":
             worker.close(timeout_seconds=2.0)
 
     def test_spawned_worker_receive_cancellation_reaps_child_with_clean_ack(self) -> None:
-        async def scenario() -> None:
+        async def scenario(worker_type: type[CanWorkerClient]) -> None:
             loaded = load_can_fixture_config(TX_PROFILE)
-            worker = CanWorkerClient(loaded)
+            worker = worker_type(loaded)
             client = AsyncCanWorkerClient(worker)
             try:
                 await client.inspect(timeout_seconds=2.0)
@@ -382,12 +432,28 @@ if __name__ == "__main__":
                 if worker.is_alive:
                     worker.cancel()
 
-        asyncio.run(scenario())
+        for worker_type in (CanWorkerClient, _SignalledCleanupClient):
+            with self.subTest(worker_type=worker_type.__name__):
+                asyncio.run(scenario(worker_type))
+
+    def test_blocked_finalizer_is_reaped_without_positive_cleanup_receipt(self) -> None:
+        worker = _BlockedCleanupClient(load_can_fixture_config(TX_PROFILE))
+        self.addCleanup(_retire_test_worker, worker)
+        worker.open(timeout_seconds=2.0)
+        started = time.monotonic()
+        with self.assertRaises(CanCleanupError):
+            worker.cancel()
+        self.assertLess(time.monotonic() - started, 3.0)
+        self.assertFalse(worker.is_alive)
+        self.assertEqual(worker.last_cleanup_outcome, "unknown")
+        self.assertEqual(worker.last_escalation_stage, "kill" if os.name == "posix" else "term")
+        self.assertIsNone(worker._connection)
 
     def test_spawned_worker_failed_cleanup_ack_reaps_and_latches_uncertainty(self) -> None:
         async def scenario() -> None:
             loaded = load_can_fixture_config(TX_PROFILE)
             worker = _FailingCleanupClient(loaded)
+            self.addCleanup(_retire_test_worker, worker)
             client = AsyncCanWorkerClient(worker)
             await client.inspect(timeout_seconds=2.0)
             await client.open(timeout_seconds=2.0)

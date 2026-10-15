@@ -233,14 +233,21 @@ def _run_worker(
     shutdown_close_failed = False
     watchdog_stop = threading.Event()
     cancel_requested = threading.Event()
+    cancellation_unwinding = False
+    finalizing = False
 
     def cancel_signal(_signum: int, _frame: object) -> None:
+        nonlocal cancellation_unwinding
         # The watchdog normally marks cancellation before signalling this
         # thread.  A loaded child can instead receive the parent's bounded TERM
         # escalation before the watchdog is scheduled.  Mark that path too so
         # the child still reports its definitive close outcome from ``finally``.
+        if cancellation_unwinding:
+            return
+        cancellation_unwinding = True
         cancel_requested.set()
-        raise _WorkerCancelled
+        if not finalizing:
+            raise _WorkerCancelled
 
     if _supports_posix_worker_signals():
         signal.signal(signal.SIGTERM, cancel_signal)
@@ -263,7 +270,9 @@ def _run_worker(
             control_channels.cancellation_receiver.close()
 
     def raise_if_cancelled() -> None:
+        nonlocal cancellation_unwinding
         if cancel_requested.is_set():
+            cancellation_unwinding = True
             raise _WorkerCancelled
 
     watchdog_thread: threading.Thread | None = None
@@ -446,6 +455,9 @@ def _run_worker(
     except _WorkerCancelled:
         pass
     finally:
+        # A late watchdog/parent TERM must not interrupt close or its receipt.
+        # The parent still uses bounded KILL escalation if finalization stalls.
+        finalizing = True
         watchdog_stop.set()
         if watchdog_thread is not None and watchdog_thread is not threading.current_thread():
             watchdog_thread.join(WORKER_POLL_SLICE_SECONDS * 2)

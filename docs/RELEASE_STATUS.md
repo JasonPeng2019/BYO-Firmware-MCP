@@ -53,6 +53,13 @@ an exited worker before confirming process-group disappearance, including Darwin
 EPERM response for an unreaped zombie. Independent review exercised preservation,
 rollback, descriptor cleanup, and process retirement.
 
+Hosted macOS testing also exposed a late CAN cancellation signal interrupting the
+worker finalizer before its cleanup receipt. Cancellation now unwinds only once
+and lets finalization finish. Deterministic repeated-signal cases preserve both
+successful and failed close receipts; a blocked close still reaches bounded hard
+termination and reports unknown cleanup. Native CI writes runtime state and capture
+evidence outside the source checkout so generated output cannot alter its attestation.
+
 The release generator runs against fresh process-recovery state. The live Codex
 harness explicitly gives each MCP server its own runs directory, so the operator's
 unresolved process markers cannot disable the test server. CAN fixtures canonicalize
@@ -67,7 +74,7 @@ The consistency and privacy gates remain mandatory in CI.
 
 | Environment | Evidence in this candidate | Status |
 | --- | --- | --- |
-| macOS 26.6.2 x86_64, Python 3.12.13 | Full default 1,438-test software suite (30 skips during generation: platform/opt-in cases plus one self-referential retained-log case; all 5 release-evidence cases then run against the immutable staged logs), Ruff, Pyright, lock and privacy checks | Retained generator logs |
+| macOS 26.6.2 x86_64, Python 3.12.13 | Full default 1,439-test software suite (30 skips during generation: platform/opt-in cases plus one self-referential retained-log case; all 5 release-evidence cases then run against the immutable staged logs), Ruff, Pyright, lock and privacy checks | Retained generator logs |
 | Opt-in Codex/MCP monitor module, pinned `gpt-5.6-luna` | 17 live agent/MCP cases plus 5 harness/unit cases, 22 module tests total; private monitor and process roots | Retained generator log |
 | CPython 3.10.20 | All 228 source files parsed with the 3.10 interpreter | Retained parse log |
 | GitHub-hosted Ubuntu, Python 3.10 and 3.12 | Complete runtime suites, clean installs, evidence checks, and exact wheel/sdist handoff verification | Required CI gates; consult the current branch run |
