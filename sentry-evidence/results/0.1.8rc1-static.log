@@ -1,14 +1,14 @@
 BYO-Firmware-MCP 0.1.8rc1 static verification
-generated_utc=2026-10-15T00:29:06.678975Z
-base_git_head=8f868cc20358b8581a0b227335aa0c4eb63b1c15
-working_tree_manifest_sha256=166019b89c3a84a339c903612ddeec3149b1d0be0d885b973d95acbd21d1604f
+generated_utc=2026-10-15T01:12:16.730534Z
+base_git_head=a9690d457343d57bd71bc261d85e9597d053e395
+working_tree_manifest_sha256=824a1cc922a937ae278a3f8f71f01d4c606b11c97965ca451028b6bcb11280a1
 uv_lock_sha256=809229545c463b3870253e251f18773cb92fab4df8d0480b07c36d701e4869b7
 uv_version=uv 0.11.20 (Homebrew 2026-06-10 x86_64-apple-darwin)
 python_version=Python 3.12.13
 --- output ---
 command=uv run --locked --extra can --group dev python scripts/verify_changed_python_format.py
-+ ruff format --check -- client-workspace/bin/attach-project scripts/generate_release_evidence.py src/pyocd_debug_mcp/kernel/processes.py tests/codex_harness.py tests/test_can_shutdown.py tests/test_can_worker_virtual.py tests/test_monitor_codex_e2e.py tests/test_monitor_stdio_lifecycle.py tests/test_process_cleanup.py tests/test_server_trust_model_round_4.py tests/test_tiered_acceptance_workspace.py
-11 files already formatted
++ ruff format --check -- client-workspace/bin/attach-project scripts/generate_release_evidence.py src/pyocd_debug_mcp/kernel/processes.py src/pyocd_debug_mcp/services/can_worker.py tests/codex_harness.py tests/test_can_shutdown.py tests/test_can_worker_virtual.py tests/test_monitor_codex_e2e.py tests/test_monitor_stdio_lifecycle.py tests/test_process_cleanup.py tests/test_server_trust_model_round_4.py tests/test_tiered_acceptance_workspace.py
+12 files already formatted
 exit_status=0
 command=uv run --locked --extra can --group dev ruff check src tests scripts client-workspace client-workspace/bin/attach-project
 All checks passed!
@@ -20,7 +20,7 @@ Please install the new version or set PYRIGHT_PYTHON_FORCE_VERSION to `latest`
 
 exit_status=0
 command=uv lock --check
-Resolved 71 packages in 14ms
+Resolved 71 packages in 12ms
 exit_status=0
 command=uv run --locked --extra can python scripts/verify_evidence_privacy.py
 evidence privacy and manifest verification passed (62 derivative files)
