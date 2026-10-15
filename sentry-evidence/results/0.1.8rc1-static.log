@@ -1,14 +1,14 @@
 BYO-Firmware-MCP 0.1.8rc1 static verification
-generated_utc=2026-10-15T03:13:02.245507Z
-base_git_head=a4ea369d4e5fda003c84ea1237c94b181b80db9c
-working_tree_manifest_sha256=3954c3d7c421a31512c16a1cb7d82628ff5c8afa5f35af37b12f5f0fc37a26d7
+generated_utc=2026-10-15T05:47:33.293358Z
+base_git_head=dd0788ee9800da232bd67dad96542cd2c5e6b452
+working_tree_manifest_sha256=d0d6304ff60c637215bda1e69dc28091c335ceec7c91dadc02c09ebba2639120
 uv_lock_sha256=809229545c463b3870253e251f18773cb92fab4df8d0480b07c36d701e4869b7
 uv_version=uv 0.11.20 (Homebrew 2026-06-10 x86_64-apple-darwin)
 python_version=Python 3.12.13
 --- output ---
 command=uv run --locked --extra can --group dev python scripts/verify_changed_python_format.py
-+ ruff format --check -- scripts/generate_release_evidence.py scripts/verify_release_evidence.py src/pyocd_debug_mcp/kernel/processes.py src/pyocd_debug_mcp/services/can_worker.py tests/codex_harness.py tests/test_can_native_sim.py tests/test_can_shutdown.py tests/test_monitor_codex_e2e.py tests/test_monitor_stdio_lifecycle.py tests/test_process_cleanup.py
-10 files already formatted
++ ruff format --check -- tests/test_package_artifacts.py
+1 file already formatted
 exit_status=0
 command=uv run --locked --extra can --group dev ruff check src tests scripts client-workspace client-workspace/bin/attach-project
 All checks passed!
@@ -20,7 +20,7 @@ Please install the new version or set PYRIGHT_PYTHON_FORCE_VERSION to `latest`
 
 exit_status=0
 command=uv lock --check
-Resolved 71 packages in 13ms
+Resolved 71 packages in 14ms
 exit_status=0
 command=uv run --locked --extra can python scripts/verify_evidence_privacy.py
 evidence privacy and manifest verification passed (62 derivative files)
