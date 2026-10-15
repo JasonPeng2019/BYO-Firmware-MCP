@@ -1,7 +1,7 @@
 BYO-Firmware-MCP 0.1.8rc1 CPython 3.10 parse verification
-generated_utc=2026-10-15T01:12:16.730534Z
-base_git_head=a9690d457343d57bd71bc261d85e9597d053e395
-working_tree_manifest_sha256=824a1cc922a937ae278a3f8f71f01d4c606b11c97965ca451028b6bcb11280a1
+generated_utc=2026-10-15T03:13:02.245507Z
+base_git_head=a4ea369d4e5fda003c84ea1237c94b181b80db9c
+working_tree_manifest_sha256=3954c3d7c421a31512c16a1cb7d82628ff5c8afa5f35af37b12f5f0fc37a26d7
 uv_lock_sha256=809229545c463b3870253e251f18773cb92fab4df8d0480b07c36d701e4869b7
 uv_version=uv 0.11.20 (Homebrew 2026-06-10 x86_64-apple-darwin)
 python_version=Python 3.10.20
