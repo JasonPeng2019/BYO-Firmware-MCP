@@ -349,6 +349,19 @@ physical CAN support from one adapter.
 
 ## Track C: native Windows and macOS qualification
 
+For a native Windows checkout of the consolidated test branch, fetch that branch
+alone. The remote has historical branch names differing only by capitalization,
+which collide in Git's files-based ref storage on a case-insensitive filesystem:
+
+```bash
+git clone --single-branch --branch test/canbus https://github.com/JasonPeng2019/BYO-Firmware-MCP.git
+```
+
+This clone retains the selected branch's history. Native Windows CI uses a
+single-revision checkout because its selected tests do not inspect ancestry;
+Linux/macOS and release-evidence CI retain full history. The artifact uploader
+uses the pinned Node 24 action rather than relying on runner migration of Node 20.
+
 The software update enables `virtual` and `tcp_sim` on native macOS/Windows.
 Run `tests.test_can_native_sim` and `tests.test_can_mcp_sim_e2e` on each native
 runner and retain the results; adding CI configuration is not execution evidence.
