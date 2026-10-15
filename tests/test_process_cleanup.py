@@ -15,6 +15,55 @@ from unittest.mock import Mock, patch
 from pyocd_debug_mcp.kernel import processes
 
 
+@unittest.skipUnless(os.name == "posix", "POSIX process groups")
+class PosixProcessCleanupTests(unittest.TestCase):
+    def test_exited_worker_eperm_is_reaped_before_group_absence_is_confirmed(self) -> None:
+        process = Mock(pid=42)
+        with patch.object(
+            processes.os, "killpg", side_effect=[PermissionError(), ProcessLookupError()]
+        ) as signal_group:
+            self.assertTrue(processes.terminate_process_group(process))
+        process.wait.assert_called_once_with(
+            timeout=processes.DEFAULT_PROCESS_GROUP_CLEANUP_GRACE_SECONDS
+        )
+        self.assertEqual(signal_group.call_args_list[-1].args, (42, 0))
+
+    def test_permission_denied_is_not_cleanup_proof_for_remaining_group(self) -> None:
+        process = Mock(pid=42)
+        with patch.object(processes.os, "killpg", side_effect=PermissionError()):
+            self.assertFalse(processes.terminate_process_group(process))
+
+    def test_exited_leader_does_not_hide_live_descendants(self) -> None:
+        process = Mock(pid=42, returncode=0)
+        process.poll.return_value = 0
+        # The surviving group is checked even after reaping the leader. If its
+        # SIGKILL cannot be delivered, cleanup must remain unconfirmed.
+        with patch.object(
+            processes.os, "killpg", side_effect=[None, None, PermissionError()]
+        ) as signal_group:
+            self.assertFalse(processes.terminate_process_group(process))
+        self.assertEqual(signal_group.call_args_list[-1].args, (42, processes.signal.SIGKILL))
+
+    def test_real_exited_child_is_reaped_and_its_group_disappears(self) -> None:
+        process = subprocess.Popen(
+            [sys.executable, "-c", "pass"], start_new_session=True, stdout=subprocess.PIPE
+        )
+        try:
+            assert process.stdout is not None
+            # EOF synchronizes with child exit without reaping it first.
+            self.assertEqual(process.stdout.read(), b"")
+            self.assertTrue(processes.terminate_process_group(process))
+            self.assertIsNotNone(process.poll())
+            with self.assertRaises(ProcessLookupError):
+                os.killpg(process.pid, 0)
+        finally:
+            if process.poll() is None:
+                process.kill()
+            process.wait(timeout=5)
+            if process.stdout is not None:
+                process.stdout.close()
+
+
 class WindowsProcessCleanupTests(unittest.TestCase):
     def test_exported_cleanup_budget_covers_every_cross_platform_phase(self) -> None:
         windows_two_phase_bound = 2 * processes.DEFAULT_PROCESS_GROUP_CLEANUP_GRACE_SECONDS

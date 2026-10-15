@@ -46,13 +46,14 @@ except ModuleNotFoundError:  # Direct ``python scripts/generate_release_evidence
 
 
 ROOT = Path(__file__).resolve().parents[1]
-EXPECTED_DEFAULT_TESTS = 1397
+EXPECTED_DEFAULT_TESTS = 1438
+EXPECTED_DEFAULT_SKIPS = 30 if sys.platform == "darwin" else 16
 EXPECTED_LIVE_TESTS = 22
 RELEASE_TMPDIR = "/tmp"
 
 
 def _sanitize(text: str, private_paths: tuple[str, ...] = ()) -> str:
-    replacements = {str(ROOT): "<candidate-root>"}
+    replacements = {str(ROOT): "<candidate-root>", str(Path.home()): "<operator-home>"}
     replacements.update({path: "<private-path>" for path in private_paths if path})
     for path in sorted(replacements, key=len, reverse=True):
         text = text.replace(path, replacements[path])
@@ -65,6 +66,7 @@ def _run(
     environment: dict[str, str] | None = None,
     private_paths: tuple[str, ...] = (),
 ) -> tuple[str, int]:
+    print("running: " + " ".join(arguments), flush=True)
     completed = subprocess.run(
         arguments,
         cwd=ROOT,
@@ -74,7 +76,10 @@ def _run(
         stderr=subprocess.STDOUT,
         check=False,
     )
-    return _sanitize(completed.stdout or "", private_paths), completed.returncode
+    output = _sanitize(completed.stdout or "", private_paths)
+    if completed.returncode:
+        print(output, file=sys.stderr, flush=True)
+    return output, completed.returncode
 
 
 def _release_test_environment(**overrides: str) -> dict[str, str]:
@@ -336,14 +341,18 @@ def main(argv: list[str] | None = None) -> int:
         "test_*.py",
         "-v",
     ]
-    full_output, full_status = _run(
-        full_command,
-        environment=full_environment,
-        private_paths=redactions,
-    )
+    with tempfile.TemporaryDirectory(prefix="byo-release-processes-") as owned_runs:
+        full_environment["PYOCD_MCP_RUNS_ROOT"] = owned_runs
+        full_output, full_status = _run(
+            full_command,
+            environment=full_environment,
+            private_paths=(*redactions, owned_runs),
+        )
     if full_status:
         raise SystemExit("full software suite failed")
-    full_output = _require_green_unittest(full_output, EXPECTED_DEFAULT_TESTS, skipped=15)
+    full_output = _require_green_unittest(
+        full_output, EXPECTED_DEFAULT_TESTS, skipped=EXPECTED_DEFAULT_SKIPS
+    )
     if working_tree_manifest_sha256() != manifest:
         raise SystemExit("candidate source changed while the full software suite was running")
     software_log = (

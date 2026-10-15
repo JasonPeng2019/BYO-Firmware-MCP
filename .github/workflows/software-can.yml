@@ -116,9 +116,13 @@ jobs:
           tests.test_tiered_acceptance_workspace.TieredWorkspaceAcceptanceTests.test_native_windows_workspace_junction_is_rejected_without_external_writes
       - name: Verify native macOS and Linux evidence I/O
         if: runner.os != 'Windows'
-        env:
-          BYO_RELEASE_EVIDENCE_GENERATING: "1"
         run: uv run --locked --extra can python -m unittest tests.test_release_evidence -v
+      - name: Verify macOS workspace attachment and SWD cleanup
+        if: runner.os == 'macOS'
+        run: >-
+          uv run --locked --extra can python -m unittest -v
+          tests.test_tiered_acceptance_workspace tests.test_swd_process_isolation
+          tests.test_process_cleanup
       - name: Provision dedicated Linux vcan
         if: runner.os == 'Linux'
         run: |

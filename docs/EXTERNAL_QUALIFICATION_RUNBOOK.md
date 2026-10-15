@@ -22,7 +22,7 @@ publish, or upload artifacts to an official BYO Releases repository as part of t
 
 The test branch has passed native CAN simulation on hosted Linux, macOS, and Windows,
 plus privileged Linux vcan. See the dated evidence in `RELEASE_STATUS.md` for the
-exact tested scope and remaining whole-product failures. Its boundaries include:
+exact tested scope and remaining platform and hardware qualification gaps. Its boundaries include:
 
 - `socketcan_vcan` passed 15 tests against privileged Linux kernel interfaces;
   this provides software-bus evidence, not physical adapter qualification.

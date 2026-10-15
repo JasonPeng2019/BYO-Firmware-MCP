@@ -46,30 +46,39 @@ real CAN worker processes, independent TCP traffic, public validation/plans,
 verified capture bytes, and a final cleanup receipt; SWD and setup policy remain
 explicitly simulated. Independent review found no remaining blocker in this scope.
 
-Local macOS clean wheel/sdist installs and all 28 package-regression tests passed.
-The Linux VM ran 1,430 tests; three fixture/inventory failures were corrected and
-all 72 targeted follow-ups passed. A broader local macOS run still exposed
-separate workspace-attachment `/dev/fd` and SWD-cleanup failures outside this CAN
-change; this is not whole-product native platform qualification.
+The macOS workspace-attachment and SWD-cleanup regressions are corrected. Attachment
+uses directory-relative operations instead of `/dev/fd` traversal and preserves
+user files and directory modes through atomic replacement. Process cleanup reaps
+an exited worker before confirming process-group disappearance, including Darwin's
+EPERM response for an unreaped zombie. Independent review exercised preservation,
+rollback, descriptor cleanup, and process retirement.
 
-The older retained release logs below describe the pre-change candidate; their source
-manifest intentionally becomes stale after implementation edits. Regenerate the
-complete release evidence before a release, including its opt-in live-agent lane.
-Focused and regression logs for this change are separate evidence. The aggregate
-release CI remains red at its stale-attestation gate; native simulation job success
-must not be presented as release approval.
+The release generator runs against fresh process-recovery state. The live Codex
+harness explicitly gives each MCP server its own runs directory, so the operator's
+unresolved process markers cannot disable the test server. CAN fixtures canonicalize
+their newly allocated temporary roots before passing them to no-symlink profile
+reads; supplied-path checks remain intact.
 
-## Retained baseline verification matrix (before these changes)
+## Retained candidate verification matrix
+
+The four retained logs and their attestation describe one complete source manifest.
+Changing any candidate source invalidates that manifest and requires regeneration.
+The consistency and privacy gates remain mandatory in CI.
 
 | Environment | Evidence in this candidate | Status |
 | --- | --- | --- |
-| Ubuntu 24.04 x86_64, Python 3.12 | Full default 1,397-test software suite (14 platform/class-level opt-in skips in a normal run; evidence generation defers its one self-referential retained-log case and runs all 4 release-evidence cases against the immutable staged set before publication; 1,415 discovered cases), Ruff, Pyright, package inventory, privacy/evidence consistency, and clean-install verifier | Locally verified |
-| Opt-in Codex/MCP monitor module, pinned `gpt-5.6-luna` | 17 live agent/MCP cases passed against isolated explicit monitor roots, plus 5 harness/unit cases (22 module tests total) | Locally verified |
-| CPython 3.10.20 | All 222 source files parsed locally with the 3.10 interpreter; the full 1,397-test runtime suite passed in the hosted Ubuntu 3.10 lane | Local parse and hosted runtime verified |
-| GitHub-hosted Ubuntu, Python 3.10 and 3.12 | Locked lint, format, type, privacy, evidence, test, clean-install, and artifact workflow completed on the feature branch; both runtime lanes passed | Hosted verification passed ([branch runs](https://github.com/JasonPeng2019/BYO-Firmware-MCP/actions/workflows/software-can.yml?query=branch%3Afeature%2Fcanbus-integration)) |
-| GitHub-hosted Windows, Python 3.12 | Six focused off-mode, configured-mode fail-closed, registry-concurrency, and junction-containment checks passed | Hosted verification passed ([branch runs](https://github.com/JasonPeng2019/BYO-Firmware-MCP/actions/workflows/software-can.yml?query=branch%3Afeature%2Fcanbus-integration)) |
-| macOS, any supported Python | Configured CAN fails closed before profile loading; no native runtime lane | Disabled pending qualification |
-| Linux `vcan`, physical CAN, or pyOCD/J-Link HIL | Requires privileged interfaces or attached hardware | External qualification gate |
+| macOS 26.6.2 x86_64, Python 3.12.13 | Full default 1,438-test software suite (30 skips during generation: platform/opt-in cases plus one self-referential retained-log case; all 5 release-evidence cases then run against the immutable staged logs), Ruff, Pyright, lock and privacy checks | Retained generator logs |
+| Opt-in Codex/MCP monitor module, pinned `gpt-5.6-luna` | 17 live agent/MCP cases plus 5 harness/unit cases, 22 module tests total; private monitor and process roots | Retained generator log |
+| CPython 3.10.20 | All 228 source files parsed with the 3.10 interpreter | Retained parse log |
+| GitHub-hosted Ubuntu, Python 3.10 and 3.12 | Complete runtime suites, clean installs, evidence checks, and exact wheel/sdist handoff verification | Required CI gates; consult the current branch run |
+| GitHub-hosted Linux/macOS/Windows, Python 3.12 | Native software CAN, public simulated MCP, retained captures, and cleanup; macOS attachment/SWD regressions; Linux kernel vcan | Prior CAN/vcan success linked above; added macOS regression lane must pass on the current revision |
+| Physical CAN and real SWD/probe onboarding | Requires attached hardware | External qualification gate |
+
+[Current test-branch CI runs](https://github.com/JasonPeng2019/BYO-Firmware-MCP/actions/workflows/software-can.yml?query=branch%3Atest%2Fcan-macos-vcan-20261014)
+retain the exact revision, platform outcomes, simulation evidence, and package bytes.
+The test branch is not merged or published as a production release. Native Windows
+workspace attachment remains unsupported (use WSL for that source-handoff command);
+this does not prevent native Windows MCP or CAN simulation testing.
 
 The virtual interface is a python-can process-local queue. The production CAN
 adapter remains isolated in a spawned worker, so a virtual bus opened by an
@@ -89,7 +98,7 @@ filesystem I/O during evidence persistence.
 
 The release logs are generated by checked-in scripts rather than an ad hoc
 shell transcript. On a fresh host, provision the pinned parse-only interpreter,
-run the default and opt-in suites, and then generate the manifest-bound logs:
+then generate the manifest-bound logs (the generator runs both suites itself):
 
 ```bash
 UV_PYTHON_INSTALL_DIR=/tmp/byo-uv-python uv python install --no-bin 3.10.20
@@ -118,7 +127,7 @@ candidate:
 - the documented open-source/commercial repository and package split;
 - real OAuth/OpenID identity, authenticated remote upload, and off-box ACKs;
 - physical CAN adapter/bus qualification and hardware-in-the-loop evidence;
-- whole-product native platform regression closure and platform-specific physical
+- whole-product native Windows regression qualification and platform-specific physical
   backend qualification, plus physical pyOCD/J-Link regression coverage.
 
 The machine requirements, execution sequence, evidence rules, and completion

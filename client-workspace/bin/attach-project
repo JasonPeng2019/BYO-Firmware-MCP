@@ -8,10 +8,10 @@ import os
 import secrets
 import shutil
 import stat
-import tempfile
 import time
 from collections.abc import Iterator
 from contextlib import contextmanager
+from contextvars import ContextVar
 from pathlib import Path
 
 
@@ -43,7 +43,7 @@ def _reject_unsafe_entries(
 ) -> None:
     """Refuse links and special files without following directory symlinks."""
 
-    root_metadata = directory.stat() if expected_root_identity is not None else directory.lstat()
+    root_metadata = _stat(directory) if expected_root_identity is not None else _lstat(directory)
     if expected_root_identity is None:
         _reject_link(root_metadata, directory, label=label)
     if not stat.S_ISDIR(root_metadata.st_mode):
@@ -57,24 +57,21 @@ def _reject_unsafe_entries(
         != expected_root_identity
     ):
         raise ValueError(f"{label} changed during attachment: {directory}")
-    for current, directories, filenames in os.walk(directory, followlinks=False):
-        current_path = Path(current)
-        for name in (*directories, *filenames):
-            candidate = current_path / name
-            metadata = candidate.lstat()
-            if stat.S_ISLNK(metadata.st_mode):
-                raise ValueError(f"{label} contains a symbolic link: {candidate}")
-            if _is_reparse_point(metadata):
-                raise ValueError(f"{label} contains a Windows reparse point: {candidate}")
+    with _anchored_directory(directory, label=label):
+        for candidate in _entries(directory):
+            metadata = _lstat(candidate)
+            _reject_link(metadata, candidate, label=label)
             if stat.S_ISREG(metadata.st_mode):
                 if metadata.st_nlink != 1:
                     raise ValueError(f"{label} contains a multiply linked file: {candidate}")
-            elif not stat.S_ISDIR(metadata.st_mode):
+            elif stat.S_ISDIR(metadata.st_mode):
+                _reject_unsafe_entries(candidate, label=label)
+            else:
                 raise ValueError(f"{label} contains a special file: {candidate}")
 
 
 def _directory_identity(path: Path, *, label: str) -> tuple[int, int]:
-    metadata = path.lstat()
+    metadata = _lstat(path)
     _reject_link(metadata, path, label=label)
     if not stat.S_ISDIR(metadata.st_mode):
         raise ValueError(f"{label} is not a directory: {path}")
@@ -91,80 +88,188 @@ def _require_directory_identity(
         raise ValueError(f"{label} changed during attachment: {path}")
 
 
-def _descriptor_directory() -> Path | None:
-    """Return a pathname view of open descriptors, when safely available."""
+# Keep opened directory objects local to this transaction/thread. Paths remain
+# descriptive names; filesystem operations use dir_fd, never /dev/fd traversal.
+_DIRECTORY_PINS: ContextVar[tuple[tuple[Path, int], ...]] = ContextVar(
+    "workspace_directory_pins", default=()
+)
 
-    if os.name != "posix":
-        return None
-    for candidate in (Path("/proc/self/fd"), Path("/dev/fd")):
-        if candidate.is_dir():
-            return candidate
-    return None
+
+def _directory_operations_available() -> bool:
+    return os.name == "posix" and all(
+        operation in os.supports_dir_fd for operation in (os.open, os.stat, os.mkdir, os.rename)
+    )
+
+
+def _location(path: Path, *, entry: bool = False) -> tuple[str, int | None]:
+    for root, descriptor in reversed(_DIRECTORY_PINS.get()):
+        if path == root:
+            if not entry:
+                return ".", descriptor
+        elif path.is_relative_to(root):
+            return str(path.relative_to(root)), descriptor
+    return str(path), None
+
+
+def _lstat(path: Path) -> os.stat_result:
+    name, descriptor = _location(path, entry=True)
+    return os.stat(name, dir_fd=descriptor, follow_symlinks=False)
+
+
+def _stat(path: Path) -> os.stat_result:
+    name, descriptor = _location(path)
+    return os.stat(name, dir_fd=descriptor, follow_symlinks=False)
+
+
+def _exists(path: Path) -> bool:
+    try:
+        _lstat(path)
+    except FileNotFoundError:
+        return False
+    return True
+
+
+def _open(path: Path, flags: int, mode: int = 0o600) -> int:
+    name, descriptor = _location(path)
+    return os.open(name, flags, mode, dir_fd=descriptor)
+
+
+def _mkdir(path: Path, mode: int = PRIVATE_DIRECTORY_MODE) -> None:
+    name, descriptor = _location(path)
+    os.mkdir(name, mode, dir_fd=descriptor)
+
+
+def _unlink(path: Path, *, directory: bool = False) -> None:
+    name, descriptor = _location(path, entry=True)
+    if directory:
+        os.rmdir(name, dir_fd=descriptor)
+    else:
+        os.unlink(name, dir_fd=descriptor)
+
+
+def _replace(source: Path, destination: Path) -> None:
+    source_name, source_fd = _location(source, entry=True)
+    destination_name, destination_fd = _location(destination, entry=True)
+    os.replace(source_name, destination_name, src_dir_fd=source_fd, dst_dir_fd=destination_fd)
+
+
+def _entries(path: Path) -> Iterator[Path]:
+    name, descriptor = _location(path)
+    if name == "." and descriptor is not None:
+        yield from (path / entry for entry in os.listdir(descriptor))
+    else:
+        with _anchored_directory(path, label="workspace directory"):
+            yield from _entries(path)
 
 
 @contextmanager
 def _anchored_directory(path: Path, *, label: str) -> Iterator[tuple[Path, tuple[int, int]]]:
-    """Anchor directory access to an opened object or fail before mutation."""
+    """Pin a directory object for all relative operations below it."""
 
     identity = _directory_identity(path, label=label)
-    descriptor_directory = _descriptor_directory()
-    if descriptor_directory is None:
-        raise OSError(
-            "safe workspace attachment requires POSIX descriptor-path support "
-            "(/proc/self/fd or /dev/fd)"
-        )
-    descriptor = os.open(
-        path,
-        os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0),
-    )
-    opened = os.fstat(descriptor)
-    if (opened.st_dev, opened.st_ino) != identity:
-        os.close(descriptor)
-        raise ValueError(f"{label} changed while it was being opened: {path}")
-    access = descriptor_directory / str(descriptor)
+    descriptor = _open(path, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
     try:
-        yield access, identity
-        _require_directory_identity(path, identity, label=label)
-    finally:
+        opened = os.fstat(descriptor)
+        if (opened.st_dev, opened.st_ino) != identity:
+            raise ValueError(f"{label} changed while it was being opened: {path}")
+    except BaseException:
         os.close(descriptor)
+        raise
+    token = _DIRECTORY_PINS.set((*_DIRECTORY_PINS.get(), (path, descriptor)))
+    try:
+        yield path, identity
+    finally:
+        _DIRECTORY_PINS.reset(token)
+        os.close(descriptor)
+    _require_directory_identity(path, identity, label=label)
+
+
+def _copy_file(source: Path, target: Path) -> None:
+    descriptor = _open(source, os.O_RDONLY | os.O_NOFOLLOW)
+    with os.fdopen(descriptor, "rb") as incoming:
+        opened = os.fstat(incoming.fileno())
+        current = _lstat(source)
+        if (
+            not stat.S_ISREG(opened.st_mode)
+            or opened.st_nlink != 1
+            or (opened.st_dev, opened.st_ino) != (current.st_dev, current.st_ino)
+        ):
+            raise ValueError(f"workspace source changed while opening: {source}")
+        output = _open(target, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW)
+        with os.fdopen(output, "wb") as outgoing:
+            shutil.copyfileobj(incoming, outgoing)
+            os.fchmod(outgoing.fileno(), stat.S_IMODE(opened.st_mode))
+
+
+def _copy_tree(source: Path, target: Path, *, ignore_cache: bool = False) -> None:
+    with _anchored_directory(source, label="workspace copy source"):
+        source_mode = stat.S_IMODE(_stat(source).st_mode)
+        _mkdir(target)
+        with _anchored_directory(target, label="workspace copy destination"):
+            for entry in _entries(source):
+                if ignore_cache and (entry.name == "__pycache__" or entry.suffix == ".pyc"):
+                    continue
+                metadata = _lstat(entry)
+                _reject_link(metadata, entry, label="workspace copy source")
+                if stat.S_ISDIR(metadata.st_mode):
+                    _copy_tree(entry, target / entry.name, ignore_cache=ignore_cache)
+                elif stat.S_ISREG(metadata.st_mode):
+                    _copy_file(entry, target / entry.name)
+                else:
+                    raise ValueError(f"workspace source is a special file: {entry}")
+            _, target_descriptor = _location(target)
+            assert target_descriptor is not None
+            os.fchmod(target_descriptor, source_mode)
+
+
+def _remove_tree(path: Path) -> None:
+    with _anchored_directory(path, label="workspace cleanup"):
+        for entry in _entries(path):
+            if stat.S_ISDIR(_lstat(entry).st_mode):
+                _remove_tree(entry)
+            else:
+                _unlink(entry)
+    _unlink(path, directory=True)
 
 
 def _remove_private_stage(path: Path, expected: tuple[int, int]) -> None:
     """Remove only the stage object we created; never traverse a swapped link."""
 
     try:
-        metadata = path.lstat()
+        metadata = _lstat(path)
     except FileNotFoundError:
         return
     if stat.S_ISLNK(metadata.st_mode):
-        path.unlink()
+        _unlink(path)
         return
     if _is_reparse_point(metadata):
-        os.rmdir(path)
+        _unlink(path, directory=True)
         return
     if stat.S_ISDIR(metadata.st_mode) and (metadata.st_dev, metadata.st_ino) == expected:
-        shutil.rmtree(path)
+        _remove_tree(path)
 
 
 def _require_beneath(path: Path, root: Path) -> None:
-    resolved = path.resolve(strict=False)
-    resolved_root = root.resolve(strict=True)
-    if not resolved.is_relative_to(resolved_root):
+    if not path.is_relative_to(root):
         raise ValueError(f"workspace destination escapes project-local root: {path}")
 
 
 def _temporary_sibling(root: Path, prefix: str) -> Path:
-    """Return a private, unpredictable directory below ``root``."""
+    """Create a private sibling relative to the pinned project directory."""
 
-    path = Path(tempfile.mkdtemp(prefix=prefix, dir=root))
-    os.chmod(path, PRIVATE_DIRECTORY_MODE)
-    return path
+    while True:
+        path = _unused_sibling(root, prefix)
+        try:
+            _mkdir(path)
+        except FileExistsError:
+            continue
+        return path
 
 
 def _unused_sibling(root: Path, prefix: str) -> Path:
     for _ in range(128):
         candidate = root / f"{prefix}{secrets.token_hex(16)}"
-        if not os.path.lexists(candidate):
+        if not _exists(candidate):
             return candidate
     raise OSError("cannot allocate a private workspace backup path")
 
@@ -177,11 +282,11 @@ def _attachment_lock(root: Path) -> Iterator[None]:
     deadline = time.monotonic() + ATTACH_LOCK_TIMEOUT_SECONDS
     while True:
         try:
-            os.mkdir(lock, PRIVATE_DIRECTORY_MODE)
+            _mkdir(lock)
             break
         except FileExistsError:
             try:
-                metadata = lock.lstat()
+                metadata = _lstat(lock)
             except FileNotFoundError:
                 continue
             _reject_link(metadata, lock, label="workspace attachment lock")
@@ -197,7 +302,7 @@ def _attachment_lock(root: Path) -> Iterator[None]:
         yield
     finally:
         try:
-            os.rmdir(lock)
+            _unlink(lock, directory=True)
         except FileNotFoundError:
             pass
 
@@ -206,24 +311,19 @@ def _copy_immutable_assets(stage: Path, identity: tuple[int, int]) -> None:
     """Copy BYO-owned source paths into a fresh private staging directory."""
 
     _reject_unsafe_entries(WORKSPACE_SOURCE, label="workspace source")
-    for entry in WORKSPACE_SOURCE.iterdir():
+    for entry in _entries(WORKSPACE_SOURCE):
         if entry.name in {"runtime", "__pycache__"}:
             continue
-        metadata = stage.stat()
+        metadata = _stat(stage)
         if (metadata.st_dev, metadata.st_ino) != identity:
             raise ValueError("staged workspace changed during attachment")
         target = stage / entry.name
-        if os.path.lexists(target):
+        if _exists(target):
             raise ValueError(f"staged workspace target already exists: {target}")
-        if entry.is_dir():
-            shutil.copytree(
-                entry,
-                target,
-                symlinks=True,
-                ignore=shutil.ignore_patterns("__pycache__", "*.pyc"),
-            )
+        if stat.S_ISDIR(_lstat(entry).st_mode):
+            _copy_tree(entry, target, ignore_cache=True)
         else:
-            shutil.copy2(entry, target, follow_symlinks=False)
+            _copy_file(entry, target)
     _reject_unsafe_entries(
         stage,
         label="staged workspace",
@@ -234,63 +334,38 @@ def _copy_immutable_assets(stage: Path, identity: tuple[int, int]) -> None:
 def _merge_preserved_assets(source: Path, stage: Path) -> None:
     """Add validated non-BYO entries without overwriting staged source paths."""
 
-    for entry in source.iterdir():
+    for entry in _entries(source):
         target = stage / entry.name
-        source_metadata = entry.lstat()
+        source_metadata = _lstat(entry)
         _reject_link(source_metadata, entry, label="workspace preserved source")
         if stat.S_ISREG(source_metadata.st_mode):
             if source_metadata.st_nlink != 1:
                 raise ValueError(f"workspace preserved source is multiply linked: {entry}")
         elif not stat.S_ISDIR(source_metadata.st_mode):
             raise ValueError(f"workspace preserved source is a special file: {entry}")
-        if not os.path.lexists(target):
+        if not _exists(target):
             if stat.S_ISDIR(source_metadata.st_mode):
-                with _anchored_directory(entry, label="workspace preserved source") as (
-                    entry_access,
-                    _identity,
-                ):
-                    shutil.copytree(entry_access, target, symlinks=True)
+                _copy_tree(entry, target)
             else:
-                flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
-                descriptor = os.open(entry, flags)
-                try:
-                    opened = os.fstat(descriptor)
-                    current = entry.lstat()
-                    if (
-                        not stat.S_ISREG(opened.st_mode)
-                        or opened.st_nlink != 1
-                        or stat.S_ISLNK(current.st_mode)
-                        or _is_reparse_point(current)
-                        or (opened.st_dev, opened.st_ino) != (current.st_dev, current.st_ino)
-                    ):
-                        raise ValueError(
-                            f"workspace preserved source changed while opening: {entry}"
-                        )
-                    with os.fdopen(os.dup(descriptor), "rb") as source_handle:
-                        with target.open("xb") as target_handle:
-                            shutil.copyfileobj(source_handle, target_handle)
-                            fchmod = getattr(os, "fchmod", None)
-                            if fchmod is not None:
-                                fchmod(target_handle.fileno(), stat.S_IMODE(opened.st_mode))
-                finally:
-                    os.close(descriptor)
+                _copy_file(entry, target)
             continue
-        target_metadata = target.lstat()
+        target_metadata = _lstat(target)
         _reject_link(target_metadata, target, label="staged workspace target")
         if stat.S_ISDIR(source_metadata.st_mode) and stat.S_ISDIR(target_metadata.st_mode):
             with _anchored_directory(entry, label="workspace preserved source") as (
                 entry_access,
                 _identity,
             ):
-                _merge_preserved_assets(entry_access, target)
+                with _anchored_directory(target, label="staged workspace target"):
+                    _merge_preserved_assets(entry_access, target)
 
 
 def _install_workspace(root: Path) -> Path:
     destination = root / ".agent-workspace"
     destination_identity: tuple[int, int] | None = None
 
-    if os.path.lexists(destination):
-        metadata = destination.lstat()
+    if _exists(destination):
+        metadata = _lstat(destination)
         _reject_link(metadata, destination, label="workspace destination")
         if not stat.S_ISDIR(metadata.st_mode):
             raise ValueError(f"workspace destination is not a directory: {destination}")
@@ -299,26 +374,19 @@ def _install_workspace(root: Path) -> Path:
 
     stage = _temporary_sibling(root, ".agent-workspace-stage-")
     stage_identity = _directory_identity(stage, label="staged workspace")
-    descriptor_directory = _descriptor_directory()
-    if descriptor_directory is None:
+    stage_descriptor: int | None = None
+    try:
+        stage_descriptor = _open(stage, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        opened = os.fstat(stage_descriptor)
+        if (opened.st_dev, opened.st_ino) != stage_identity:
+            raise ValueError("staged workspace changed while it was being opened")
+    except BaseException:
+        if stage_descriptor is not None:
+            os.close(stage_descriptor)
         _remove_private_stage(stage, stage_identity)
-        raise OSError(
-            "safe workspace attachment requires POSIX descriptor-path support "
-            "(/proc/self/fd or /dev/fd)"
-        )
-    stage_descriptor = os.open(
-        stage,
-        os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0),
-    )
-    opened = os.fstat(stage_descriptor)
-    if (opened.st_dev, opened.st_ino) != stage_identity:
-        os.close(stage_descriptor)
-        _remove_private_stage(stage, stage_identity)
-        raise ValueError("staged workspace changed while it was being opened")
-    # All population below is anchored to the opened directory object. A
-    # concurrent rename/symlink swap of its public pathname therefore cannot
-    # redirect writes into the replacement target.
-    stage_access = descriptor_directory / str(stage_descriptor)
+        raise
+    token = _DIRECTORY_PINS.set((*_DIRECTORY_PINS.get(), (stage, stage_descriptor)))
+    stage_access = stage
     backup: Path | None = None
     backup_identity: tuple[int, int] | None = None
     published = False
@@ -330,11 +398,11 @@ def _install_workspace(root: Path) -> Path:
         # symlink substitution must be rejected, not followed to an external
         # target before the final tree validation runs.
         runtime = stage_access / "runtime"
-        runtime.mkdir(mode=PRIVATE_DIRECTORY_MODE)
-        if os.path.lexists(destination):
+        _mkdir(runtime)
+        if _exists(destination):
             backup = _unused_sibling(root, ".agent-workspace-backup-")
-            os.replace(destination, backup)
-            moved = backup.lstat()
+            _replace(destination, backup)
+            moved = _lstat(backup)
             if destination_identity != (moved.st_dev, moved.st_ino):
                 raise ValueError("workspace destination changed during attachment")
             with _anchored_directory(backup, label="workspace destination") as (
@@ -360,15 +428,15 @@ def _install_workspace(root: Path) -> Path:
             expected_root_identity=stage_identity,
         )
         _require_directory_identity(stage, stage_identity, label="staged workspace")
-        os.replace(stage, destination)
-        installed = destination.lstat()
+        _replace(stage, destination)
+        installed = _lstat(destination)
         if stat.S_ISLNK(installed.st_mode) or _is_reparse_point(installed):
             # A hostile name swap can occur after the last pre-rename identity
             # check. Never report success with that substituted link published.
             if stat.S_ISLNK(installed.st_mode):
-                destination.unlink()
+                _unlink(destination)
             else:  # pragma: no cover - attachment fails earlier on native Windows
-                os.rmdir(destination)
+                _unlink(destination, directory=True)
             raise ValueError("staged workspace changed during publication")
         if (
             not stat.S_ISDIR(installed.st_mode)
@@ -381,7 +449,7 @@ def _install_workspace(root: Path) -> Path:
             raise ValueError("staged workspace changed during publication")
         published = True
     except BaseException:
-        if backup is not None and not published and not os.path.lexists(destination):
+        if backup is not None and not published and not _exists(destination):
             try:
                 _reject_unsafe_entries(
                     backup,
@@ -393,15 +461,16 @@ def _install_workspace(root: Path) -> Path:
                 # it under its private random name for explicit recovery.
                 pass
             else:
-                os.replace(backup, destination)
+                _replace(backup, destination)
                 backup = None
         raise
     finally:
+        _DIRECTORY_PINS.reset(token)
         os.close(stage_descriptor)
         if not published:
             _remove_private_stage(stage, stage_identity)
-        if backup is not None and published and os.path.lexists(backup):
-            shutil.rmtree(backup)
+        if backup is not None and published and _exists(backup):
+            _remove_tree(backup)
 
     return destination
 
@@ -417,19 +486,16 @@ def _ensure_hidden_workspace_entry(project_root: Path) -> Path:
 
     root = Path(os.path.abspath(Path(project_root).expanduser()))
     root.mkdir(parents=True, exist_ok=True)
-    if _descriptor_directory() is None:
+    if not _directory_operations_available():
         # Preserve the strongest available diagnostic for an already-unsafe
         # destination, but never enter the replacement transaction without an
-        # opened-directory pathname that cannot be redirected by a name swap.
+        # opened directory that cannot be redirected by a name swap.
         _directory_identity(root, label="project root")
         destination = root / ".agent-workspace"
-        if os.path.lexists(destination):
-            metadata = destination.lstat()
+        if _exists(destination):
+            metadata = _lstat(destination)
             _reject_link(metadata, destination, label="workspace destination")
-        raise OSError(
-            "safe workspace attachment requires POSIX descriptor-path support "
-            "(/proc/self/fd or /dev/fd)"
-        )
+        raise OSError("safe workspace attachment requires POSIX directory-relative operations")
     with _anchored_directory(root, label="project root") as (root_access, _identity):
         with _attachment_lock(root_access):
             _install_workspace(root_access)

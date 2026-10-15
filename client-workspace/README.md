@@ -11,9 +11,12 @@ shipped and remain isolated under each attached project's
 `.gitignore`, so Git does not stage anything under that runtime directory.
 Refreshing an attachment overlays the versioned BYO paths while preserving
 validated unrelated top-level files and nested third-party workspace assets.
-For race-safe publication, attachment requires POSIX descriptor-path support
-through `/proc/self/fd` or `/dev/fd`; unsupported platforms fail before changing
-an existing workspace.
+Attachment uses POSIX directory-relative operations on Linux and macOS, pinning
+opened directories through copying, preservation, and publication. It does not
+require `/proc/self/fd` or `/dev/fd` pathname traversal. Native Windows attachment
+remains unsupported and fails before changing an existing workspace; use a Linux
+workspace under WSL for this source-handoff command. This restriction does not
+apply to the native Windows MCP server or CAN simulator.
 
 The model-invocable `byo-issue-report` skill classifies conversation-visible
 S-4 through S-14 signals and submits the server's exact issue/check-in forms.

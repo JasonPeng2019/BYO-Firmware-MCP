@@ -286,7 +286,7 @@ class RoundFourRegressionTests(unittest.TestCase):
         self,
     ) -> None:
         with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
+            root = Path(directory).resolve()
             source = root / "source.elf"
             source.write_bytes(b"ELF artifact bytes")
             target = root / "target"

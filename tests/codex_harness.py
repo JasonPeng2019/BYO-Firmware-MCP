@@ -270,6 +270,7 @@ class CodexAgentTestCase(unittest.TestCase):
                     f'{SNAPSHOT_CADENCE_ENV} = "{E2E_SNAPSHOT_CADENCE}"',
                     f'{CHECKIN_CADENCE_ENV} = "{E2E_CHECKIN_CADENCE}"',
                     f'BYO_MCP_MONITOR_ROOT = "{self.store.as_posix()}"',
+                    f'PYOCD_MCP_RUNS_ROOT = "{(home / "owned-runs").as_posix()}"',
                     "",
                 ]
             ),

@@ -371,6 +371,9 @@ class ModelPinningIsEnforced(CodexAgentTestCase):
         config = (self.codex_home / "config.toml").read_text(encoding="utf-8")
         launcher = self.codex_home / "server_launcher.py"
         self.assertIn(launcher.as_posix(), config)
+        self.assertIn(
+            f'PYOCD_MCP_RUNS_ROOT = "{(self.codex_home / "owned-runs").as_posix()}"', config
+        )
         self.assertIn("_watch_parent", launcher.read_text(encoding="utf-8"))
 
         # Exercise the same nonce/create-time/command identity check

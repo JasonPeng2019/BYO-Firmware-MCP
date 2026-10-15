@@ -165,7 +165,7 @@ class ProductionCanHarness:
 
     def __init__(self, operation: str) -> None:
         self.temporary = tempfile.mkdtemp(prefix="byo-can-registry-")
-        self.root = Path(self.temporary)
+        self.root = Path(self.temporary).resolve()
         self.profile = self.root / "can.yaml"
         self.profile.write_text(
             SOURCE_PROFILE.read_text(encoding="utf-8").replace("nucleo_l476rg", BOARD),
@@ -187,7 +187,12 @@ class ProductionCanHarness:
         )
         self.environment.start()
         sys.modules.pop("pyocd_debug_mcp.server", None)
-        self.server: ModuleType = importlib.import_module("pyocd_debug_mcp.server")
+        try:
+            self.server: ModuleType = importlib.import_module("pyocd_debug_mcp.server")
+        except BaseException:
+            self.environment.stop()
+            shutil.rmtree(self.root)
+            raise
 
         policies = CapabilityPolicyRepository(self.root)
         self.policies = policies
@@ -733,7 +738,7 @@ except SystemExit:
     raise
 """
         with tempfile.TemporaryDirectory(prefix="byo-can-stdio-") as temporary:
-            root = Path(temporary)
+            root = Path(temporary).resolve()
             profile = root / "can.yaml"
             profile.write_text(
                 SOURCE_PROFILE.read_text(encoding="utf-8").replace("nucleo_l476rg", BOARD),

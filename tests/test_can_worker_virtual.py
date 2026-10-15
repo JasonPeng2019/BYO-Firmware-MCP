@@ -206,7 +206,7 @@ if __name__ == "__main__":
     }, sort_keys=True))
 """
         with tempfile.TemporaryDirectory(prefix="byo-can-console-spawn-") as temporary:
-            root = Path(temporary)
+            root = Path(temporary).resolve()
             profile = root / "can.yaml"
             profile.write_bytes(TX_PROFILE.read_bytes())
             launcher = root / "pyocd-debug-mcp"

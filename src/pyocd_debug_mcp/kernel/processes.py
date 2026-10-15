@@ -368,10 +368,18 @@ def terminate_process_group(
         return process.returncode is not None
 
     process_group = process.pid
+    # Reap a worker that exited after its final reply before signaling its PGID.
+    # Darwin may report EPERM for a group whose only member is an unreaped zombie.
+    process.poll()
     try:
         os.killpg(process_group, signal.SIGTERM)
     except ProcessLookupError:
+        process.poll()
         return True
+    except PermissionError:
+        # An exit can race the poll above. Reap below, then require PGID absence
+        # (or successfully terminate remaining descendants); EPERM is not proof.
+        pass
     try:
         process.wait(timeout=grace_seconds)
     except (OSError, subprocess.TimeoutExpired):
@@ -388,6 +396,8 @@ def terminate_process_group(
         os.killpg(process_group, signal.SIGKILL)
     except ProcessLookupError:
         return True
+    except PermissionError:
+        return False
     try:
         process.wait(timeout=grace_seconds)
     except (OSError, subprocess.TimeoutExpired):

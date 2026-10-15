@@ -48,9 +48,10 @@ extracted sdist, attach them explicitly:
 client-workspace/bin/attach-project /absolute/path/to/firmware-project
 ```
 
-Race-safe attachment requires POSIX descriptor-path support through
-`/proc/self/fd` or `/dev/fd`. Unsupported platforms fail closed before changing
-an existing workspace.
+Attachment uses opened directories and POSIX directory-relative operations on
+Linux and macOS. Native Windows attachment remains unsupported; use WSL for this
+source-handoff command. The native Windows MCP server and CAN simulator do not
+require workspace attachment.
 
 The command copies the versioned assets to the firmware project's private
 `.agent-workspace/`. On refresh it overlays BYO-owned paths and preserves validated

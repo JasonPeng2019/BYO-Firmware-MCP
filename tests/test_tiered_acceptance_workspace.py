@@ -87,7 +87,7 @@ class TieredWorkspaceAcceptanceTests(unittest.TestCase):
         metadata = SimpleNamespace(st_file_attributes=marker, st_reparse_tag=0)
         self.assertTrue(attach._is_reparse_point(metadata))
 
-    def test_attach_fails_before_publication_without_descriptor_paths(self) -> None:
+    def test_attach_fails_before_publication_without_directory_operations(self) -> None:
         attach = _attach_project_module()
         with tempfile.TemporaryDirectory(prefix="tiered-attach-project-") as project_text:
             project = Path(project_text)
@@ -97,8 +97,8 @@ class TieredWorkspaceAcceptanceTests(unittest.TestCase):
             marker.write_text("preserved\n", encoding="utf-8")
 
             with (
-                patch.object(attach, "_descriptor_directory", return_value=None),
-                self.assertRaisesRegex(OSError, "descriptor-path support"),
+                patch.object(attach, "_directory_operations_available", return_value=False),
+                self.assertRaisesRegex(OSError, "directory-relative operations"),
             ):
                 attach._ensure_hidden_workspace_entry(project)
 
@@ -483,7 +483,7 @@ class TieredWorkspaceAcceptanceTests(unittest.TestCase):
         ):
             project = Path(project_text)
             external = Path(external_text)
-            original_copytree = attach.shutil.copytree
+            original_copytree = attach._copy_tree
             swapped = False
 
             def swap_target(*args: Any, **kwargs: Any) -> Path:
@@ -495,7 +495,7 @@ class TieredWorkspaceAcceptanceTests(unittest.TestCase):
                 return original_copytree(*args, **kwargs)
 
             with (
-                patch.object(attach.shutil, "copytree", side_effect=swap_target),
+                patch.object(attach, "_copy_tree", side_effect=swap_target),
                 self.assertRaises((FileExistsError, ValueError)),
             ):
                 attach._ensure_hidden_workspace_entry(project)
@@ -639,6 +639,75 @@ class TieredWorkspaceAcceptanceTests(unittest.TestCase):
             )
             self.assertTrue((attached / "bin/attach-project").is_file())
 
+    def test_attach_preserves_all_user_bytes_without_descriptor_path_traversal(self) -> None:
+        attach = _attach_project_module()
+        with tempfile.TemporaryDirectory(prefix="tiered-attach-project-") as project_text:
+            project = Path(project_text)
+            workspace = attach._ensure_hidden_workspace_entry(project)
+            files = {
+                "runtime/operator-cache/__pycache__/state.pyc": b"retained state",
+                "skills-src/third-party/plugin.pyc": b"retained plugin",
+                "operator-data/state.bin": bytes(range(256)),
+            }
+            for name, content in files.items():
+                path = workspace / name
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_bytes(content)
+            private_data = workspace / "operator-data"
+            private_data.chmod(0o750)
+            original_open = attach._open
+
+            def check_open(path: Any, *args: Any, **kwargs: Any) -> int:
+                self.assertFalse(str(path).startswith(("/dev/fd/", "/proc/self/fd/")))
+                return original_open(path, *args, **kwargs)
+
+            with patch.object(attach, "_open", side_effect=check_open):
+                attach._ensure_hidden_workspace_entry(project)
+            for name, content in files.items():
+                self.assertEqual((workspace / name).read_bytes(), content)
+            self.assertEqual(stat.S_IMODE(private_data.stat().st_mode), 0o750)
+
+    def test_attach_stage_open_and_stat_failures_remove_stage_and_close_descriptors(self) -> None:
+        for failure in ("open", "fstat"):
+            with self.subTest(failure=failure), tempfile.TemporaryDirectory() as temporary:
+                attach = _attach_project_module()
+                project = Path(temporary)
+                original_open = attach._open
+                original_fstat = attach.os.fstat
+                stage_descriptors: list[int] = []
+                injected = False
+                stat_failed = False
+
+                def failing_open(path: Path, *args: Any, **kwargs: Any) -> int:
+                    nonlocal injected
+                    if path.name.startswith(".agent-workspace-stage-") and not injected:
+                        injected = True
+                        if failure == "open":
+                            raise OSError("injected stage open failure")
+                        descriptor = original_open(path, *args, **kwargs)
+                        stage_descriptors.append(descriptor)
+                        return descriptor
+                    return original_open(path, *args, **kwargs)
+
+                def failing_fstat(descriptor: int) -> os.stat_result:
+                    nonlocal stat_failed
+                    if descriptor in stage_descriptors and not stat_failed:
+                        stat_failed = True
+                        raise OSError("injected stage stat failure")
+                    return original_fstat(descriptor)
+
+                with (
+                    patch.object(attach, "_open", side_effect=failing_open),
+                    patch.object(attach.os, "fstat", side_effect=failing_fstat),
+                    self.assertRaisesRegex(OSError, "injected stage"),
+                ):
+                    attach._ensure_hidden_workspace_entry(project)
+                self.assertTrue(injected)
+                self.assertEqual(list(project.iterdir()), [])
+                for descriptor in stage_descriptors:
+                    with self.assertRaises(OSError):
+                        os.fstat(descriptor)
+
     def test_attach_serializes_concurrent_replacements_without_losing_runtime(self) -> None:
         attach = _attach_project_module()
         with tempfile.TemporaryDirectory(prefix="tiered-attach-project-") as project_text:
@@ -648,7 +717,7 @@ class TieredWorkspaceAcceptanceTests(unittest.TestCase):
             (runtime / "grant.json").write_text('{"grant":true}\n', encoding="utf-8")
             moved = threading.Event()
             release = threading.Event()
-            original_replace = attach.os.replace
+            original_replace = attach._replace
             paused = False
 
             def pause_after_backup(source: Path, target: Path, *args: Any, **kwargs: Any) -> None:
@@ -672,7 +741,7 @@ class TieredWorkspaceAcceptanceTests(unittest.TestCase):
                 except BaseException as exc:  # pragma: no cover - asserted below
                     failures.append(exc)
 
-            with patch.object(attach.os, "replace", side_effect=pause_after_backup):
+            with patch.object(attach, "_replace", side_effect=pause_after_backup):
                 first = threading.Thread(target=run_attach)
                 second = threading.Thread(target=run_attach)
                 first.start()
@@ -703,7 +772,7 @@ class TieredWorkspaceAcceptanceTests(unittest.TestCase):
             destination.mkdir()
             displaced = project / "displaced-workspace"
             os.chmod(external, 0o755)
-            original_replace = attach.os.replace
+            original_replace = attach._replace
             swapped = False
 
             def swap_before_move(source: Path, target: Path, *args: Any, **kwargs: Any) -> None:
@@ -720,7 +789,7 @@ class TieredWorkspaceAcceptanceTests(unittest.TestCase):
                 original_replace(source, target, *args, **kwargs)
 
             with (
-                patch.object(attach.os, "replace", side_effect=swap_before_move),
+                patch.object(attach, "_replace", side_effect=swap_before_move),
                 self.assertRaisesRegex(ValueError, "changed during attachment"),
             ):
                 attach._ensure_hidden_workspace_entry(project)
@@ -735,28 +804,19 @@ class TieredWorkspaceAcceptanceTests(unittest.TestCase):
             project = Path(project_text)
             external = Path(external_text)
             displaced = project / "displaced-final-stage"
-            original_require = attach._require_directory_identity
+            original_replace = attach._replace
             swapped = False
 
-            def swap_after_final_stage_check(
-                path: Path,
-                expected: tuple[int, int],
-                *,
-                label: str,
-            ) -> None:
+            def swap_before_publication(source: Path, target: Path) -> None:
                 nonlocal swapped
-                original_require(path, expected, label=label)
-                if not swapped and label == "staged workspace":
+                if not swapped and source.name.startswith(".agent-workspace-stage-"):
                     swapped = True
-                    os.replace(path, displaced)
-                    path.symlink_to(external, target_is_directory=True)
+                    os.replace(source, displaced)
+                    source.symlink_to(external, target_is_directory=True)
+                original_replace(source, target)
 
             with (
-                patch.object(
-                    attach,
-                    "_require_directory_identity",
-                    side_effect=swap_after_final_stage_check,
-                ),
+                patch.object(attach, "_replace", side_effect=swap_before_publication),
                 self.assertRaisesRegex(ValueError, "changed during publication"),
             ):
                 attach._ensure_hidden_workspace_entry(project)

@@ -93,6 +93,7 @@ class StdioServer:
     ) -> None:
         environment = os.environ.copy()
         environment[MONITOR_ROOT_ENV] = str(monitor_root())
+        environment["PYOCD_MCP_RUNS_ROOT"] = str(monitor_root() / "owned-runs")
         if extra_environment is not None:
             environment.update(extra_environment)
         launcher = Path(sys.executable).with_name(
