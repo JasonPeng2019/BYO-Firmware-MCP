@@ -487,8 +487,8 @@ def _verify_release_logs_in(results_dir: Path) -> list[str]:
         if f"Full default {count}-test software suite" not in release_status:
             errors.append("release status test count disagrees with the software-suite log")
     live_count = TEST_COUNT_PATTERN.search(live)
-    if live_count is None or live_count.group(1) != "22":
-        errors.append("monitor Codex E2E log must retain the claimed 22 module tests")
+    if live_count is None or live_count.group(1) != "29":
+        errors.append("monitor Codex E2E log must retain the claimed 29 module tests")
 
     parse_log = texts.get(results_dir / "0.1.8rc1-python310-parse.log", "")
     parsed_count = PARSED_COUNT_PATTERN.search(parse_log)
