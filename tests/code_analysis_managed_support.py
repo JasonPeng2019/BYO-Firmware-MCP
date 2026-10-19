@@ -538,7 +538,9 @@ class OwnedSpawns:
         # Retain the actual child for emergency cleanup even if an oracle fails.
         record["marker"] = json.loads(marker.read_bytes()) if marker else None
         token = (
-            windows_child_start_token(process) if os.name == "nt" else native_start_token(process.pid)
+            windows_child_start_token(process)
+            if os.name == "nt"
+            else native_start_token(process.pid)
         )
         if token is None and os.name == "posix":
             # A fast version peer may already be a retained zombie with a real birth.
