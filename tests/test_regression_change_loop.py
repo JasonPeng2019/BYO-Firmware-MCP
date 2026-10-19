@@ -23,8 +23,18 @@ from pyocd_debug_mcp.adapters.swd_process import _validate_result
 from pyocd_debug_mcp.board_config import BoardConfig
 from pyocd_debug_mcp.services.connections import BoardNotConnectedError, ConnectionManager
 from pyocd_debug_mcp.services.session_runtime import ActionContext, SessionRecord, ToolOutcome
+from pyocd_debug_mcp.setup_flow.validate import ValidationInventory, ValidationProbe
 from pyocd_debug_mcp.tools.flash import FlashToolServices, build_flash_handlers
 from pyocd_debug_mcp.firmstore.profiles import ProfileError
+from pyocd_debug_mcp.flash_image import FlashResult
+from tests.flash_test_support import (
+    FLASH_START,
+    ElfSegment,
+    FakeFlashTarget,
+    file_programmer,
+    flash_handle,
+    write_elf32,
+)
 
 
 def _write_loadable_elf(path: Path) -> None:
@@ -157,101 +167,67 @@ class NativeBuildAmbiguityRegressionTests(unittest.TestCase):
 
 
 class FlashStateRegressionTests(unittest.TestCase):
-    @staticmethod
-    def _handle(target: object) -> TargetSessionHandle:
-        board = BoardConfig(
-            "board", "Board", "mcu", "probe", "target", "probe", (), (), 0
-        )
-        return TargetSessionHandle(SimpleNamespace(target=target), board, "probe", "route", None)
+    DATA = b"\x10\x20\x30\x40\x50\x60\x70\x80"
+
+    def _flash(
+        self,
+        target: FakeFlashTarget,
+        *,
+        writes: tuple[tuple[int, bytes], ...] | None = None,
+        error: BaseException | None = None,
+    ) -> FlashResult:
+        with tempfile.TemporaryDirectory() as temporary:
+            firmware = write_elf32(
+                Path(temporary) / "firmware.elf", [ElfSegment(FLASH_START, self.DATA)]
+            )
+            programmer = file_programmer(
+                target, ((FLASH_START, self.DATA),) if writes is None else writes, error=error
+            )
+            with patch.object(swd_pyocd, "FileProgrammer", programmer):
+                return swd_pyocd.PyOCDSWDInterface().flash(
+                    flash_handle(target), firmware, halt_after_reset=False
+                )
 
     def test_final_reset_transport_loss_is_unconfirmed_not_running(self) -> None:
-        class Target:
-            def reset_and_halt(self) -> None:
-                pass
+        target = FakeFlashTarget()
+        target.final_reset_error = swd_pyocd.TransferError("link dropped")
 
-            def reset(self) -> None:
-                raise swd_pyocd.TransferError("link dropped")
+        result = self._flash(target)
 
-        programmer = Mock()
-        with tempfile.TemporaryDirectory() as temporary, patch.object(
-            swd_pyocd, "FileProgrammer", return_value=programmer
-        ):
-            state = swd_pyocd.PyOCDSWDInterface().flash(
-                self._handle(Target()), Path(temporary) / "firmware.elf", halt_after_reset=False
-            )
-
-        self.assertEqual(state, "reset_state_unconfirmed")
-        programmer.program.assert_called_once()
+        self.assertEqual(result.target_state, "reset_state_unconfirmed")
+        self.assertEqual(result.verified_ranges, ((FLASH_START, FLASH_START + len(self.DATA)),))
+        self.assertEqual(target.calls, ["reset_and_halt", "program", "read", "reset"])
 
     def test_any_final_reset_exception_is_unconfirmed_but_programmer_failure_is_fatal(self) -> None:
-        class ResetFailureTarget:
-            def reset_and_halt(self) -> None:
-                pass
+        target = FakeFlashTarget()
+        target.final_reset_error = RuntimeError("target stopped responding")
+        self.assertEqual(self._flash(target).target_state, "reset_state_unconfirmed")
 
-            def reset(self) -> None:
-                raise RuntimeError("target stopped responding")
-
-        class RunningTarget:
-            def reset_and_halt(self) -> None:
-                pass
-
-            def reset(self) -> None:
-                pass
-
-            @staticmethod
-            def get_state() -> object:
-                return SimpleNamespace(name="RUNNING")
-
-        with tempfile.TemporaryDirectory() as temporary:
-            firmware = Path(temporary) / "firmware.elf"
-            with patch.object(swd_pyocd, "FileProgrammer", return_value=Mock()):
-                self.assertEqual(
-                    swd_pyocd.PyOCDSWDInterface().flash(
-                        self._handle(ResetFailureTarget()), firmware, halt_after_reset=False
-                    ),
-                    "reset_state_unconfirmed",
-                )
-            failed_programmer = Mock()
-            failed_programmer.program.side_effect = RuntimeError("verify failed")
-            with patch.object(swd_pyocd, "FileProgrammer", return_value=failed_programmer):
-                with self.assertRaisesRegex(Exception, "verify failed"):
-                    swd_pyocd.PyOCDSWDInterface().flash(
-                        self._handle(RunningTarget()), firmware, halt_after_reset=False
-                    )
+        failed = FakeFlashTarget()
+        with self.assertRaisesRegex(Exception, "verify failed"):
+            self._flash(failed, error=RuntimeError("verify failed"))
+        self.assertEqual(failed.calls, ["reset_and_halt", "program"])
 
     def test_observed_state_and_worker_contract_only_allow_truthful_flash_states(self) -> None:
-        class Target:
-            def reset_and_halt(self) -> None:
-                pass
+        result = self._flash(FakeFlashTarget())
 
-            def reset(self) -> None:
-                pass
-
-            @staticmethod
-            def get_state() -> object:
-                return SimpleNamespace(name="RUNNING")
-
-        with tempfile.TemporaryDirectory() as temporary, patch.object(
-            swd_pyocd, "FileProgrammer", return_value=Mock()
-        ):
-            state = swd_pyocd.PyOCDSWDInterface().flash(
-                self._handle(Target()), Path(temporary) / "firmware.elf", halt_after_reset=False
-            )
-
-        self.assertEqual(state, "running")
+        self.assertEqual(result.target_state, "running")
         for allowed in ("running", "halted", "reset_state_unconfirmed"):
-            self.assertEqual(_validate_result("flash", allowed), allowed)
-        with self.assertRaises(ValueError):
-            _validate_result("flash", None)
-        with self.assertRaises(ValueError):
-            _validate_result("flash", "unknown")
+            document = FlashResult(result.verified_ranges, allowed).to_document()
+            self.assertEqual(_validate_result("flash", document), FlashResult(result.verified_ranges, allowed))
+        for invalid in (None, "unknown", "running"):
+            with self.assertRaises(ValueError):
+                _validate_result("flash", invalid)
 
     def test_flash_tool_propagates_unconfirmed_state_to_event_and_operator_remedy(self) -> None:
         events: list[dict[str, object]] = []
         request = SimpleNamespace(
             artifact_path=Path("firmware.elf"),
-            identity=SimpleNamespace(as_log_fields=lambda: {"artifact_sha256": "hash"}),
+            identity=SimpleNamespace(
+                sha256="hash", as_log_fields=lambda: {"artifact_sha256": "hash"}
+            ),
         )
+        result = FlashResult(((FLASH_START, FLASH_START + 8),), "reset_state_unconfirmed")
         services = FlashToolServices(
             runtime_for=lambda _board: None,
             active_session_id=lambda _board: "session",
@@ -262,7 +238,7 @@ class FlashStateRegressionTests(unittest.TestCase):
             maybe_handle_for=lambda _board: object(),
             handle_for=lambda _board: object(),
             resolve_request=lambda *_args: request,
-            flash_target=lambda *_args: (Path("firmware.elf"), "reset_state_unconfirmed"),
+            flash_target=lambda *_args: (Path("firmware.elf"), result),
             error_code=lambda _error: "flash/error",
         )
 
@@ -273,7 +249,11 @@ class FlashStateRegressionTests(unittest.TestCase):
         self.assertEqual(events[0]["outcome_kind"], ToolOutcome.SUCCESS)
         self.assertEqual(
             events[0]["details"],
-            {"target_state": "reset_state_unconfirmed", "safety_map_checked": True},
+            {
+                "programming": result.programming_summary(),
+                "target_state": "reset_state_unconfirmed",
+                "safety_map_checked": True,
+            },
         )
 
 
@@ -312,7 +292,13 @@ class ResetConnectRoutingRegressionTests(unittest.TestCase):
         resolve_uid.assert_called_once_with(board, None, allow_environment_override=False)
         self.assertEqual(connect.call_args.kwargs["unique_id"], "profile-uid")
         self.assertEqual(connect.call_args.kwargs["target"], "profile-target")
-        with patch.dict("os.environ", {"PYOCD_PROBE_UID": "ambient-uid"}, clear=False):
+        inventory = ValidationInventory(
+            probes=(ValidationProbe("ambient-uid", "Ambient fixture", "jlink", "ambient-uid"),)
+        )
+        with (
+            patch.dict("os.environ", {"PYOCD_PROBE_UID": "ambient-uid"}, clear=False),
+            patch.object(server, "_validation_inventory", return_value=inventory),
+        ):
             self.assertEqual(server._resolve_probe_uid_for_connect(None, None), "ambient-uid")
 
     def test_adapter_reset_connect_does_not_reintroduce_ambient_routing_but_open_does(self) -> None:
@@ -358,6 +344,7 @@ class ResetConnectRoutingRegressionTests(unittest.TestCase):
         self.assertNotIn("target_override", choose.call_args.kwargs["options"])
         self.assertIsNone(reset_handle.target_override)
 
+        session.probe.unique_id = "ambient-uid"
         with (
             patch.dict(
                 "os.environ",

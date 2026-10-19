@@ -8,8 +8,69 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, JsonValue
 
+from pyocd_debug_mcp.capabilities.matrix import route_names
 from pyocd_debug_mcp.kernel.operations import SAFE_EXIT_REMINDER
 from pyocd_debug_mcp.monitor.tools import MONITOR_TOOL_NAMES
+from pyocd_debug_mcp.setup_flow.setup import TERMINAL_SETUP_STATUSES
+from pyocd_debug_mcp.setup_flow.validate import VALIDATION_STATUSES
+
+
+_PENDING_STATUSES = frozenset(
+    {
+        "setup_needs_user_input",
+        "setup_research_required",
+        # continue_setup only stages evidence; board_fix_setup must still run.
+        "setup_continuation_accepted",
+        "validation_needs_user_input",
+        "validation_research_required",
+    }
+)
+_FAILED_STATUSES = frozenset(
+    {
+        "error",
+        "refused",
+        "failed",
+        "setup_tool_not_loaded",
+        "setup_policy_recovery_required",
+        "setup_plan_ineligible",
+        "setup_assignment_required",
+        "setup_continuation_unavailable",
+        "setup_overview_unavailable",
+        "setup_status_unavailable",
+        "safety_refresh_blocked",
+        "policy_restore_blocked",
+    }
+) | (set(TERMINAL_SETUP_STATUSES) - {"setup_completed"} - _PENDING_STATUSES) | (
+    set(VALIDATION_STATUSES) - {"validation_passed"} - _PENDING_STATUSES
+)
+_RESULT_STATUSES = {
+    **{name: {"ok", "error", "refused"} for name in route_names("raw")},
+    "load_setup_tool": {
+        "setup_tool_loaded",
+        "setup_policy_recovery_required",
+        "setup_plan_ineligible",
+        "setup_assignment_required",
+    },
+    "board_setup": set(TERMINAL_SETUP_STATUSES),
+    "board_fix_setup": set(TERMINAL_SETUP_STATUSES),
+    "continue_setup": {
+        "setup_continuation_accepted",
+        "setup_research_required",
+        "setup_continuation_unavailable",
+    },
+    "board_validate": {*VALIDATION_STATUSES, "setup_tool_not_loaded"},
+    "board_safety_refresh": {
+        "safety_refresh_completed",
+        "safety_refresh_replayed",
+        "safety_refresh_blocked",
+        "setup_tool_not_loaded",
+    },
+    "board_policy_restore": {
+        "policy_restore_completed",
+        "policy_restore_blocked",
+        "setup_tool_not_loaded",
+    },
+}
 
 
 class BatchChild(BaseModel):
@@ -97,6 +158,47 @@ def _json_result(value: Any) -> JsonValue:
     return str(value)
 
 
+def _child_stop(tool_name: str, result: JsonValue) -> tuple[str, str, str] | None:
+    """Inspect the public outcome without rewriting the child's result payload.
+
+    Legacy tools return human-readable text and metadata tools need not have a
+    status. Require a status only for actions whose existing contract defines it.
+    """
+
+    expected = _RESULT_STATUSES.get(tool_name)
+    payload = result
+    malformed = (
+        "batch_failed",
+        "MalformedChildResult",
+        "Child did not return a valid result for its public contract.",
+    )
+    if isinstance(payload, str):
+        body = payload.partition(f"\n{SAFE_EXIT_REMINDER}")[0].strip()
+        if body.startswith("Refused ["):
+            return "batch_failed", "ChildResultError", body.split("\n", 1)[0]
+        if not body:
+            return malformed
+        if expected is not None or body.startswith(("{", "[")):
+            try:
+                payload = json.loads(body)
+            except ValueError:
+                return malformed
+        else:
+            return None
+    if not isinstance(payload, dict):
+        return malformed
+    if "status" not in payload and expected is None:
+        return None
+    status = payload.get("status")
+    if not isinstance(status, str) or not status or (expected is not None and status not in expected):
+        return malformed
+    if status in _PENDING_STATUSES:
+        return "batch_pending", "ChildPending", f"Child requires continuation ({status})."
+    if status in _FAILED_STATUSES:
+        return "batch_failed", "ChildResultError", f"Child returned {status}."
+    return None
+
+
 def build_batch_handlers(
     dispatch_child: ChildDispatcher,
     *,
@@ -113,52 +215,59 @@ def build_batch_handlers(
         callable bindings remain static. Never invent hidden children or use a batch to bypass
         plans, permission, validation, gates, freshness, timeouts, budgets, locks, or cleanup;
         every child independently traverses those normal checks.
+        Stop at the first error, refusal, malformed result, or pending setup/validation
+        continuation. completed contains only the successful prefix; failure identifies the
+        stopped child and retains its result. batch_pending requires following that child's
+        continuation before submitting remaining work. Earlier effects are not rolled back.
         """
 
         validated = _validate_children(board_id, actions, tool_exists=tool_exists)
         completed: list[dict[str, JsonValue]] = []
         failure: dict[str, JsonValue] | None = None
+        status = "batch_completed"
 
         for index, child in enumerate(validated):
             arguments = dict(child.arguments)
             try:
-                result = await dispatch_child(child.tool_name, arguments)
+                result = _json_result(await dispatch_child(child.tool_name, arguments))
+                if normalize_child_result is not None:
+                    result = normalize_child_result(board_id, child.tool_name, result)
             except Exception as exc:  # child dispatch owns the typed authorization failure
                 normalized_error = (
                     normalize_child_error(board_id, child.tool_name, exc)
                     if normalize_child_error is not None
                     else None
                 )
-                if normalized_error is not None:
-                    completed.append(
-                        {
-                            "index": index,
-                            "tool_name": child.tool_name,
-                            "result": normalized_error,
-                        }
-                    )
-                    continue
                 failure = {
                     "index": index,
                     "tool_name": child.tool_name,
                     "error_type": type(exc).__name__,
                     "message": str(exc),
+                    "result": normalized_error if normalized_error is not None else str(exc),
+                }
+                status = "batch_failed"
+                break
+            stopped = _child_stop(child.tool_name, result)
+            if stopped is not None:
+                status, error_type, message = stopped
+                failure = {
+                    "index": index,
+                    "tool_name": child.tool_name,
+                    "result": result,
+                    "error_type": error_type,
+                    "message": message,
                 }
                 break
             completed.append(
                 {
                     "index": index,
                     "tool_name": child.tool_name,
-                    "result": (
-                        normalize_child_result(board_id, child.tool_name, _json_result(result))
-                        if normalize_child_result is not None
-                        else _json_result(result)
-                    ),
+                    "result": result,
                 }
             )
 
         payload: dict[str, JsonValue] = {
-            "status": "batch_completed" if failure is None else "batch_failed",
+            "status": status,
             "board_id": board_id,
             "completed": list(completed),
             "failure": dict(failure) if failure is not None else None,

@@ -14,6 +14,7 @@ from typing import Any, cast
 
 from pyocd.target.pack.cmsis_pack import CmsisPack  # type: ignore[import-untyped]
 from pyocd.target import TARGET, normalise_target_type_name  # type: ignore[import-untyped]
+from pyocd.target.builtin import BUILTIN_TARGETS  # type: ignore[import-untyped]
 from pyocd.debug.svd.parser import SVDParser  # type: ignore[import-untyped]
 
 from pyocd_debug_mcp.pack_provision import (
@@ -50,6 +51,10 @@ _ARM_CPUID_ARCHITECTURES = {0xC, 0xF}
 
 class BuiltInTargetGeometryError(PackProvisionError):
     """An installed target is real but its static geometry needs pack augmentation."""
+
+
+class BuiltInTargetCompatibilityError(PackProvisionError):
+    """Installed metadata does not establish support for the supplied MCU part."""
 
 
 def live_cpuid_compatibility_proof(observed_cpuid: int) -> LiveIdentityProof:
@@ -300,8 +305,9 @@ class BuiltInTargetSupportCandidate:
     """Agent-resolved built-in pyOCD target, replayable from the installed registry.
 
     The target name is a research result, not authority by itself. Authority is
-    established by resolving that exact installed target, hashing its static
-    memory geometry, and recording a compatible live Arm CPUID proof.
+    established by matching the supplied part to installed device metadata,
+    hashing static memory geometry, and recording a compatible live Arm CPUID
+    proof. CPUID never supplies the part/package binding.
     """
 
     part_number: str
@@ -568,9 +574,36 @@ def resolve_builtin_target_support(
     *,
     identity_proof: LiveIdentityProof | None = None,
 ) -> BuiltInTargetSupportCandidate:
-    """Resolve an agent-researched exact built-in target without a pack requirement."""
+    """Resolve installed part compatibility and geometry before any live attachment."""
 
     normalized = normalise_target_type_name(pyocd_target)
+    requested = normalize_part_number(part_number)
+    installed_class = BUILTIN_TARGETS.get(normalized)
+    if installed_class is None or TARGET.get(normalized) is not installed_class:
+        raise BuiltInTargetCompatibilityError(
+            "target is not provided by the installed built-in registry; use an official CMSIS-Pack"
+        )
+    target_class = installed_class
+    # Registry aliases are literal device identifiers. Some built-ins instead
+    # declare a complete ordering-code pattern in their module identifier (for
+    # example target_<device>_xxAA). Reuse explicit lowercase-x matching, never
+    # prefix matching or package inference from CPUID/research prose. A module
+    # shared by distinct target classes cannot select a variant safely.
+    aliases = tuple(name for name, cls in BUILTIN_TARGETS.items() if cls is target_class)
+    literal_match = any(normalize_part_number(name) == requested for name in aliases)
+    module_prefix = "pyocd.target.builtin.target_"
+    module = target_class.__module__
+    module_classes = {cls for cls in BUILTIN_TARGETS.values() if cls.__module__ == module}
+    module_match = (
+        module.startswith(module_prefix)
+        and len(module_classes) == 1
+        and _pdsc_leaf_matches_part(module.removeprefix(module_prefix), part_number)
+    )
+    if not literal_match and not module_match:
+        raise BuiltInTargetCompatibilityError(
+            f"installed target {normalized!r} has no unambiguous device identifier matching "
+            f"the supplied MCU part {part_number!r}; use an official CMSIS-Pack"
+        )
     geometry = resolve_builtin_target_geometry(normalized)
     return BuiltInTargetSupportCandidate(
         part_number.strip(), normalized, _geometry_digest(geometry), identity_proof

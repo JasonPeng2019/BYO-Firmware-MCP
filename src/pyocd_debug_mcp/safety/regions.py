@@ -370,14 +370,18 @@ class RecoveryEraseDisclosure:
     affected_regions: tuple[SafetyRegion, ...]
     all_nonvolatile_erased: bool
     expected_losses: tuple[str, ...]
+    unknown_effects: tuple[str, ...] = ()
 
     def to_document(self) -> dict[str, object]:
-        return {
+        document: dict[str, object] = {
             "erased_ranges": [item.to_document() for item in self.spans],
             "affected_regions": [item.to_document() for item in self.affected_regions],
             "all_nonvolatile_erased": self.all_nonvolatile_erased,
             "expected_losses": list(self.expected_losses),
         }
+        if self.unknown_effects:
+            document["unknown_effects"] = list(self.unknown_effects)
+        return document
 
 
 def _uniform_span(
@@ -409,10 +413,7 @@ def _uniform_span(
     )
 
 
-def _explicit_span(
-    requested: AddressRange,
-    rows: list[object],
-) -> RecoveryEraseSpan:
+def _explicit_sectors(rows: list[object]) -> list[tuple[int, AddressRange, str]]:
     sectors: list[tuple[int, AddressRange, str]] = []
     for index, raw in enumerate(rows):
         if not isinstance(raw, Mapping):
@@ -423,6 +424,14 @@ def _explicit_span(
             raise RegionError(f"invalid recovery erase sector: {exc}") from exc
         bank = str(raw.get("bank", "unspecified-bank")).strip() or "unspecified-bank"
         sectors.append((index, sector, bank))
+    return sectors
+
+
+def _explicit_span(
+    requested: AddressRange,
+    rows: list[object],
+) -> RecoveryEraseSpan:
+    sectors = _explicit_sectors(rows)
     covering = [item for item in sectors if item[1].overlaps(requested)]
     if not covering or not _covered(requested, [item[1] for item in covering]):
         raise RegionError("explicit erase geometry does not cover a physical flash range")
@@ -437,28 +446,11 @@ def _explicit_span(
     )
 
 
-def build_recovery_erase_disclosure(
-    regions: tuple[SafetyRegion, ...] | list[SafetyRegion],
-    geometry: Mapping[str, object],
-    *,
-    mass_erase: bool,
-) -> RecoveryEraseDisclosure:
-    """Derive recovery loss from the map; callers cannot inject allowed ranges."""
-
-    mapped = tuple(regions)
-    physical_flash = tuple(
-        region for region in mapped if region.kind is RegionKind.PHYSICAL_FLASH
-    )
-    if not physical_flash:
-        raise RegionError("the current safety map has no physical flash range to disclose")
-    explicit = geometry.get("sectors")
-    spans = tuple(
-        _explicit_span(region.address_range, explicit)
-        if isinstance(explicit, list)
-        else _uniform_span(region.address_range, geometry, region.name)
-        for region in physical_flash
-    )
-    affected = tuple(
+def _affected_regions(
+    mapped: tuple[SafetyRegion, ...],
+    physical_flash: tuple[SafetyRegion, ...],
+) -> tuple[SafetyRegion, ...]:
+    return tuple(
         sorted(
             {
                 region
@@ -486,6 +478,30 @@ def build_recovery_erase_disclosure(
             ),
         )
     )
+
+
+def build_recovery_erase_disclosure(
+    regions: tuple[SafetyRegion, ...] | list[SafetyRegion],
+    geometry: Mapping[str, object],
+    *,
+    mass_erase: bool,
+) -> RecoveryEraseDisclosure:
+    """Derive recovery loss from the map; callers cannot inject allowed ranges."""
+
+    mapped = tuple(regions)
+    physical_flash = tuple(
+        region for region in mapped if region.kind is RegionKind.PHYSICAL_FLASH
+    )
+    if not physical_flash:
+        raise RegionError("the current safety map has no physical flash range to disclose")
+    explicit = geometry.get("sectors")
+    spans = tuple(
+        _explicit_span(region.address_range, explicit)
+        if isinstance(explicit, list)
+        else _uniform_span(region.address_range, geometry, region.name)
+        for region in physical_flash
+    )
+    affected = _affected_regions(mapped, physical_flash)
     kinds = {item.kind for item in affected}
     losses = ["all user data in addressable nonvolatile memory"]
     if mass_erase or RegionKind.APPLICATION_FLASH in kinds:
@@ -499,4 +515,59 @@ def build_recovery_erase_disclosure(
         affected,
         mass_erase,
         tuple(losses),
+    )
+
+
+_GENERIC_UNKNOWN_EFFECTS = (
+    "The setup map identifies flash addresses, not what the bytes stored there mean; it does "
+    "not classify configuration, option, protection, debug-access, provisioning, calibration, "
+    "or other chip settings.",
+    "The backend runs the live target's own whole-chip mass-erase implementation; whether that "
+    "also erases or changes such settings, or memory outside the listed ranges, is not "
+    "established by setup.",
+)
+
+
+def build_generic_recovery_erase_disclosure(
+    regions: tuple[SafetyRegion, ...] | list[SafetyRegion],
+    geometry: Mapping[str, object],
+) -> RecoveryEraseDisclosure:
+    """Disclose a backend whole-chip erase from ordinary setup map facts.
+
+    Setup establishes flash addresses and their erase sectors, not the meaning of
+    the stored bytes or the chip's other nonvolatile state. Physical flash the
+    setup geometry does not cover, and every chip-setting effect, is therefore
+    stated as unknown rather than claimed as erased or preserved.
+    """
+
+    mapped = tuple(regions)
+    physical_flash = tuple(region for region in mapped if region.kind is RegionKind.PHYSICAL_FLASH)
+    if not physical_flash:
+        raise RegionError("the current safety map has no physical flash range to disclose")
+    rows = geometry.get("sectors")
+    if not isinstance(rows, list) or not rows:
+        raise RegionError("setup established no erase sector geometry for the physical flash")
+    sectors = _explicit_sectors(rows)
+    erased: list[SafetyRegion] = []
+    unknown: list[str] = []
+    for region in physical_flash:
+        if any(sector.overlaps(region.address_range) for _, sector, _ in sectors):
+            erased.append(region)
+        else:
+            unknown.append(
+                f"{region.name} 0x{region.address_range.start:08X}-"
+                f"0x{region.address_range.end:08X} is physical flash without setup erase "
+                "geometry; the whole-chip erase may erase or change it."
+            )
+    if not erased:
+        raise RegionError("setup erase sector geometry covers no physical flash range")
+    return RecoveryEraseDisclosure(
+        tuple(_explicit_span(region.address_range, rows) for region in erased),
+        _affected_regions(mapped, tuple(erased)),
+        False,
+        (
+            "all contents of the listed erased ranges, including any application firmware, "
+            "bootloader, or user data stored there",
+        ),
+        (*unknown, *_GENERIC_UNKNOWN_EFFECTS),
     )

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import contextlib
 import io
+import logging
 import os
 import subprocess
 import sys
@@ -17,10 +18,12 @@ from typing import Any, cast
 
 from pyocd.core.exceptions import (  # type: ignore[import-untyped]
     CoreRegisterAccessError,
+    ProbeError,
     TransferError,
 )
 from pyocd.core.helpers import ConnectHelper  # type: ignore[import-untyped]
-from pyocd.flash.eraser import FlashEraser  # type: ignore[import-untyped]
+from pyocd.core.target import Target  # type: ignore[import-untyped]
+from pyocd.coresight.cortex_m import CortexM  # type: ignore[import-untyped]
 from pyocd.flash.file_programmer import FileProgrammer  # type: ignore[import-untyped]
 from pyocd.target.pack.cmsis_pack import CmsisPack  # type: ignore[import-untyped]
 from pyocd.target.pack.pack_target import (  # type: ignore[import-untyped]
@@ -29,8 +32,19 @@ from pyocd.target.pack.pack_target import (  # type: ignore[import-untyped]
     normalise_target_type_name,
 )
 
-from pyocd_debug_mcp.adapters.swd_interface import SWDInterface, TargetSessionHandle
+from pyocd_debug_mcp.adapters.swd_interface import (
+    SWDInterface,
+    TargetSessionHandle,
+    session_metadata,
+)
 from pyocd_debug_mcp.board_config import BoardConfig
+from pyocd_debug_mcp.flash_image import (
+    FlashImage,
+    FlashResult,
+    derive_flash_image,
+    snapshot_flash_artifact,
+    verify_flash_image,
+)
 from pyocd_debug_mcp.pack_provision import (
     PackProvisionError,
     VerifiedPack,
@@ -41,15 +55,18 @@ from pyocd_debug_mcp.pack_provision import (
 from pyocd_debug_mcp.probe_inventory import (
     _probe_info_from_pyocd_probe,
     list_connected_probes_cli,
+    registered_provider_ids,
 )
 from pyocd_debug_mcp.target_errors import (
+    FlashReadbackConnectionError,
+    FlashTargetSupportError,
+    FlashVerificationError,
     LockedTargetError,
     ProbeNotFoundError,
     ResetLineUnavailableError,
     TargetConnectionError,
     TargetControlError,
     TargetStateError,
-    UnsupportedArtifactError,
 )
 from pyocd_debug_mcp.timeouts import (
     DEFAULT_EXTERNAL_COMMAND_TIMEOUT_SECONDS,
@@ -59,7 +76,6 @@ from pyocd_debug_mcp.timeouts import (
 )
 
 ROUTE_PYOCD_NATIVE = "pyocd-native"
-SUPPORTED_FLASH_SUFFIXES = frozenset({".axf", ".elf", ".hex"})
 _PACK_OBJECTS: dict[str, tuple[bytes, CmsisPack]] = {}
 _PACK_TARGET_LOCK = threading.RLock()
 _MISSING_TARGET = object()
@@ -200,6 +216,9 @@ def _backend_stdout_to_stderr() -> Iterator[None]:
 
 
 def _typed_backend_error(exc: Exception) -> TargetControlError:
+    if isinstance(exc, LockedTargetError):
+        # Already a typed protected-target refusal; keep its remedy text intact.
+        return LockedTargetError(str(exc))
     if isinstance(exc, CoreRegisterAccessError):
         return TargetStateError(f"{type(exc).__name__}: {exc}")
     if isinstance(exc, KeyError) and exc.args == (1,):
@@ -218,20 +237,64 @@ def _typed_backend_error(exc: Exception) -> TargetControlError:
     return TargetConnectionError(message)
 
 
+def _require_flash_support(target: Any, image: FlashImage) -> None:
+    """Refuse unless every addressed byte lies in live flash with a usable algorithm.
+
+    pyOCD's FileProgrammer logs and skips ELF/HEX data it has no flash region for,
+    then returns normally, so this mirrors FlashLoader.add_data's region walk before
+    any reset or programming. RAM-addressed bytes are refused: flash means flash.
+    """
+
+    try:
+        memory_map = target.memory_map
+        core_name = getattr(getattr(target, "selected_core", None), "node_name", None)
+        for start, end in image.ranges:
+            address = start
+            while address < end:
+                region = memory_map.get_region_for_address(address, core_name)
+                flash = getattr(region, "flash", None) if region is not None else None
+                if (
+                    region is None
+                    or not region.is_flash
+                    or flash is None
+                    or getattr(flash, "is_valid", False) is not True
+                    or not getattr(flash, "has_required_sequences", True)
+                ):
+                    part = getattr(target, "part_number", None) or "unknown"
+                    raise FlashTargetSupportError(
+                        f"The live target '{part}' has no programmable flash algorithm for "
+                        f"addressed artifact bytes at 0x{address:08X} (range 0x{start:08X}-"
+                        f"0x{end - 1:08X}); nothing was reset, erased or programmed. Connect "
+                        "with the exact pyOCD or CMSIS-pack target for this device rather than "
+                        "a generic target such as cortex_m, and flash only addresses in its "
+                        "flash regions."
+                    )
+                address = int(region.end) + 1
+    except FlashTargetSupportError:
+        raise
+    except Exception as exc:  # noqa: BLE001 - fail closed when support is unprovable
+        raise FlashTargetSupportError(
+            f"Live flash support could not be confirmed ({type(exc).__name__}: {exc}); "
+            "nothing was reset, erased or programmed."
+        ) from exc
+
+
 def _breakpoint_kind(breakpoint: object) -> str:
     """Return the stable pyOCD breakpoint type name without binding to its enum class."""
 
     return str(getattr(getattr(breakpoint, "type", None), "name", "")).casefold()
 
 
-def _breakpoint_recovery_instruction(breakpoint: object | None) -> str:
+def _breakpoint_recovery_instruction(
+    breakpoint: object | None, *, hardware_only: bool = False
+) -> str:
     kind = _breakpoint_kind(breakpoint) if breakpoint is not None else ""
     if kind == "sw":
         return (
             "Disconnect, restore/reflash code memory, reconnect/revalidate, and do not resume "
             "execution until restoration is proven."
         )
-    if kind == "hw":
+    if kind == "hw" or (not kind and hardware_only):
         return (
             "Disconnect, power-cycle the target, reconnect, and revalidate before further "
             "target control."
@@ -306,6 +369,15 @@ def _same_probe_uid(expected: str | None, observed: str | None) -> bool:
         return False
     left = expected.strip().casefold()
     right = observed.strip().casefold()
+    left_provider, left_separator, left_uid = left.partition(":")
+    right_provider, right_separator, right_uid = right.partition(":")
+    providers = registered_provider_ids()
+    if left_separator and left_provider in providers:
+        if right_separator and right_provider in providers and left_provider != right_provider:
+            return False
+        left = left_uid
+    if right_separator and right_provider in providers:
+        right = right_uid
     if left == right:
         return True
     return (
@@ -352,10 +424,13 @@ def build_session_options(
     board: BoardConfig | None,
     target: str | None,
     server_timeouts: ServerTimeoutConfig | None = None,
-) -> dict[str, object] | None:
+) -> dict[str, object]:
     """Build pyOCD session options from shared board facts."""
 
-    options: dict[str, object] = {}
+    # pyOCD defaults auto_unlock on, which mass-erases a protected target (and may
+    # write Nordic UICR) just to attach. Every session opened from these options
+    # must refuse instead; erasing needs the separate one-use $mass-erase grant.
+    options: dict[str, object] = {"auto_unlock": False}
     if target:
         options["target_override"] = target
     options.update((server_timeouts or default_server_timeout_config()).pyocd_options())
@@ -368,7 +443,62 @@ def build_session_options(
         options["connect_mode"] = board.debug_connect_mode
     if board and board.debug_clock_hz:
         options["frequency"] = board.debug_clock_hz
-    return options or None
+    return options
+
+
+# pyOCD logs this when auto_unlock is off and it finds a protected target.
+_AUTO_UNLOCK_DECLINED = "not automatically unlocking"
+
+
+class _AutoUnlockDeclineRecorder(logging.Handler):
+    """Notice pyOCD declining to mass-erase a protected target during one open."""
+
+    def __init__(self) -> None:
+        super().__init__(logging.WARNING)
+        self.notice: str | None = None
+        # Adding this handler hides pyOCD warnings from logging.lastResort, so
+        # forward them there when nothing else would have printed them.
+        self._forward = None if logging.getLogger("pyocd").hasHandlers() else logging.lastResort
+
+    def emit(self, record: logging.LogRecord) -> None:
+        message = record.getMessage()
+        if _AUTO_UNLOCK_DECLINED in message:
+            self.notice = message
+        if self._forward is not None and record.levelno >= self._forward.level:
+            self._forward.handle(record)
+
+
+def _protected_target_refusal(notice: str) -> LockedTargetError:
+    return LockedTargetError(
+        f"Target debug access is protected (pyOCD: {notice}). Connecting never erases "
+        "a protected target, so no session was opened and the target was not erased or "
+        "unlocked. pyOCD can remove this protection only by erasing the whole device, "
+        "and target_unlock and target_unlock_raw need a connected session, so this "
+        "server cannot recover it. If the device owner accepts losing its contents, use "
+        "the vendor's recovery procedure outside this server, then connect again."
+    )
+
+
+def _open_refusing_protected_target(session: object) -> None:
+    """Open a session built without auto-unlock; refuse a target pyOCD found protected.
+
+    pyOCD may still fail later (no cores) or even finish opening after declining,
+    so the decline itself decides the outcome. The caller closes the session.
+    """
+
+    recorder = _AutoUnlockDeclineRecorder()
+    pyocd_logger = logging.getLogger("pyocd")
+    pyocd_logger.addHandler(recorder)
+    try:
+        getattr(session, "open")()
+    except Exception as exc:
+        if recorder.notice is not None:
+            raise _protected_target_refusal(recorder.notice) from exc
+        raise
+    finally:
+        pyocd_logger.removeHandler(recorder)
+    if recorder.notice is not None:
+        raise _protected_target_refusal(recorder.notice)
 
 
 def _close_session(session: object) -> None:
@@ -380,8 +510,85 @@ def _close_session(session: object) -> None:
             close()
 
 
+@contextlib.contextmanager
+def _suspend_step_breakpoint(target: Any, breakpoint: Any) -> Iterator[None]:
+    """Suspend one owned provider slot without reallocating it or changing its owner.
+
+    Match pyOCD FPB's comparator-clear operation, retaining its exact register
+    value and provider allocation. For a software BP, expose its saved RAM
+    instruction and then restore the physical patch, bypassing read filtering.
+    The manager/provider objects stay installed, so PRE_RUN cannot re-add them.
+    """
+    if breakpoint is None:
+        yield
+        return
+    core = target.selected_core_or_raise
+    address = breakpoint.addr
+    kind = _breakpoint_kind(breakpoint)
+    if kind == "hw":
+        location, width, suspended = breakpoint.comp_register_addr, 32, 0
+    elif kind == "sw":
+        region = core.memory_map.get_region_for_address(address)
+        if not (region and region.is_ram and not region.is_flash and region.is_writable
+                and region.contains_range(address, length=2)):
+            raise TargetStateError("Cannot suspend a software breakpoint outside writable RAM.")
+        location, width, suspended = address, 16, breakpoint.original_instr
+    else:
+        raise TargetStateError("Cannot step over an unrealized or unsupported breakpoint.")
+    saved = core.ap.read_memory(location, width, now=True)
+    if type(saved) is not int or (kind == "hw" and not saved & 1) or (
+        kind == "sw" and saved != 0xBE00
+    ):
+        raise TargetStateError("Cannot verify the installed breakpoint before stepping.")
+
+    def write_and_verify(value: int) -> None:
+        core.ap.write_memory(location, value, width)
+        if kind == "sw":
+            core.invalidate_instruction_cache(address)
+        target.flush()
+        if core.ap.read_memory(location, width, now=True) != value:
+            raise TargetStateError("Physical breakpoint state did not match readback.")
+
+    try:
+        write_and_verify(suspended)
+        yield
+    finally:
+        primary = sys.exc_info()[1]
+        try:
+            write_and_verify(saved)
+            if target.find_breakpoint(address) is not breakpoint or not breakpoint.enabled:
+                raise TargetStateError("Breakpoint manager/provider identity changed during step.")
+        except Exception as exc:  # noqa: BLE001 - never hide an uncertain restoration
+            raise TargetStateError(
+                f"Step breakpoint restoration is uncertain: {exc}. "
+                f"{_breakpoint_recovery_instruction(breakpoint)}"
+                + (f" Original step error: {primary}" if primary else "")
+            ) from exc
+
+
+def _restore_step_control(target: Any, saved: int) -> None:
+    """pyOCD restores C_MASKINTS/C_PMOV on normal return; also restore on errors."""
+    core = target.selected_core_or_raise
+    mask = CortexM.C_MASKINTS | CortexM.C_PMOV
+    observed = core.read32(CortexM.DHCSR)
+    if not observed & CortexM.S_HALT:
+        target.halt()
+        observed = core.read32(CortexM.DHCSR)
+    if not observed & CortexM.S_HALT:
+        raise TargetStateError("Step cleanup could not halt the core; control restoration is uncertain.")
+    if observed & mask != saved & mask:
+        core.write32(CortexM.DHCSR, CortexM.DBGKEY | CortexM.C_DEBUGEN | CortexM.C_HALT
+                     | (saved & mask))
+        target.flush()
+        if core.read32(CortexM.DHCSR) & mask != saved & mask:
+            raise TargetStateError("Step interrupt/debug control restoration is uncertain.")
+
+
 class PyOCDSWDInterface(SWDInterface):
     """Child-local native pyOCD route for one provider-owned session."""
+
+    def __init__(self) -> None:
+        self._owned_breakpoints: dict[tuple[str, int], object] = {}
 
     @staticmethod
     def _choose_session(
@@ -410,8 +617,51 @@ class PyOCDSWDInterface(SWDInterface):
 
         with _backend_stdout_to_stderr():
             self._verify_session_pack_source(session, target, pack, pdsc_device)
-            getattr(session, "open")()
+            _open_refusing_protected_target(session)
             self._verify_session_pack_source(session, target, pack, pdsc_device)
+
+    @staticmethod
+    def _verify_selected_probe_and_target(
+        session: object, probe_uid: str | None, target: str | None
+    ) -> None:
+        """Check available probe/catalog evidence before target init can write.
+
+        A probe's associated board target is catalog evidence, not a live silicon
+        or package proof. Only a contradictory vendor is decisive here; aliases,
+        generic targets and uncertain device variants retain unverified access.
+        """
+
+        probe = getattr(session, "probe", None)
+        observed_uid = getattr(probe, "unique_id", None)
+        if probe_uid is not None and not _same_probe_uid(probe_uid, observed_uid):
+            raise ProbeNotFoundError(
+                "The selected probe does not match the requested UID; refusing a different probe."
+            )
+        observed_target = getattr(getattr(probe, "associated_board_info", None), "target", None)
+        if not isinstance(observed_target, str) or not target:
+            return
+        observed_class = TARGET.get(normalise_target_type_name(observed_target))
+        requested_class = TARGET.get(normalise_target_type_name(target)) or type(
+            getattr(session, "target", None)
+        )
+        observed_vendor = getattr(observed_class, "VENDOR", None)
+        requested_vendor = getattr(requested_class, "VENDOR", None)
+        generic_vendor = getattr(TARGET.get("cortex_m"), "VENDOR", None)
+        if (
+            isinstance(observed_vendor, str)
+            and isinstance(requested_vendor, str)
+            and observed_vendor
+            and requested_vendor
+            and observed_vendor != generic_vendor
+            and requested_vendor != generic_vendor
+            and observed_vendor.casefold() != requested_vendor.casefold()
+        ):
+            raise TargetConnectionError(
+                f"Target selection mismatch: probe board catalog identifies {observed_target!r} "
+                f"({observed_vendor}), but requested {target!r} uses {requested_vendor}. "
+                "Select the intended probe/compatible target; target initialization was refused. "
+                "This catalog contradiction is not an exact live package identity proof."
+            )
 
     @staticmethod
     def _verify_session_pack_source(
@@ -496,6 +746,7 @@ class PyOCDSWDInterface(SWDInterface):
         if session is None:
             raise ProbeNotFoundError("No matching debug probe found.")
         try:
+            self._verify_selected_probe_and_target(session, probe_uid, target_override)
             self._open_and_verify_session(
                 session, board, target_override, pack_object, pdsc_device
             )
@@ -521,6 +772,7 @@ class PyOCDSWDInterface(SWDInterface):
                     "refusing to open a different physical probe."
                 ) from exc
             try:
+                self._verify_selected_probe_and_target(retry_session, probe_uid, target_override)
                 self._open_and_verify_session(
                     retry_session, board, target_override, pack_object, pdsc_device
                 )
@@ -542,7 +794,39 @@ class PyOCDSWDInterface(SWDInterface):
         )
 
     def close(self, handle: TargetSessionHandle) -> None:
-        _close_session(handle.session)
+        token = session_metadata(handle).runtime_token
+        failures: list[Exception] = []
+        try:
+            # pyOCD disconnect removes realized BPs but retains its pending map;
+            # resume/PRE_RUN can then reinstall them. Use the ordinary verified
+            # removal path first, which updates both maps before native close.
+            for (owner, address), breakpoint in tuple(self._owned_breakpoints.items()):
+                if owner != token:
+                    continue
+                try:
+                    with _backend_stdout_to_stderr():
+                        current = handle.session.target.find_breakpoint(address)
+                    if current is breakpoint:
+                        self.remove_breakpoint(handle, address)
+                except Exception as exc:  # noqa: BLE001 - still close every host resource
+                    failures.append(exc)
+            try:
+                _close_session(handle.session)
+            except Exception as exc:  # noqa: BLE001 - retain removal and native close failures
+                if not failures:
+                    raise
+                failures.append(exc)
+            if failures:
+                raise TargetStateError(
+                    "Session-owned breakpoint cleanup is uncertain: "
+                    + "; ".join(f"{type(exc).__name__}: {exc}" for exc in failures)
+                    + ". Host session close was attempted; target restoration was not proven. "
+                    "Reconnect/revalidate and verify breakpoint/code state before target control."
+                ) from failures[0]
+        finally:
+            self._owned_breakpoints = {
+                key: value for key, value in self._owned_breakpoints.items() if key[0] != token
+            }
 
     def connect_under_reset(
         self,
@@ -580,6 +864,11 @@ class PyOCDSWDInterface(SWDInterface):
             session = self._choose_session(probe_uid=probe_uid, options=options)
         if session is None:
             raise ProbeNotFoundError("No matching debug probe found.")
+        try:
+            self._verify_selected_probe_and_target(session, probe_uid, target_override)
+        except Exception:
+            _close_session(session)
+            raise
         assert_reset = getattr(session.probe, "assert_reset", None)
         if not callable(assert_reset):
             try:
@@ -606,7 +895,7 @@ class PyOCDSWDInterface(SWDInterface):
                 # more after open and verify the observable postcondition before
                 # returning. The bounded retry covers probes where the first halt
                 # command races reset release.
-                session.open()
+                _open_refusing_protected_target(session)
                 self._verify_session_pack_source(
                     session, target_override, pack_object, pdsc_device
                 )
@@ -734,10 +1023,65 @@ class PyOCDSWDInterface(SWDInterface):
         except Exception as exc:  # noqa: BLE001 - preserve backend context
             raise _typed_backend_error(exc) from exc
 
-    def step(self, handle: TargetSessionHandle) -> None:
+    def step(self, handle: TargetSessionHandle) -> int:
         try:
             with _backend_stdout_to_stderr():
-                handle.session.target.step()
+                target = handle.session.target
+                core = target.selected_core_or_raise
+                saved = core.read32(CortexM.DHCSR)
+                if not (saved & CortexM.C_DEBUGEN and saved & CortexM.S_HALT):
+                    raise TargetStateError("Incomplete step: core must be halted with debug enabled.")
+                pc = target.read_core_register("pc") & ~1
+                breakpoint = target.find_breakpoint(pc)
+                key = (session_metadata(handle).runtime_token, pc)
+                if breakpoint is not None and (
+                    self._owned_breakpoints.get(key) is not breakpoint or not breakpoint.enabled
+                ):
+                    raise TargetStateError(
+                        f"Cannot step at 0x{pc:08X}: this session does not own the installed "
+                        "breakpoint. Have its owner remove it before retrying."
+                    )
+                with _suspend_step_breakpoint(target, breakpoint):
+                    try:
+                        # Establish pyOCD's default interrupt mask ourselves. Its
+                        # step() then has no mask change to undo by forcing C_HALT
+                        # on timeout. We can observe the actual step stop before
+                        # restoring control in finally. S_RETIRE_ST is not a
+                        # portable per-instruction oracle (Arm DDI0403 C1.6.2).
+                        core.write32(
+                            CortexM.DHCSR, CortexM.DBGKEY | CortexM.C_DEBUGEN
+                            | CortexM.C_HALT | CortexM.C_MASKINTS | (saved & CortexM.C_PMOV),
+                        )
+                        target.flush()
+                        if not core.read32(CortexM.DHCSR) & CortexM.C_MASKINTS:
+                            raise TargetStateError("Incomplete step: interrupt masking was not established.")
+                        core.clear_debug_cause_bits()
+                        target.flush()
+                        if core.read32(CortexM.DFSR) != 0:
+                            raise TargetStateError("Incomplete step: stale debug causes could not be cleared.")
+                        target.step()
+                        state = target.get_state()
+                        cause = core.read32(CortexM.DFSR)
+                        pc_after = target.read_core_register("pc") if state == Target.State.HALTED else None
+                        if not (state == Target.State.HALTED and cause == CortexM.DFSR_HALTED):
+                            pc_text = f"0x{pc_after:08X}" if pc_after is not None else "unavailable"
+                            raise TargetStateError(
+                                f"Incomplete step: state={state.name} pc={pc_text} "
+                                f"step_halt_confirmed=false dfsr=0x{cause:X}. "
+                                "Inspect target state before retrying."
+                            )
+                    finally:
+                        primary = sys.exc_info()[1]
+                        try:
+                            _restore_step_control(target, saved)
+                        except Exception as exc:  # noqa: BLE001 - retain both failures
+                            raise TargetStateError(
+                                f"Step control restoration is uncertain: {exc}."
+                                + (f" Original step error: {primary}" if primary else "")
+                            ) from exc
+                return cast(int, pc_after)
+        except TargetControlError:
+            raise
         except Exception as exc:  # noqa: BLE001 - preserve backend context
             raise _typed_backend_error(exc) from exc
 
@@ -771,34 +1115,71 @@ class PyOCDSWDInterface(SWDInterface):
         except Exception as exc:  # noqa: BLE001 - preserve backend context
             raise _typed_backend_error(exc) from exc
 
+    def check_flash_support(
+        self,
+        handle: TargetSessionHandle,
+        firmware: Path,
+        *,
+        base_address: int | None = None,
+        artifact_sha256: str | None = None,
+    ) -> None:
+        with snapshot_flash_artifact(firmware, expected_sha256=artifact_sha256) as snapshot:
+            image = derive_flash_image(snapshot, base_address=base_address)
+        with _backend_stdout_to_stderr():
+            _require_flash_support(handle.session.target, image)
+
     def flash(
         self,
         handle: TargetSessionHandle,
         firmware: Path,
         *,
         halt_after_reset: bool,
-    ) -> str:
-        if firmware.suffix.lower() not in SUPPORTED_FLASH_SUFFIXES:
-            raise UnsupportedArtifactError(
-                f"Unsupported artifact type '{firmware.suffix}' - use one of: "
-                f"{', '.join(sorted(SUPPORTED_FLASH_SUFFIXES))}"
-            )
-
-        target = handle.session.target
-        # Match `pyocd load`'s proven pre-reset sequence. On STM32/ST-Link, skipping
-        # this can make the Python API flash path fail even though the CLI succeeds.
-        try:
+        base_address: int | None = None,
+        artifact_sha256: str | None = None,
+    ) -> FlashResult:
+        # One snapshot supplies the expected bytes and is the file programmed, so a
+        # rebuild of ``firmware`` mid-flash cannot add bytes that are never checked.
+        with snapshot_flash_artifact(firmware, expected_sha256=artifact_sha256) as snapshot:
+            # Derive the expected bytes and refuse any addressed byte without a live
+            # flash algorithm before the first target effect. These typed refusals
+            # deliberately stay outside the backend error mapping below.
+            image = derive_flash_image(snapshot, base_address=base_address)
+            target = handle.session.target
             with _backend_stdout_to_stderr():
-                target.reset_and_halt()
-                # Containment pre-computes and validates every implied erase sector.
-                # Force pyOCD to honor that sector scope even when a host/session option
-                # would otherwise select auto or whole-chip erase.
-                FileProgrammer(handle.session, chip_erase="sector").program(str(firmware))
-        except TransferError as exc:
-            # A pre-program reset or programming transfer failure is a real failure.
-            raise _typed_backend_error(exc) from exc
-        except Exception as exc:  # noqa: BLE001 - preserve backend context
-            raise _typed_backend_error(exc) from exc
+                _require_flash_support(target, image)
+
+            # Match `pyocd load`'s proven pre-reset sequence. On STM32/ST-Link, skipping
+            # this can make the Python API flash path fail even though the CLI succeeds.
+            try:
+                with _backend_stdout_to_stderr():
+                    target.reset_and_halt()
+                    # Containment pre-computes and validates every implied erase sector.
+                    # Force pyOCD to honor that sector scope even when a host/session
+                    # option would otherwise select auto or whole-chip erase.
+                    programmer = FileProgrammer(handle.session, chip_erase="sector")
+                    if base_address is None:
+                        programmer.program(str(snapshot))
+                    else:
+                        # A raw .bin is programmed only at its explicit, validated base.
+                        programmer.program(str(snapshot), base_address=base_address)
+            except TransferError as exc:
+                # A pre-program reset or programming transfer failure is a real failure.
+                raise _typed_backend_error(exc) from exc
+            except Exception as exc:  # noqa: BLE001 - preserve backend context
+                raise _typed_backend_error(exc) from exc
+        # FileProgrammer returns normally even when it skipped data, so only matching
+        # readback of every addressed byte, before the final reset, proves programming.
+        with _backend_stdout_to_stderr():
+            try:
+                verify_flash_image(image, target.read_memory_block8)
+            except FlashVerificationError as exc:
+                # Only the oracle's direct native read cause establishes transport
+                # loss. Mismatch, short bytes and nontransport refusals stay live.
+                if isinstance(
+                    exc.__cause__, (TransferError, ProbeError, OSError, TargetConnectionError)
+                ):
+                    raise FlashReadbackConnectionError(str(exc)) from exc
+                raise
         try:
             with _backend_stdout_to_stderr():
                 if halt_after_reset:
@@ -808,27 +1189,32 @@ class PyOCDSWDInterface(SWDInterface):
         except TransferError:
             # `pyocd load` tolerates a transient transport drop during final reset,
             # but it cannot prove the target's resulting execution state.
-            return "reset_state_unconfirmed"
+            return FlashResult.for_image(image, "reset_state_unconfirmed")
         except Exception:
-            # Programming already completed successfully. A final-reset failure
-            # leaves execution state unknown, irrespective of backend exception type.
-            return "reset_state_unconfirmed"
+            # Programming is already verified. A final-reset failure leaves only
+            # execution state unknown, irrespective of backend exception type.
+            return FlashResult.for_image(image, "reset_state_unconfirmed")
         try:
             state = str(target.get_state().name).casefold()
         except Exception:  # final reset completed but its state cannot be observed
-            return "reset_state_unconfirmed"
-        if state == "running":
-            return "running"
-        if state == "halted":
-            return "halted"
-        return "reset_state_unconfirmed"
+            return FlashResult.for_image(image, "reset_state_unconfirmed")
+        if state in {"running", "halted"}:
+            return FlashResult.for_image(image, state)
+        return FlashResult.for_image(image, "reset_state_unconfirmed")
 
     def recover(self, handle: TargetSessionHandle) -> None:
         try:
             with _backend_stdout_to_stderr():
-                FlashEraser(handle.session, FlashEraser.Mode.MASS).erase()
+                result = handle.session.target.mass_erase()
         except Exception as exc:  # noqa: BLE001 - preserve backend context
             raise _typed_backend_error(exc) from exc
+        # FlashEraser's MASS wrapper discards this result. Some targets return
+        # None on success, while others explicitly return False on failure.
+        if result is False:
+            raise TargetControlError(
+                "pyOCD target mass erase reported failure; completion is unconfirmed. "
+                "Reconnect and run board_validate before further use."
+            )
 
     def supports_recovery(self, handle: TargetSessionHandle, mechanism: str) -> bool:
         with _backend_stdout_to_stderr():
@@ -844,13 +1230,49 @@ class PyOCDSWDInterface(SWDInterface):
             manager_flush_succeeded = False
             try:
                 existing = target.find_breakpoint(address)
+                if existing is not None and bool(getattr(existing, "enabled", False)):
+                    return
+                core = target.selected_core_or_raise
+                memory_map = getattr(core, "memory_map", None)
+                region = memory_map.get_region_for_address(address) if memory_map else None
+                # Only positively identified writable RAM permits software patches.
+                # Flash may be marked writable by pyOCD; unknown geometry is not RAM.
+                hardware_only = not (
+                    region is not None
+                    and region.is_ram
+                    and not region.is_flash
+                    and region.is_writable
+                    and region.contains_range(address, length=2)
+                )
                 if existing is not None:
                     # find_breakpoint() also returns queued UnrealizedBreakpoint
                     # entries. Only an enabled provider object proves an already
                     # installed breakpoint. Flush a pre-existing queued request,
                     # but never claim ownership of or roll back that request.
-                    if bool(getattr(existing, "enabled", False)):
-                        return
+                    if hardware_only and _breakpoint_kind(existing) != "hw":
+                        raise TargetStateError(
+                            f"Pre-existing queued breakpoint at 0x{address:08X} is not "
+                            "explicitly hardware; it was not flushed or removed because this "
+                            "call does not own it. Have its owner cancel the request before "
+                            "retrying; no code-memory write was requested by this call."
+                        )
+                if hardware_only:
+                    fpb = getattr(core, "fpb", None)
+                    # Explicit HW alone is insufficient: pyOCD can still select SW
+                    # outside the FPB's supported range, or when no FPB is present.
+                    if fpb is None or not fpb.can_support_address(address):
+                        raise TargetControlError(
+                            f"Hardware breakpoints are unavailable or unsupported at "
+                            f"0x{address:08X}. No code-memory write was attempted; choose an "
+                            "address supported by the target's hardware breakpoint unit."
+                        )
+                    if fpb.available_breakpoints <= 0:
+                        raise TargetControlError(
+                            f"Hardware breakpoint capacity exhausted at 0x{address:08X}. "
+                            "No code-memory write was attempted; remove an owned hardware "
+                            "breakpoint before retrying."
+                        )
+                if existing is not None:
                     try:
                         target.selected_core_or_raise.bp_manager.flush()
                         target.flush()
@@ -867,14 +1289,17 @@ class PyOCDSWDInterface(SWDInterface):
                         "or unverifiable; it was not removed because this call does not own it. "
                         f"{_breakpoint_recovery_instruction(existing)}"
                     )
-                accepted = target.set_breakpoint(address)
+                accepted = target.set_breakpoint(
+                    address, Target.BreakpointType.HW if hardware_only else Target.BreakpointType.AUTO
+                )
             except TargetControlError:
                 raise
             except Exception as exc:  # noqa: BLE001 - preserve backend context
                 raise _typed_backend_error(exc) from exc
             if not accepted:
                 raise TargetControlError(
-                    f"pyOCD could not allocate a breakpoint at 0x{address:08X}. "
+                    f"pyOCD could not allocate a {'hardware ' if hardware_only else ''}"
+                    f"breakpoint at 0x{address:08X}. "
                     "Remove an existing breakpoint or choose a supported executable address, "
                     "then retry."
                 )
@@ -890,8 +1315,7 @@ class PyOCDSWDInterface(SWDInterface):
                 if realized is None:
                     raise TargetStateError(
                         f"pyOCD did not return a realized breakpoint at 0x{address:08X}; "
-                        "a suppressed software-provider write failure may have changed code "
-                        f"memory. {_breakpoint_recovery_instruction(None)}"
+                        "provider state could not be proven."
                     )
                 target.flush()
                 if _breakpoint_kind(realized) == "sw":
@@ -900,9 +1324,9 @@ class PyOCDSWDInterface(SWDInterface):
                         detail = error or f"raw instruction is 0x{observed:04X}, expected 0xBE00"
                         raise TargetStateError(
                             f"Software breakpoint installation at 0x{address:08X} could not be "
-                            f"proven in physical code memory ({detail}). "
-                            f"{_breakpoint_recovery_instruction(realized)}"
+                            f"proven in physical code memory ({detail})."
                         )
+                self._owned_breakpoints[(session_metadata(handle).runtime_token, address)] = realized
             except Exception as primary:  # noqa: BLE001 - transaction rollback is best effort
                 rollback_failures: list[str] = []
                 try:
@@ -931,6 +1355,10 @@ class PyOCDSWDInterface(SWDInterface):
                 )
                 if provider_failure is not None:
                     rollback_failures.append(f"provider-level rollback: {provider_failure}")
+                if realized is None:
+                    rollback_failures.append(
+                        "no realized provider object is available for physical cleanup verification"
+                    )
 
                 # A provider can program an FPB comparator and then throw before
                 # the breakpoint manager records the realized object. In that
@@ -948,11 +1376,20 @@ class PyOCDSWDInterface(SWDInterface):
                         f"Breakpoint state at 0x{address:08X} is uncertain after a failed "
                         f"installation ({primary_detail}); rollback could not be proven "
                         f"complete ({rollback_detail}). "
-                        f"{_breakpoint_recovery_instruction(realized)}"
+                        f"{_breakpoint_recovery_instruction(realized, hardware_only=hardware_only)}"
                     ) from primary
-                if isinstance(primary, TargetControlError):
-                    raise
-                raise _typed_backend_error(primary) from primary
+                restored = (
+                    "the saved original instruction was read back physically"
+                    if _breakpoint_kind(realized) == "sw"
+                    else "the hardware comparator was read back clear"
+                )
+                error = (
+                    primary if isinstance(primary, TargetControlError) else _typed_backend_error(primary)
+                )
+                raise type(error)(
+                    f"{error} Rollback verified: breakpoint absent and {restored}. "
+                    "This failure does not require reflashing."
+                ) from primary
 
     def remove_breakpoint(self, handle: TargetSessionHandle, address: int) -> None:
         with _backend_stdout_to_stderr():
@@ -963,6 +1400,7 @@ class PyOCDSWDInterface(SWDInterface):
             except Exception as exc:  # noqa: BLE001 - no removal was requested yet
                 raise _typed_backend_error(exc) from exc
             try:
+                self._owned_breakpoints.pop((session_metadata(handle).runtime_token, address), None)
                 target.remove_breakpoint(address)
                 target.selected_core_or_raise.bp_manager.flush()
                 target.flush()

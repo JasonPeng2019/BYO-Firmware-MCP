@@ -32,10 +32,13 @@ class TierRouter:
     def state_for(self, board_id: str) -> CapabilityState:
         state = self.policies.resolve(board_id)
         if not state.hardware_allowed:
+            recovery = self.policies.recovery_requirements(board_id)
             raise TierRouteRefusal(
                 "tier/corrupt-policy",
-                f"Board '{board_id}' has a corrupt committed safety policy; repair it before hardware access.",
-                ("board_safety_refresh", "board_setup"),
+                f"Board '{board_id}' has a corrupt committed safety policy. "
+                "Load board_policy_restore with load_setup_tool before hardware access. "
+                + str(recovery["prerequisite"]),
+                ("board_policy_restore",),
             )
         return state
 
@@ -108,6 +111,7 @@ class TierRouter:
 
         state = state or self.policies.resolve(board_id)
         if state.tier is None:
+            recovery = self.policies.recovery_requirements(board_id)
             return {
                 "schema_version": 1,
                 "status": "capability_status",
@@ -119,9 +123,8 @@ class TierRouter:
                 "setup_incomplete": False,
                 "identity": {"assertion": None, "capability": None},
                 "capabilities": [],
-                "remedies": [
-                    "Repair the committed policy with board setup before hardware access."
-                ],
+                "remedies": [str(recovery["prerequisite"])],
+                "recovery": recovery,
             }
         if state.tier is Tier.SETUP_FULL:
             identity = {
@@ -233,11 +236,17 @@ class TierRouter:
             )
         )
         profile = state.profile_snapshot if isinstance(state.profile_snapshot, Mapping) else {}
+        geometry = (
+            state.map_snapshot.get("geometry") if isinstance(state.map_snapshot, Mapping) else None
+        )
+        erase = geometry.get("erase") if isinstance(geometry, Mapping) else None
+        # Ordinary FULL setup records no mechanism; the typed backend primitive
+        # is the only automated one, and manual_only must stay manual.
         documented_full_recovery = bool(
             full
-            and isinstance(state.map_snapshot, Mapping)
-            and state.map_snapshot.get("schema_version") == 2
-            and profile.get("recover_mode") == "backend_mass_erase"
+            and isinstance(erase, Mapping)
+            and erase.get("kind") in {"explicit", "uniform"}
+            and profile.get("recover_mode") in {None, "backend_mass_erase"}
         )
         # Documentation makes a mechanism eligible for consideration, never a
         # live backend operation. The server supplies this only from the
@@ -358,6 +367,7 @@ class TierRouter:
                     "confirmed bootloader region",
                     "confirmed flash backend target",
                     "confirmed erase sectors",
+                    "explicit bootloader flash permission; FULL requires fresh exact supported-unit identity",
                 ],
             ),
             row(
@@ -389,7 +399,7 @@ class TierRouter:
                 (
                     ["documented native recovery mechanism", "connected backend support"]
                     if lite
-                    else ["setup-full recovery authority"]
+                    else ["setup-full erase geometry", "connected backend support"]
                 ),
             ),
         ]

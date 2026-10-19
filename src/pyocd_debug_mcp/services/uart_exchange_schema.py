@@ -10,6 +10,28 @@ _LINE_ENDING_BYTES = {"none": b"", "lf": b"\n", "cr": b"\r", "crlf": b"\r\n"}
 MAX_UART_SECONDS = 30.0
 MAX_UART_EXCHANGE_STEPS = 16
 MAX_UART_TEXT_BYTES = 65_536
+
+
+def encode_uart_text(text: str, line_ending: str) -> bytes:
+    """Encode one exact UART payload under the established UTF-8/line-ending contract.
+
+    This is the single definition of the payload encoding shared by the planned
+    write path and the exchange schema, so both judge emptiness on the same bytes.
+    """
+
+    try:
+        suffix = _LINE_ENDING_BYTES[line_ending]
+    except KeyError as exc:
+        raise ValueError("line_ending must be one of: none, lf, cr, crlf") from exc
+    return text.encode("utf-8") + suffix
+
+
+def encoded_payload_is_empty(text: str, line_ending: str) -> bool:
+    """True only when the configured payload carries no bytes at all."""
+
+    return not encode_uart_text(text, line_ending)
+
+
 SERIAL_EXCHANGE_FIELDS = frozenset(
     {
         "steps",
@@ -72,14 +94,18 @@ def validate_serial_exchange_parameters(
         text = row["text"]
         expected = row["expected_text"]
         ending = row["line_ending"]
-        if not isinstance(text, str) or not text:
-            return f"steps[{index}].text must be non-empty text"
-        if not isinstance(expected, str) or not expected:
-            return f"steps[{index}].expected_text must be non-empty text"
+        if not isinstance(text, str):
+            return f"steps[{index}].text must be text"
         if not isinstance(ending, str) or ending not in LINE_ENDINGS:
             return f"steps[{index}].line_ending must be none, lf, cr, or crlf"
-        text_bytes += len(text.encode("utf-8")) + len(expected.encode("utf-8"))
-        text_bytes += len(_LINE_ENDING_BYTES[ending])
+        # Emptiness is judged on the encoded payload, not on stripped characters: an empty
+        # text with a real line ending still sends bytes, and a newline-only or
+        # whitespace-only command is a meaningful payload for the target firmware.
+        if encoded_payload_is_empty(text, ending):
+            return f"steps[{index}].text and line_ending encode an empty payload"
+        if not isinstance(expected, str) or not expected:
+            return f"steps[{index}].expected_text must be non-empty text"
+        text_bytes += len(encode_uart_text(text, ending)) + len(expected.encode("utf-8"))
 
     if not _finite_number_at_least(parameters["read_seconds"], minimum=0.000001):
         return "read_seconds must be a positive finite number"

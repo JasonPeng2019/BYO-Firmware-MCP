@@ -424,11 +424,21 @@ class RealClangdExtendedRoot(unittest.TestCase):
                 )
 
             def compiler_verdict(mode: int) -> int:
+                argv = [*flags(mode), "-fsyntax-only", "src/main.cpp"]
                 result = subprocess.run(  # noqa: S603 - pinned fixture compiler
-                    [*flags(mode), "-fsyntax-only", "src/main.cpp"],
+                    argv,
                     cwd=project.root,
                     capture_output=True,
                     timeout=60,
+                )
+                data.setdefault("compiler_verdicts", []).append(
+                    {
+                        "argv": argv,
+                        "cwd": str(project.root),
+                        "raw_exit": result.returncode,
+                        "stdout": result.stdout.decode("utf-8", "replace"),
+                        "stderr": result.stderr.decode("utf-8", "replace"),
+                    }
                 )
                 return result.returncode
 
@@ -482,7 +492,7 @@ class RealClangdExtendedRoot(unittest.TestCase):
 
             try:
                 self.assertLess(utf16_units(source), MAX_PATH_UNITS)
-                self.assertEqual(compiler_verdict(1), 0)
+                self.assertEqual(compiler_verdict(1), 0, data)
                 clean, first = diagnose("clean")
                 self.assertEqual(messages(clean), [], clean)
 

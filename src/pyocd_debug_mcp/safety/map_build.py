@@ -999,9 +999,96 @@ def _validated_generic_deployment_policy(value: Mapping[str, object]) -> dict[st
     return rebuilt
 
 
+def build_user_bootloader_allocation(
+    sectors: Sequence[AddressRange],
+    *,
+    driver_proof_digest: str,
+    support_id: str,
+    creation_map_digest: str,
+    factory_identity: Mapping[str, object],
+) -> dict[str, object]:
+    """Bind bounded erase-sector ownership to a server-captured factory proof."""
+    ordered = tuple(sorted(set(sectors)))
+    if not ordered or any(
+        _DIGEST.fullmatch(value) is None
+        for value in (driver_proof_digest, support_id, creation_map_digest)
+    ):
+        raise SafetyMapError("bootloader allocation requires sectors and replayable support proofs")
+    if any(left.end != right.start for left, right in zip(ordered, ordered[1:])):
+        raise SafetyMapError("bootloader allocation requires contiguous erase sectors")
+    material: dict[str, object] = {
+        "kind": "user_bootloader_allocation",
+        "sectors": [item.to_document() for item in ordered],
+        "driver_proof_digest": driver_proof_digest,
+        "support_id": support_id,
+        "creation_map_digest": creation_map_digest,
+        "factory_identity": dict(factory_identity),
+    }
+    return {**material, "allocation_digest": _domain_digest("user-bootloader-allocation", material)}
+
+
+def _validated_bootloader_policy(
+    value: Mapping[str, object],
+    geometry: GenericMapGeometry,
+    support_id: str,
+) -> dict[str, object]:
+    from pyocd_debug_mcp.setup_flow.factory_identity import validate_factory_record
+
+    raw = _exact_mapping(
+        value,
+        {
+            "kind",
+            "sectors",
+            "driver_proof_digest",
+            "support_id",
+            "creation_map_digest",
+            "factory_identity",
+            "allocation_digest",
+        },
+        "bootloader_policy",
+    )
+    if raw["kind"] != "user_bootloader_allocation" or raw["support_id"] != support_id:
+        raise SafetyMapError("bootloader ownership must match the current device support")
+    rows = raw["sectors"]
+    if not isinstance(rows, list) or not rows:
+        raise SafetyMapError("bootloader allocation requires a bounded erase-sector list")
+    sectors = tuple(_range_from_document(row, "bootloader sector") for row in rows)
+    verified = tuple(item.address_range for item in geometry.erase_sectors)
+    if (
+        not geometry.erase_available
+        or not verified
+        or any(item not in verified for item in sectors)
+        or set(sectors) == set(verified)
+    ):
+        raise SafetyMapError(
+            "bootloader allocation must be a proper subset of verified flash sectors"
+        )
+    try:
+        factory = validate_factory_record(
+            raw["factory_identity"],
+            flash_size=sum(item.size for item in verified),
+            memory_ranges=[
+                (item.start, item.end)
+                for item in (*geometry.physical_flash, *geometry.physical_ram)
+            ],
+        )
+    except ValueError as exc:
+        raise SafetyMapError(f"bootloader factory identity is invalid: {exc}") from exc
+    rebuilt = build_user_bootloader_allocation(
+        sectors,
+        driver_proof_digest=_required_string(raw["driver_proof_digest"], "bootloader driver proof"),
+        support_id=support_id,
+        creation_map_digest=_required_string(raw["creation_map_digest"], "bootloader creation map"),
+        factory_identity=factory,
+    )
+    if rebuilt != raw:
+        raise SafetyMapError("bootloader allocation digest or canonical sector order is invalid")
+    return rebuilt
+
+
 @dataclass(frozen=True, slots=True)
 class GenericSafetyMapDocument:
-    """A schema-v3 generic map with physical and optional application ownership."""
+    """A schema-v3 generic map with physical and proven deployment ownership."""
 
     board_id: str
     identity: GenericMapIdentity
@@ -1011,13 +1098,29 @@ class GenericSafetyMapDocument:
     partitions: MapPartitions
     deployment_policy: Mapping[str, object]
     regions: tuple[SafetyRegion, ...]
+    bootloader_policy: Mapping[str, object] | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "board_id", _require_board_id(self.board_id))
         policy = _validated_generic_deployment_policy(self.deployment_policy)
         object.__setattr__(self, "deployment_policy", policy)
-        if self.partitions.bootloader is not None:
-            raise SafetyMapError("generic application policy cannot create a bootloader partition")
+        bootloader_policy = self.bootloader_policy
+        if bootloader_policy is None:
+            if self.partitions.bootloader is not None:
+                raise SafetyMapError(
+                    "generic bootloader partition requires captured factory authority"
+                )
+        else:
+            bootloader_policy = _validated_bootloader_policy(
+                bootloader_policy, self.geometry, self.identity.support_id
+            )
+            sectors = cast(list[dict[str, int]], bootloader_policy["sectors"])
+            bootloader = AddressRange(sectors[0]["start"], sectors[-1]["end"])
+            if self.partitions.bootloader != bootloader or not self.geometry.contains_flash(
+                bootloader
+            ):
+                raise SafetyMapError("bootloader partition must equal its verified sector envelope")
+            object.__setattr__(self, "bootloader_policy", bootloader_policy)
         if policy["kind"] == "none":
             if self.partitions.application is not None:
                 raise SafetyMapError(
@@ -1087,8 +1190,23 @@ class GenericSafetyMapDocument:
         deployment_regions = tuple(
             region for region in canonical_regions if region.kind is RegionKind.APPLICATION_FLASH
         )
-        if any(region.kind is RegionKind.BOOTLOADER_FLASH for region in canonical_regions):
-            raise SafetyMapError("generic application policy cannot persist a bootloader region")
+        bootloader_regions = tuple(
+            region for region in canonical_regions if region.kind is RegionKind.BOOTLOADER_FLASH
+        )
+        expected_bootloader_regions = (
+            () if bootloader_policy is None else (self.partitions.bootloader,)
+        )
+        if (
+            tuple(region.address_range for region in bootloader_regions)
+            != expected_bootloader_regions
+        ):
+            raise SafetyMapError("generic bootloader region must equal its proven allocation")
+        if self.partitions.bootloader is not None and any(
+            region.kind in {RegionKind.PROHIBITED, RegionKind.ROM, RegionKind.ROM_BOOTLOADER}
+            and region.address_range.overlaps(self.partitions.bootloader)
+            for region in canonical_regions
+        ):
+            raise SafetyMapError("bootloader ownership overlaps a protected or factory ROM region")
         if policy["kind"] == "none" and deployment_regions:
             raise SafetyMapError(
                 "generic map without allocation cannot persist application regions"
@@ -1127,6 +1245,11 @@ class GenericSafetyMapDocument:
             "partitions": self.partitions.to_document(),
             "deployment_policy": dict(self.deployment_policy),
             "regions": [region.to_document() for region in self.regions],
+            **(
+                {"bootloader_policy": dict(self.bootloader_policy)}
+                if self.bootloader_policy is not None
+                else {}
+            ),
         }
 
     @property
@@ -1154,7 +1277,12 @@ class GenericSafetyMapDocument:
                 "partitions",
                 "deployment_policy",
                 "regions",
-            },
+            }
+            | (
+                {"bootloader_policy"}
+                if isinstance(value, Mapping) and "bootloader_policy" in value
+                else set()
+            ),
             "generic memory map",
         )
         if raw["schema_version"] != 3:
@@ -1213,6 +1341,11 @@ class GenericSafetyMapDocument:
             tuple(
                 _region_from_document(row, f"regions[{index}]") for index, row in enumerate(rows)
             ),
+            (
+                cast(Mapping[str, object], raw["bootloader_policy"])
+                if "bootloader_policy" in raw
+                else None
+            ),
         )
 
 
@@ -1267,12 +1400,54 @@ def generic_map_with_allocation(
         document.authority_source,
         digests,
         document.geometry,
-        MapPartitions(application),
+        MapPartitions(application, document.partitions.bootloader),
         policy,
         (
             *(item for item in document.regions if item.kind is not RegionKind.APPLICATION_FLASH),
             region,
         ),
+        document.bootloader_policy,
+    )
+
+
+def generic_map_with_bootloader(
+    document: GenericSafetyMapDocument,
+    policy: Mapping[str, object],
+) -> GenericSafetyMapDocument:
+    """Admit bounded bootloader ownership while preserving all application authority."""
+    if document.bootloader_policy is not None:
+        if document.bootloader_policy == policy:
+            return document
+        raise SafetyMapError("existing bootloader ownership cannot be replaced or resized")
+    validated = _validated_bootloader_policy(
+        policy, document.geometry, document.identity.support_id
+    )
+    sectors = cast(list[dict[str, int]], validated["sectors"])
+    bootloader = AddressRange(sectors[0]["start"], sectors[-1]["end"])
+    return GenericSafetyMapDocument(
+        document.board_id,
+        document.identity,
+        document.authority_source,
+        document.source_digests,
+        document.geometry,
+        MapPartitions(document.partitions.application, bootloader),
+        document.deployment_policy,
+        (
+            *document.regions,
+            SafetyRegion(
+                "documented user bootloader allocation",
+                RegionKind.BOOTLOADER_FLASH,
+                bootloader,
+                (
+                    Provenance(
+                        SourceAuthority.DERIVED,
+                        str(validated["allocation_digest"]),
+                        "source-backed factory identity and verified erase-sector allocation",
+                    ),
+                ),
+            ),
+        ),
+        validated,
     )
 
 

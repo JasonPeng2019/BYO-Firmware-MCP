@@ -16,14 +16,16 @@ from pyocd_debug_mcp.setup_flow.preflight import (
     PreflightSelections,
     SetupUserInput,
 )
-from pyocd_debug_mcp.setup_flow.setup import SetupWorkflow
+from pyocd_debug_mcp.setup_flow.setup import PENDING_SETUP_STATUSES, SetupWorkflow
 from pyocd_debug_mcp.setup_flow.validate import (
     VALIDATION_STATUSES,
     BoardValidator,
     ValidationRequest,
 )
 
-SETUP_LOADABLE_TOOLS = frozenset({"board_setup-plan", "board_safety_refresh", "board_validate"})
+SETUP_LOADABLE_TOOLS = frozenset(
+    {"board_setup-plan", "board_safety_refresh", "board_validate", "board_policy_restore"}
+)
 
 
 def _json(document: Mapping[str, Any]) -> str:
@@ -42,6 +44,30 @@ def _load_guidance(
         f"{NO_INTERNALS_RELAY_INSTRUCTION} Ask only the ordinary-language question named by "
         "the returned status; copy machine fields into the next MCP call without showing them."
     )
+    if tool_name == "board_policy_restore":
+        return {
+            "next_call": {
+                "tool": tool_name,
+                "arguments": {"board_id": board_id, "generation_backup_path": None},
+            },
+            "guidance": {
+                "purpose": "Restore the exact committed generation from a supplied local backup without hardware I/O.",
+                "when_to_use": "The committed generation is missing or damaged and its original pointer survives.",
+                "accepted_response_shape": (
+                    "Supply generation_backup_path as an absolute local pathname or a pathname "
+                    "relative to the firmware project. None only reports the exact prerequisite. "
+                    "The backup must match the surviving pointer's full-file SHA-256 and existing "
+                    "semantic checks; compatibility files or other generations cannot replace it."
+                ),
+                "expected_statuses": ["policy_restore_completed", "policy_restore_blocked"],
+                "common_remedies": [
+                    "Obtain the exact selected generation from a trusted project backup; if unavailable, stop hardware work.",
+                    "If the pointer itself is invalid, restore the original pointer and selected generation from that backup.",
+                    "After restoration, use setup_overview and fresh board_validate before protected access.",
+                ],
+                "relay_rule": relay_rule,
+            },
+        }
     if tool_name == "board_setup-plan":
         definition = PLAN_DEFINITIONS["board_setup"]
         return {
@@ -74,13 +100,16 @@ def _load_guidance(
                     "First make the all-NULL next_call above. Then submit only one complete "
                     "board_setup-plan JSON object. Copy board_id and server-known action fields "
                     "from setup_overview.plan_action_parameters_template; obtain only its listed "
-                    "user facts conversationally. For a setup continuation, copy the exact "
-                    "accepted_response returned by board_setup into continue_setup."
+                    "user facts conversationally. For a setup continuation, use the primary "
+                    "accepted_response.response or one explicitly advertised alternative's "
+                    "response as continue_setup.response. LITE includes response_schema and "
+                    "response_example; replace illustrative facts with confirmed evidence."
                 ),
                 "common_remedies": [
                     "For friendly probe or UART ambiguity, ask which friendly label belongs to the board.",
                     "For official-source research, return only the fields requested by the continuation.",
-                    "After completion, load and call board_validate; setup alone does not open the gate.",
+                    "After completion, load and call board_validate for the current tier: LITE "
+                    "checks its live binding and partial policy; FULL proves identity and opens its gate.",
                 ],
                 "relay_rule": relay_rule,
             },
@@ -92,16 +121,22 @@ def _load_guidance(
         return {
             "next_call": {"tool": tool_name, "arguments": arguments},
             "guidance": {
-                "purpose": "Non-destructively prove live MCU identity and bind the current safety map.",
+                "purpose": (
+                    "Non-destructively check the current connection and committed policy. "
+                    "FULL proves live MCU identity and binds its safety map. LITE checks the "
+                    "assigned probe, saved backend target, partial map and live target state; "
+                    "its identity remains trusted-not-proven and no FULL gate is opened."
+                ),
                 "when_to_use": (
-                    "Use only when there is no live proof (restart, initial setup, or not yet "
-                    "validated), when connection identity changes (disconnect, reconnect, probe "
+                    "Use for the first live check after setup or restart, when connection "
+                    "identity changes (disconnect, reconnect, probe "
                     "or target override), or when hardware identity may have changed (identity "
                     "repair or destructive recovery)."
                 ),
                 "when_not_to_use": (
                     "Do not validate merely because of a build, flash, reset/halt, UART operation, "
-                    "safety refresh, full map reconstruction, or bookkeeping change."
+                    "healthy safety refresh, full map reconstruction, or bookkeeping change. "
+                    "Committed-policy restoration always requires fresh validation."
                 ),
                 "expected_statuses": list(VALIDATION_STATUSES),
                 "accepted_response_shape": (
@@ -112,7 +147,8 @@ def _load_guidance(
                 "common_remedies": [
                     "Choose a returned friendly probe label without exposing its choice_id.",
                     "Use board_safety_refresh only for a stable-map problem.",
-                    "For a mismatch, report expected and observed MCU identity and ask the user what to do.",
+                    "For a FULL mismatch, report expected and observed MCU identity and ask the user what to do.",
+                    "For a LITE binding failure, rerun setup_overview and follow the current assigned route.",
                     "If a provider call does not return, the server terminates only that worker; "
                     "reconnect and revalidate the affected board before retrying.",
                 ],
@@ -129,24 +165,31 @@ def _load_guidance(
                 "Deterministically rebuild the complete stable safety map from reviewed sources."
             ),
             "when_to_use": (
-                "Use for a missing, malformed, old, or inconsistent map, or when reviewed MCU, "
+                "Use with healthy committed policy for a missing, malformed, old, or inconsistent "
+                "compatibility map, or when reviewed MCU, "
                 "target, geometry, partition policy, pack/SVD/target, datasheet, or schema evidence changes."
             ),
             "when_not_to_use": (
                 "Do not use for an ordinary rebuild, artifact path/timestamp/size change, reset, "
-                "flash, or UART use. It accepts no build artifacts or caller ranges and cannot "
-                "create live identity authority."
+                "flash, or UART use. It accepts no build artifacts. Ordinary replay cannot create "
+                "new ownership; documented user_bootloader admission is a separate intentional "
+                "request and closes live readiness until fresh validation."
             ),
             "expected_statuses": [
                 "safety_refresh_completed",
                 "safety_refresh_blocked",
             ],
             "accepted_response_shape": (
-                "Call with only the server-generated board_id; follow validation_required exactly."
+                "Call with board_id for ordinary replay. Optional user_bootloader admits bounded "
+                "ownership after generic FULL setup/live validation: supply start/end byte bounds, "
+                "source_path/source_url/source_pages/source_note, identity_coverage and documented "
+                "read-only factory device/flash_size/unique registers. See the tool schema/docs; "
+                "the server captures UID and validates source, model and geometry. Follow "
+                "validation_required exactly."
             ),
             "common_remedies": [
                 "Resolve unavailable reviewed evidence and retry refresh.",
-                "A missing reviewed partition is a maintainer evidence task, never a caller-range prompt.",
+                "Use documented user_bootloader admission for a missing user partition; never edit policy files.",
                 "Run board_validate only when validation_required is true.",
             ],
             "relay_rule": relay_rule,
@@ -241,6 +284,12 @@ class SetupToolServices:
     setup_plan_eligible: Callable[[str], tuple[bool, str]] | None = None
     require_assignment: Callable[[str, str], None] | None = None
     assigned_connection: Callable[[str], str | None] | None = None
+    setup_session_for_plan: Callable[[str, Mapping[str, object]], str | None] = (
+        lambda _board, _parameters: None
+    )
+    validate_board: Callable[[ValidationRequest], Mapping[str, Any]] | None = None
+    policy_recovery: Callable[[str], Mapping[str, Any] | None] | None = None
+    policy_restore: Callable[[str, str | None], Mapping[str, Any]] | None = None
 
 
 def build_setup_handlers(services: SetupToolServices) -> dict[str, Callable[..., str]]:
@@ -252,10 +301,25 @@ def build_setup_handlers(services: SetupToolServices) -> dict[str, Callable[...,
         Call setup_overview first so the server, rather than the user, supplies the profile route,
         board_id, and friendly physical choices. Then load exactly the setup tool named by that
         route before calling it. Never ask the user for board_id, connection IDs, or JSON.
+        After a successful connect_override, load board_validate directly for that active
+        run assignment; its token may differ from the normal saved-profile transport.
         Pass connection identifiers back exactly as the server issued them; they are opaque
         tokens, not probe serial numbers, and must not be edited or shortened.
+        For corrupt committed policy, load board_policy_restore directly using the refusal's
+        board_id; this host-only route needs no probe assignment or live validation.
         """
 
+        if tool_name != "board_policy_restore" and services.policy_recovery is not None:
+            recovery = services.policy_recovery(board_id)
+            if recovery is not None:
+                return _json(
+                    {
+                        "status": "setup_policy_recovery_required",
+                        "board_id": board_id,
+                        "agent_prompt": recovery["prerequisite"],
+                        "recovery": recovery,
+                    }
+                )
         if tool_name == "board_setup-plan" and services.setup_plan_eligible is not None:
             eligible, reason = services.setup_plan_eligible(board_id)
             if not eligible:
@@ -291,13 +355,14 @@ def build_setup_handlers(services: SetupToolServices) -> dict[str, Callable[...,
             # ever compared for equality against the assignment, so deriving a pyOCD UID
             # here would be both unnecessary and wrong for a session-scoped selection.
             validation_probe_id = connection_id
-        return _json(
-            services.loader.load(
-                board_id,
-                tool_name,
-                validation_probe_id=validation_probe_id,
-            )
+        loaded = services.loader.load(
+            board_id,
+            tool_name,
+            validation_probe_id=validation_probe_id,
         )
+        if tool_name == "board_policy_restore" and services.policy_restore is not None:
+            loaded["recovery"] = services.policy_restore(board_id, None)["recovery"]
+        return _json(loaded)
 
     def setup_overview(
         board_names: list[str] | None = None,
@@ -383,7 +448,19 @@ def build_setup_handlers(services: SetupToolServices) -> dict[str, Callable[...,
             connection_id = action_parameters["connection_id"]
             assert isinstance(connection_id, str)
             services.require_assignment(board_id, connection_id)
-        return services.plan_engine.submit("board_setup-plan", fields, session_id=None).message
+        previous = services.loader.allowance_for(board_id) if board_id is not None else None
+        result = services.plan_engine.submit(
+            "board_setup-plan",
+            fields,
+            session_id=(
+                services.setup_session_for_plan(board_id, action_parameters)
+                if board_id is not None and isinstance(action_parameters, dict)
+                else None
+            ),
+        )
+        if result.status == "accepted" and previous is not None:
+            services.workflow.close_allowance(previous, "replaced by a new setup plan")
+        return result.message
 
     def _user_input(
         board_id: str,
@@ -484,7 +561,7 @@ def build_setup_handlers(services: SetupToolServices) -> dict[str, Callable[...,
         datasheet_path: str,
         target_tier: str | None = None,
     ) -> str:
-        """Use the setup plan's single paired repair allowance."""
+        """Resume the bounded paired workflow after one accepted continue_setup reply."""
 
         active = services.plan_engine.active_plan("board_setup", board_id)
         if active is not None:
@@ -514,6 +591,8 @@ def build_setup_handlers(services: SetupToolServices) -> dict[str, Callable[...,
             else PreflightSelections()
         )
         response = services.workflow.board_fix_setup(allowance_id, selections=selections)
+        if response.status in PENDING_SETUP_STATUSES:
+            return _json(response.to_payload())
         services.plan_engine.complete_paired_plan(
             "board_setup",
             board_id,
@@ -535,9 +614,15 @@ def build_setup_handlers(services: SetupToolServices) -> dict[str, Callable[...,
         Call this only when board_setup or board_fix_setup returns setup_needs_user_input or
         setup_research_required. Relay the server's friendly question to the user when required,
         or perform the requested official-source research, then submit exactly the response
-        object described by accepted_response/exact_response_fields. This tool validates and
+        object described by accepted_response.response/exact_response_fields, or one advertised
+        accepted_response.alternatives entry's response. LITE includes its full nested schema
+        and a schema-valid example; replace example facts with confirmed datasheet evidence.
+        Installed target choices require official exact-part support evidence; use the pack
+        form when none is compatible. This tool validates and
         stages evidence but grants no permission, opens no gate, and performs no target write.
         After acceptance, call board_fix_setup under the still-active paired setup allowance.
+        Repeat only for a new returned prompt: at most ten answered resumptions within
+        thirty minutes of plan acceptance. Answers never replenish the fixed plan budgets.
         """
 
         if services.setup_continue is None:
@@ -555,10 +640,13 @@ def build_setup_handlers(services: SetupToolServices) -> dict[str, Callable[...,
         """Validate a matching board YAML first, or validate after setup, repair, or reconnect.
 
         Trigger this instead of board_setup when the user's familiar board name already matches a
-        healthy profile. A passing validation stamps only the current board/connection gate. If it
-        fails because setup or safety evidence is incomplete, follow its exact setup or safety
-        remedy; never treat the profile's presence alone as permission to access hardware.
-        Pass probe_id exactly as setup_overview issued it: it is an opaque connection token that
+        healthy profile. FULL proves identity and stamps only the current board/connection gate.
+        LITE checks its assigned live probe, saved target and partial policy without proving MCU
+        identity or creating a FULL stamp. It connects using the saved profile if disconnected.
+        Follow any setup or safety remedy; a profile alone is never hardware permission.
+        After a successful connect_override, load_setup_tool returns the validation call for
+        that exact active connection; the saved normal profile remains unchanged.
+        Pass probe_id exactly as the loader issued it: it is an opaque connection token that
         the server re-resolves to live hardware, not a probe serial number.
         """
 
@@ -587,19 +675,74 @@ def build_setup_handlers(services: SetupToolServices) -> dict[str, Callable[...,
                     "assignment"
                 )
             services.require_assignment(board_id, assigned_connection)
-        result = services.validator.validate(ValidationRequest(board_id, probe_id))
+        request = ValidationRequest(board_id, probe_id)
+        if services.validate_board is not None:
+            return _json(services.validate_board(request))
+        result = services.validator.validate(request)
         return _json(result.to_payload())
 
-    def board_safety_refresh(board_id: str) -> str:
+    def board_safety_refresh(
+        board_id: str,
+        user_bootloader: dict[str, Any] | None = None,
+    ) -> str:
         """Rebuild the complete stable safety map from current replayed verified sources.
 
-        Use this for any missing/corrupt/stale map or stable-authority change. Do not use it
-        after ordinary firmware builds. It accepts no artifact, geometry, partition, or caller range.
+        Use this for a missing/corrupt/stale compatibility map with healthy committed policy,
+        or a stable-authority change. For a missing/damaged committed generation use
+        board_policy_restore with an exact backup first. Do not use refresh
+        after ordinary firmware builds. With user_bootloader=None it accepts no new ownership.
+        For deliberate user-bootloader admission after generic FULL setup/live validation,
+        user_bootloader has exactly start/end (integer byte addresses, end exclusive),
+        source_path (local official PDF), source_url (official HTTPS URL), source_pages
+        (positive PDF pages), source_note (layout/section explanation), identity_coverage
+        (device/group and any unproven package distinction), and registers. Bounds must cover
+        contiguous complete verified erase sectors outside application ownership and cannot
+        be the whole programmable flash. Each register requires address, width_bits (8/16/32),
+        role (device/flash_size/unique), mask, expected, unit_bytes, source_pages, source_note,
+        read_only=true and factory=true. Device expected/mask are documented candidate facts;
+        flash_size and unique require expected=null and full masks. Only flash_size has a
+        positive unit_bytes; others use null. Include all three roles. The server pins the PDF,
+        compares device/group and geometry, captures the actual UID (never supply it), and
+        commits only after live checks. Exact means the same supported unit with disclosed
+        coverage, not an unobservable package suffix. No physical writes or erase grants occur.
+        Success requires fresh board_validate; restart/recovery also require fresh validation.
+        Identical admission is repeatable; existing bootloader ownership cannot be resized or
+        replaced. Invalid/missing evidence, mismatched identity, stale readiness or overlap returns
+        safety_refresh_blocked without changing committed authority. Correct that prerequisite
+        and retry. Physical programming is a separate guarded flash_bootloader workflow.
         """
 
         if not services.loader.is_loaded(board_id, "board_safety_refresh"):
             return services.loader.redirect(board_id, "board_safety_refresh")
-        return _json(services.safety_refresh(board_id))
+        return _json(
+            services.safety_refresh(board_id)
+            if user_bootloader is None
+            else services.safety_refresh(board_id, user_bootloader=user_bootloader)
+        )
+
+    def board_policy_restore(board_id: str, generation_backup_path: str | None = None) -> str:
+        """Restore a missing/damaged committed generation from an exact local backup, without I/O to hardware.
+
+        Load this tool with load_setup_tool using the corrupt-policy refusal's board_id; no
+        probe assignment or live readiness is required. generation_backup_path is an absolute
+        local pathname or a pathname relative to the firmware project (for example,
+        backups/selected-generation.json). Default None reports the exact required backup and
+        writes nothing. The surviving original pointer must bind its entire file SHA-256;
+        existing semantic checks must also pass. Mutable profile/map files, retained or orphaned
+        generations cannot reconstruct ownership. A missing/invalid pointer requires operator
+        restoration of the original pointer and selected generation from a trusted project backup.
+        Returns policy_restore_completed or policy_restore_blocked. Restoration preserves pointer,
+        identity and ownership, clears prior live gates/plans, and always requires setup_overview
+        followed by fresh board_validate before protected access. It replays compatibility
+        projections only from the trusted snapshot so overview can issue validation. The source
+        backup is unchanged. If projection replay is interrupted, repeat this exact restoration.
+        """
+
+        if not services.loader.is_loaded(board_id, "board_policy_restore"):
+            return services.loader.redirect(board_id, "board_policy_restore")
+        if services.policy_restore is None:
+            raise RuntimeError("committed-policy restoration is unavailable")
+        return _json(services.policy_restore(board_id, generation_backup_path))
 
     def get_setup_status(board_id: str) -> str:
         """Report whether durable setup and this run's live validated session are ready.
@@ -640,6 +783,7 @@ def build_setup_handlers(services: SetupToolServices) -> dict[str, Callable[...,
         "board_fix_setup": board_fix_setup,
         "continue_setup": continue_setup,
         "board_safety_refresh": board_safety_refresh,
+        "board_policy_restore": board_policy_restore,
         "board_validate": board_validate,
         "get_setup_status": get_setup_status,
     }

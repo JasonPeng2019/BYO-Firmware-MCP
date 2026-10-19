@@ -24,7 +24,10 @@ from pathlib import Path
 from typing import Any
 from unittest.mock import patch
 
+from mcp.types import CallToolResult, TextContent
+
 from pyocd_debug_mcp.adapters.swd_interface import TargetSessionHandle
+from pyocd_debug_mcp.flash_image import FlashResult, derive_flash_image
 
 
 SERVER_ROOT = Path(__file__).resolve().parents[1]
@@ -32,6 +35,7 @@ SOURCE_ROOT = SERVER_ROOT / "src"
 FIXTURE_ROOT = Path(__file__).with_name("tiered_acceptance_fixtures")
 MANUAL_PERMISSION_RELATIVE = Path(".agent-workspace") / "runtime" / "manual-permissions"
 MONITOR_RELATIVE = Path(".agent-workspace") / "runtime" / "acceptance-monitor"
+STDIO_REHEARSAL_PROBE_UID = "tiered-stdio-probe"
 
 
 def fixture(name: str) -> dict[str, Any]:
@@ -203,7 +207,7 @@ class _RehearsalBackend:
         return TargetSessionHandle(
             session=object(),
             board=kwargs.get("board"),
-            probe_uid=None,
+            probe_uid=kwargs.get("unique_id"),
             route_used="tiered-stdio-rehearsal",
             target_override=kwargs.get("target"),
         )
@@ -233,6 +237,27 @@ class _RehearsalBackend:
     def release_reset(self, _handle: TargetSessionHandle) -> None:
         _record("backend-release-reset")
 
+
+# Replace enumeration before either the imported server or the module entrypoint
+# binds it. Keep the real inventory merge and explicit-selector admission.
+from pyocd_debug_mcp import hardware_inventory as _inventory
+from pyocd_debug_mcp import probe_inventory as _probes
+from pyocd_debug_mcp import serial_resolver as _serial
+
+
+def _native_probes(*_args: object) -> _probes.NativeProbeListing:
+    _record("inventory-probes")
+    return _probes.NativeProbeListing(
+        (_probes.ProbeInfo(
+            {STDIO_REHEARSAL_PROBE_UID!r}, "Private stdio probe", "", family="jlink"
+        ),),
+        (), 0, False, "private stdio fixture", "",
+    )
+
+
+_probes.list_connected_probes_detailed = _native_probes
+_serial.list_serial_ports = lambda: []
+_inventory.vendor_uart_rows = lambda _run_cmd: []
 
 from pyocd_debug_mcp import server as _server
 
@@ -401,9 +426,29 @@ class DeterministicTargetBackend:
     def release_reset(self, handle: TargetSessionHandle) -> None:
         self.calls.append(("release_reset", handle.probe_uid))
 
-    def flash(self, handle: TargetSessionHandle, firmware: Path, *, halt_after_reset: bool) -> str:
+    def check_flash_support(
+        self,
+        handle: TargetSessionHandle,
+        firmware: Path,
+        *,
+        base_address: int | None = None,
+        artifact_sha256: str | None = None,
+    ) -> None:
+        self.calls.append(("check_flash_support", handle.probe_uid, firmware, base_address))
+
+    def flash(
+        self,
+        handle: TargetSessionHandle,
+        firmware: Path,
+        *,
+        halt_after_reset: bool,
+        base_address: int | None = None,
+        artifact_sha256: str | None = None,
+    ) -> FlashResult:
         self.calls.append(("flash", handle.probe_uid, firmware, halt_after_reset))
-        return "halted"
+        # A deterministic target programs exactly the bytes the artifact addresses.
+        image = derive_flash_image(firmware, base_address=base_address)
+        return FlashResult.for_image(image, "halted")
 
     def recover(self, handle: TargetSessionHandle) -> None:
         self.calls.append(("recover", handle.probe_uid))
@@ -422,15 +467,44 @@ class DeterministicTargetBackend:
 
 
 def _content_text(value: Any) -> str:
+    """Extract one primary text, allowing only the documented check-in block.
+
+    Keep protocol status distinct from an expected public refusal. In particular,
+    an isError reply containing an apparent success must never become a success
+    merely because its primary content is valid JSON.
+    """
+
+    is_error = isinstance(value, CallToolResult) and value.isError
+    if isinstance(value, CallToolResult):
+        value = value.content
     if isinstance(value, tuple):
+        if len(value) != 2 or not isinstance(value[0], list) or not isinstance(value[1], dict):
+            raise AssertionError(f"unexpected MCP structured result: {value!r}")
         value = value[0]
     if isinstance(value, list):
-        if len(value) != 1:
-            raise AssertionError(f"expected one MCP text content item, got {value!r}")
+        from pyocd_debug_mcp.monitor.monitor import CHECKIN_PROMPT
+
+        if len(value) == 2:
+            advisory = value[1]
+            if not isinstance(advisory, TextContent) or advisory.text != CHECKIN_PROMPT:
+                raise AssertionError(f"unexpected MCP trailing content: {value!r}")
+        elif len(value) != 1:
+            raise AssertionError(f"expected primary MCP text and optional check-in, got {value!r}")
         value = value[0]
-    text = getattr(value, "text", value)
+    text = value.text if isinstance(value, TextContent) else value
     if not isinstance(text, str):
         raise AssertionError(f"expected MCP text result, got {type(text).__name__}: {text!r}")
+    if is_error:
+        try:
+            payload = json.loads(text)
+        except json.JSONDecodeError as exc:
+            raise AssertionError(f"MCP tool failed: {text!r}") from exc
+        if not (
+            isinstance(payload, dict)
+            and payload.get("schema_version") == 1
+            and payload.get("status") == "refused"
+        ):
+            raise AssertionError(f"MCP tool failed: {text!r}")
     return text
 
 

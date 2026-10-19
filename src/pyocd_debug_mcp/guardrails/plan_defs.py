@@ -10,8 +10,15 @@ from types import MappingProxyType
 from typing import Final
 
 from pyocd_debug_mcp.services.uart_exchange_schema import (
+    encoded_payload_is_empty,
     validate_serial_exchange_parameters,
 )
+
+# A paired setup workflow can pause for choices, target research, attachment
+# settings, and map confirmation. Ten answered steps cover the setup phases;
+# the fixed primary/paired authorization is never replenished by those answers.
+SETUP_CONTINUATION_LIMIT = 10
+SETUP_CONTINUATION_SECONDS = 30 * 60
 
 
 class BudgetMode(str, Enum):
@@ -179,6 +186,23 @@ def _validate_setup_parameters(values: Mapping[str, object]) -> str | None:
         return "serial_baudrate and serial_id are required when requires_uart is true"
     if requires_uart is False and (baudrate is not None or serial_id is not None):
         return "serial_baudrate and serial_id must be NULL when requires_uart is false"
+    return None
+
+
+def _validate_write_serial_parameters(values: Mapping[str, object]) -> str | None:
+    """Refuse only a payload that encodes to zero bytes.
+
+    A UART payload is byte-preserving: ``text`` plus one LF byte when ``append_newline``
+    is true. A newline-only, CRLF-only, or whitespace-only command is real input for the
+    target firmware, so stripped-prose emptiness must never be applied to it.
+    """
+
+    text = values.get("text")
+    if not isinstance(text, str):
+        return "text must be UTF-8 text"
+    ending = "lf" if values.get("append_newline") is True else "none"
+    if encoded_payload_is_empty(text, ending):
+        return "text and append_newline must encode at least one byte"
     return None
 
 
@@ -384,8 +408,14 @@ _DEFINITIONS = (
         PermissionMode.NONE,
         SafetyMode.FRESH_WRITE,
         30.0,
-        "The resolved location must be in an executable section of the plan-bound current ELF and "
-        "supported by the connected core.",
+        "The resolved location must be in an executable section of the plan-bound current ELF, "
+        "supported by the connected core, and inside a reviewed application or bootloader "
+        "deployment partition; a reviewed bootloader partition can qualify a location on its own. "
+        "A generic board whose safety map still has no deployment allocation (deployment policy "
+        "'none') can breakpoint nowhere and refuses with safety/no-deployment-allocation: deploy "
+        "the current build once through flash_application-plan and flash_application to establish "
+        "the artifact-derived allocation. A safety refresh cannot create an allocation; it only "
+        "re-derives an existing reviewed partition.",
         artifact_binding_field="elf_artifact",
         artifact_binding_suffixes=(".elf", ".axf"),
     ),
@@ -578,7 +608,12 @@ _DEFINITIONS = (
         "write_serial-plan",
         "Send bounded UTF-8 text over the selected board's UART.",
         (
-            _field("text", FieldType.TEXT, "Exact text to send."),
+            _field(
+                "text",
+                FieldType.TEXT,
+                "Exact text to send; a newline-only or whitespace-only payload is a real command.",
+                allow_empty=True,
+            ),
             _field("baudrate", FieldType.INTEGER, "Positive baud rate.", nullable=True, minimum=1),
             _field("port", FieldType.TEXT, "Current serial port path.", nullable=True),
             _field("append_newline", FieldType.BOOLEAN, "Append one newline when true."),
@@ -600,7 +635,9 @@ _DEFINITIONS = (
         PermissionMode.NONE,
         SafetyMode.FRESH_WRITE,
         30.0,
-        "The text and all transport parameters are bound exactly by the plan.",
+        "The text and all transport parameters are bound exactly by the plan; the "
+        "encoded payload must contain at least one byte.",
+        action_validator=_validate_write_serial_parameters,
     ),
 )
 
@@ -690,8 +727,10 @@ _GUIDANCE: Final = MappingProxyType(
             "plan and finish setup before any hardware action or other *-plan tool.",
             "The all-NULL routing response is available before load_setup_tool. A populated setup "
             "plan is accepted only after load_setup_tool and the server verifies the one-to-one "
-            "name-to-connection assignment. One plan uniquely permits one board_setup call and one "
-            "paired board_fix_setup call; board_fix_setup has no separate plan prompt.",
+            "name-to-connection assignment. One plan permits one board_setup call and one "
+            "bounded paired repair workflow; board_fix_setup has no separate plan prompt. "
+            "Each accepted continue_setup answer permits one resumption, at most ten within "
+            "thirty minutes of plan acceptance, without refilling the fixed plan budgets.",
             "Setup touches live hardware but is bounded to non-destructive attach and reads; an "
             "under-reset fallback may reset execution, but setup never flashes, erases, unlocks, "
             "or changes security state. Relay setup_needs_user_input and setup_research_required choices in plain "
@@ -722,17 +761,20 @@ _GUIDANCE: Final = MappingProxyType(
                 "serial_id": "probe-associated-serial-id",
                 "datasheet_path": "C:/project/docs/datasheet.pdf",
             },
-            "PAIRED ALLOWANCE: if the first setup call fails, its one paired board_fix_setup call "
-            "is already authorized even under one-time permission. A further attempt requires a "
-            "replacement plan and, for one-time permission, a fresh user prompt.",
+            "PAIRED ALLOWANCE: research and friendly-choice pauses keep the same bounded "
+            "workflow authorized even under one-time permission. Submit the requested answer "
+            "through continue_setup, then call board_fix_setup; repeat only for a new prompt. "
+            "Completion, terminal failure, cancellation, revocation, replacement, session change, "
+            "expiry, or ten answered resumptions close it. Further work requires a replacement "
+            "plan and, for one-time permission, a fresh user prompt.",
             example_hypothesis=(
                 "The board the user calls 'left controller' is a new exact-package MCU build with no "
                 "existing profile; setup should resolve exact device support from the supplied "
                 "datasheet plus verified support and bind it to the selected attached probe."
             ),
             example_strategy=(
-                "Run board_setup once; if it reports a failed phase, use the paired "
-                "board_fix_setup once with whatever fact the status requests; then run board_validate."
+                "Run board_setup once; answer each requested choice or research prompt through "
+                "continue_setup and resume with board_fix_setup until completion; then run board_validate."
             ),
             example_fail=(
                 "setup_needs_user_input, setup_research_required, or a phase failure status "
@@ -745,15 +787,20 @@ _GUIDANCE: Final = MappingProxyType(
             "exact failure. It is for exceptional manual probe unique_id, pyOCD target, logical "
             "board definition, or external board configuration. Never use it to conceal a "
             "hardware/profile mismatch the user should correct.",
-            "The plan and logical board must match. Manual probe_uid, target_override, and "
-            "external_board_config values are run-scoped and never rewrite a profile.",
+            "The board must be disconnected with no live session. Record the normal resolution "
+            "step and its exact error in hypothesis/strategy, and review the selected probe and "
+            "target identity before submitting. The plan and logical board must match. "
+            "Manual probe_uid, target_override, and external_board_config values are run-scoped "
+            "and never rewrite a profile.",
             "An incorrect target override can produce undefined debug behavior on a mismatched chip.",
             (
                 "State which normal resolution step failed and its exact error.",
                 "Confirm the target override agrees with the user's exact part number.",
                 "Take the probe unique ID from server enumeration; never guess it.",
             ),
-            "The resulting session behaves like a normal connection; disconnect cleanly when done.",
+            "After connection, run board_validate for fresh compatible live identity proof before "
+            "protected I/O; the connection itself does not establish readiness. Disconnect cleanly "
+            "when done.",
             {
                 "probe_uid": "probe-unique-id",
                 "target_override": "agent-resolved-pyocd-target",
@@ -797,7 +844,8 @@ _GUIDANCE: Final = MappingProxyType(
         ),
         "read_memory_address": _PromptGuidance(
             "Prefer symbol access whenever source code or debug symbols identify the intended "
-            "variable (find_symbol and read_memory_symbol are always available and need no plan; "
+            "variable (find_symbol and read_memory_symbol need no plan; symbol memory reads "
+            "require FULL setup and live validation for the current connection; "
             "pass the current project ELF as elf_artifact after a server restart). "
             "Use raw addresses only for dynamically allocated, pointer-derived, stack, optimized-out, "
             "or otherwise unsymbolized memory.",
@@ -844,7 +892,14 @@ _GUIDANCE: Final = MappingProxyType(
             "no UART path, or instruction-level inspection after logs localized the fault. "
             "remove_breakpoint is always available and needs no plan.",
             "The server binds the current ELF when this plan is accepted, resolves the symbol/address, "
-            "and verifies an executable ELF section supported by the target breakpoint mechanism.",
+            "and verifies an executable ELF section supported by the target breakpoint mechanism. "
+            "The location must also fall inside a reviewed application or bootloader deployment "
+            "partition; a reviewed bootloader partition can qualify a location on its own. A generic "
+            "board whose safety map still has no deployment allocation (deployment policy 'none') can "
+            "breakpoint nowhere, and the refusal says so: deploy the current build once through "
+            "flash_application-plan and flash_application to establish the artifact-derived "
+            "allocation. A safety refresh cannot create an allocation; use it only for a genuinely "
+            "stale or invalid reviewed map.",
             "Breakpoint resources are finite, and a forgotten breakpoint can halt the board later.",
             (
                 "Record the print-based attempt and why escalation is necessary.",
@@ -895,7 +950,10 @@ _GUIDANCE: Final = MappingProxyType(
                 "Tell the user plainly what a failed bootloader means.",
                 "State the post-flash check, such as a bootloader UART banner.",
             ),
-            "The target runs after flashing; verify the bootloader behavior.",
+            "Success proves readback of the artifact-addressed bytes. Inspect the separately "
+            "reported final target state (running, halted, or reset_state_unconfirmed); verify "
+            "bootloader startup separately. If state is unconfirmed, reconnect and check target "
+            "state before use.",
             {"artifact": "firmware/boot/build/bootloader.elf"},
         ),
         "register_write": _PromptGuidance(
@@ -953,8 +1011,9 @@ _GUIDANCE: Final = MappingProxyType(
             "never unlock and arbitrary security/provisioning writes are never accepted.",
             "The server binds the plan to current run, board, target, probe, connection, canonical "
             "safety-map digest, recovery mechanism, and complete erase disclosure.",
-            "Recovery erases exactly the disclosed ranges. If the device only supports full-chip erase, "
-            "all nonvolatile application, bootloader, configuration, and user data is lost.",
+            "Recovery erases at least the disclosed ranges; all application, bootloader, and user data "
+            "there is lost. Effects setup data cannot establish, such as on option, protection, "
+            "provisioning, or other chip settings, are disclosed as unknown rather than ruled out.",
             (
                 "Confirm locked state from a server result, not inference.",
                 "List the exhausted non-destructive alternatives.",
@@ -965,7 +1024,8 @@ _GUIDANCE: Final = MappingProxyType(
             {"recovery_mechanism": "backend_mass_erase"},
             "TWO-PHASE APPROVAL: first submit the complete populated plan with user_permission=null. "
             "The server returns permission_required with exact live identity, mechanism, mass-erase "
-            "flag, all ranges/banks/sectors, all-nonvolatile status, expected losses, and plan_id. Relay "
+            "flag, all ranges/banks/sectors, all-nonvolatile status, expected losses, any unknown "
+            "effects, and plan_id. Relay "
             "that in plain language and obtain explicit approval. Then resubmit the complete plan "
             "unchanged except user_permission='one-time'. Any change to plan, target, probe, map, or "
             "erase facts invalidates approval. Research can identify a mechanism but never authorizes "
@@ -1053,8 +1113,8 @@ _GUIDANCE: Final = MappingProxyType(
         "write_serial": _PromptGuidance(
             "Use to send bounded UTF-8 input to a firmware CLI or test menu. The exact text is frozen; a "
             "different command requires a replacement plan. Pair it with planned read_serial observation.",
-            "The server verifies a validated session, exact plan/board/parameters, non-empty text, and "
-            "positive baud rate and timeout.",
+            "The server verifies a validated session, exact plan/board/parameters, a payload that "
+            "encodes to at least one byte, and positive baud rate and timeout.",
             "Input reaches live firmware. Recognize and avoid destructive commands implemented by the "
             "firmware's own erase or reset menus.",
             (
@@ -1159,6 +1219,13 @@ def _render_null_response(
     )
     special = f"\n{guidance.special}" if guidance.special else ""
     budget_label = "fixed" if definition.budget_mode is BudgetMode.FIXED else "flexible"
+    timeout_guidance = (
+        f"minimum timeout {definition.timeout_seconds:g}s, extended by addressed image work to "
+        "max(120, 30 + 2 * addressed_bytes / 8192) seconds for programming and complete readback. "
+        "The accepted plan discloses the concrete timeout_seconds for its bound artifact bytes."
+        if definition.action_name in {"flash_application", "flash_bootloader"}
+        else f"default timeout {definition.timeout_seconds:g}s."
+    )
     setup_first = (
         "This is the universal hardware-entry guide. Call it all-NULL before loading the setup "
         "tool. Ask the user for familiar connected-board names and call setup_overview. Every "
@@ -1168,6 +1235,14 @@ def _render_null_response(
         "board_setup-plan and submit its populated plan. Hidden setup or repair is used only when "
         "there is no matching profile or validation names that remedy."
         if definition.action_name == "board_setup"
+        else "Use the disconnected recovery route only after normal connect or validation "
+        "resolution fails. Call initialization_handshake and setup_overview to review the logical "
+        "board and enumerated probe; record the failed step and exact error in hypothesis/strategy. "
+        "Review the target against the user's exact part number and preserve the saved profile. "
+        "This plan does not require ready_for_code=true: its exceptional connection must happen "
+        "before fresh board_validate can establish live readiness. After connection, successful "
+        "compatible live validation is required before protected I/O."
+        if definition.action_name == "connect_override"
         else "Before populating this plan, call initialization_handshake, ask for familiar "
         "connected-board names, and call setup_overview. Every matching YAML must pass "
         "board_validate first. An unknown name must complete setup using the exact package-level "
@@ -1210,8 +1285,8 @@ def _render_null_response(
         "A changed field requires a complete replacing plan.\n\n"
         f"[BUDGET]\nBudget: {budget_label}. {budget}\n\n"
         f"[PERMISSION]\nPermission: {permission}\n\n"
-        f"[PRECONDITIONS]\nSafety/session policy: {definition.safety_mode.value}; default timeout "
-        f"{definition.timeout_seconds:g}s. {guidance.preconditions} Execution still checks active/current plan, "
+        f"[PRECONDITIONS]\nSafety/session policy: {definition.safety_mode.value}; {timeout_guidance} "
+        f"{guidance.preconditions} Execution still checks active/current plan, "
         "exact board and parameters, remaining calls, assignment/session validity, and every applicable "
         "validation, gate, and safety-map-currentness condition; refusal names the remedy.\n\n"
         f"[WARNINGS]\n{guidance.warnings}{special}\nExtra instructions: "
@@ -1251,6 +1326,10 @@ def render_plan_tool_description(definition: PlanDefinition) -> str:
     setup_first = (
         "This is the first plan tool to use when hardware access is desired. "
         if definition.action_name == "board_setup"
+        else "Use while disconnected after a reviewed normal resolution failure; record the "
+        "failed step and exact error in hypothesis/strategy. Establish the exceptional connection "
+        "first, then run board_validate before protected I/O. "
+        if definition.action_name == "connect_override"
         else "Complete setup routing and board_validate before using this hardware plan. "
     )
     return (

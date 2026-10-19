@@ -21,6 +21,7 @@ from pyocd_debug_mcp.artifact_collector import (
     _validate_destination,
     collect_artifacts,
 )
+from pyocd_debug_mcp.flash_image import FlashResult
 from pyocd_debug_mcp.kernel.finalizers import FinalizerValidationError, parse_finalizer
 from pyocd_debug_mcp.kernel.hygiene import cleanup_stale_owned_processes, require_clean_startup
 from pyocd_debug_mcp.kernel.operations import operation_timeout_seconds
@@ -408,7 +409,7 @@ class RoundFourRegressionTests(unittest.TestCase):
             resolve_request=lambda *_args: (_ for _ in ()).throw(
                 RuntimeError("x" * 350 + "FLASH-SUFFIX")
             ),
-            flash_target=lambda *_args: (Path("unused"), "running"),
+            flash_target=lambda *_args: (Path("unused"), FlashResult(((0, 1),), "running")),
             error_code=lambda _exc: "flash/test",
         )
         with self.assertRaisesRegex(RuntimeError, "FLASH-SUFFIX"):

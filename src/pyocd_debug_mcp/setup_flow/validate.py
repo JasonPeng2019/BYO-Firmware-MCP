@@ -152,6 +152,9 @@ class ValidationBackend:
     # Kept as a shared backend service for setup/status callers. BoardValidator never invokes it.
     capture_serial: Callable[[ValidationSerial, int, float, int], str]
     close: Callable[[object], None]
+    # Only an exact, currently assigned live connection may depart from the
+    # saved profile's transport provider. This grants no identity/map readiness.
+    active_connection_id: Callable[[str], str | None] = lambda _board: None
 
 
 @dataclass(frozen=True, slots=True)
@@ -503,7 +506,7 @@ class BoardValidator:
             status, code, message = (
                 "validation_blocked",
                 "validation/target-locked",
-                f"The target is locked. Use the separate unlock plan, then validate again: {exc}",
+                f"The target is locked; validation did not erase or unlock it: {exc}",
             )
         except TargetConnectionError as exc:
             status, code, message = (
@@ -561,10 +564,19 @@ class BoardValidator:
         inventory: ValidationInventory,
         selected_id: str | None,
     ) -> tuple[ValidationProbe, tuple[FriendlyChoice, ...]]:
+        active_id = self._backend.active_connection_id(profile.board_id)
         compatible = [
             probe
             for probe in inventory.probes
             if probe.probe_family.casefold() == profile.board.probe_family.casefold()
+            or (
+                active_id is not None
+                and selected_id == active_id
+                and (
+                    _canonical_assignment_matches_probe(active_id, probe)
+                    or active_id == probe.probe_id
+                )
+            )
         ]
         if not compatible:
             raise ValidationBackendError(

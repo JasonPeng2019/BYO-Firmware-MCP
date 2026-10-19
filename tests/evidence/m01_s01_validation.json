@@ -1,0 +1,1161 @@
+{
+  "schema": "m01-s01-independent-validation/v1",
+  "lane_id": "m01-validate-s01",
+  "run_id": "f542c030cc364c0488cb77c5ff8535de",
+  "base": "a870d4b74e507f16822148980ea2cdae1a02ef2e",
+  "source_tree": "d88df68ec47acc3efabb5b104fcf91cc19b9e187",
+  "overlay_commit_excluded": "7c4d0781ca62bb0529f49b6e7cf15deb142b538e",
+  "external_evidence_root": "C:\\Users\\Jason\\Documents\\Jason\\FirmCLI-10-12\\.harness-runtime\\campaigns\\product-repair\\checks\\m01-validate-s01",
+  "verdict": "PASS within deterministic host scope; semantic follow-up and ROOT module acceptance pending",
+  "commands": [
+    {
+      "argv": [
+        "uv",
+        "run",
+        "--locked",
+        "ruff",
+        "format",
+        "tests/test_m01_s01_public_session.py",
+        "tests/m01_s01_evidence.py",
+        "tests/m01_s01_sensitivity.py"
+      ],
+      "cwd": "C:\\Users\\Jason\\Documents\\Jason\\FirmCLI-10-12\\.harness-runtime\\worktrees\\c2c5751c70b24a8c9e4a5fbd8073fd7e\\m01-validate-s01\\MCP_Server_Dev\\BYO-Firmware-MCP",
+      "started_utc": "2026-10-15T23:21:35.801044+00:00",
+      "ended_utc": "2026-10-15T23:21:35.947540+00:00",
+      "raw_exit": 0,
+      "log_sha256": "44b7183e1f210a4817679f52d6f965f5de6331fb1c9174e863b4b0fc479a3e24",
+      "record": "final-format-command.json",
+      "record_sha256": "cf8191792e49009413e950d98f60a908a451da5deb97f8354bffef434db78045",
+      "log": "final-format.log",
+      "unittest_summaries": []
+    },
+    {
+      "argv": [
+        "C:\\Users\\Jason\\Documents\\Jason\\FirmCLI-10-12\\.harness-runtime\\worktrees\\c2c5751c70b24a8c9e4a5fbd8073fd7e\\m01-validate-s01\\MCP_Server_Dev\\BYO-Firmware-MCP\\.venv\\Scripts\\python.exe",
+        "C:\\Users\\Jason\\Documents\\Jason\\FirmCLI-10-12\\.harness-runtime\\campaigns\\product-repair\\checks\\m01-validate-s01\\mutations\\final\\remove-refusal\\final-remove-refusal-control.py"
+      ],
+      "cwd": "C:\\Users\\Jason\\Documents\\Jason\\FirmCLI-10-12\\.harness-runtime\\worktrees\\c2c5751c70b24a8c9e4a5fbd8073fd7e\\m01-validate-s01\\MCP_Server_Dev\\BYO-Firmware-MCP",
+      "started_utc": "2026-10-15T23:22:26.773618+00:00",
+      "ended_utc": "2026-10-15T23:22:32.486265+00:00",
+      "raw_exit": 0,
+      "log_sha256": "6352b2cf675110d6b9e7da0033d44e0c6a19a2c6f5bebcf34f585629ec5128c3",
+      "record": "final-remove-refusal-control-command.json",
+      "record_sha256": "d59a4aba78f3dc080e95b53a80c8d7d3df1619c7e7e3b4b6babf867bbdaab121",
+      "log": "final-remove-refusal-control.log",
+      "unittest_summaries": [
+        "Ran 1 test in 2.072s",
+        "OK"
+      ]
+    },
+    {
+      "argv": [
+        "C:\\Users\\Jason\\Documents\\Jason\\FirmCLI-10-12\\.harness-runtime\\worktrees\\c2c5751c70b24a8c9e4a5fbd8073fd7e\\m01-validate-s01\\MCP_Server_Dev\\BYO-Firmware-MCP\\.venv\\Scripts\\python.exe",
+        "C:\\Users\\Jason\\Documents\\Jason\\FirmCLI-10-12\\.harness-runtime\\campaigns\\product-repair\\checks\\m01-validate-s01\\mutations\\final\\remove-refusal\\final-remove-refusal-locked.py"
+      ],
+      "cwd": "C:\\Users\\Jason\\Documents\\Jason\\FirmCLI-10-12\\.harness-runtime\\worktrees\\c2c5751c70b24a8c9e4a5fbd8073fd7e\\m01-validate-s01\\MCP_Server_Dev\\BYO-Firmware-MCP",
+      "started_utc": "2026-10-15T23:22:13.166109+00:00",
+      "ended_utc": "2026-10-15T23:22:26.659569+00:00",
+      "raw_exit": 1,
+      "log_sha256": "3ca28670477d2d885f50600b0f53ded06a5d3bd615742dc20be966efaff1066a",
+      "record": "final-remove-refusal-locked-command.json",
+      "record_sha256": "56704542b29471bd60e9d8a5a73c672ff2046664e43f942a6b8010c776246550",
+      "log": "final-remove-refusal-locked.log",
+      "unittest_summaries": [
+        "Ran 1 test in 9.003s",
+        "FAILED (failures=12)"
+      ]
+    },
+    {
+      "argv": [
+        "C:\\Users\\Jason\\Documents\\Jason\\FirmCLI-10-12\\.harness-runtime\\worktrees\\c2c5751c70b24a8c9e4a5fbd8073fd7e\\m01-validate-s01\\MCP_Server_Dev\\BYO-Firmware-MCP\\.venv\\Scripts\\python.exe",
+        "C:\\Users\\Jason\\Documents\\Jason\\FirmCLI-10-12\\.harness-runtime\\campaigns\\product-repair\\checks\\m01-validate-s01\\mutations\\final\\restore-default\\final-restore-default-control.py"
+      ],
+      "cwd": "C:\\Users\\Jason\\Documents\\Jason\\FirmCLI-10-12\\.harness-runtime\\worktrees\\c2c5751c70b24a8c9e4a5fbd8073fd7e\\m01-validate-s01\\MCP_Server_Dev\\BYO-Firmware-MCP",
+      "started_utc": "2026-10-15T23:22:06.623430+00:00",
+      "ended_utc": "2026-10-15T23:22:12.806109+00:00",
+      "raw_exit": 0,
+      "log_sha256": "4a63d422792d252355f0c5906a68953cbb972007e478c99eac3b249d23d03e18",
+      "record": "final-restore-default-control-command.json",
+      "record_sha256": "adb31c87de52cbfc98d5707555696c2d04c142ac75505409ab6e80ee8f871bf4",
+      "log": "final-restore-default-control.log",
+      "unittest_summaries": [
+        "Ran 1 test in 2.284s",
+        "OK"
+      ]
+    },
+    {
+      "argv": [
+        "C:\\Users\\Jason\\Documents\\Jason\\FirmCLI-10-12\\.harness-runtime\\worktrees\\c2c5751c70b24a8c9e4a5fbd8073fd7e\\m01-validate-s01\\MCP_Server_Dev\\BYO-Firmware-MCP\\.venv\\Scripts\\python.exe",
+        "C:\\Users\\Jason\\Documents\\Jason\\FirmCLI-10-12\\.harness-runtime\\campaigns\\product-repair\\checks\\m01-validate-s01\\mutations\\final\\restore-default\\final-restore-default-locked.py"
+      ],
+      "cwd": "C:\\Users\\Jason\\Documents\\Jason\\FirmCLI-10-12\\.harness-runtime\\worktrees\\c2c5751c70b24a8c9e4a5fbd8073fd7e\\m01-validate-s01\\MCP_Server_Dev\\BYO-Firmware-MCP",
+      "started_utc": "2026-10-15T23:21:52.858603+00:00",
+      "ended_utc": "2026-10-15T23:22:06.509410+00:00",
+      "raw_exit": 1,
+      "log_sha256": "e0b9364513f0503a2dc4a19701f3d9c986efa9d72f2fca32888578e2928050cd",
+      "record": "final-restore-default-locked-command.json",
+      "record_sha256": "1d192bfd0d707f22d1dbae9deb850ce1532e213975066d68f88ccc1e65fd6376",
+      "log": "final-restore-default-locked.log",
+      "unittest_summaries": [
+        "Ran 1 test in 9.089s",
+        "FAILED (failures=12)"
+      ]
+    },
+    {
+      "argv": [
+        "uv",
+        "run",
+        "--locked",
+        "pyright",
+        "tests/test_m01_s01_public_session.py",
+        "tests/m01_s01_evidence.py",
+        "tests/m01_s01_sensitivity.py"
+      ],
+      "cwd": "C:\\Users\\Jason\\Documents\\Jason\\FirmCLI-10-12\\.harness-runtime\\worktrees\\c2c5751c70b24a8c9e4a5fbd8073fd7e\\m01-validate-s01\\MCP_Server_Dev\\BYO-Firmware-MCP",
+      "started_utc": "2026-10-15T23:21:37.677351+00:00",
+      "ended_utc": "2026-10-15T23:21:41.508376+00:00",
+      "raw_exit": 1,
+      "log_sha256": "314cdbe8933aa846d7fcbe77cd57087ff2de979430bd40ca2d81a277787e70c4",
+      "record": "final-types-command.json",
+      "record_sha256": "1570a3d90e929f279e806c6f0affe00e35fe80a21371828ded5b2908357b6488",
+      "log": "final-types.log",
+      "unittest_summaries": []
+    },
+    {
+      "argv": [
+        "uv",
+        "run",
+        "--locked",
+        "python",
+        "-m",
+        "unittest",
+        "tests.test_m01_s01_public_session",
+        "-v"
+      ],
+      "cwd": "C:\\Users\\Jason\\Documents\\Jason\\FirmCLI-10-12\\.harness-runtime\\worktrees\\c2c5751c70b24a8c9e4a5fbd8073fd7e\\m01-validate-s01\\MCP_Server_Dev\\BYO-Firmware-MCP",
+      "started_utc": "2026-10-15T23:14:45.616709+00:00",
+      "ended_utc": "2026-10-15T23:15:17.540255+00:00",
+      "raw_exit": 1,
+      "log_sha256": "5fad60e2920b6c14cb59462e2d012fc043b663f54bc3699830207b708f775b80",
+      "record": "first-public-command.json",
+      "record_sha256": "60c0af97dd1a937fe63c28c000c6508bcf5ecaee6b0e255de36a25a7400ce42d",
+      "log": "first-public.log",
+      "unittest_summaries": [
+        "Ran 6 tests in 26.007s",
+        "FAILED (failures=13, errors=6)"
+      ]
+    },
+    {
+      "argv": [
+        "uv",
+        "run",
+        "--locked",
+        "python",
+        "-m",
+        "unittest",
+        "tests.test_m01_s01_public_session",
+        "tests.test_m01_independent_erase_dispatch",
+        "tests.test_m01_connect_auto_unlock",
+        "tests.test_swd_pyocd_jlink_multisession",
+        "tests.test_server_assignment_connect",
+        "tests.test_connection_promotion_transaction",
+        "tests.test_disconnect_cleanup",
+        "-v"
+      ],
+      "cwd": "C:\\Users\\Jason\\Documents\\Jason\\FirmCLI-10-12\\.harness-runtime\\worktrees\\c2c5751c70b24a8c9e4a5fbd8073fd7e\\m01-validate-s01\\MCP_Server_Dev\\BYO-Firmware-MCP",
+      "started_utc": "2026-10-15T23:19:19.192377+00:00",
+      "ended_utc": "2026-10-15T23:19:58.003039+00:00",
+      "raw_exit": 0,
+      "log_sha256": "53fdc9cbab7d63f269a7a9f6bcd413feeb2441b4fbce681754748d1155123b92",
+      "record": "focused-final-command.json",
+      "record_sha256": "0a968b317d7b321e917e16a7571d02e74c4ac1235fb663f29e93fe63cbf66b81",
+      "log": "focused-final.log",
+      "unittest_summaries": [
+        "Ran 63 tests in 33.896s",
+        "OK"
+      ]
+    },
+    {
+      "argv": [
+        "uv",
+        "run",
+        "--locked",
+        "ruff",
+        "format",
+        "--check",
+        "tests/test_m01_s01_public_session.py",
+        "tests/m01_s01_evidence.py",
+        "tests/m01_s01_sensitivity.py"
+      ],
+      "cwd": "C:\\Users\\Jason\\Documents\\Jason\\FirmCLI-10-12\\.harness-runtime\\worktrees\\c2c5751c70b24a8c9e4a5fbd8073fd7e\\m01-validate-s01\\MCP_Server_Dev\\BYO-Firmware-MCP",
+      "started_utc": "2026-10-15T23:22:14.004258+00:00",
+      "ended_utc": "2026-10-15T23:22:14.168763+00:00",
+      "raw_exit": 0,
+      "log_sha256": "eee76f865de5a9f2456950f710ae5d5f9b5bd0ea02aa54f614c5eed6642a0bfd",
+      "record": "format-check-final-command.json",
+      "record_sha256": "ed6494005284f591bede97f977b49f5391e3af2591a079cfacdbd50ab1e5a1d4",
+      "log": "format-check-final.log",
+      "unittest_summaries": []
+    },
+    {
+      "argv": [
+        "uv",
+        "run",
+        "--locked",
+        "ruff",
+        "format",
+        "tests/test_m01_s01_public_session.py",
+        "tests/m01_s01_evidence.py",
+        "tests/m01_s01_sensitivity.py"
+      ],
+      "cwd": "C:\\Users\\Jason\\Documents\\Jason\\FirmCLI-10-12\\.harness-runtime\\worktrees\\c2c5751c70b24a8c9e4a5fbd8073fd7e\\m01-validate-s01\\MCP_Server_Dev\\BYO-Firmware-MCP",
+      "started_utc": "2026-10-15T23:19:17.189975+00:00",
+      "ended_utc": "2026-10-15T23:19:17.349859+00:00",
+      "raw_exit": 0,
+      "log_sha256": "878d50bf4ab752ab41ae942ac518b87e744d994b21bb15dca142ed7a470b3b3a",
+      "record": "format-tests-command.json",
+      "record_sha256": "f8477ded0ec7d649f2e0e00a957ec36caea29eb5b0273c0ac40ea9e0415c11ad",
+      "log": "format-tests.log",
+      "unittest_summaries": []
+    },
+    {
+      "argv": [
+        "uv",
+        "run",
+        "--locked",
+        "python",
+        "-c",
+        "import json,sys,pyocd; from tests.test_m01_s01_public_session import import_identities; print(sys.version); print(pyocd.__version__); print(json.dumps(import_identities(),indent=2))"
+      ],
+      "cwd": "C:\\Users\\Jason\\Documents\\Jason\\FirmCLI-10-12\\.harness-runtime\\worktrees\\c2c5751c70b24a8c9e4a5fbd8073fd7e\\m01-validate-s01\\MCP_Server_Dev\\BYO-Firmware-MCP",
+      "started_utc": "2026-10-15T23:21:52.173981+00:00",
+      "ended_utc": "2026-10-15T23:21:56.394550+00:00",
+      "raw_exit": 0,
+      "log_sha256": "673eadfddb64b151f26669ce77e9912ba8a78aad067be42575bbd2fbe58a3971",
+      "record": "identities-command.json",
+      "record_sha256": "f070fa4a0c0202cdcde82b71883c2bb975f0ffd31ae38c138f3e0e94f4424afd",
+      "log": "identities.log",
+      "unittest_summaries": []
+    },
+    {
+      "argv": [
+        "uv",
+        "run",
+        "--locked",
+        "ruff",
+        "check",
+        "tests/test_m01_s01_public_session.py",
+        "tests/m01_s01_evidence.py",
+        "tests/m01_s01_sensitivity.py"
+      ],
+      "cwd": "C:\\Users\\Jason\\Documents\\Jason\\FirmCLI-10-12\\.harness-runtime\\worktrees\\c2c5751c70b24a8c9e4a5fbd8073fd7e\\m01-validate-s01\\MCP_Server_Dev\\BYO-Firmware-MCP",
+      "started_utc": "2026-10-15T23:22:13.943719+00:00",
+      "ended_utc": "2026-10-15T23:22:14.095689+00:00",
+      "raw_exit": 0,
+      "log_sha256": "82b3e6a6c090a57601d22943bd23fca9218d1031dbe5a7b754092f9a156b4f18",
+      "record": "lint-final-command.json",
+      "record_sha256": "0468d37175ca6c4398662ad7729d0107c7206a5490a61ce6fea07dbaf94118e2",
+      "log": "lint-final.log",
+      "unittest_summaries": []
+    },
+    {
+      "argv": [
+        "uv",
+        "run",
+        "--locked",
+        "ruff",
+        "check",
+        "tests/test_m01_s01_public_session.py",
+        "tests/m01_s01_evidence.py",
+        "tests/m01_s01_sensitivity.py"
+      ],
+      "cwd": "C:\\Users\\Jason\\Documents\\Jason\\FirmCLI-10-12\\.harness-runtime\\worktrees\\c2c5751c70b24a8c9e4a5fbd8073fd7e\\m01-validate-s01\\MCP_Server_Dev\\BYO-Firmware-MCP",
+      "started_utc": "2026-10-15T23:19:09.262630+00:00",
+      "ended_utc": "2026-10-15T23:19:09.427972+00:00",
+      "raw_exit": 0,
+      "log_sha256": "82b3e6a6c090a57601d22943bd23fca9218d1031dbe5a7b754092f9a156b4f18",
+      "record": "lint-first-command.json",
+      "record_sha256": "4eddc9437c38b65cc82bb7e2844aad5c3e76f1de57eb52a290e54c8b8f858d86",
+      "log": "lint-first.log",
+      "unittest_summaries": []
+    },
+    {
+      "argv": [
+        "uv",
+        "run",
+        "--locked",
+        "python",
+        "-c",
+        "import asyncio,json; from tests.tiered_acceptance_support import isolated_project,tiered_test_server; p=isolated_project(); root=p.__enter__(); s=tiered_test_server(root); server=s.__enter__(); print(json.dumps([x.model_dump() for x in asyncio.run(server.mcp.list_tools()) if x.name == 'connect_under_reset-plan'],indent=2)); s.__exit__(None,None,None); p.__exit__(None,None,None)"
+      ],
+      "cwd": "C:\\Users\\Jason\\Documents\\Jason\\FirmCLI-10-12\\.harness-runtime\\worktrees\\c2c5751c70b24a8c9e4a5fbd8073fd7e\\m01-validate-s01\\MCP_Server_Dev\\BYO-Firmware-MCP",
+      "started_utc": "2026-10-15T23:15:37.962064+00:00",
+      "ended_utc": "2026-10-15T23:15:42.554532+00:00",
+      "raw_exit": 0,
+      "log_sha256": "481b91ebc12a3149df733c589195a8c7096e354f0ea40094447c4f97079a0f2d",
+      "record": "plan-inspection-command.json",
+      "record_sha256": "a50c4d903b6f7894992fa76e4eee5ca44862e9a2fbd8b933ca5047ec68cc7832",
+      "log": "plan-inspection.log",
+      "unittest_summaries": []
+    },
+    {
+      "argv": [
+        "uv",
+        "run",
+        "--locked",
+        "python",
+        "-m",
+        "unittest",
+        "tests.test_swd_process_isolation",
+        "-v"
+      ],
+      "cwd": "C:\\Users\\Jason\\Documents\\Jason\\FirmCLI-10-12\\.harness-runtime\\worktrees\\c2c5751c70b24a8c9e4a5fbd8073fd7e\\m01-validate-s01\\MCP_Server_Dev\\BYO-Firmware-MCP",
+      "started_utc": "2026-10-15T23:19:48.162511+00:00",
+      "ended_utc": "2026-10-15T23:20:08.039930+00:00",
+      "raw_exit": 0,
+      "log_sha256": "1ed9b3e312089b43d6333dfb6dcc1891a540f6c7ba2f54b9721cc8816d872f97",
+      "record": "process-connection-command.json",
+      "record_sha256": "e3cdfc06a986c27a47580fc82937f39ad199f8c93b32223b976b49c3346f1025",
+      "log": "process-connection.log",
+      "unittest_summaries": [
+        "Ran 32 tests in 18.898s",
+        "OK"
+      ]
+    },
+    {
+      "argv": [
+        "uv",
+        "run",
+        "--locked",
+        "python",
+        "-c",
+        "import inspect, sys, pyocd; from pyocd.core.session import Session; from pyocd.target.family.target_nRF52 import NRF52; from pyocd.coresight.coresight_target import CoreSightTarget; from pyocd.flash.eraser import FlashEraser; print(sys.version); print(pyocd.__version__); print(inspect.getfile(Session)); print(inspect.getsource(Session.__init__)); print(inspect.getsource(Session._get_config)); print(inspect.getsource(NRF52.check_flash_security)); print(inspect.getsource(NRF52.is_locked)); print(inspect.getsource(NRF52.mass_erase)); print(inspect.getsource(NRF52.persist_unlock)); print(inspect.getsource(CoreSightTarget.check_for_cores)); print(inspect.getsource(FlashEraser.erase))"
+      ],
+      "cwd": "C:\\Users\\Jason\\Documents\\Jason\\FirmCLI-10-12\\.harness-runtime\\worktrees\\c2c5751c70b24a8c9e4a5fbd8073fd7e\\m01-validate-s01\\MCP_Server_Dev\\BYO-Firmware-MCP",
+      "started_utc": "2026-10-15T23:12:17.389206+00:00",
+      "ended_utc": "2026-10-15T23:12:22.442632+00:00",
+      "raw_exit": 0,
+      "log_sha256": "91f825fcc4a6f43e566b625f7eac02bcf7dd94e4c6068e1c9a195a0bca810a15",
+      "record": "pyocd-inspection-command.json",
+      "record_sha256": "127f55f5ee1dc2c590b2760d9b7774848f24e689e4ac299ee94c3c9122b70e84",
+      "log": "pyocd-inspection.log",
+      "unittest_summaries": []
+    },
+    {
+      "argv": [
+        "C:\\Users\\Jason\\Documents\\Jason\\FirmCLI-10-12\\.harness-runtime\\worktrees\\c2c5751c70b24a8c9e4a5fbd8073fd7e\\m01-validate-s01\\MCP_Server_Dev\\BYO-Firmware-MCP\\.venv\\Scripts\\python.exe",
+        "C:\\Users\\Jason\\Documents\\Jason\\FirmCLI-10-12\\.harness-runtime\\campaigns\\product-repair\\checks\\m01-validate-s01\\mutations\\remove-refusal\\remove-refusal-control.py"
+      ],
+      "cwd": "C:\\Users\\Jason\\Documents\\Jason\\FirmCLI-10-12\\.harness-runtime\\worktrees\\c2c5751c70b24a8c9e4a5fbd8073fd7e\\m01-validate-s01\\MCP_Server_Dev\\BYO-Firmware-MCP",
+      "started_utc": "2026-10-15T23:20:22.240227+00:00",
+      "ended_utc": "2026-10-15T23:20:28.029094+00:00",
+      "raw_exit": 0,
+      "log_sha256": "162422875f602b2b6094cfdf2e9bd902bc20f0c853c2447b11ede052ebc6c428",
+      "record": "remove-refusal-control-command.json",
+      "record_sha256": "7eb9dcfdeb10d17b89ce4dd794bfd7f6f21054084c05dd98801139a4dcd71e7d",
+      "log": "remove-refusal-control.log",
+      "unittest_summaries": [
+        "Ran 1 test in 2.320s",
+        "OK"
+      ]
+    },
+    {
+      "argv": [
+        "C:\\Users\\Jason\\Documents\\Jason\\FirmCLI-10-12\\.harness-runtime\\worktrees\\c2c5751c70b24a8c9e4a5fbd8073fd7e\\m01-validate-s01\\MCP_Server_Dev\\BYO-Firmware-MCP\\.venv\\Scripts\\python.exe",
+        "C:\\Users\\Jason\\Documents\\Jason\\FirmCLI-10-12\\.harness-runtime\\campaigns\\product-repair\\checks\\m01-validate-s01\\mutations\\remove-refusal\\remove-refusal-locked.py"
+      ],
+      "cwd": "C:\\Users\\Jason\\Documents\\Jason\\FirmCLI-10-12\\.harness-runtime\\worktrees\\c2c5751c70b24a8c9e4a5fbd8073fd7e\\m01-validate-s01\\MCP_Server_Dev\\BYO-Firmware-MCP",
+      "started_utc": "2026-10-15T23:20:09.564621+00:00",
+      "ended_utc": "2026-10-15T23:20:22.136960+00:00",
+      "raw_exit": 1,
+      "log_sha256": "26f36be9b77d61b8ae7817d3eb1bd9c9142e2c1c03ab4c2b026302c40b0a67a9",
+      "record": "remove-refusal-locked-command.json",
+      "record_sha256": "06cbd0e34fc2c6baab53bed91b3de5ffeaef40389df2ba4dfdb0470d9099e007",
+      "log": "remove-refusal-locked.log",
+      "unittest_summaries": [
+        "Ran 1 test in 8.469s",
+        "FAILED (failures=12)"
+      ]
+    },
+    {
+      "argv": [
+        "C:\\Users\\Jason\\Documents\\Jason\\FirmCLI-10-12\\.harness-runtime\\worktrees\\c2c5751c70b24a8c9e4a5fbd8073fd7e\\m01-validate-s01\\MCP_Server_Dev\\BYO-Firmware-MCP\\.venv\\Scripts\\python.exe",
+        "C:\\Users\\Jason\\Documents\\Jason\\FirmCLI-10-12\\.harness-runtime\\campaigns\\product-repair\\checks\\m01-validate-s01\\mutations\\restore-default\\restore-default-control.py"
+      ],
+      "cwd": "C:\\Users\\Jason\\Documents\\Jason\\FirmCLI-10-12\\.harness-runtime\\worktrees\\c2c5751c70b24a8c9e4a5fbd8073fd7e\\m01-validate-s01\\MCP_Server_Dev\\BYO-Firmware-MCP",
+      "started_utc": "2026-10-15T23:20:03.201043+00:00",
+      "ended_utc": "2026-10-15T23:20:09.271685+00:00",
+      "raw_exit": 0,
+      "log_sha256": "b0a6e108fa48d6827c1604d2f0132311d0d537c7e3b3789109be9c2d0ef143b0",
+      "record": "restore-default-control-command.json",
+      "record_sha256": "3ce1298ddf334576fe1869bb59cd3c6dd8606cb5572e01bc6a9a4d59d2dde469",
+      "log": "restore-default-control.log",
+      "unittest_summaries": [
+        "Ran 1 test in 2.272s",
+        "OK"
+      ]
+    },
+    {
+      "argv": [
+        "C:\\Users\\Jason\\Documents\\Jason\\FirmCLI-10-12\\.harness-runtime\\worktrees\\c2c5751c70b24a8c9e4a5fbd8073fd7e\\m01-validate-s01\\MCP_Server_Dev\\BYO-Firmware-MCP\\.venv\\Scripts\\python.exe",
+        "C:\\Users\\Jason\\Documents\\Jason\\FirmCLI-10-12\\.harness-runtime\\campaigns\\product-repair\\checks\\m01-validate-s01\\mutations\\restore-default\\restore-default-locked.py"
+      ],
+      "cwd": "C:\\Users\\Jason\\Documents\\Jason\\FirmCLI-10-12\\.harness-runtime\\worktrees\\c2c5751c70b24a8c9e4a5fbd8073fd7e\\m01-validate-s01\\MCP_Server_Dev\\BYO-Firmware-MCP",
+      "started_utc": "2026-10-15T23:19:48.778806+00:00",
+      "ended_utc": "2026-10-15T23:20:03.095037+00:00",
+      "raw_exit": 1,
+      "log_sha256": "56ea81573f538449cc8ae45eab55952a0406803689e94c4e35d487192912b847",
+      "record": "restore-default-locked-command.json",
+      "record_sha256": "5c786c707756de5bdec1fdc5323722b3f68c027c0237ac1b4a677ef3c1c1a2cb",
+      "log": "restore-default-locked.log",
+      "unittest_summaries": [
+        "Ran 1 test in 9.689s",
+        "FAILED (failures=12)"
+      ]
+    },
+    {
+      "argv": [
+        "uv",
+        "run",
+        "--locked",
+        "python",
+        "-m",
+        "unittest",
+        "tests.test_m01_s01_public_session",
+        "-v"
+      ],
+      "cwd": "C:\\Users\\Jason\\Documents\\Jason\\FirmCLI-10-12\\.harness-runtime\\worktrees\\c2c5751c70b24a8c9e4a5fbd8073fd7e\\m01-validate-s01\\MCP_Server_Dev\\BYO-Firmware-MCP",
+      "started_utc": "2026-10-15T23:16:35.432506+00:00",
+      "ended_utc": "2026-10-15T23:16:49.287031+00:00",
+      "raw_exit": 1,
+      "log_sha256": "32dd4e80f4db85705c5edeefab4f60d8e740207ec4215ed36e64e89c4e860594",
+      "record": "second-public-command.json",
+      "record_sha256": "a9e9bb3f5006a372a18e19a8660b0715b23d7c1a57479f929db8a7c96377a76c",
+      "log": "second-public.log",
+      "unittest_summaries": [
+        "Ran 6 tests in 10.273s",
+        "FAILED (failures=5, errors=3)"
+      ]
+    },
+    {
+      "argv": [
+        "uv",
+        "run",
+        "--locked",
+        "python",
+        "tests/m01_s01_sensitivity.py"
+      ],
+      "cwd": "C:\\Users\\Jason\\Documents\\Jason\\FirmCLI-10-12\\.harness-runtime\\worktrees\\c2c5751c70b24a8c9e4a5fbd8073fd7e\\m01-validate-s01\\MCP_Server_Dev\\BYO-Firmware-MCP",
+      "started_utc": "2026-10-15T23:19:48.161292+00:00",
+      "ended_utc": "2026-10-15T23:20:28.148664+00:00",
+      "raw_exit": 0,
+      "log_sha256": "241ac639e59b49a79473423806c3bf30e87f911a6ceb5d76c792662bbba2b9be",
+      "record": "sensitivity-command.json",
+      "record_sha256": "50dab1a9720d0fcf9b51c38b6dfdc817cb41fdbf6493d6ed64cbe36580bc46a7",
+      "log": "sensitivity.log",
+      "unittest_summaries": [
+        "Ran 1 test in 9.689s",
+        "FAILED (failures=12)",
+        "Ran 1 test in 2.272s",
+        "OK",
+        "Ran 1 test in 8.469s",
+        "FAILED (failures=12)",
+        "Ran 1 test in 2.320s",
+        "OK"
+      ]
+    },
+    {
+      "argv": [
+        "uv",
+        "run",
+        "--locked",
+        "python",
+        "tests/m01_s01_sensitivity.py",
+        "final"
+      ],
+      "cwd": "C:\\Users\\Jason\\Documents\\Jason\\FirmCLI-10-12\\.harness-runtime\\worktrees\\c2c5751c70b24a8c9e4a5fbd8073fd7e\\m01-validate-s01\\MCP_Server_Dev\\BYO-Firmware-MCP",
+      "started_utc": "2026-10-15T23:21:52.191863+00:00",
+      "ended_utc": "2026-10-15T23:22:32.601393+00:00",
+      "raw_exit": 0,
+      "log_sha256": "f3bf71e3c65348b610c54687077597f546b6d9856ff10f4cc14ebe5bd064cca0",
+      "record": "sensitivity-final-command.json",
+      "record_sha256": "143962bb9a3846ef946a166be3a5d205c85ff4935096a22e7d6a3017c52da671",
+      "log": "sensitivity-final.log",
+      "unittest_summaries": [
+        "Ran 1 test in 9.089s",
+        "FAILED (failures=12)",
+        "Ran 1 test in 2.284s",
+        "OK",
+        "Ran 1 test in 9.003s",
+        "FAILED (failures=12)",
+        "Ran 1 test in 2.072s",
+        "OK"
+      ]
+    },
+    {
+      "argv": [
+        "uv",
+        "sync",
+        "--locked"
+      ],
+      "cwd": "C:\\Users\\Jason\\Documents\\Jason\\FirmCLI-10-12\\.harness-runtime\\worktrees\\c2c5751c70b24a8c9e4a5fbd8073fd7e\\m01-validate-s01\\MCP_Server_Dev\\BYO-Firmware-MCP",
+      "started_utc": "2026-10-15T23:11:52.165651+00:00",
+      "ended_utc": "2026-10-15T23:12:02.282357+00:00",
+      "raw_exit": 0,
+      "log_sha256": "07787a659dff9b264364ae81da33e82790003293e48ea608d69b12f6f58e9a4f",
+      "record": "sync-command.json",
+      "record_sha256": "06adfe5b7184316335baf45fb24fa4d21fca2be0c137c5006729fb38bdbed0fa",
+      "log": "sync.log",
+      "unittest_summaries": []
+    },
+    {
+      "argv": [
+        "uv",
+        "run",
+        "--locked",
+        "python",
+        "-m",
+        "unittest",
+        "tests.test_m01_s01_public_session",
+        "-v"
+      ],
+      "cwd": "C:\\Users\\Jason\\Documents\\Jason\\FirmCLI-10-12\\.harness-runtime\\worktrees\\c2c5751c70b24a8c9e4a5fbd8073fd7e\\m01-validate-s01\\MCP_Server_Dev\\BYO-Firmware-MCP",
+      "started_utc": "2026-10-15T23:17:45.921030+00:00",
+      "ended_utc": "2026-10-15T23:18:01.026322+00:00",
+      "raw_exit": 0,
+      "log_sha256": "306c77ecb5a0d36d2982a36e1b43e67322368659986fb6080b8c277ae804d7a1",
+      "record": "third-public-command.json",
+      "record_sha256": "a067ff10366633a57da0db9c5c342e5ca0b1640065a09891faf047fcf8a52e1e",
+      "log": "third-public.log",
+      "unittest_summaries": [
+        "Ran 6 tests in 11.215s",
+        "OK"
+      ]
+    },
+    {
+      "argv": [
+        "uv",
+        "run",
+        "--locked",
+        "pyright",
+        "tests/test_m01_s01_public_session.py",
+        "tests/m01_s01_evidence.py",
+        "tests/m01_s01_sensitivity.py"
+      ],
+      "cwd": "C:\\Users\\Jason\\Documents\\Jason\\FirmCLI-10-12\\.harness-runtime\\worktrees\\c2c5751c70b24a8c9e4a5fbd8073fd7e\\m01-validate-s01\\MCP_Server_Dev\\BYO-Firmware-MCP",
+      "started_utc": "2026-10-15T23:19:48.137897+00:00",
+      "ended_utc": "2026-10-15T23:19:52.617150+00:00",
+      "raw_exit": 1,
+      "log_sha256": "d4f473fa00ea67ba683911ec3586713e352e711b848043f9eb3c551be40373fa",
+      "record": "types-command.json",
+      "record_sha256": "d17a3203c22b313fbef08f4ad60e8e484eb86c156fd7b7a3d44efd7bae8a9caf",
+      "log": "types.log",
+      "unittest_summaries": []
+    },
+    {
+      "argv": [
+        "uv",
+        "run",
+        "--locked",
+        "python",
+        "-m",
+        "unittest",
+        "tests.test_m01_s01_public_session",
+        "tests.test_m01_independent_erase_dispatch",
+        "-v"
+      ],
+      "cwd": "C:\\Users\\Jason\\Documents\\Jason\\FirmCLI-10-12\\.harness-runtime\\worktrees\\c2c5751c70b24a8c9e4a5fbd8073fd7e\\m01-validate-s01\\MCP_Server_Dev\\BYO-Firmware-MCP",
+      "started_utc": "2026-10-15T23:21:52.170367+00:00",
+      "ended_utc": "2026-10-15T23:22:28.166088+00:00",
+      "raw_exit": 0,
+      "log_sha256": "c28303f7f028939dba120c36bc68cfcfa20e5ad4bd45955f7bda5a5ab636634b",
+      "record": "verification-command.json",
+      "record_sha256": "6894d1a188da8e5cab5511bf525fd21e174b6763b89e6260def46f1b4822c497",
+      "log": "verification.log",
+      "unittest_summaries": [
+        "Ran 12 tests in 31.758s",
+        "OK"
+      ]
+    },
+    {
+      "argv": [
+        "uv",
+        "run",
+        "--locked",
+        "pyright",
+        "tests/test_m01_s01_public_session.py",
+        "tests/m01_s01_evidence.py",
+        "tests/m01_s01_sensitivity.py"
+      ],
+      "cwd": "C:\\Users\\Jason\\Documents\\Jason\\FirmCLI-10-12\\.harness-runtime\\worktrees\\c2c5751c70b24a8c9e4a5fbd8073fd7e\\m01-validate-s01\\MCP_Server_Dev\\BYO-Firmware-MCP",
+      "started_utc": "2026-10-15T23:21:52.142067+00:00",
+      "ended_utc": "2026-10-15T23:21:56.623319+00:00",
+      "raw_exit": 0,
+      "log_sha256": "409bc8d9797bc7e7def87688b2db69573b00762f489cbd34c52af51c1a293815",
+      "record": "verified-types-command.json",
+      "record_sha256": "85e37363cad944b65aed1d372ac38497f9056e9f5989b15b85172e3c116b8bad",
+      "log": "verified-types.log",
+      "unittest_summaries": []
+    }
+  ],
+  "journals": [
+    {
+      "label": "verification",
+      "fixture_runs": 22,
+      "eraseall_attempts": 1,
+      "uicr_writes": 0,
+      "all_writes": 4
+    },
+    {
+      "label": "final-restore-default-locked",
+      "fixture_runs": 12,
+      "eraseall_attempts": 12,
+      "uicr_writes": 12,
+      "all_writes": 60
+    },
+    {
+      "label": "final-remove-refusal-locked",
+      "fixture_runs": 12,
+      "eraseall_attempts": 0,
+      "uicr_writes": 0,
+      "all_writes": 0
+    },
+    {
+      "label": "final-restore-default-control",
+      "fixture_runs": 3,
+      "eraseall_attempts": 0,
+      "uicr_writes": 3,
+      "all_writes": 3
+    },
+    {
+      "label": "final-remove-refusal-control",
+      "fixture_runs": 3,
+      "eraseall_attempts": 0,
+      "uicr_writes": 0,
+      "all_writes": 0
+    }
+  ],
+  "artifacts": [
+    {
+      "path": "final-format-command.json",
+      "bytes": 16367,
+      "sha256": "cf8191792e49009413e950d98f60a908a451da5deb97f8354bffef434db78045"
+    },
+    {
+      "path": "final-format.log",
+      "bytes": 43,
+      "sha256": "44b7183e1f210a4817679f52d6f965f5de6331fb1c9174e863b4b0fc479a3e24"
+    },
+    {
+      "path": "final-remove-refusal-control-command.json",
+      "bytes": 16644,
+      "sha256": "d59a4aba78f3dc080e95b53a80c8d7d3df1619c7e7e3b4b6babf867bbdaab121"
+    },
+    {
+      "path": "final-remove-refusal-control-journal.jsonl",
+      "bytes": 2839,
+      "sha256": "6582a99fad8b2219bcb35becfee6ef1cf59869e4fd3cb44fe66a462b5644d5af"
+    },
+    {
+      "path": "final-remove-refusal-control.log",
+      "bytes": 4034,
+      "sha256": "6352b2cf675110d6b9e7da0033d44e0c6a19a2c6f5bebcf34f585629ec5128c3"
+    },
+    {
+      "path": "final-remove-refusal-locked-command.json",
+      "bytes": 16639,
+      "sha256": "56704542b29471bd60e9d8a5a73c672ff2046664e43f942a6b8010c776246550"
+    },
+    {
+      "path": "final-remove-refusal-locked-journal.jsonl",
+      "bytes": 10442,
+      "sha256": "26b6ba5bf01bfe05a76897493e313fe575d43ecd0f1fd7eb8c47d8d617313a39"
+    },
+    {
+      "path": "final-remove-refusal-locked.log",
+      "bytes": 22425,
+      "sha256": "3ca28670477d2d885f50600b0f53ded06a5d3bd615742dc20be966efaff1066a"
+    },
+    {
+      "path": "final-restore-default-control-command.json",
+      "bytes": 16650,
+      "sha256": "adb31c87de52cbfc98d5707555696c2d04c142ac75505409ab6e80ee8f871bf4"
+    },
+    {
+      "path": "final-restore-default-control-journal.jsonl",
+      "bytes": 2863,
+      "sha256": "f3ada0ce9dd8fb9cdb429e1cb97ae01f40ab89616c023128f187ea3eeaba70c4"
+    },
+    {
+      "path": "final-restore-default-control.log",
+      "bytes": 4038,
+      "sha256": "4a63d422792d252355f0c5906a68953cbb972007e478c99eac3b249d23d03e18"
+    },
+    {
+      "path": "final-restore-default-locked-command.json",
+      "bytes": 16645,
+      "sha256": "1d192bfd0d707f22d1dbae9deb850ce1532e213975066d68f88ccc1e65fd6376"
+    },
+    {
+      "path": "final-restore-default-locked-journal.jsonl",
+      "bytes": 12220,
+      "sha256": "ed01ec16ca56999aebfd6c4084807a55b9d6f24b0705aacab6d312ea541bf255"
+    },
+    {
+      "path": "final-restore-default-locked.log",
+      "bytes": 21265,
+      "sha256": "e0b9364513f0503a2dc4a19701f3d9c986efa9d72f2fca32888578e2928050cd"
+    },
+    {
+      "path": "final-sensitivity-outcomes.json",
+      "bytes": 357,
+      "sha256": "2cdddeda1e041e0f336b68b855ba0753ae50b34cc097bb9331d2a0fd32e96f8b"
+    },
+    {
+      "path": "final-types-command.json",
+      "bytes": 16351,
+      "sha256": "1570a3d90e929f279e806c6f0affe00e35fe80a21371828ded5b2908357b6488"
+    },
+    {
+      "path": "final-types.log",
+      "bytes": 5178,
+      "sha256": "314cdbe8933aa846d7fcbe77cd57087ff2de979430bd40ca2d81a277787e70c4"
+    },
+    {
+      "path": "first-public-command.json",
+      "bytes": 16213,
+      "sha256": "60c0af97dd1a937fe63c28c000c6508bcf5ecaee6b0e255de36a25a7400ce42d"
+    },
+    {
+      "path": "first-public-journal.jsonl",
+      "bytes": 11166,
+      "sha256": "7bfa0941760e0fa1b5f956503268b15286688d90b19be23135d94f8b3484ea29"
+    },
+    {
+      "path": "first-public.log",
+      "bytes": 61539,
+      "sha256": "5fad60e2920b6c14cb59462e2d012fc043b663f54bc3699830207b708f775b80"
+    },
+    {
+      "path": "focused-final-command.json",
+      "bytes": 16599,
+      "sha256": "0a968b317d7b321e917e16a7571d02e74c4ac1235fb663f29e93fe63cbf66b81"
+    },
+    {
+      "path": "focused-final-journal.jsonl",
+      "bytes": 20716,
+      "sha256": "1b350e2410aa7105313ef017a1b1f93993d6954334e48443b917c431602cfa93"
+    },
+    {
+      "path": "focused-final.log",
+      "bytes": 15596,
+      "sha256": "53fdc9cbab7d63f269a7a9f6bcd413feeb2441b4fbce681754748d1155123b92"
+    },
+    {
+      "path": "format-check-final-command.json",
+      "bytes": 16407,
+      "sha256": "ed6494005284f591bede97f977b49f5391e3af2591a079cfacdbd50ab1e5a1d4"
+    },
+    {
+      "path": "format-check-final.log",
+      "bytes": 26,
+      "sha256": "eee76f865de5a9f2456950f710ae5d5f9b5bd0ea02aa54f614c5eed6642a0bfd"
+    },
+    {
+      "path": "format-tests-command.json",
+      "bytes": 16367,
+      "sha256": "f8477ded0ec7d649f2e0e00a957ec36caea29eb5b0273c0ac40ea9e0415c11ad"
+    },
+    {
+      "path": "format-tests.log",
+      "bytes": 20,
+      "sha256": "878d50bf4ab752ab41ae942ac518b87e744d994b21bb15dca142ed7a470b3b3a"
+    },
+    {
+      "path": "identities-command.json",
+      "bytes": 16431,
+      "sha256": "f070fa4a0c0202cdcde82b71883c2bb975f0ffd31ae38c138f3e0e94f4424afd"
+    },
+    {
+      "path": "identities.log",
+      "bytes": 3610,
+      "sha256": "673eadfddb64b151f26669ce77e9912ba8a78aad067be42575bbd2fbe58a3971"
+    },
+    {
+      "path": "lint-final-command.json",
+      "bytes": 16358,
+      "sha256": "0468d37175ca6c4398662ad7729d0107c7206a5490a61ce6fea07dbaf94118e2"
+    },
+    {
+      "path": "lint-final.log",
+      "bytes": 19,
+      "sha256": "82b3e6a6c090a57601d22943bd23fca9218d1031dbe5a7b754092f9a156b4f18"
+    },
+    {
+      "path": "lint-first-command.json",
+      "bytes": 16358,
+      "sha256": "4eddc9437c38b65cc82bb7e2844aad5c3e76f1de57eb52a290e54c8b8f858d86"
+    },
+    {
+      "path": "lint-first.log",
+      "bytes": 19,
+      "sha256": "82b3e6a6c090a57601d22943bd23fca9218d1031dbe5a7b754092f9a156b4f18"
+    },
+    {
+      "path": "mutations/final/remove-refusal/change.diff",
+      "bytes": 1011,
+      "sha256": "54815f9151c50f08b004e9696d93da4a0ea91113271048a17923c0031c03974f"
+    },
+    {
+      "path": "mutations/final/remove-refusal/final-remove-refusal-control.py",
+      "bytes": 1243,
+      "sha256": "ce8f5abd5446ed37eed27c37814d030bd3b89b760f9fc73ced002c46e3ff282d"
+    },
+    {
+      "path": "mutations/final/remove-refusal/final-remove-refusal-locked.py",
+      "bytes": 1252,
+      "sha256": "7bc68580974f459de01db9e017b77b6ccada1c275f8b4fa9681c0c5ddde674e5"
+    },
+    {
+      "path": "mutations/final/remove-refusal/src/pyocd_debug_mcp/adapters/swd_pyocd.py",
+      "bytes": 49946,
+      "sha256": "71f92a53943ea303fddb93b92fdd4e77173cc029abea6ffd6cecba43c8eae8f9"
+    },
+    {
+      "path": "mutations/final/restore-default/change.diff",
+      "bytes": 584,
+      "sha256": "dd618737df0a0f5f7467be7e8cf51f66d71bb9f0bbcd4447a6c4ee1cd276905d"
+    },
+    {
+      "path": "mutations/final/restore-default/final-restore-default-control.py",
+      "bytes": 1245,
+      "sha256": "cf9db1e770982ac7827388cd048042b97f2396ca7be6ad5b91f1a1a849ffd114"
+    },
+    {
+      "path": "mutations/final/restore-default/final-restore-default-locked.py",
+      "bytes": 1254,
+      "sha256": "daa92ab148fca2a5935b8e36888fa30afd4753cd46da3bb6017f2dd51bbab57e"
+    },
+    {
+      "path": "mutations/final/restore-default/src/pyocd_debug_mcp/adapters/swd_pyocd.py",
+      "bytes": 50629,
+      "sha256": "16bc860f0bab4d5fd01e42f31c89b196c4cb471d6aa492185428be403d5c67d5"
+    },
+    {
+      "path": "mutations/remove-refusal/change.diff",
+      "bytes": 1011,
+      "sha256": "54815f9151c50f08b004e9696d93da4a0ea91113271048a17923c0031c03974f"
+    },
+    {
+      "path": "mutations/remove-refusal/remove-refusal-control.py",
+      "bytes": 1229,
+      "sha256": "7e26e6d9f845fad626c58fbd45e4f976fd1c34277d4839474b0c4485e6703da8"
+    },
+    {
+      "path": "mutations/remove-refusal/remove-refusal-locked.py",
+      "bytes": 1238,
+      "sha256": "1f9ef298a16b092b764338dcac4e1650ea0f0a7c6ece9e2ddaffe5965e29d5c7"
+    },
+    {
+      "path": "mutations/remove-refusal/src/pyocd_debug_mcp/adapters/swd_pyocd.py",
+      "bytes": 49946,
+      "sha256": "71f92a53943ea303fddb93b92fdd4e77173cc029abea6ffd6cecba43c8eae8f9"
+    },
+    {
+      "path": "mutations/restore-default/change.diff",
+      "bytes": 584,
+      "sha256": "dd618737df0a0f5f7467be7e8cf51f66d71bb9f0bbcd4447a6c4ee1cd276905d"
+    },
+    {
+      "path": "mutations/restore-default/restore-default-control.py",
+      "bytes": 1231,
+      "sha256": "9d5463edc8dc81d7a3c2dfc03674acab4221dd55ab3c2d5dc8b58ebcebd09bc8"
+    },
+    {
+      "path": "mutations/restore-default/restore-default-locked.py",
+      "bytes": 1240,
+      "sha256": "7ade91ac9d70c545026b81f38712218ece1c6c67f6f9ec0eb68242fb8ad50c79"
+    },
+    {
+      "path": "mutations/restore-default/src/pyocd_debug_mcp/adapters/swd_pyocd.py",
+      "bytes": 50629,
+      "sha256": "16bc860f0bab4d5fd01e42f31c89b196c4cb471d6aa492185428be403d5c67d5"
+    },
+    {
+      "path": "plan-inspection-command.json",
+      "bytes": 16544,
+      "sha256": "a50c4d903b6f7894992fa76e4eee5ca44862e9a2fbd8b933ca5047ec68cc7832"
+    },
+    {
+      "path": "plan-inspection.log",
+      "bytes": 4440,
+      "sha256": "481b91ebc12a3149df733c589195a8c7096e354f0ea40094447c4f97079a0f2d"
+    },
+    {
+      "path": "process-connection-command.json",
+      "bytes": 16342,
+      "sha256": "e3cdfc06a986c27a47580fc82937f39ad199f8c93b32223b976b49c3346f1025"
+    },
+    {
+      "path": "process-connection.log",
+      "bytes": 6415,
+      "sha256": "1ed9b3e312089b43d6333dfb6dcc1891a540f6c7ba2f54b9721cc8816d872f97"
+    },
+    {
+      "path": "pyocd-inspection-command.json",
+      "bytes": 16741,
+      "sha256": "127f55f5ee1dc2c590b2760d9b7774848f24e689e4ac299ee94c3c9122b70e84"
+    },
+    {
+      "path": "pyocd-inspection.log",
+      "bytes": 11009,
+      "sha256": "91f825fcc4a6f43e566b625f7eac02bcf7dd94e4c6068e1c9a195a0bca810a15"
+    },
+    {
+      "path": "remove-refusal-control-command.json",
+      "bytes": 16607,
+      "sha256": "7eb9dcfdeb10d17b89ce4dd794bfd7f6f21054084c05dd98801139a4dcd71e7d"
+    },
+    {
+      "path": "remove-refusal-control-journal.jsonl",
+      "bytes": 2839,
+      "sha256": "6582a99fad8b2219bcb35becfee6ef1cf59869e4fd3cb44fe66a462b5644d5af"
+    },
+    {
+      "path": "remove-refusal-control.log",
+      "bytes": 2867,
+      "sha256": "162422875f602b2b6094cfdf2e9bd902bc20f0c853c2447b11ede052ebc6c428"
+    },
+    {
+      "path": "remove-refusal-locked-command.json",
+      "bytes": 16602,
+      "sha256": "06cbd0e34fc2c6baab53bed91b3de5ffeaef40389df2ba4dfdb0470d9099e007"
+    },
+    {
+      "path": "remove-refusal-locked-journal.jsonl",
+      "bytes": 10442,
+      "sha256": "26b6ba5bf01bfe05a76897493e313fe575d43ecd0f1fd7eb8c47d8d617313a39"
+    },
+    {
+      "path": "remove-refusal-locked.log",
+      "bytes": 21258,
+      "sha256": "26f36be9b77d61b8ae7817d3eb1bd9c9142e2c1c03ab4c2b026302c40b0a67a9"
+    },
+    {
+      "path": "restore-default-control-command.json",
+      "bytes": 16613,
+      "sha256": "3ce1298ddf334576fe1869bb59cd3c6dd8606cb5572e01bc6a9a4d59d2dde469"
+    },
+    {
+      "path": "restore-default-control-journal.jsonl",
+      "bytes": 2863,
+      "sha256": "f3ada0ce9dd8fb9cdb429e1cb97ae01f40ab89616c023128f187ea3eeaba70c4"
+    },
+    {
+      "path": "restore-default-control.log",
+      "bytes": 2869,
+      "sha256": "b0a6e108fa48d6827c1604d2f0132311d0d537c7e3b3789109be9c2d0ef143b0"
+    },
+    {
+      "path": "restore-default-locked-command.json",
+      "bytes": 16608,
+      "sha256": "5c786c707756de5bdec1fdc5323722b3f68c027c0237ac1b4a677ef3c1c1a2cb"
+    },
+    {
+      "path": "restore-default-locked-journal.jsonl",
+      "bytes": 12220,
+      "sha256": "ed01ec16ca56999aebfd6c4084807a55b9d6f24b0705aacab6d312ea541bf255"
+    },
+    {
+      "path": "restore-default-locked.log",
+      "bytes": 20096,
+      "sha256": "56ea81573f538449cc8ae45eab55952a0406803689e94c4e35d487192912b847"
+    },
+    {
+      "path": "second-public-command.json",
+      "bytes": 16217,
+      "sha256": "a9e9bb3f5006a372a18e19a8660b0715b23d7c1a57479f929db8a7c96377a76c"
+    },
+    {
+      "path": "second-public-journal.jsonl",
+      "bytes": 12975,
+      "sha256": "1ff415057f1b7f7ed533a0014ed99752fcff6e316aa7981e52bb3504d5729a18"
+    },
+    {
+      "path": "second-public.log",
+      "bytes": 21510,
+      "sha256": "32dd4e80f4db85705c5edeefab4f60d8e740207ec4215ed36e64e89c4e860594"
+    },
+    {
+      "path": "sensitivity-command.json",
+      "bytes": 16271,
+      "sha256": "50dab1a9720d0fcf9b51c38b6dfdc817cb41fdbf6493d6ed64cbe36580bc46a7"
+    },
+    {
+      "path": "sensitivity-final-command.json",
+      "bytes": 16309,
+      "sha256": "143962bb9a3846ef946a166be3a5d205c85ff4935096a22e7d6a3017c52da671"
+    },
+    {
+      "path": "sensitivity-final.log",
+      "bytes": 52546,
+      "sha256": "f3bf71e3c65348b610c54687077597f546b6d9856ff10f4cc14ebe5bd064cca0"
+    },
+    {
+      "path": "sensitivity-outcomes.json",
+      "bytes": 357,
+      "sha256": "2cdddeda1e041e0f336b68b855ba0753ae50b34cc097bb9331d2a0fd32e96f8b"
+    },
+    {
+      "path": "sensitivity.log",
+      "bytes": 47850,
+      "sha256": "241ac639e59b49a79473423806c3bf30e87f911a6ceb5d76c792662bbba2b9be"
+    },
+    {
+      "path": "snapshots/009c9676ef0fa673f858949465e9fa67ea1e2ed3e86f063d1ebdffc53c7a385a.py",
+      "bytes": 19926,
+      "sha256": "009c9676ef0fa673f858949465e9fa67ea1e2ed3e86f063d1ebdffc53c7a385a"
+    },
+    {
+      "path": "snapshots/09043a31cd35d78b9375e57046e6f176adc5bb0268bef9933ae48a79ba7d3873.py",
+      "bytes": 25359,
+      "sha256": "09043a31cd35d78b9375e57046e6f176adc5bb0268bef9933ae48a79ba7d3873"
+    },
+    {
+      "path": "snapshots/1dff20f1465741f464d73d480885fb20fa2126bd78577579d91f6d26d5d88521.py",
+      "bytes": 4212,
+      "sha256": "1dff20f1465741f464d73d480885fb20fa2126bd78577579d91f6d26d5d88521"
+    },
+    {
+      "path": "snapshots/2245b5974d0736e86dd368f490ea7b44422977b73fc074dcd1c2796d3bd67b97.py",
+      "bytes": 22255,
+      "sha256": "2245b5974d0736e86dd368f490ea7b44422977b73fc074dcd1c2796d3bd67b97"
+    },
+    {
+      "path": "snapshots/268d4d7b11488cf1b8541e51b0578234c51aac41176cf901e14cfc0f800c3d84.py",
+      "bytes": 25642,
+      "sha256": "268d4d7b11488cf1b8541e51b0578234c51aac41176cf901e14cfc0f800c3d84"
+    },
+    {
+      "path": "snapshots/2b33628bf89bcded3f4b4523ca02da0aa906eb5be8afbdf42ff1670104827693.py",
+      "bytes": 4554,
+      "sha256": "2b33628bf89bcded3f4b4523ca02da0aa906eb5be8afbdf42ff1670104827693"
+    },
+    {
+      "path": "snapshots/50f56845bcec66e0f57b8897cbc9d0da8a8c3786dac26f2fbae07ada511614d8.py",
+      "bytes": 2608,
+      "sha256": "50f56845bcec66e0f57b8897cbc9d0da8a8c3786dac26f2fbae07ada511614d8"
+    },
+    {
+      "path": "snapshots/7a445573edc626a7e03009b783a46727eceab5575232bb8b0a1d7da608aa4de6.py",
+      "bytes": 24859,
+      "sha256": "7a445573edc626a7e03009b783a46727eceab5575232bb8b0a1d7da608aa4de6"
+    },
+    {
+      "path": "snapshots/8ccea27fa736845e0548379b8804b18b5a1794fd83805ec96256933d15b5d8d6.py",
+      "bytes": 2806,
+      "sha256": "8ccea27fa736845e0548379b8804b18b5a1794fd83805ec96256933d15b5d8d6"
+    },
+    {
+      "path": "snapshots/97e001081af552751772650b5ba6791a07ec2735b7e092599908f1c528bd509b.py",
+      "bytes": 25675,
+      "sha256": "97e001081af552751772650b5ba6791a07ec2735b7e092599908f1c528bd509b"
+    },
+    {
+      "path": "snapshots/aaf739847cd86ba1d0d3fcc1f4f11c7e1836f611b3aa3a32e402b032c7bbc33e.py",
+      "bytes": 4465,
+      "sha256": "aaf739847cd86ba1d0d3fcc1f4f11c7e1836f611b3aa3a32e402b032c7bbc33e"
+    },
+    {
+      "path": "snapshots/c353ad42a755719a70c02bbfe1a06ff63849f9ed8d2dd2d105280b6de4df89ec.py",
+      "bytes": 21929,
+      "sha256": "c353ad42a755719a70c02bbfe1a06ff63849f9ed8d2dd2d105280b6de4df89ec"
+    },
+    {
+      "path": "snapshots/cfcadcbea417b01c357d1aede7caa36759e843b52afed015181e4e72e55a0f4f.py",
+      "bytes": 2964,
+      "sha256": "cfcadcbea417b01c357d1aede7caa36759e843b52afed015181e4e72e55a0f4f"
+    },
+    {
+      "path": "snapshots/d72c080b6c65308fe681a6b6425b5196169d20cb66e3328031dd91b9e98d2e04.py",
+      "bytes": 22845,
+      "sha256": "d72c080b6c65308fe681a6b6425b5196169d20cb66e3328031dd91b9e98d2e04"
+    },
+    {
+      "path": "snapshots/ed456ed466d29ba57cc4bb1885b7a56377718ad727132e3fb2578544a395db3b.py",
+      "bytes": 16555,
+      "sha256": "ed456ed466d29ba57cc4bb1885b7a56377718ad727132e3fb2578544a395db3b"
+    },
+    {
+      "path": "sync-command.json",
+      "bytes": 15972,
+      "sha256": "06adfe5b7184316335baf45fb24fa4d21fca2be0c137c5006729fb38bdbed0fa"
+    },
+    {
+      "path": "sync.log",
+      "bytes": 1977,
+      "sha256": "07787a659dff9b264364ae81da33e82790003293e48ea608d69b12f6f58e9a4f"
+    },
+    {
+      "path": "third-public-command.json",
+      "bytes": 16213,
+      "sha256": "a067ff10366633a57da0db9c5c342e5ca0b1640065a09891faf047fcf8a52e1e"
+    },
+    {
+      "path": "third-public-journal.jsonl",
+      "bytes": 18000,
+      "sha256": "abed7658fd73e27b5bd94652cecfd55e7c799ff74bbbade498eea0c4f3b66a73"
+    },
+    {
+      "path": "third-public.log",
+      "bytes": 2906,
+      "sha256": "306c77ecb5a0d36d2982a36e1b43e67322368659986fb6080b8c277ae804d7a1"
+    },
+    {
+      "path": "types-command.json",
+      "bytes": 16327,
+      "sha256": "d17a3203c22b313fbef08f4ad60e8e484eb86c156fd7b7a3d44efd7bae8a9caf"
+    },
+    {
+      "path": "types.log",
+      "bytes": 3172,
+      "sha256": "d4f473fa00ea67ba683911ec3586713e352e711b848043f9eb3c551be40373fa"
+    },
+    {
+      "path": "verification-command.json",
+      "bytes": 16369,
+      "sha256": "6894d1a188da8e5cab5511bf525fd21e174b6763b89e6260def46f1b4822c497"
+    },
+    {
+      "path": "verification-journal.jsonl",
+      "bytes": 20716,
+      "sha256": "1b350e2410aa7105313ef017a1b1f93993d6954334e48443b917c431602cfa93"
+    },
+    {
+      "path": "verification.log",
+      "bytes": 4508,
+      "sha256": "c28303f7f028939dba120c36bc68cfcfa20e5ad4bd45955f7bda5a5ab636634b"
+    },
+    {
+      "path": "verified-types-command.json",
+      "bytes": 16363,
+      "sha256": "85e37363cad944b65aed1d372ac38497f9056e9f5989b15b85172e3c116b8bad"
+    },
+    {
+      "path": "verified-types.log",
+      "bytes": 194,
+      "sha256": "409bc8d9797bc7e7def87688b2db69573b00762f489cbd34c52af51c1a293815"
+    }
+  ],
+  "final_test_sha256": "97e001081af552751772650b5ba6791a07ec2735b7e092599908f1c528bd509b",
+  "qualifications": [
+    "Public dispatch uses in-process real PyOCDSWDInterface and real target_control, not production worker pipes or live hardware.",
+    "Native Session constructor/configuration with probe is real. Session.open lifecycle and unavailable-AP/core discovery are boundary simulations. Real NRF52.is_locked/check_flash_security/mass_erase/persist_unlock and CoreSightTarget.check_for_cores run unmodified.",
+    "Initial first-public exploratory configured routes used read-only production probe enumeration (UID 683854191); fake selected sessions failed construction before open. Subsequent tests isolate enumeration. No target session/hardware write/protection change or live grant occurred.",
+    "Initial first/second-public failures and two pyright failures are retained; no production failure was established by those fixture/type mistakes.",
+    "Earlier sensitivity identity output identified contextlib for the decorated fixture; final identities use inspect.unwrap and identify actual tiered_acceptance_support.py.",
+    "Initial snapshot reconstruction diagnostics failed (Windows path key, then two hash mismatches); command logs and exact input SHA256 identities remain retained. Pre-change exact initial test body was not archived; later snapshots are stored by hash.",
+    "Base adapter format drift remains FAIL as separately disclosed by ROOT; no adapter format check was rerun or relabeled.",
+    "Silent nRF54 decline, physical transport behavior, current-board protection and Nordic erase remain unproved. No protected-target recovery feature or module acceptance is claimed."
+  ]
+}

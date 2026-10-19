@@ -5,8 +5,10 @@ from __future__ import annotations
 import asyncio
 import json
 import unittest
+from unittest.mock import patch
 
 from pyocd_debug_mcp.capabilities.policy import CapabilityPolicyRepository, Tier
+from tests.test_tiered_acceptance_lite import _setup_inventory
 
 from tests.tiered_acceptance_support import (
     DeterministicTargetBackend,
@@ -31,7 +33,13 @@ class TieredIndirectPathAcceptanceTests(unittest.TestCase):
             server.configure_tiered_test_seams(
                 backend=backend, auto_target_resolver=lambda _board: "nrf52840"
             )
-            asyncio.run(server.mcp.call_tool("connect", {"board_id": "raw_board"}))
+            with patch.object(server, "_hardware_inventory", _setup_inventory()):
+                asyncio.run(
+                    server.mcp.call_tool(
+                        "connect",
+                        {"board_id": "raw_board", "probe_uid": "LITE-ACCEPTANCE-PROBE"},
+                    )
+                )
             text = public_text(
                 server,
                 "action_batch",

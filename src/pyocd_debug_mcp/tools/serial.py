@@ -19,24 +19,9 @@ from pyocd_debug_mcp.services.session_runtime import (
     ToolOutcome,
 )
 from pyocd_debug_mcp.services.uart_exchange_schema import (
+    encode_uart_text,
     validate_serial_exchange_parameters,
 )
-
-_LINE_ENDINGS = {
-    "none": "",
-    "lf": "\n",
-    "cr": "\r",
-    "crlf": "\r\n",
-}
-
-
-def _encode_uart_text(text: str, line_ending: str) -> bytes:
-    try:
-        suffix = _LINE_ENDINGS[line_ending]
-    except KeyError as exc:
-        raise ValueError("line_ending must be one of: none, lf, cr, crlf") from exc
-    return f"{text}{suffix}".encode("utf-8")
-
 
 def _is_cancellation(exc: BaseException) -> bool:
     """True when `exc` is, or wraps, cooperative cancellation.
@@ -389,7 +374,7 @@ def serial_exchange(
         expected = row["expected_text"]
         ending = row["line_ending"]
         assert isinstance(text, str) and isinstance(expected, str) and isinstance(ending, str)
-        validated_steps.append((_encode_uart_text(text, ending), expected))
+        validated_steps.append((encode_uart_text(text, ending), expected))
     handle = services.handle_for(board_id)
     if handle.board is None:
         return services.no_board_config_message
@@ -406,7 +391,7 @@ def serial_exchange(
             ready_text=ready_text,
             ready_seconds=ready_seconds,
             ready_probe=(
-                _encode_uart_text(ready_probe_text, ready_probe_line_ending)
+                encode_uart_text(ready_probe_text, ready_probe_line_ending)
                 if ready_probe_text is not None
                 else None
             ),

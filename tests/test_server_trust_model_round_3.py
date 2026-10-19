@@ -17,6 +17,7 @@ from pyocd_debug_mcp import server
 from pyocd_debug_mcp.adapters.swd_interface import TargetSessionHandle
 from pyocd_debug_mcp.artifact_collector import ArtifactRole, collect_artifacts
 from pyocd_debug_mcp.firmstore.store import FirmStore
+from pyocd_debug_mcp.flash_image import FlashResult
 from pyocd_debug_mcp.kernel.finalizers import FinalizerValidationError, parse_finalizer
 from pyocd_debug_mcp.kernel.hygiene import cleanup_stale_owned_processes, require_clean_startup
 from pyocd_debug_mcp.kernel.processes import ProcessIdentityUnavailable, ProcessMarker
@@ -331,7 +332,7 @@ class RoundThreeRegressionTests(unittest.TestCase):
             lambda _: None,
             lambda _: None,
             lambda *a: (_ for _ in ()).throw(RuntimeError(message)),
-            lambda *a: (Path("unused"), "running"),
+            lambda *a: (Path("unused"), FlashResult(((0, 1),), "running")),
             lambda _: "runtime/error",
         )
         with self.assertRaisesRegex(RuntimeError, suffix):
@@ -697,10 +698,12 @@ class RoundThreeRegressionTests(unittest.TestCase):
             retained_generations=(),
         )
         request = SimpleNamespace(
-            identity=SimpleNamespace(as_log_fields=lambda: {}),
+            identity=SimpleNamespace(sha256="digest", as_log_fields=lambda: {}),
             artifact_path=Path("artifact.hex"),
         )
-        flash_target = Mock(return_value=(request.artifact_path, "halted"))
+        flash_target = Mock(
+            return_value=(request.artifact_path, FlashResult(((0, 1),), "halted"))
+        )
         clear_pending = Mock()
         services = FlashToolServices(
             runtime_for=lambda _: None,

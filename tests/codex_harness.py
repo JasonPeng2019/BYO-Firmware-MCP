@@ -9,11 +9,10 @@ Model is pinned to ``gpt-5.6-luna`` and the run fails rather than silently
 downgrading: a test that quietly used a different model would be testing
 something other than what it claims.
 
-Isolation: the monitoring store resolves to the per-user application-data
-directory through the platform's shell API, which no environment variable can
-redirect. Each run therefore uses a unique temporary project directory, whose
-anonymized workspace digest gives it a private folder inside the real store. The
-harness removes exactly those folders afterwards.
+Isolation: each test supplies a private BYO_MCP_MONITOR_ROOT to both the server
+and the in-process observation helpers. They share its deployment salt and
+workspace digest. Cleanup removes the entire private store, including unbound
+startup records, without reading or deleting the user's monitor data.
 """
 
 from __future__ import annotations
@@ -26,6 +25,8 @@ import tempfile
 import unittest
 from dataclasses import dataclass, field
 from pathlib import Path
+from unittest.mock import patch
+from uuid import uuid4
 
 from pyocd_debug_mcp.monitor.counters import (
     CHECKIN_CADENCE_ENV,
@@ -105,6 +106,7 @@ class CodexResult:
     stdout: str
     stderr: str
     tool_calls: list[str] = field(default_factory=list)
+    protocol_calls: list[dict] = field(default_factory=list)
 
     @property
     def combined(self) -> str:
@@ -115,16 +117,19 @@ class CodexResult:
 
 
 def _store_root() -> Path:
-    from platformdirs import user_data_dir
+    from pyocd_debug_mcp.monitor import paths
 
-    return Path(user_data_dir("BYO", appauthor=False, roaming=False))
+    root = paths.resolve_store_root().root
+    if root is None:
+        raise AssertionError("the isolated monitor store is unavailable")
+    return root
 
 
 def _workspace_digest(project: Path) -> str:
     """Compute the store folder name this project maps to.
 
     Imported in-process purely to locate the folder for assertions and cleanup;
-    the salt is shared because both use the same per-user store.
+    the salt is shared because both use the same explicit private store.
     """
 
     from pyocd_debug_mcp.monitor import paths
@@ -143,17 +148,34 @@ class CodexAgentTestCase(unittest.TestCase):
             raise unittest.SkipTest(reason)
 
     def setUp(self) -> None:
+        from pyocd_debug_mcp.monitor import paths
+
+        # An explicit suite root owns only these disposable children; never use
+        # the suite root itself as a test store or delete its existing contents.
+        parent = os.environ.get(paths.MONITOR_ROOT_ENV, "").strip()
+        if parent:
+            Path(parent).expanduser().mkdir(parents=True, exist_ok=True)
+        temporary = tempfile.TemporaryDirectory(
+            prefix="byo-codex-test-", dir=Path(parent).expanduser() if parent else None
+        )
+        self.addCleanup(temporary.cleanup)
+        self.test_root = Path(temporary.name).resolve()
+        self.monitor_root = self.test_root / "monitor"
+        self.artifact_root = self.test_root / "artifacts"
+        environment = patch.dict(os.environ, {paths.MONITOR_ROOT_ENV: str(self.monitor_root)})
+        environment.start()
+        self.addCleanup(environment.stop)
+        paths._reset_cache(None)
+        self.addCleanup(paths._reset_cache, None)
         self.project = Path(tempfile.mkdtemp(prefix="byo-codex-proj-"))
+        self.addCleanup(shutil.rmtree, self.project, True)
         (self.project / "README.md").write_text(
             "Toy firmware project used by the monitor integration tests.\n",
             encoding="utf-8",
         )
-        self.addCleanup(shutil.rmtree, self.project, True)
         self.store = _store_root()
         self.workspace = _workspace_digest(self.project)
-        self.addCleanup(self._clean_workspace)
         self.codex_home = self._isolated_codex_home()
-        self.addCleanup(shutil.rmtree, self.codex_home, True)
 
     def _isolated_codex_home(self) -> Path:
         """Build a codex home containing only this test's MCP server.
@@ -166,6 +188,7 @@ class CodexAgentTestCase(unittest.TestCase):
         """
 
         home = Path(tempfile.mkdtemp(prefix="byo-codex-home-"))
+        self.addCleanup(shutil.rmtree, home, True)
         source_auth = Path.home() / ".codex" / "auth.json"
         if source_auth.exists():
             shutil.copy2(source_auth, home / "auth.json")
@@ -175,11 +198,21 @@ class CodexAgentTestCase(unittest.TestCase):
                 [
                     f'model = "{REQUIRED_MODEL}"',
                     'model_reasoning_effort = "medium"',
+                    'web_search = "disabled"',
+                    "",
+                    # These tests exercise MCP only. A prompt alone does not
+                    # prevent a client from reading unrelated source/stores.
+                    "[features]",
+                    "shell_tool = false",
+                    "multi_agent = false",
                     "",
                     f"[mcp_servers.{SERVER_NAME}]",
                     "command = 'uv'",
-                    f"args = ['run','--project','{project}','pyocd-debug-mcp']",
+                    f"args = ['run','--locked','--project','{project}','pyocd-debug-mcp']",
                     f"cwd = '{project}'",
+                    # Optional servers have a short initial catalog grace period.
+                    # This target is essential; wait for its real initialization.
+                    "required = true",
                     "startup_timeout_sec = 180",
                     "tool_timeout_sec = 120",
                     "",
@@ -190,6 +223,8 @@ class CodexAgentTestCase(unittest.TestCase):
                     # subprocess environment because the server is codex's child
                     # and either route could be the one that carries it.
                     f"[mcp_servers.{SERVER_NAME}.env]",
+                    f"BYO_MCP_MONITOR_ROOT = {json.dumps(str(self.monitor_root))}",
+                    f"BYO_MCP_ARTIFACT_ROOT = {json.dumps(str(self.artifact_root))}",
                     f'{SNAPSHOT_CADENCE_ENV} = "{E2E_SNAPSHOT_CADENCE}"',
                     f'{CHECKIN_CADENCE_ENV} = "{E2E_CHECKIN_CADENCE}"',
                     "",
@@ -198,10 +233,6 @@ class CodexAgentTestCase(unittest.TestCase):
             encoding="utf-8",
         )
         return home
-
-    def _clean_workspace(self) -> None:
-        for base in ("server_data", "simulated_remote"):
-            shutil.rmtree(self.store / base / self.workspace, ignore_errors=True)
 
     # -- driving the agent ------------------------------------------------
 
@@ -235,33 +266,41 @@ class CodexAgentTestCase(unittest.TestCase):
             "--model",
             REQUIRED_MODEL,
             "--skip-git-repo-check",
-            # The server writes to the per-user data directory, which sits
-            # outside any workspace sandbox, so it needs filesystem access.
+            # The server writes to the private monitor directory, which sits
+            # outside the firmware workspace, so it needs filesystem access.
             # Approvals stay enforced; only the filesystem policy is widened.
             "-s",
             "danger-full-access",
             prompt,
         ]
-        completed = subprocess.run(
-            command,
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            timeout=timeout,
-            cwd=str(self.project),
-            stdin=subprocess.DEVNULL,
-            env={
-                **os.environ,
-                "RUST_LOG": "error",
-                # Isolated home: only this test's MCP server is visible.
-                "CODEX_HOME": str(self.codex_home),
-                # Inherited by the MCP server codex spawns, so a short session
-                # still reaches a snapshot boundary.
-                SNAPSHOT_CADENCE_ENV: str(E2E_SNAPSHOT_CADENCE),
-                CHECKIN_CADENCE_ENV: str(E2E_CHECKIN_CADENCE),
-            },
-        )
+        environment = {
+            **os.environ,
+            "RUST_LOG": "error",
+            # Isolated home: only this test's MCP server is visible.
+            "CODEX_HOME": str(self.codex_home),
+            "BYO_MCP_MONITOR_ROOT": str(self.monitor_root),
+            "BYO_MCP_ARTIFACT_ROOT": str(self.artifact_root),
+            # Inherited by the MCP server codex spawns, so a short session
+            # still reaches a snapshot boundary.
+            SNAPSHOT_CADENCE_ENV: str(E2E_SNAPSHOT_CADENCE),
+            CHECKIN_CADENCE_ENV: str(E2E_CHECKIN_CADENCE),
+        }
+        try:
+            completed = subprocess.run(
+                command,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=timeout,
+                cwd=str(self.project),
+                stdin=subprocess.DEVNULL,
+                env=environment,
+            )
+        except subprocess.TimeoutExpired as exc:
+            self._save_agent_evidence(command, environment, exc)
+            raise
+        self._save_agent_evidence(command, environment, completed)
         result = CodexResult(
             returncode=completed.returncode,
             stdout=completed.stdout or "",
@@ -271,7 +310,140 @@ class CodexAgentTestCase(unittest.TestCase):
             line.strip() for line in result.combined.splitlines() if line.strip().startswith("mcp:")
         ]
         self._assert_model_was_honoured(result)
+        result.protocol_calls = self._protocol_calls()
+        if bind_workspace:
+            self.assert_bound_activity(result)
         return result
+
+    def _protocol_calls(self) -> list[dict]:
+        """Native terminal MCP events, independent of the model's printed answer."""
+        calls = []
+        for path in sorted((self.codex_home / "sessions").rglob("*.jsonl")):
+            for line in path.read_text(encoding="utf-8").splitlines():
+                event = json.loads(line)
+                payload = event.get("payload", {})
+                item = payload.get("item", {})
+                if (
+                    event.get("type") == "event_msg"
+                    and payload.get("type") == "item_completed"
+                    and item.get("type") == "McpToolCall"
+                    and item.get("server") == SERVER_NAME
+                ):
+                    calls.append(item)
+        return calls
+
+    def target_replies(self, result: CodexResult, tool: str) -> list[dict]:
+        """Actual target responses, including expected MCP tool errors.
+
+        Codex labels an MCP isError response as failed. A transport failure
+        without an MCP result cannot establish target behavior.
+        """
+        return [
+            call
+            for call in result.protocol_calls
+            if call.get("server") == SERVER_NAME
+            and call.get("tool") == tool
+            and isinstance(call.get("result"), dict)
+            and (
+                call.get("status") == "completed"
+                or (call.get("status") == "failed" and call["result"].get("isError") is True)
+            )
+        ]
+
+    def assert_bound_activity(self, result: CodexResult, *, health: bool = False) -> None:
+        """Negative claims require successful traffic and this workspace's durable boot.
+
+        Resource discovery, a failed handshake, or an empty store proves nothing.
+        Native MCP events carry actual arguments/results; ledger and live readout
+        must corroborate the same server run. Never parse around damaged JSON.
+        """
+        self.assertEqual(result.returncode, 0, result.combined[-2000:])
+        handshakes = [
+            call
+            for call in self.target_replies(result, "initialization_handshake")
+            if not call["result"].get("isError")
+            and call.get("arguments", {}).get("workspace_path")
+            and Path(call["arguments"]["workspace_path"]).resolve() == self.project.resolve()
+        ]
+        self.assertTrue(handshakes, "UNPROVEN: no successful target handshake bound this project")
+        boots = [
+            record
+            for record in self.ledger_records()
+            if record.get("kind") == "boot"
+            and record.get("workspace") == self.workspace
+            and record.get("run_id")
+        ]
+        self.assertTrue(boots, "UNPROVEN: no persisted boot for the bound workspace")
+        if not health:
+            return
+        calls = [
+            call
+            for call in self.target_replies(result, "server_health_check")
+            if not call["result"].get("isError")
+        ]
+        self.assertTrue(calls, "UNPROVEN: no successful target health observation")
+        observations = [json.loads(call["result"]["content"][0]["text"]) for call in calls]
+        run_ids = {boot["run_id"] for boot in boots}
+        matching = [
+            value
+            for value in observations
+            if value.get("run_id") in run_ids
+            and value.get("recording", {}).get("workspace_bound") is True
+            and value.get("counters", {}).get("per_tool", {}).get("initialization_handshake", 0) > 0
+        ]
+        self.assertTrue(matching, "UNPROVEN: health did not observe the bound boot/handshake")
+        self.assertTrue(
+            any(
+                record.get("run_id") in run_ids
+                and record["detail"]["per_tool"].get("server_health_check", 0) > 0
+                and record["detail"]["per_tool"].get("initialization_handshake", 0) > 0
+                for record in self.counted_records()
+            ),
+            "UNPROVEN: no durable handshake/health counters",
+        )
+
+    def _save_agent_evidence(
+        self,
+        command: list[str],
+        environment: dict[str, str],
+        completed: subprocess.CompletedProcess[str] | subprocess.TimeoutExpired,
+    ) -> None:
+        """Retain authentic traffic and store contents before temporary cleanup."""
+
+        configured = os.environ.get("BYO_MANAGED_TEST_EVIDENCE")
+        if not configured:
+            return
+        destination = Path(configured) / self.id() / uuid4().hex
+        destination.mkdir(parents=True)
+        for stream in ("stdout", "stderr"):
+            value = getattr(completed, stream, None) or ""
+            if isinstance(value, bytes):
+                value = value.decode("utf-8", "replace")
+            (destination / f"{stream}.txt").write_text(value, encoding="utf-8")
+        shutil.copy2(self.codex_home / "config.toml", destination / "mcp-config.toml")
+        sessions = self.codex_home / "sessions"
+        if sessions.exists():
+            shutil.copytree(sessions, destination / "sessions")
+        shutil.copytree(self.store, destination / "monitor")
+        receipt = {
+            "command": command,
+            "cwd": str(self.project),
+            "required_model": REQUIRED_MODEL,
+            "returncode": getattr(completed, "returncode", None),
+            "timeout": isinstance(completed, subprocess.TimeoutExpired),
+            "workspace": self.workspace,
+            "environment": {
+                key: environment[key]
+                for key in (
+                    "CODEX_HOME",
+                    "BYO_MCP_MONITOR_ROOT",
+                    "BYO_MCP_ARTIFACT_ROOT",
+                    SNAPSHOT_CADENCE_ENV,
+                    CHECKIN_CADENCE_ENV,
+                )
+            },
+        }
+        (destination / "receipt.json").write_text(json.dumps(receipt, indent=2), encoding="utf-8")
 
     def _assert_model_was_honoured(self, result: CodexResult) -> None:
         """Fail loudly rather than silently testing a different model.

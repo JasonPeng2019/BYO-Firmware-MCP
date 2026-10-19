@@ -12,6 +12,8 @@ from pyocd_debug_mcp.board_config import (
     RECOVER_MODE_BACKEND_MASS_ERASE,
     BoardConfig,
 )
+from pyocd_debug_mcp.flash_image import FlashResult
+from pyocd_debug_mcp.target_errors import FlashVerificationError, TargetStateError
 from pyocd_debug_mcp.timeouts import ServerTimeoutConfig
 
 _BACKEND: Any = ProcessIsolatedSWDInterface()
@@ -151,8 +153,11 @@ def resume(handle: TargetSessionHandle) -> None:
 
 
 def step(handle: TargetSessionHandle) -> int:
-    _BACKEND.step(handle)
-    return read_core_register(handle, "pc")
+    """Preserve the backend's confirmed-step PC; a void result proves nothing."""
+    pc = _BACKEND.step(handle)
+    if type(pc) is not int or not 0 <= pc <= 0xFFFFFFFF:
+        raise TargetStateError("Incomplete step: backend supplied no confirmed completion result.")
+    return pc
 
 
 def reset(handle: TargetSessionHandle, *, halt_after: bool = True) -> None:
@@ -162,17 +167,61 @@ def reset(handle: TargetSessionHandle, *, halt_after: bool = True) -> None:
         _BACKEND.reset(handle)
 
 
+def _flash_artifact_path(firmware: Path) -> Path:
+    path = Path(firmware).expanduser().resolve()
+    if not path.exists():
+        raise FileNotFoundError(f"Firmware artifact does not exist: {path}")
+    return path
+
+
+def check_flash_support(
+    handle: TargetSessionHandle,
+    firmware: Path,
+    *,
+    base_address: int | None = None,
+    artifact_sha256: str | None = None,
+) -> Path:
+    """Refuse, before any target effect, an artifact the live target cannot program.
+
+    ``artifact_sha256``, when given, is the approved content digest the artifact
+    bytes must still match.
+    """
+
+    path = _flash_artifact_path(firmware)
+    _BACKEND.check_flash_support(
+        handle, path, base_address=base_address, artifact_sha256=artifact_sha256
+    )
+    return path
+
+
 def flash_firmware(
     handle: TargetSessionHandle,
     firmware: Path,
     *,
     halt_after_reset: bool = False,
-) -> tuple[Path, str]:
-    path = Path(firmware).expanduser().resolve()
-    if not path.exists():
-        raise FileNotFoundError(f"Firmware artifact does not exist: {path}")
-    state = _BACKEND.flash(handle, path, halt_after_reset=halt_after_reset)
-    return path, state
+    base_address: int | None = None,
+    artifact_sha256: str | None = None,
+) -> tuple[Path, FlashResult]:
+    """Flash and return readback-verified programming plus the final reset state.
+
+    Only a ``FlashResult`` proves programming; any other backend return is treated as
+    unverified rather than trusted as success. ``artifact_sha256``, when given, is
+    the approved content digest the programmed bytes must match.
+    """
+
+    path = _flash_artifact_path(firmware)
+    result = _BACKEND.flash(
+        handle,
+        path,
+        halt_after_reset=halt_after_reset,
+        base_address=base_address,
+        artifact_sha256=artifact_sha256,
+    )
+    if not isinstance(result, FlashResult):
+        raise FlashVerificationError(
+            "The flash backend returned no readback proof; programming is not verified"
+        )
+    return path, result
 
 
 def recover_target(

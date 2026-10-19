@@ -2,22 +2,16 @@
 
 from __future__ import annotations
 
+import json
+import os
 import tempfile
 import unittest
-import shutil
 from pathlib import Path
 from unittest.mock import patch
 
 from pyocd_debug_mcp.capabilities.lite import normalize_lite_confirmation
 from pyocd_debug_mcp.capabilities.policy import CapabilityPolicyRepository, Tier
 from pyocd_debug_mcp.safety.map_build import GenericSafetyMapDocument
-from pyocd_debug_mcp.setup_flow.preflight import PreflightDecision, ProbeCandidate, SetupUserInput
-from pyocd_debug_mcp.setup_flow.setup import SetupPhaseContext
-from pyocd_debug_mcp.setup_flow.validate import (
-    ValidationBackend,
-    ValidationInventory,
-    ValidationProbe,
-)
 
 
 class CapabilityPolicyRepositoryTests(unittest.TestCase):
@@ -48,98 +42,77 @@ class CapabilityPolicyRepositoryTests(unittest.TestCase):
     def test_fresh_generic_full_setup_commits_candidate_and_live_gate_together(self) -> None:
         """A fresh generic full setup validates staged authority before publishing it."""
 
-        from tests.tiered_acceptance_support import DeterministicTargetBackend, tiered_test_server
+        from tests.m15_independent_evidence import capture_imports
+        from tests.m15_public_support import BOARD, public_fixture
 
-        with tempfile.TemporaryDirectory() as temporary:
-            root = Path(temporary)
-            fixture_root = (
-                Path(__file__).resolve().parents[1]
-                / "fallback-support-evidence"
-                / "results"
-                / "hil-artifacts"
-                / ".firm"
-            )
-            shutil.copytree(fixture_root / "packs", root / ".firm" / "packs")
-            source_datasheet = next((fixture_root / "evidence" / "datasheets").glob("*.pdf"))
-            datasheet = root / "STM32L476RG.pdf"
-            shutil.copy2(source_datasheet, datasheet)
-            with tiered_test_server(root) as server:
-                board_id = "fresh_generic"
-                target = "stm32l476rgtx"
-                probe = ProbeCandidate("probe-1", "ST-Link", "stlink", "serial-1")
-                connection_id = server.probe_connection_id("stlink", "serial-1")
-                backend = DeterministicTargetBackend(
-                    # Arm Cortex-M4 CPUID: enough for the generic compatible
-                    # proof, without any physical target access.
-                    read_value=0x410FC240,
-                    supported_targets=frozenset({target}),
-                )
-                server.configure_tiered_test_seams(backend=backend)
-                server._setup_tiers[board_id] = Tier.SETUP_FULL
-                server.assignment_store.assign(connection_id, board_id)
-                user_input = SetupUserInput(
-                    board_id,
-                    connection_id,
-                    "Fresh generic STM32L4",
-                    "STM32L476RGT6",
-                    None,
-                    datasheet_path=str(datasheet),
-                    requires_uart=False,
-                )
-                context = SetupPhaseContext(
-                    "continuation",
-                    "attempt",
-                    "setup",
-                    user_input,
-                    PreflightDecision(
-                        "preflight_ready",
-                        "setup/preflight-ready",
-                        "ready",
-                        selected_probe=probe,
-                        selected_target=target,
-                    ),
-                    {},
-                )
+        with public_fixture(self) as fixture:
+            server = fixture.server
+            validate = server._board_validator.validate
+            observations = []
 
-                with patch.object(
-                    server._board_validator,
-                    "_backend",
-                    ValidationBackend(
-                        inventory=lambda: ValidationInventory(
-                            probes=(ValidationProbe("probe-1", "ST-Link", "stlink", "serial-1"),)
-                        ),
-                        target_supported=server._validation_target_supported,
-                        connect=server._validation_connect,
-                        read_memory=server._validation_read,
-                        capture_serial=server._validation_capture,
-                        close=server._validation_close,
-                    ),
-                ):
-                    self.assertTrue(server._setup_connection_phase(context).verified)
-                    # The early hardware pass intentionally has no active map yet.
-                    validation = server._setup_validation_phase(context)
-                    self.assertTrue(validation.verified, validation.agent_prompt)
-                    self.assertTrue(server._setup_safety_research_phase(context).verified)
-                    safety_map = server._setup_safety_map_phase(context)
-                    self.assertTrue(
-                        safety_map.verified, f"{safety_map.agent_prompt}: {safety_map.details}"
-                    )
-                    self.assertEqual(
-                        server._capability_policies.resolve(board_id).tier, Tier.NO_SETUP
+            def observe_validation(request):
+                # Forward every call to the real validator. Observe the candidate
+                # boundary reached by public setup, without manufacturing authority.
+                active = server.plan_engine.active_plan("board_setup", BOARD)
+                candidate = request.candidate_safety_map
+                before = server._capability_policies.resolve(BOARD)
+                session_before = server._active_session_id(BOARD)
+                if candidate is not None:
+                    self.assertIsNotNone(active)
+                    assert active is not None
+                    self.assertEqual(active.session_id, session_before)
+                    self.assertEqual(before.tier, Tier.NO_SETUP)
+                    self.assertIsNone(server.gate_manager.snapshot(BOARD))
+
+                result = validate(request)
+                after = server._capability_policies.resolve(BOARD)
+                stamp = server.gate_manager.snapshot(BOARD)
+                observations.append(
+                    {
+                        "candidate": candidate is not None,
+                        "plan_id": active.plan_id if active else None,
+                        "session_before": session_before,
+                        "session_after": server._active_session_id(BOARD),
+                        "tier_before": before.tier.value,
+                        "tier_after": after.tier.value,
+                        "status": result.status,
+                        "candidate_digest": candidate.map_digest if candidate else None,
+                        "gate_digest": stamp.safety_map.map_digest if stamp else None,
+                    }
+                )
+                if candidate is not None:
+                    self.assertEqual(result.status, "validation_passed", result.agent_prompt)
+                    self.assertEqual(after.tier, Tier.NO_SETUP)
+                    self.assertIsNotNone(stamp)
+                    assert stamp is not None
+                    self.assertEqual(stamp.safety_map.map_digest, candidate.map_digest)
+                    self.assertEqual(stamp.live_identity.identity_capability, "compatible")
+                return result
+
+            try:
+                with patch.object(server._board_validator, "validate", side_effect=observe_validation):
+                    fixture.full_setup(ownership=False)
+            finally:
+                capture_imports()
+                if evidence_root := os.environ.get("BYO_MANAGED_TEST_EVIDENCE"):
+                    destination = Path(evidence_root) / self.id()
+                    destination.mkdir(parents=True, exist_ok=True)
+                    (destination / "candidate-validation.json").write_text(
+                        json.dumps(observations, indent=2), encoding="utf-8"
                     )
 
-                    outcome = server._setup_commit_phase(context)
-                state = server._capability_policies.resolve(board_id)
-                stamp = server.gate_manager.snapshot(board_id)
-
-                self.assertTrue(outcome.verified, outcome.agent_prompt)
-                self.assertEqual(state.tier, Tier.SETUP_FULL)
-                self.assertIsInstance(state.map_snapshot, dict)
-                document = GenericSafetyMapDocument.from_document(state.map_snapshot)
-                self.assertIsNotNone(stamp)
-                assert stamp is not None
-                self.assertEqual(stamp.safety_map.map_digest, document.canonical_digest)
-                self.assertEqual(stamp.live_identity.identity_capability, "compatible")
+            candidates = [row for row in observations if row["candidate"]]
+            self.assertEqual(len(candidates), 1)
+            state = server._capability_policies.resolve(BOARD)
+            stamp = server.gate_manager.snapshot(BOARD)
+            self.assertEqual(state.tier, Tier.SETUP_FULL)
+            self.assertIsInstance(state.map_snapshot, dict)
+            document = GenericSafetyMapDocument.from_document(state.map_snapshot)
+            self.assertIsNotNone(stamp)
+            assert stamp is not None
+            self.assertEqual(stamp.safety_map.map_digest, document.canonical_digest)
+            self.assertEqual(candidates[0]["candidate_digest"], document.canonical_digest)
+            self.assertEqual(stamp.live_identity.identity_capability, "compatible")
 
     def test_fresh_named_boards_commit_explicit_no_setup_policy_per_board(self) -> None:
         """A fresh logical board gets its own persisted raw policy, not inferred state."""

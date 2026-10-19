@@ -221,7 +221,12 @@ The setup workflow does the following in phases:
 1. Re-inventory probes, UARTs, profiles, build artifacts, targets, and known
    support; ask for a friendly physical choice only when necessary.
 2. Replay any verified project support for the exact part. Otherwise issue a
-   focused research continuation for a single official pack candidate.
+   focused research continuation for a single official pack candidate, with an
+   installed-target alternative when installed device identifiers match the
+   supplied part and usable geometry exists. The server rechecks compatibility
+   before live attachment and on persisted replay. Installed
+   candidates still require official evidence for the unchanged exact part and
+   live identity checks; use a pack if support is incompatible or insufficient.
 3. Stage candidate pack bytes, hash them, validate archive/PDSC structure,
    derive/select the exact PDSC leaf and target, and make a non-destructive live
    attach before promoting support.
@@ -239,7 +244,7 @@ trusting old inventory.
 
 ### Validation
 
-`board_validate` is the only ordinary path that establishes live identity
+For FULL, `board_validate` is the only ordinary path that establishes live identity
 authority and opens a board's in-memory gate. It loads the profile and map,
 re-inventories hardware, resolves the current selected probe, replays the exact
 support binding, connects, and performs only safe configured identity reads.
@@ -250,6 +255,22 @@ Validation may prove a specific exact identity or an explicitly compatible one.
 If support lacks safe identity evidence, diagnostic connectivity can be
 reported but the gate cannot open. Validation does not install packs, flash,
 capture UART behavior, or claim firmware correctness.
+
+For LITE, follow `setup_overview`'s `load_call` and `next_call` after completion,
+restart or reconnect. The same `board_validate` tool replays the committed partial
+policy, re-resolves the current assigned probe, connects with the saved profile
+if needed, checks the live probe/backend target binding, and reads target state
+without mutation. `validation_passed` with code `validation/lite-binding-checked`
+means this LITE connection is usable; `observed` identifies its current run,
+session, connection, target and policy digest. Identity remains
+`trusted-not-proven`, `identity_capability` is null, and no FULL gate is stamped.
+The `identity-validation` capability remains FULL-only. Only confirmed ranges
+and capabilities are available, under their existing plans and permissions.
+An absent/changed assignment or mismatched live binding refuses; disconnect,
+repeat `setup_overview`, and follow the new route. A failed live check releases
+that exact connection through normal disconnect cleanup, invalidating its plans.
+Provider errors do not yield a passing check. Neither a prior result nor a
+capability dump supplies live proof.
 
 Identity proof is cleared on restart, disconnect, connection/probe change,
 identity repair, mismatch, and destructive recovery. It is not invalidated just
@@ -356,7 +377,7 @@ surface by responsibility. Consult `tools/list` for the live schema.
 | `continue_setup` | supplies an exact server-requested setup continuation |
 | `get_setup_status` | reports readiness and non-authoritative build guidance |
 | `board_safety_refresh` | rederives/rechecks the durable map from replayed evidence |
-| `board_validate` | non-destructively establishes live identity and opens one gate |
+| `board_validate` | checks the current connection/policy; FULL also proves identity and opens its gate |
 | `get_discovery_hook_contract` | returns the hook contract without executing it |
 | `refresh_discovery_hooks` | loads server-designated hooks and refreshes fallback inventory |
 | `register_remote_probe` / `unregister_remote_probe` | maintain explicit pyOCD-server endpoint inventory |
@@ -448,11 +469,37 @@ partition and stronger permission rule. Neither can write ROM bootloader,
 unknown, or prohibited space. Flash becomes non-interruptible once its
 transaction starts; cancellation waits for bounded safe completion and cleanup.
 
+Before any reset or programming, every addressed artifact byte must lie in a
+live flash region with a usable algorithm; otherwise the flash is refused with
+`flash/unsupported-target` (a generic `cortex_m` map has none). Success requires
+bounded readback of every addressed byte to match bytes derived independently
+from the artifact; holes are neither padded nor read, and a no-op, partial, or
+unreadable write fails with `flash/verification-failed`. The final reset is
+reported separately as `target_state`; `reset_state_unconfirmed` never weakens
+verified programming. Raw `flash_raw` additionally accepts a `.bin` only with an
+explicit `base_address`, which is never inferred and grants no partition
+authority.
+
 `target_unlock` is a separate destructive recovery flow. It requires a fresh
 one-time approval and only discloses supported mechanisms (`backend_mass_erase`
-or `manual_only`) after checking connected backend capability and exact map
-facts. Recovery leaves the normal validation gate closed; the board must be
-validated again before guarded work.
+or `manual_only`) after checking connected backend capability and the current
+map's erase geometry. Ordinary full setup needs no separate approved-board
+entry: the disclosure lists the setup map's sector-covered flash ranges and
+states effects on other chip settings as `unknown_effects`, because the map
+identifies addresses, not what the stored bytes mean. Recovery leaves the normal
+validation gate closed; the board must be validated again before guarded work.
+
+Opening a session never erases. The shared pyOCD session options disable
+`auto_unlock` for every open (ordinary, under-reset, J-Link UID-less retry, setup
+candidate, and validation), overriding any project `pyocd.yaml`, including its
+per-probe `probes:` section. When pyOCD declines to unlock a protected target,
+the adapter closes the session and raises `LockedTargetError` (event code
+`target/locked`), even if pyOCD would otherwise have finished opening. Protection
+pyOCD does not report surfaces as an ordinary connection error. With `auto_unlock`
+off, pyOCD also skips its connect-time UICR.APPROTECT write on hardened Nordic
+parts, so such a part keeps whatever protection its UICR and firmware select after
+reset. Recovery of a target that cannot attach is outside this server, because
+`target_unlock` and `target_unlock_raw` act only on a connected session.
 
 ## 10. pyOCD, drivers, and process isolation
 
@@ -545,7 +592,7 @@ must not be described as cloud archival or an external integrity witness.
 
 ```text
 handshake → setup_overview
-  ├─ known complete profile → load board_validate → validate → gate opens
+  ├─ known complete profile → load board_validate → LITE binding check / FULL identity gate
   ├─ unknown profile → load setup plan → plan → setup/continuations
   │                    → map commit → validate → gate opens
   └─ incomplete/stale state → returned repair/refresh route
@@ -741,8 +788,13 @@ opaque values and must be replayed exactly; they are not editable probe serials.
 
 ### C.2 Setup phases and results
 
-An accepted `board_setup-plan` permits one primary setup action, then at most
-one paired repair action if the first action is incomplete/repairable. Setup is
+An accepted `board_setup-plan` permits one primary setup action and one bounded
+paired repair workflow. Each accepted `continue_setup` answer permits one
+`board_fix_setup` resumption, up to ten within thirty minutes of plan acceptance.
+Research and friendly-choice pauses preserve that same authority; they do not
+refill fixed plan calls or create another permission. Completion, terminal
+failure, cancellation, revocation, replacement, expiry, or a changed session
+closes the workflow. Setup is
 not a monolithic client script; the workflow advances persistent evidence only
 after each deterministic phase succeeds.
 
@@ -756,8 +808,10 @@ after each deterministic phase succeeds.
    exact, unique match. Otherwise return friendly probe/UART choices for the
    agent to relay. Raw COM/tty paths are never stored as identity.
 4. **Support replay:** reuse only the profile’s verified canonical support
-   binding. If that is unavailable, request one official pack candidate rather
-   than accepting a naked target-name assertion.
+   binding. If that is unavailable, request one official pack candidate or an
+   explicitly offered installed-target response with evidence and reasoning.
+   Installed geometry alone does not establish exact-part compatibility. The
+   [client contract](client-contract.md) gives the full forms and failure examples.
 5. **Pack admission:** stage bytes; compute SHA-256; verify readable archive and
    PDSC structure; select the exact device leaf; enumerate targets; require the
    part-consistent target; attempt a non-destructive live attach. No failed or
@@ -793,6 +847,12 @@ Each nonterminal response explains the next conversational or evidence step via
 current preflight and connection checks. It never blindly trusts an old device
 inventory, previous port path, or stale external pack assertion.
 
+Populated plans bind the actual attached session. Setup reuses a live connection
+only when session, assigned probe, and target all match; a different backend
+target requires disconnection, a new overview, and a new plan. A disconnected
+FULL plan can bind the connection established by its own validation call. No
+other reconnect inherits the old continuation.
+
 ## D. Connection, validation, and gate lifecycle
 
 ### D.1 Normal and exceptional connection
@@ -812,7 +872,7 @@ attach and calling it success.
 ### D.2 Board validation algorithm
 
 `board_validate(board_id, probe_id?)` performs no flash, erase, pack install,
-or behavior assertion. Its successful path is:
+or behavior assertion. Its FULL successful path is:
 
 1. Load the profile and map and reject missing, malformed, stale, or
    authority-incomplete safety state.
@@ -910,7 +970,7 @@ one-way allocation history might be unrecoverable.
 | `step` | `board_id` | single-steps and reports resulting PC | changes execution state |
 | `reset_and_run` | `board_id` | resets and starts reset vector | does not unlock security |
 | `reset_and_halt` | planned `board_id` | resets then halts at startup | planned execution mutation |
-| `wait` | `board_id`, `ms` | bounded wait in operation lifecycle | no invented hardware mutation |
+| `wait` | `board_id`, `ms` (1–30,000 milliseconds) | cancellable board-workflow delay | no invented hardware mutation |
 | `connect_override` | planned manual fields | exceptional run-scoped attach | never persists override |
 | `connect_under_reset` | planned UID/target | reset assert, attach/halt, reset release | validate current session before gated work |
 
@@ -918,6 +978,16 @@ one-way allocation history might be unrecoverable.
 being readable through them does not prove a target is connected or validated.
 `halt`, `resume`, `step`, and reset preserve the state documented by their own
 tool; common cleanup does not “helpfully” reset a board after normal success.
+
+`wait(board_id="board", ms=100)` delays that board's workflow by 100 milliseconds.
+The public maximum is 30,000 ms (30 seconds), matching the ordinary operation
+budget. Larger durations refuse before reserving the board; retry with a duration
+within that range. The managed timeout is a fixed 35 seconds, including five
+seconds of dispatch grace, and cannot enlarge the accepted duration. Cancellation
+wakes the owning handler; its normal exit and cleanup release the reservation
+before same-board work can proceed. Other boards remain independent. A wait
+does not own the debug transport, so cancellation preserves the connection for
+the next operation or an explicit `disconnect`.
 
 ### F.2 Registers and execution state
 
@@ -938,8 +1008,12 @@ runs under the board lock, and passes the containment rules in Section E.
 returns name, address, size, and ELF type. Empty queries, unavailable files,
 non-ELF files, parse errors, and artifact changes receive typed refusals.
 
-`read_memory_symbol(board_id, symbol, width=32, elf_artifact?)` requires a
-sized data symbol. It refuses executable/function symbols, invalid widths,
+`read_memory_symbol(board_id, symbol, width=32, elf_artifact?)` needs no plan,
+but requires FULL setup, live validation for the current connection, and a
+sized data symbol. Supply the current project ELF/AXF explicitly after restart
+or before a same-run flash. Direct and `action_batch` calls use the same board
+operation lock and read gate; raw and LITE tiers cannot use this route.
+It refuses executable/function symbols, invalid widths,
 unaligned scalar access, unknown size, and a scalar wider than the data object.
 It then checks the resolved concrete memory range before reading.
 
@@ -961,6 +1035,16 @@ adapter’s breakpoint mechanism. `remove_breakpoint(board_id, address)` removes
 previous breakpoint through the ordinary target operation path. Breakpoint
 containment deliberately does not claim that every mapped application-flash byte
 is executable.
+
+Ordinary `disconnect` and automatic eviction after a step transport fault remove
+session-owned installed breakpoints before native teardown resumes the core.
+Hardware comparators are cleared and saved RAM instructions are restored through
+the verified removal path; teardown does not patch flash. A target restoration
+failure is reported even if worker/probe ownership is successfully released.
+When teardown follows a failed step, its error retains both the original failure
+and restoration uncertainty. Follow its recovery instruction and verify target
+state after reconnect/revalidation; a terminated worker is not physical cleanup
+proof.
 
 ### F.5 UART
 
@@ -998,12 +1082,16 @@ in application allocation/partition. Bootloader flashing has an independent
 partition and stronger permission boundary. Neither may program unknown,
 prohibited, ROM bootloader, or the other partition. Once programming begins,
 the action becomes non-interruptible: cancellation waits for bounded safe
-transaction completion before managed cleanup.
+transaction completion before managed cleanup. A target without a live flash
+algorithm for every addressed byte is refused before reset or programming, and
+success requires matching readback of every addressed byte; programming proof
+and the final `target_state` are reported separately.
 
 `target_unlock` is deliberately not “flash with an extra flag.” Its plan takes a
 recovery mechanism, needs fresh one-time destructive approval, verifies current
 backend capability, and discloses only `backend_mass_erase` or `manual_only`
-where the exact map supports that statement. Completion leaves the validation
+where the current map's erase geometry supports that statement, naming any
+effects it cannot establish as unknown. Completion leaves the validation
 gate closed; recovery approval cannot be reused as post-recovery authority.
 
 ### F.7 Batches and artifact collection
@@ -1098,7 +1186,8 @@ machine owner from rewriting records and recomputing a public hash chain.
 `server_health_check` is read-only and returns run/uptime, counters, exercised
 versus advertised coverage, ledger record/head state, store/workspace state,
 transport/delivery anchor, narrative capability, and staleness-block state. It
-sends and writes no report.
+sends and writes no report. Its JSON remains intact in the first text block;
+a due check-in advisory appears in a separate trailing MCP text block.
 
 `report_agent_issue` is only for server behavior that is actually wrong or whose
 named remedy is absent/wrong/non-convergent. Correct locked-tool, plan, gate,

@@ -78,7 +78,12 @@ def build_breakpoint_handlers(
         symbol_or_address: str | int,
         elf_artifact: str,
     ) -> str:
-        """Set one symbol-backed or explicit breakpoint under a fixed plan."""
+        """Set a symbol or byte-address breakpoint using the current ELF and plan.
+
+        Flash/code outside confirmed writable RAM uses hardware only. Exhaustion
+        refuses without code patches; remove an owned hardware breakpoint and retry.
+        Confirmed writable RAM retains backend-supported software breakpoints.
+        """
 
         started = time.monotonic()
         runtime = services.runtime_for(board_id)

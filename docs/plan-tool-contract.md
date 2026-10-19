@@ -49,6 +49,15 @@ Extra instructions: Do not guess hardware choices or rewrite the user-supplied M
 
 Extra instructions: Override values are run-scoped and never silently update a profile.
 
+Use while disconnected after normal connect or validation resolution fails. Review
+the logical board, enumerated probe and target identity; record the failed step and
+exact error in `hypothesis`/`strategy`. Prior live readiness is not required. Execute
+the exact accepted connection call, then load `board_validate` through
+`load_setup_tool` and execute its returned `next_call`. That call selects the
+actual active exceptional connection while retaining the saved normal profile.
+Fresh compatible live proof is required before protected I/O. The plan, parameters, board, server run and call
+budget remain bound; the saved normal profile is unchanged.
+
 ## `connect_under_reset-plan`
 
 - Action: `connect_under_reset`
@@ -203,7 +212,7 @@ Extra instructions: This reset does not unlock a protected target.
 | `ready_probe_delay_seconds` | `number` | required; finite; >= 0 | Optional observation delay before sending the readiness probe; use it after flash/reset so boot output can arrive first. |
 | `clear_input` | `boolean` | required | Discard buffered input after open only when true; false preserves boot/prompt bytes. |
 
-Extra instructions: All steps, readiness input, and the optional pre-probe delay are exact and execute through one port open; successful cleanup preserves application state. The result includes complete time-bounded aggregate `captured_text` and complete ordered `step_captured_texts`, reversibly JSON-escaped.
+Extra instructions: All steps, readiness input, and the optional pre-probe delay are exact and execute through one port open; successful cleanup preserves application state. A step sends its `text` plus its `line_ending` bytes, so only a step whose encoded payload is zero bytes is refused. The result includes complete time-bounded aggregate `captured_text` and complete ordered `step_captured_texts`, reversibly JSON-escaped.
 
 ## `set_breakpoint-plan`
 
@@ -221,7 +230,7 @@ Extra instructions: All steps, readiness input, and the optional pre-probe delay
 | `symbol_or_address` | `text-or-integer` | required | Exact symbol or address. |
 | `elf_artifact` | `text` | required | Current local ELF whose executable sections contain the breakpoint. |
 
-Extra instructions: The resolved location must be in an executable section of the plan-bound current ELF and supported by the connected core.
+Extra instructions: The resolved location must be in an executable section of the plan-bound current ELF, supported by the connected core, and inside a reviewed application or bootloader deployment partition; an existing reviewed bootloader partition can qualify a location by itself. A generic board whose safety map still has no deployment allocation (deployment policy `none`) cannot set a breakpoint anywhere and refuses with `safety/no-deployment-allocation`: deploy the current build once through flash_application-plan and flash_application, which establishes the artifact-derived allocation. A safety refresh cannot create an allocation and only re-derives a reviewed partition.
 
 ## `set_execution_state-plan`
 
@@ -311,11 +320,11 @@ Extra instructions: Prefer symbols and pass their current project ELF. Raw addre
 
 | Action field | Type | Constraints | Description |
 | --- | --- | --- | --- |
-| `text` | `text` | required | Exact text to send. |
+| `text` | `text` | required | Exact text to send. The payload is `text` plus one LF byte when `append_newline` is true; a newline-only or whitespace-only command is valid, and only a payload that encodes to zero bytes is refused. |
 | `baudrate` | `integer` | nullable; >= 1 | Positive baud rate. |
 | `port` | `text` | nullable | Current serial port path. |
 | `append_newline` | `boolean` | required | Append one newline when true. |
 | `timeout_seconds` | `number` | required; > 0 | Positive bounded write timeout. |
 | `on_exit` | `object` | nullable | Optional exact structured uart_write or reset_and_run finalizer. |
 
-Extra instructions: The text and all transport parameters are bound exactly by the plan.
+Extra instructions: The text and all transport parameters are bound exactly by the plan; the encoded payload must contain at least one byte. Emptiness is judged after UTF-8 encoding, not on stripped characters.

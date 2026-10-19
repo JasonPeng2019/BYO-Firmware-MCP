@@ -46,13 +46,14 @@ from pyocd_debug_mcp.tools.code_analysis import (
 )
 from pyocd_debug_mcp.adapters.swd_interface import TargetSessionHandle, session_metadata
 from pyocd_debug_mcp.board_config import (
+    RECOVER_MODE_BACKEND_MASS_ERASE,
     BoardConfig,
     ConfigError,
     load_board_configs_from_paths,
     preview_board_config_paths,
     select_boards_by_id,
 )
-from pyocd_debug_mcp.guardrails.flash_gate import resolve_flash_request
+from pyocd_debug_mcp.guardrails.flash_gate import ResolvedFlashRequest, resolve_flash_request
 from pyocd_debug_mcp.guardrails.gate import GateManager, GateRefusal
 from pyocd_debug_mcp.guardrails.permissions import PermissionStore
 from pyocd_debug_mcp.guardrails.plan_defs import PLAN_DEFINITIONS, PlanDefinition
@@ -65,11 +66,12 @@ from pyocd_debug_mcp.firmstore.cache import (
 )
 from pyocd_debug_mcp.firmstore.profiles import BoardProfile, ProfileError, ProfileRepository
 from pyocd_debug_mcp.firmstore.reports import ReportWriter
-from pyocd_debug_mcp.firmstore.store import FirmStore
+from pyocd_debug_mcp.firmstore.store import FirmStore, FirmStoreError
 from pyocd_debug_mcp.local_env import load_local_env
 from pyocd_debug_mcp.kernel.registry import RegistryFastMCP
 from pyocd_debug_mcp.kernel.operations import (
     ManagedOperation,
+    OperationCancelledError,
     cancellation_checkpoint,
     current_operation,
     run_if_not_cancelled,
@@ -152,6 +154,7 @@ from pyocd_debug_mcp.capabilities.lite import (
     LiteConfirmation,
     LiteConfirmationError,
     conservative_lite_proposal,
+    lite_confirmation_form,
     native_lite_recovery_disclosure,
     normalize_lite_confirmation,
 )
@@ -205,6 +208,7 @@ from pyocd_debug_mcp.setup_flow.reviewed_evidence import (
     pack_matches_reviewed_catalog,
 )
 from pyocd_debug_mcp.setup_flow.device_support import (
+    BuiltInTargetCompatibilityError,
     BuiltInTargetGeometryError,
     BuiltInTargetSupportCandidate,
     DeviceSupportCandidate,
@@ -221,6 +225,11 @@ from pyocd_debug_mcp.setup_flow.device_support import (
     resolve_persisted_pack_support,
     has_available_pack_binding,
     verified_pack_for_candidate,
+)
+from pyocd_debug_mcp.setup_flow.factory_identity import (
+    capture_factory_identity,
+    normalize_bootloader_request,
+    replay_factory_identity,
 )
 from pyocd_debug_mcp.setup_flow.datasheet_evidence import (
     capture_datasheet_evidence,
@@ -243,6 +252,7 @@ from pyocd_debug_mcp.setup_flow.validate import (
     BoardValidator,
     SafetyMapSnapshot,
     ValidationBackend,
+    ValidationBackendError,
     ValidationHooks,
     ValidationInventory,
     ValidationProbe,
@@ -269,7 +279,9 @@ from pyocd_debug_mcp.safety.map_build import (
     SafetyMapRepository,
     reviewed_map_source_documents,
     build_artifact_application_allocation,
+    build_user_bootloader_allocation,
     generic_map_with_allocation,
+    generic_map_with_bootloader,
     require_reconciled_authority,
     region_conflicts,
 )
@@ -284,6 +296,7 @@ from pyocd_debug_mcp.safety.regions import (
     SourceAuthority,
 )
 from pyocd_debug_mcp.target_errors import (
+    TargetStateError,
     ReferenceArtifactError,
     SymbolLookupError,
     TargetConnectionError,
@@ -368,7 +381,7 @@ from pyocd_debug_mcp.tools.unlock import (
     UnlockToolServices,
     build_unlock_handlers,
 )
-from pyocd_debug_mcp.tools.raw import RawToolServices, build_raw_handlers
+from pyocd_debug_mcp.tools.raw import RawRecoveryRefusal, RawToolServices, build_raw_handlers
 
 load_local_env()
 
@@ -592,11 +605,17 @@ def _validate_plan_scope(
                     "rewritten.",
                     session_id=session_id,
                 )
-        if session_id is not None or connection is not None:
+        if connection is not None and (
+            connection.runtime_session.closed_at is not None
+            or connection.runtime_session.session_id != session_id
+            or not _same_setup_connection(
+                connection.connection_id, assignment_store.connection_for(board_id) or ""
+            )
+        ) or (connection is None and session_id is not None):
             raise PlanRefusal(
-                "plan/setup-session-active",
-                f"Board '{board_id}' already has an active debug session; use validation or "
-                "disconnect before first-time setup.",
+                "plan/setup-session-invalid",
+                "Setup requires its unchanged live session and exact assigned probe; "
+                "restart setup_overview and replace the plan after a connection change.",
                 session_id=session_id,
             )
         return
@@ -638,7 +657,7 @@ plan_engine = PlanEngine(
 )
 permission_store.set_revocation_handler(plan_engine.invalidate)
 
-_GUARDED_READ_ACTIONS = frozenset({"read_memory_address", "read_serial"})
+_GUARDED_READ_ACTIONS = frozenset({"read_memory_address", "read_memory_symbol", "read_serial"})
 _WRITE_CAPABLE_ACTIONS = frozenset(
     {
         "write_memory",
@@ -727,6 +746,8 @@ def _check_active_snapshot_range(board_id: str, action: ActionCategory, requeste
             else GenericSafetyMapDocument.from_document(snapshot)
         )
         require_reconciled_authority(document)
+        if isinstance(document, GenericSafetyMapDocument):
+            _replay_bootloader_authority(document)
         result = document.safety_map.check(action, (requested,))
     except (SafetyMapError, ValueError) as exc:
         raise SafetyPolicyError(
@@ -765,6 +786,8 @@ def _active_snapshot_aggregate(board_id: str) -> str:
             else GenericSafetyMapDocument.from_document(snapshot)
         )
         require_reconciled_authority(document)
+        if isinstance(document, GenericSafetyMapDocument):
+            _replay_bootloader_authority(document)
         return document.canonical_digest
     except (SafetyMapError, ValueError) as exc:
         raise SafetyPolicyError(
@@ -789,6 +812,8 @@ def _active_full_document(board_id: str) -> SafetyMapDocument | GenericSafetyMap
             else GenericSafetyMapDocument.from_document(state.map_snapshot)
         )
         require_reconciled_authority(document)
+        if isinstance(document, GenericSafetyMapDocument):
+            _replay_bootloader_authority(document)
         return document
     except (SafetyMapError, ValueError) as exc:
         raise SafetyPolicyError(
@@ -1214,6 +1239,9 @@ def _enforce_action_containment(
             address = canonicalize_breakpoint_address(address)
             _check_breakpoint_safety(board_id, address, elf_path)
         elif tool_name in {"flash_application", "flash_bootloader"}:
+            operation = current_operation()
+            if operation is not None:
+                operation.prepared.pop("flash_artifact", None)
             handle = _maybe_handle(board_id)
             context = _action_context(tool_name, board_id)
             request = resolve_flash_request(
@@ -1224,6 +1252,13 @@ def _enforce_action_containment(
             _check_flash_safety(tool_name, board_id, request.artifact_path)
             if tool_name == "flash_application":
                 _stage_generic_allocation(board_id, request.artifact_path, handle)
+            if operation is not None:
+                # Execution programs only the content digest these checks approved.
+                operation.prepared["flash_artifact"] = (
+                    tool_name,
+                    request.artifact_path,
+                    request.identity.sha256,
+                )
     except (
         SafetyPolicyError,
         ReferenceArtifactError,
@@ -1316,9 +1351,16 @@ def _enforce_guarded_invocation(
             session_id=_active_session_id(board_id),
             preconditions=validate_layer0_and_action,
         )
-    except PlanRefusal as exc:
+    except PolicyRefusal as exc:
         if tool_name == "target_unlock" and exc.code == "plan/parameter-mismatch":
             _unlock_coordinator.invalidate_execution_mismatch(board_id)
+        if tool_name in {"board_setup", "board_fix_setup"}:
+            allowance_id = setup_tool_loader.allowance_for(board_id)
+            active = plan_engine.active_plan("board_setup", board_id)
+            if allowance_id is not None and (
+                active is None or active.plan_id != allowance_id or exc.code.startswith("permission/")
+            ):
+                _setup_workflow.close_allowance(allowance_id, str(exc))
         raise
 
 
@@ -1379,20 +1421,40 @@ def _enforce_direct_tiered_hardware(
     _monitor.check_block()
 
 
-def _enforce_full_identity_route(
+def _enforce_symbol_read_invocation(
     tool_name: str,
     board_id: str,
     arguments: Mapping[str, object],
 ) -> None:
-    """Keep identity validation a full-tier-only operation with a useful remedy."""
+    """Use the read gate without a plan; ELF and mapped containment stay in the handler."""
+
+    # Recheck under the operation lock: the policy may have changed since routing.
+    _enforce_tier_route(tool_name, board_id, arguments)
+    if _tier_router.state_for(board_id).tier is not Tier.SETUP_FULL:
+        raise PlanRefusal(
+            "tier/wrong-route",
+            "Symbol memory reads require setup-full and live board validation.",
+            session_id=_active_session_id(board_id),
+            remedies=("board_setup-plan", "board_validate"),
+        )
+    _monitor.check_block()
+    _require_layer0(tool_name, board_id)
+
+
+def _enforce_board_validation_route(
+    tool_name: str,
+    board_id: str,
+    arguments: Mapping[str, object],
+) -> None:
+    """Require a committed protected tier; only FULL may prove silicon identity."""
 
     del tool_name, arguments
     state = _tier_router.state_for(board_id)
     assert state.tier is not None
-    if state.tier is not Tier.SETUP_FULL:
+    if state.tier not in {Tier.SETUP_LITE, Tier.SETUP_FULL}:
         raise PlanRefusal(
             "tier/wrong-route",
-            "This board does not have setup-full identity policy; run setup-full to validate identity.",
+            "Run setup-lite or setup-full before validating this board's connection and policy.",
             session_id=_active_session_id(board_id),
         )
     _monitor.check_block()
@@ -1630,13 +1692,61 @@ def _resolve_probe_uid_for_connect(
     *,
     allow_environment_override: bool = True,
 ) -> str | None:
-    if unique_id is not None:
-        return unique_id
     env_uid = os.environ.get("PYOCD_PROBE_UID") or None if allow_environment_override else None
-    if env_uid is not None:
-        return env_uid
+    selector = unique_id if unique_id is not None else env_uid
+    if selector is not None:
+        selector = selector.strip()
+        if not selector or selector.casefold() == "null":
+            raise ValueError("probe_uid must name a current probe; use JSON null to omit it")
+        inventory = _validation_inventory()
+        snapshot = snapshot_from_validation_inventory(inventory)
+        # Opaque assignment/session tokens retain their provider and exact identity.
+        if selector.casefold().startswith(
+            (PROBE_CONNECTION_PREFIX, LEGACY_PROBE_CONNECTION_PREFIX, "session:")
+        ):
+            selection = _probe_selection_store.resolve(selector, snapshot)
+            if selection.unique_id is None:
+                return selection.connection_id
+            resolved_uid = selection.unique_id
+            if not resolved_uid.casefold().startswith(selection.provider.casefold() + ":"):
+                resolved_uid = f"{selection.provider}:{resolved_uid}"
+            return resolved_uid
+        provider, separator, provider_uid = selector.partition(":")
+        qualified = bool(separator and provider.casefold() in registered_provider_ids())
+        candidates = [
+            probe
+            for probe in inventory.probes
+            if not qualified or probe.probe_family.casefold() == provider.casefold()
+        ]
+        uid_text = provider_uid if qualified else selector
+        exact = [
+            probe
+            for probe in candidates
+            if stable_identity_equal(selector, probe.usb_serial)
+            or stable_identity_equal(selector, probe.probe_id)
+            or (qualified and stable_identity_equal(uid_text, probe.usb_serial))
+        ]
+        # Keep pyOCD's supported partial UID input, but expand it to a single full
+        # selector here; return_first must never decide an ambiguous caller intent.
+        matches = exact or [
+            probe
+            for probe in candidates
+            if uid_text and uid_text.casefold() in (probe.usb_serial or probe.probe_id).casefold()
+        ]
+        if len(matches) != 1:
+            raise RuntimeError(
+                "Probe selector is absent or ambiguous in current inventory; call "
+                "setup_overview and select the intended probe explicitly."
+            )
+        resolved_uid = matches[0].usb_serial or matches[0].probe_id
+        if qualified and not resolved_uid.casefold().startswith(provider.casefold() + ":"):
+            return f"{provider}:{resolved_uid}"
+        return resolved_uid
     if board is None:
-        return None
+        raise RuntimeError(
+            "An unassigned raw board label requires an explicit probe_uid; call "
+            "setup_overview to assign the intended physical connection first."
+        )
 
     resolution = resolve_probe_for_board_cli(
         board,
@@ -1706,10 +1816,33 @@ def _assigned_probe_uid_for_connect(board_id: str) -> str | None:
     # hook-discovered selection is checked against the admitted hook set instead.
     _require_unchanged_hook_source(board_id, selection)
     if selection.unique_id is not None:
+        duplicated_uid = sum(
+            stable_identity_equal(selection.unique_id, row.unique_id) for row in snapshot.probes
+        ) > 1
+        if duplicated_uid and not selection.unique_id.casefold().startswith(
+            selection.provider.casefold() + ":"
+        ):
+            return f"{selection.provider}:{selection.unique_id}"
         return selection.unique_id
     # A UID-less live session is identified only by its exact session token, which is
     # what the downstream provider already expects for this run.
     return selection.connection_id
+
+
+def _connect_selector_matches(selector: str | None, connection: ManagedConnection) -> bool:
+    """Compare an already-resolved native selector with the live connection."""
+
+    if selector is None:
+        return False
+    metadata = session_metadata(connection.handle)
+    provider, separator, uid = selector.partition(":")
+    if separator and provider.casefold() in registered_provider_ids():
+        if metadata.probe_family not in {None, "unknown"} and provider.casefold() != str(
+            metadata.probe_family
+        ).casefold():
+            return False
+        selector = uid
+    return stable_identity_equal(selector, metadata.probe_uid) or selector == connection.connection_id
 
 
 def _require_unchanged_hook_source(board_id: str, selection: ProbeSelection) -> None:
@@ -1866,6 +1999,16 @@ def _connect_impl(
         }
         existing = connection_manager.maybe_connection(board_id)
         if existing is not None:
+            if unique_id is not None:
+                requested_uid = _resolve_probe_uid_for_connect(None, unique_id)
+                if not _connect_selector_matches(requested_uid, existing):
+                    raise ValueError(
+                        "The requested probe differs from this board's live connection; disconnect first."
+                    )
+            if target is not None and target.casefold() != _current_target(board_id).casefold():
+                raise ValueError(
+                    "The requested target differs from this board's live connection; disconnect first."
+                )
             result = f"Board '{board_id}' is already connected."
             _record_event(
                 "connect",
@@ -1913,11 +2056,18 @@ def _connect_impl(
                 if not allow_environment_overrides and unique_id is None
                 else None
             )
-            uid = _resolve_probe_uid_for_connect(
-                board,
-                assigned_uid or unique_id,
-                allow_environment_override=allow_environment_overrides,
+            # The recorded assignment already resolved against current inventory.
+            # Do not reinterpret its full UID as a partial caller selector in a
+            # second scan if that probe disappears between scans.
+            uid = assigned_uid if assigned_uid is not None else _resolve_probe_uid_for_connect(
+                board, unique_id, allow_environment_override=allow_environment_overrides
             )
+            for owner in connection_manager.assigned_board_ids():
+                connection = connection_manager.maybe_connection(owner)
+                if connection is not None and _connect_selector_matches(uid, connection):
+                    raise ConnectionAssignmentError(
+                        f"The selected probe is busy in this server, assigned to '{owner}'."
+                    )
             tgt = (
                 target
                 or (board.pyocd_target if board else None)
@@ -2055,7 +2205,13 @@ def _connect_impl(
 
 @mcp.tool()
 def connect(board_id: str, probe_uid: str | None = None, target: str | None = None) -> str:
-    """Connect a named board, using profile policy or no-setup raw target resolution."""
+    """Connect an assigned board, or deliberately select a no-setup raw probe.
+
+    A new raw label requires probe_uid (a current full or unambiguous partial UID)
+    or a setup_overview assignment. The string "null" is invalid; JSON null omits
+    the selector. Raw target overrides do not assert silicon/package identity.
+    Setup-lite/full use their saved profile and accept neither override.
+    """
 
     state = _tier_router.state_for(board_id)
     if state.tier is Tier.NO_SETUP:
@@ -2081,16 +2237,37 @@ def _connect_override_impl(
     target: str | None = None,
     board_config: str | None = None,
 ) -> str:
-    """Connect diagnostically with an explicit target before a profile exists."""
+    """Connect exceptionally and bind validation to this run's actual session."""
 
-    return _connect_impl(
-        board_id,
-        unique_id,
-        target,
-        board_config,
-        allow_environment_overrides=True,
-        allow_missing_profile=True,
-    )
+    with connection_manager.lock_for(board_id):
+        result = _connect_impl(
+            board_id,
+            unique_id,
+            target,
+            board_config,
+            allow_environment_overrides=True,
+            allow_missing_profile=True,
+        )
+        connection = connection_manager.connection_for(board_id)
+        try:
+            bindings = assignment_store.bindings()
+            if bindings.get(connection.connection_id, board_id) != board_id:
+                raise SetupWorkflowError(
+                    "The exceptional connection is assigned to another logical board."
+                )
+            bindings = {key: owner for key, owner in bindings.items() if owner != board_id}
+            bindings[connection.connection_id] = board_id
+            # This is a live run assignment, not a saved profile edit. The normal
+            # loader, equality check and stamp must all name the actual session.
+            _replace_setup_assignments(bindings, "exceptional connection requires board_validate")
+        except BaseException:
+            cleared = connection_manager.clear_if_current(board_id, connection)
+            if cleared is not None:
+                _close_evicted_validation_connection(
+                    board_id, cleared, gate_reason="exceptional assignment failed"
+                )
+            raise
+        return result
 
 
 def _connect_under_reset_impl(
@@ -2395,7 +2572,12 @@ def get_capabilities(board_id: str) -> str:
                 profile = (
                     state.profile_snapshot if isinstance(state.profile_snapshot, Mapping) else {}
                 )
-                mechanism = profile.get("recover_mode") if isinstance(profile, Mapping) else None
+                # Ordinary setup records no mechanism; probe the typed backend primitive.
+                mechanism = (
+                    profile.get("recover_mode") or RECOVER_MODE_BACKEND_MASS_ERASE
+                    if isinstance(profile, Mapping)
+                    else None
+                )
             if isinstance(mechanism, str):
                 try:
                     native_recovery_backend_available = target_control.supports_recovery(
@@ -2410,6 +2592,19 @@ def get_capabilities(board_id: str) -> str:
             native_recovery_backend_available=native_recovery_backend_available,
             state=state,
         )
+        bootloader = (
+            state.map_snapshot.get("bootloader_policy")
+            if isinstance(state.map_snapshot, Mapping)
+            else None
+        )
+        if isinstance(bootloader, Mapping):
+            factory = bootloader.get("factory_identity")
+            if isinstance(factory, Mapping) and isinstance(factory.get("research"), Mapping):
+                payload["identity"]["coverage"] = factory["research"]["identity_coverage"]
+                payload["identity"]["exact_meaning"] = (
+                    "same individually identified supported target"
+                )
+                payload["identity"]["package_identity"] = "not inferred from device-group/UID/size"
     try:
         manual_ready, manual_error = _manual_permissions.readiness
         if not manual_ready:
@@ -2758,11 +2953,18 @@ def resume(board_id: str) -> str:
 
 @mcp.tool()
 def step(board_id: str) -> str:
-    """Single-step one instruction and return the new program counter."""
+    """Step once, reporting a confirmed single-step halt, HALTED state and PC.
+
+    Owned breakpoints are suspended and restored. Incomplete steps or uncertain
+    restoration raise a tool error; unchanged PC is valid for a self-branch.
+    """
     with connection_manager.lock_for(board_id):
 
         def operation() -> str:
-            return f"Stepped. pc=0x{target_control.step(_handle(board_id)):08X}"
+            return (
+                f"Stepped. pc=0x{target_control.step(_handle(board_id)):08X} "
+                "state=HALTED stop_reason=single_step"
+            )
 
         return _run_logged_tool(board_id, "step", {"board_id": board_id}, operation)
 
@@ -3078,11 +3280,13 @@ def flash_firmware(
             )
             active_handle = _handle(board_id)
             normalized_args.update(request.identity.as_log_fields())
-            flashed, state = target_control.flash_firmware(
+            flashed, result = target_control.flash_firmware(
                 active_handle,
                 request.artifact_path,
                 halt_after_reset=halt_after_reset,
+                artifact_sha256=request.identity.sha256,
             )
+            state = result.target_state
         except PolicyRefusal as exc:
             _record_event(
                 "flash_firmware",
@@ -3114,7 +3318,7 @@ def flash_firmware(
             outcome_kind=ToolOutcome.SUCCESS,
             error_code=None,
             duration_ms=_duration_ms(started),
-            details={"target_state": state},
+            details={"programming": result.programming_summary(), "target_state": state},
             board_id=board_id,
             session=runtime,
         )
@@ -3123,7 +3327,10 @@ def flash_firmware(
             if state != "reset_state_unconfirmed"
             else "final reset state is unconfirmed; reconnect and check target state before use."
         )
-        return f"Flashed {flashed} via {session_metadata(active_handle).route_used}; {suffix}"
+        return (
+            f"Flashed {flashed} via {session_metadata(active_handle).route_used}; "
+            f"read back and verified {result.verified_bytes} addressed bytes; {suffix}"
+        )
 
 
 @mcp.tool()
@@ -3477,6 +3684,39 @@ def _clear_generic_allocation(board_id: str) -> None:
     _pending_generic_allocations.pop(board_id, None)
 
 
+def _resolve_admitted_flash_request(
+    handle: TargetSessionHandle | None,
+    artifact: str,
+    context: ActionContext,
+) -> ResolvedFlashRequest:
+    """Resolve the flash artifact bound to this invocation's guarded containment pass.
+
+    Containment, allocation and the plan's artifact binding approved one content
+    digest; execution refuses other content instead of silently re-approving it.
+    """
+
+    request = resolve_flash_request(handle, explicit_path=artifact, action_context=context)
+    operation = current_operation()
+    if operation is None:
+        return request
+    prepared = operation.prepared.pop("flash_artifact", None)
+    if prepared is None:
+        raise RuntimeError("Guarded flash has no prepared containment result.")
+    prepared_tool, prepared_path, prepared_sha256 = cast(tuple[str, Path, str], prepared)
+    if prepared_tool != context.action_name:
+        raise RuntimeError("Prepared flash artifact does not match the guarded invocation.")
+    if prepared_path != request.artifact_path or prepared_sha256 != request.identity.sha256:
+        raise PolicyRefusal(
+            "flash/artifact-changed",
+            f"Flash artifact {request.artifact_path} changed after its containment and "
+            f"allocation checks (sha256 {request.identity.sha256}, approved "
+            f"{prepared_sha256}); nothing was reset, erased or programmed. Let the build "
+            "finish, then flash the artifact again.",
+            session_id=context.session_id,
+        )
+    return request
+
+
 flash_services = FlashToolServices(
     runtime_for=_runtime_for,
     active_session_id=_active_session_id,
@@ -3486,15 +3726,15 @@ flash_services = FlashToolServices(
     action_context=_action_context,
     maybe_handle_for=_maybe_handle,
     handle_for=_handle,
-    resolve_request=lambda handle, artifact, context: resolve_flash_request(
-        handle,
-        explicit_path=artifact,
-        action_context=context,
-    ),
-    flash_target=lambda handle, artifact: target_control.flash_firmware(
+    resolve_request=_resolve_admitted_flash_request,
+    flash_target=lambda handle, artifact, artifact_sha256: target_control.flash_firmware(
         handle,
         artifact,
         halt_after_reset=False,
+        artifact_sha256=artifact_sha256,
+    ),
+    check_flash_support=lambda handle, artifact, artifact_sha256: (
+        target_control.check_flash_support(handle, artifact, artifact_sha256=artifact_sha256)
     ),
     error_code=_error_code,
     validate_flash=_check_flash_safety,
@@ -3597,8 +3837,8 @@ raw_tool_handlers = build_raw_handlers(
         write_register=target_control.write_core_register,
         set_breakpoint=target_control.set_breakpoint,
         reset=lambda handle, halt_after: target_control.reset(handle, halt_after=halt_after),
-        flash=lambda handle, artifact: target_control.flash_firmware(
-            handle, artifact, halt_after_reset=False
+        flash=lambda handle, artifact, base_address: target_control.flash_firmware(
+            handle, artifact, halt_after_reset=False, base_address=base_address
         ),
         recover=lambda handle, mechanism: target_control.recover_target(
             handle, recover_mode=mechanism
@@ -3609,6 +3849,7 @@ raw_tool_handlers = build_raw_handlers(
         # Resolve at call time: raw handlers register before the unlock
         # coordinator/finalizer is constructed below.
         finalize_recovery=lambda board_id: _finalize_unlock_recovery(board_id),
+        authorize_recovery=lambda board_id, mechanism: _authorize_raw_recovery(board_id, mechanism),
     )
 )
 
@@ -3677,12 +3918,12 @@ def _tiered_batch_child_error(
     tool_name: str,
     error: BaseException,
 ) -> Any | None:
-    """Represent a late lite containment refusal as a completed fallback child.
+    """Preserve a late lite containment refusal as a structured failed child.
 
     Plan submission intentionally does not grant a range forever: the guarded
     child rechecks the immutable map just before target I/O.  That recheck is a
-    normal tiered refusal, not an execution failure of the surrounding static
-    client fallback.  Existing tiers retain the historical batch failure path.
+    normal tiered refusal. The batch must retain it and stop before the next
+    child, just as it does for an unnormalized dispatch exception.
     """
 
     if tool_name not in route_names("safe"):
@@ -3774,7 +4015,7 @@ for _direct_hardware_action in route_names("direct"):
 mcp.configure_route_guard("read_memory_symbol", guard=_enforce_tier_route)
 mcp.configure_guarded_dispatch(
     "read_memory_symbol",
-    guard=_enforce_guarded_invocation,
+    guard=_enforce_symbol_read_invocation,
     lock_for_board=lambda board_id: connection_manager.lock_for(board_id),
 )
 
@@ -3790,6 +4031,23 @@ def _built_in_target_names() -> set[str]:
     from pyocd.target.builtin import BUILTIN_TARGETS  # type: ignore[reportMissingImports]
 
     return {str(name).casefold() for name in BUILTIN_TARGETS}
+
+
+def _installed_setup_target_candidates(part_number: str) -> tuple[str, ...]:
+    """Inventory installed part compatibility and usable static geometry.
+
+    Use the same conservative metadata check as admission and persisted replay.
+    Research evidence and live compatibility checks are still required.
+    """
+
+    eligible: list[str] = []
+    for target in sorted(_built_in_target_names()):
+        try:
+            resolve_builtin_target_support(part_number, target)
+        except PackProvisionError:
+            continue
+        eligible.append(target)
+    return tuple(eligible)
 
 
 def _target_names() -> tuple[str, ...]:
@@ -3960,6 +4218,15 @@ def _validation_connect(profile, probe: ValidationProbe, timeout: float) -> obje
             raise TargetConnectionError(
                 "The selected validation probe does not match the board's exact active "
                 "connection assignment."
+            )
+        if (
+            existing.runtime_session.closed_at is not None
+            or (session_metadata(existing.handle).target_override or "").casefold()
+            != profile.board.pyocd_target.casefold()
+        ):
+            raise TargetConnectionError(
+                "The active validation session is closed or its backend target differs from "
+                "the saved profile target. Disconnect and select the reviewed target."
             )
         return _ValidationConnection(
             existing.handle,
@@ -4334,6 +4601,32 @@ def _derive_generic_safety_map(
                 ) from exc
             loaded = None
         prior = loaded if isinstance(loaded, GenericSafetyMapDocument) else None
+        # Bootloader ownership can only be inherited from the committed
+        # generation. A compatibility projection is never admission authority.
+        state = _capability_policies.resolve(board_id)
+        committed = (
+            GenericSafetyMapDocument.from_document(state.map_snapshot)
+            if state.tier is Tier.SETUP_FULL
+            and isinstance(state.map_snapshot, Mapping)
+            and state.map_snapshot.get("schema_version") == 3
+            else None
+        )
+        if committed is not None:
+            prior = committed
+        elif prior is not None and prior.bootloader_policy is not None:
+            raise SafetyMapError("mutable map projection cannot establish bootloader ownership")
+    bootloader_policy = prior.bootloader_policy if prior is not None else None
+    if bootloader_policy is not None:
+        if (
+            prior is None
+            or prior.identity.support_id != candidate.support_id
+            or geometry.driver_proof_digest != bootloader_policy["driver_proof_digest"]
+        ):
+            raise SafetyMapError("existing bootloader ownership no longer matches verified support")
+        partitions = MapPartitions(None, prior.partitions.bootloader)
+        deployment_regions = tuple(
+            item for item in prior.regions if item.kind is RegionKind.BOOTLOADER_FLASH
+        )
     if (
         isinstance(prior, GenericSafetyMapDocument)
         and prior.deployment_policy.get("kind") == "artifact_application_allocation"
@@ -4355,6 +4648,7 @@ def _derive_generic_safety_map(
         partitions = prior.partitions
         assert partitions.application is not None
         deployment_regions = (
+            *deployment_regions,
             SafetyRegion(
                 "artifact-defined application allocation",
                 RegionKind.APPLICATION_FLASH,
@@ -4452,7 +4746,65 @@ def _derive_generic_safety_map(
         partitions,
         deployment_policy,
         regions,
+        bootloader_policy,
     )
+
+
+def _generic_bootloader_geometry(document: GenericSafetyMapDocument) -> dict[str, Any]:
+    source = document.authority_source
+    candidate = (
+        resolve_persisted_builtin_target_support(document.identity.mcu_part_number, source)
+        if document.identity.authority_kind == "resolved_builtin_target"
+        else resolve_persisted_pack_support(
+            _profile_repository.store, document.identity.mcu_part_number, source
+        )
+    )
+    geometry = resolve_device_support_geometry(candidate, _profile_repository.store)
+    if (
+        geometry.driver_proof_digest is None
+        or not geometry.erase_sectors
+        or geometry.erase_sectors
+        != tuple(
+            (item.address_range.start, item.address_range.end)
+            for item in document.geometry.erase_sectors
+        )
+    ):
+        raise SafetyMapError(
+            "bootloader authority requires unchanged verified bounded flash geometry"
+        )
+    return {
+        "driver_proof_digest": geometry.driver_proof_digest,
+        "flash_size": sum(end - start for start, end in geometry.erase_sectors),
+        "memory_ranges": [
+            (item.start, item.end)
+            for item in (*document.geometry.physical_flash, *document.geometry.physical_ram)
+        ],
+    }
+
+
+def _replay_bootloader_authority(
+    document: GenericSafetyMapDocument,
+    *,
+    reader=None,
+    probe_identity: str | None = None,
+) -> None:
+    policy = document.bootloader_policy
+    if policy is None:
+        return
+    try:
+        geometry = _generic_bootloader_geometry(document)
+        if policy["driver_proof_digest"] != geometry.pop("driver_proof_digest"):
+            raise SafetyMapError("bootloader flash driver changed since admission")
+        replay_factory_identity(
+            _profile_repository.store,
+            policy["factory_identity"],
+            reader=reader,
+            probe_identity=probe_identity,
+            **geometry,
+        )
+    except (SafetyMapError, PackProvisionError, TargetControlError, ValueError, OSError) as exc:
+        gate_manager.clear(document.board_id, "captured bootloader factory proof no longer replays")
+        raise SafetyMapError(f"bootloader factory proof unavailable: {exc}") from exc
 
 
 def _require_map_authority(document) -> None:
@@ -4471,6 +4823,7 @@ def _require_map_authority(document) -> None:
             document,
             generic_support_resolver=replay_generic,
         )
+        _replay_bootloader_authority(document)
     else:
         require_reconciled_authority(document)
 
@@ -4541,10 +4894,181 @@ _safety_refresher = SafetyRefresher(
 )
 
 
-def _run_board_safety_refresh(board_id: str) -> Mapping[str, object]:
-    """Public v2 safety maintenance: deterministic rebuild with no artifact inputs."""
+def _policy_recovery_route(board_id: str) -> Mapping[str, object] | None:
+    if _capability_policies.resolve(board_id).hardware_allowed:
+        return None
+    return _capability_policies.recovery_requirements(board_id)
+
+
+def _run_board_policy_restore(
+    board_id: str, generation_backup_path: str | None
+) -> Mapping[str, object]:
+    """Host-only exact restoration; never replay a live stamp from before corruption."""
+
+    with connection_manager.lock_for(board_id):
+        recovery = _capability_policies.recovery_requirements(board_id)
+        blocked: dict[str, object] = {
+            "status": "policy_restore_blocked",
+            "board_id": board_id,
+            "agent_prompt": recovery["prerequisite"],
+            "recovery": recovery,
+            "validation_required": True,
+            "ready_for_code": False,
+        }
+        if generation_backup_path is None:
+            return blocked
+        reason = "committed-policy restoration requires fresh validation"
+        gate_manager.clear(board_id, reason)
+        plan_engine.invalidate_board(board_id, reason)
+        _unlock_coordinator.invalidate_board(board_id)
+        _setup_workflow.revoke(board_id)
+        setup_tool_loader.clear_allowance(board_id)
+        _clear_setup_continuation(board_id)
+        try:
+            restored = _capability_policies.restore_committed_generation(
+                board_id, generation_backup_path
+            )
+        except (CapabilityPolicyError, OSError, ValueError) as exc:
+            return blocked | {"reason": str(exc)}
+        try:
+            # Overview must be able to load the restored profile before it can
+            # issue fresh validation. Replay only the trusted snapshot, never
+            # incorporate possibly altered compatibility identity or ownership.
+            if restored.profile_snapshot is not None:
+                paths = [
+                    _firm_store.layout.board_profile(board_id, suffix=suffix)
+                    for suffix in (".yaml", ".yml", ".json")
+                    if _firm_store.layout.board_profile(board_id, suffix=suffix).exists()
+                ]
+                if len(paths) > 1:
+                    raise CapabilityPolicyError(
+                        "Multiple compatibility profiles exist for this board. The operator must "
+                        "resolve the duplicate files, then repeat this exact backup restoration."
+                    )
+                profile_path = paths[0] if paths else _firm_store.layout.board_profile(board_id)
+                _firm_store.atomic_write_json(profile_path, restored.profile_snapshot)
+            if restored.tier is Tier.SETUP_FULL and restored.map_snapshot is not None:
+                _firm_store.atomic_write_json(
+                    _safety_repository.path(board_id), restored.map_snapshot
+                )
+        except (CapabilityPolicyError, FirmStoreError, OSError, ValueError) as exc:
+            return blocked | {
+                "generation_restored": True,
+                "reason": str(exc),
+                "agent_prompt": (
+                    f"Exact committed authority is restored, but compatibility replay is incomplete: {exc}. "
+                    "Resolve this filesystem prerequisite, then repeat board_policy_restore with "
+                    "the same exact backup before overview/validation. Hardware readiness remains closed."
+                ),
+                "retry_call": {
+                    "tool": "board_policy_restore",
+                    "arguments": {
+                        "board_id": board_id,
+                        "generation_backup_path": generation_backup_path,
+                    },
+                },
+            }
+        return {
+            "status": "policy_restore_completed",
+            "board_id": board_id,
+            "tier": restored.tier.value if restored.tier is not None else None,
+            "policy_digest": restored.policy_digest,
+            "generation_id": restored.generation_id,
+            "validation_required": True,
+            "ready_for_code": False,
+            "agent_prompt": (
+                "Restored the exact committed generation without changing its pointer or ownership. "
+                "Replayed its trusted compatibility projections. "
+                "Use setup_overview and fresh board_validate before protected access."
+            ),
+            "next_call": {"tool": "setup_overview", "arguments": {}},
+        }
+
+
+def _admit_user_bootloader(
+    board_id: str,
+    document: GenericSafetyMapDocument,
+    value: object,
+) -> GenericSafetyMapDocument:
+    request = normalize_bootloader_request(value)
+    connection = connection_manager.connection_for(board_id)
+    assignment = assignment_store.connection_for(board_id)
+    if assignment is None:
+        raise ValueError("bootloader admission requires the current setup_overview assignment")
+    assignment_store.require(assignment, board_id)
+    gate_manager.require_write(board_id, connection.connection_id, document.canonical_digest)
+    if _current_target(board_id).casefold() != document.identity.pyocd_target.casefold():
+        raise ValueError(
+            "bootloader admission target does not match the committed supported target"
+        )
+    bounds = AddressRange(request["start"], request["end"])
+    sectors = tuple(
+        item.address_range
+        for item in document.geometry.erase_sectors
+        if item.address_range.overlaps(bounds)
+    )
+    if (
+        not sectors
+        or not document.geometry.contains_flash(bounds)
+        or sectors[0].start != bounds.start
+        or sectors[-1].end != bounds.end
+        or any(left.end != right.start for left, right in zip(sectors, sectors[1:]))
+        or len(sectors) == len(document.geometry.erase_sectors)
+    ):
+        raise ValueError(
+            "bootloader bounds must be a proper subset of contiguous exact flash erase sectors"
+        )
+    MapPartitions(document.partitions.application, bounds)
+    if document.bootloader_policy is not None and document.partitions.bootloader != bounds:
+        raise ValueError("existing bootloader ownership cannot be replaced or resized")
+    geometry = _generic_bootloader_geometry(document)
+    driver = geometry.pop("driver_proof_digest")
+    metadata = session_metadata(connection.handle)
+    if document.bootloader_policy is not None:
+        # A failed repeat must not retain an exact stamp after observing a
+        # different unit. Even a successful repeat requires fresh validation.
+        gate_manager.clear(board_id, "rechecking captured bootloader factory identity")
+    factory = capture_factory_identity(
+        _profile_repository.store,
+        request,
+        probe_identity=metadata.probe_uid or connection.connection_id,
+        reader=lambda address, width: target_control.read_memory(connection.handle, address, width),
+        **geometry,
+    )
+    if document.bootloader_policy is not None:
+        if factory != document.bootloader_policy["factory_identity"]:
+            raise ValueError("existing bootloader evidence/unit cannot be replaced")
+        return document
+    policy = build_user_bootloader_allocation(
+        sectors,
+        driver_proof_digest=driver,
+        support_id=document.identity.support_id,
+        creation_map_digest=document.canonical_digest,
+        factory_identity=factory,
+    )
+    return generic_map_with_bootloader(document, policy)
+
+
+def _run_board_safety_refresh(
+    board_id: str,
+    user_bootloader: Mapping[str, object] | None = None,
+) -> Mapping[str, object]:
+    with connection_manager.lock_for(board_id):
+        return _refresh_safety_map_locked(board_id, user_bootloader)
+
+
+def _refresh_safety_map_locked(
+    board_id: str,
+    user_bootloader: Mapping[str, object] | None,
+) -> Mapping[str, object]:
+    """Replay stable authority and optionally admit documented bounded bootloader ownership."""
 
     tier_state = _tier_router.state_for(board_id)
+    if user_bootloader is not None and tier_state.tier is not Tier.SETUP_FULL:
+        return _safety_refresher.blocked(
+            SafetyRefreshRequest(board_id, _safety_continuation("safety-refresh")),
+            "user bootloader admission requires ordinary generic FULL setup and live validation",
+        ).to_payload()
     if tier_state.tier is Tier.SETUP_LITE:
         # Lite has no derived full map to rebuild.  Its operator-confirmed
         # geometry and provenance are the active immutable generation; replay
@@ -4574,6 +5098,10 @@ def _run_board_safety_refresh(board_id: str) -> Mapping[str, object]:
             profile=profile,
             prior=previous if isinstance(previous, GenericSafetyMapDocument) else None,
         )
+        if user_bootloader is not None:
+            if not isinstance(candidate, GenericSafetyMapDocument):
+                raise ValueError("user bootloader admission requires a generic FULL map")
+            candidate = _admit_user_bootloader(board_id, candidate, user_bootloader)
         if candidate.board_id != board_id:
             raise SafetyMapError("derived memory map belongs to a different board")
         _capability_policies.commit(
@@ -4588,9 +5116,23 @@ def _run_board_safety_refresh(board_id: str) -> Mapping[str, object]:
         # pointer. A crash/failure can never make it the authority for a
         # protected route; rerunning refresh repairs only this projection.
         _safety_repository.commit(board_id, candidate)
-        identity_changed = previous.identity != candidate.identity
+        identity_changed = previous.identity != candidate.identity or (
+            isinstance(previous, GenericSafetyMapDocument)
+            and isinstance(candidate, GenericSafetyMapDocument)
+            and previous.bootloader_policy != candidate.bootloader_policy
+        )
         _restamp_after_refresh(board_id, candidate.canonical_digest, identity_changed)
-    except (ProfileError, SafetyMapError, SafetyPolicyError, ValueError, OSError) as exc:
+    except (
+        ProfileError,
+        SafetyMapError,
+        SafetyPolicyError,
+        GateRefusal,
+        TargetControlError,
+        PackProvisionError,
+        SetupWorkflowError,
+        ValueError,
+        OSError,
+    ) as exc:
         return _safety_refresher.blocked(request, str(exc)).to_payload()
     connection = connection_manager.maybe_connection(board_id)
     stamp = gate_manager.snapshot(board_id)
@@ -4812,7 +5354,39 @@ def _stamp_validation_session(
                     label=profile.board.silicon_id_label,
                 )
             capability = proof.capability
-    except (ProfileError, PackProvisionError):
+            committed = _capability_policies.resolve(board_id)
+            document = (
+                _active_full_document(board_id) if committed.tier is Tier.SETUP_FULL else None
+            )
+            if (
+                isinstance(document, GenericSafetyMapDocument)
+                and document.bootloader_policy is not None
+            ):
+                try:
+                    _replay_bootloader_authority(
+                        document,
+                        probe_identity=stable_probe,
+                        reader=lambda address, width: target_control.read_memory(
+                            connection.handle, address, width
+                        ),
+                    )
+                except SafetyMapError as exc:
+                    raise ValidationBackendError(
+                        "validation_blocked",
+                        "validation/factory-proof-unavailable",
+                        f"{exc}. Select the originally identified supported unit and restore its "
+                        "exact captured source evidence, then run fresh board_validate.",
+                    ) from exc
+                capability = "exact"
+    except (
+        ProfileError,
+        PackProvisionError,
+        SafetyMapError,
+        SafetyPolicyError,
+        TargetControlError,
+        ValueError,
+        OSError,
+    ):
         return False
     try:
         assignment_store.run_if_current(
@@ -4889,6 +5463,19 @@ def _rollback_validation_session(board_id: str, validation_run: str) -> None:
             _session_store.close_session(connection.runtime_session)
 
 
+def _active_validation_connection_id(board_id: str) -> str | None:
+    """Expose only this run's exact assigned, open session to probe selection."""
+
+    connection = connection_manager.maybe_connection(board_id)
+    if (
+        connection is None
+        or connection.runtime_session.closed_at is not None
+        or assignment_store.connection_for(board_id) != connection.connection_id
+    ):
+        return None
+    return connection.connection_id
+
+
 _board_validator = BoardValidator(
     _profile_repository,
     _report_writer,
@@ -4899,6 +5486,7 @@ _board_validator = BoardValidator(
         _validation_read,
         _validation_capture,
         _validation_close,
+        active_connection_id=_active_validation_connection_id,
     ),
     hooks=ValidationHooks(
         _load_validation_safety_map,
@@ -5199,6 +5787,9 @@ def _setup_inventory(user_input: SetupUserInput) -> PreflightInventory:
         built_in_targets=tuple(target for target in targets if target not in manifest_targets),
         manifest_targets=manifest_targets,
         exact_detected_targets=exact,
+        installed_target_candidates=(
+            _installed_setup_target_candidates(user_input.mcu_part_number) if not exact else ()
+        ),
         # PreflightEngine is pure and has no server access, so it only renders these.
         hook_contract_call=contract_call("probe"),
         uart_hook_contract_call=contract_call("uart"),
@@ -5208,6 +5799,43 @@ def _setup_inventory(user_input: SetupUserInput) -> PreflightInventory:
 def _mcu_family(mcu_part_number: str, target: str) -> str:
     normalized = _normalized_target_identity(mcu_part_number)
     return normalized or _normalized_target_identity(target)
+
+
+def _borrow_setup_handle(
+    board_id: str, probe_uid: str, target: str,
+) -> TargetSessionHandle | None:
+    """Borrow only this setup plan's unchanged session, probe, and backend target."""
+
+    connection = connection_manager.maybe_connection(board_id)
+    if connection is None:
+        return None
+    active = plan_engine.active_plan("board_setup", board_id)
+    if (
+        active is None or active.session_id != connection.runtime_session.session_id
+        or connection.runtime_session.closed_at is not None
+        or not _same_setup_connection(
+            connection.connection_id, str(active.action_parameters["connection_id"])
+        )
+        or not _stable_identity_equal(probe_uid, session_metadata(connection.handle).probe_uid)
+        or (session_metadata(connection.handle).target_override or _current_target(board_id)).casefold()
+        != target.casefold()
+    ):
+        raise TargetConnectionError(
+            "The live session, probe, or backend target differs from setup. Disconnect, "
+            "call setup_overview, and submit a new plan for the intended target."
+        )
+    return connection.handle
+
+
+def _borrowed_setup_policy(handle: TargetSessionHandle) -> tuple[str | None, str, int | None]:
+    """Reuse known attachment facts rather than claiming a newly attempted policy."""
+
+    board = handle.board
+    return (
+        board.debug_protocol if board is not None else None,
+        (board.debug_connect_mode or "attach") if board is not None else "attach",
+        board.debug_clock_hz if board is not None else None,
+    )
 
 
 def _setup_lite_connection_phase(context: SetupPhaseContext) -> SetupPhaseOutcome:
@@ -5253,7 +5881,10 @@ def _setup_lite_connection_phase(context: SetupPhaseContext) -> SetupPhaseOutcom
     opened: list[TargetSessionHandle] = []
 
     def connect(candidate_target: str, _pack_path: str | None) -> None:
-        handle = target_control.open_session(
+        borrowed = _borrow_setup_handle(
+            user_input.board_id, probe.usb_serial or probe.probe_id, candidate_target
+        )
+        handle = borrowed or target_control.open_session(
             board=board,
             unique_id=probe.usb_serial,
             target=candidate_target,
@@ -5267,7 +5898,8 @@ def _setup_lite_connection_phase(context: SetupPhaseContext) -> SetupPhaseOutcom
                     "live setup-lite probe identity changed during connection"
                 )
         finally:
-            target_control.close_session(handle)
+            if borrowed is None:
+                target_control.close_session(handle)
 
     try:
         existing = _profile_repository.load(user_input.board_id)
@@ -5508,10 +6140,17 @@ def _setup_connection_phase(context: SetupPhaseContext) -> SetupPhaseOutcome:
         else:
             attempts = ((None, legacy_catalog.debug_connect_mode, legacy_catalog.debug_clock_hz),)
         handle: TargetSessionHandle | None = None
+        borrowed: TargetSessionHandle | None = None
         last_error: TargetConnectionError | None = None
         for protocol, mode, frequency in attempts:
             try:
-                handle = target_control.open_session(
+                borrowed = _borrow_setup_handle(
+                    context.user_input.board_id, probe.usb_serial or probe.probe_id,
+                    candidate_target,
+                )
+                if borrowed is not None:
+                    protocol, mode, frequency = _borrowed_setup_policy(borrowed)
+                handle = borrowed or target_control.open_session(
                     board=setup_board,
                     unique_id=probe.usb_serial,
                     target=candidate_target,
@@ -5611,7 +6250,8 @@ def _setup_connection_phase(context: SetupPhaseContext) -> SetupPhaseOutcome:
                 raise BoardCatalogError("datasheet bytes changed during live setup")
             captured_datasheet_ref = evidence.reference
         finally:
-            target_control.close_session(handle)
+            if borrowed is None:
+                target_control.close_session(handle)
 
     optional_fields = {
         **(
@@ -5732,6 +6372,28 @@ def _setup_connection_phase(context: SetupPhaseContext) -> SetupPhaseOutcome:
     )
 
 
+def _validate_for_setup(context: SetupPhaseContext, request: ValidationRequest):
+    """Bind a connection created by this exact validation call, never an external reconnect."""
+
+    board_id = context.user_input.board_id
+    active = plan_engine.active_plan("board_setup", board_id)
+    previous_session = _active_session_id(board_id)
+    result = _board_validator.validate(request)
+    current_session = _active_session_id(board_id)
+    if current_session != previous_session:
+        if active is None or previous_session is not None or current_session is None:
+            raise SetupWorkflowError("The session changed outside setup's owned connection transition")
+        _borrowed = connection_manager.maybe_connection(board_id)
+        if _borrowed is None or not _same_setup_connection(
+            _borrowed.connection_id, context.user_input.connection_id
+        ) or _current_target(board_id).casefold() != (context.preflight.selected_target or "").casefold():
+            raise SetupWorkflowError("Setup validation attached a different probe or target")
+        plan_engine.bind_setup_session(
+            board_id, active.plan_id, previous_session_id=previous_session, session_id=current_session,
+        )
+    return result
+
+
 def _setup_validation_phase(context: SetupPhaseContext) -> SetupPhaseOutcome:
     if _setup_target_tier(context.user_input.board_id) is Tier.SETUP_LITE:
         return SetupPhaseOutcome.success(
@@ -5739,7 +6401,8 @@ def _setup_validation_phase(context: SetupPhaseContext) -> SetupPhaseOutcome:
             capability_level="trusted-not-proven",
         )
     selected_probe = context.preflight.selected_probe
-    result = _board_validator.validate(
+    result = _validate_for_setup(
+        context,
         ValidationRequest(
             context.user_input.board_id,
             selected_probe.probe_id if selected_probe is not None else None,
@@ -5828,6 +6491,7 @@ def _setup_safety_research_phase(context: SetupPhaseContext) -> SetupPhaseOutcom
                 details={
                     "exact_response_fields": ["decision", "regions", "flash", "recovery"],
                     "lite_proposal": proposal,
+                    **lite_confirmation_form(),
                 },
             )
         return SetupPhaseOutcome.success(
@@ -5975,7 +6639,8 @@ def _setup_commit_phase(context: SetupPhaseContext) -> SetupPhaseOutcome:
         artifacts = _safety_repository.load_current(board_id)
         candidate_safety_map = _validation_safety_snapshot(profile, artifacts)
         probe = context.preflight.selected_probe
-        result = _board_validator.validate(
+        result = _validate_for_setup(
+            context,
             ValidationRequest(
                 board_id,
                 probe.probe_id if probe is not None else None,
@@ -6034,10 +6699,127 @@ def _confirm_setup_cache(user_input: SetupUserInput, decision) -> None:
         _attachment_cache.confirm(user_input.board_id, probe_identity, endpoint)
 
 
+def _run_board_validation(request: ValidationRequest) -> Mapping[str, object]:
+    """Reuse tier connection/policy checks without giving LITE identity authority."""
+
+    board_id = request.board_id
+    state = _tier_router.require_safe("board_validate", board_id)
+    if state.tier is Tier.SETUP_FULL:
+        return _board_validator.validate(request).to_payload()
+
+    # Resolving the committed generation already replays/validates the exact
+    # partial map. LITE has no identity gate to stamp or restore from a report.
+    assert state.tier is Tier.SETUP_LITE
+    if state.profile_snapshot is None or request.probe_id is None:
+        raise TargetConnectionError(
+            "LITE validation requires its saved profile and current assignment."
+        )
+    profile = _profile_repository.from_snapshot(board_id, state.profile_snapshot)
+    cancellation_checkpoint()
+    connection = connection_manager.maybe_connection(board_id)
+    try:
+        if connection is None:
+            connect(board_id)
+            connection = connection_manager.connection_for(board_id)
+        else:
+            selector = _assigned_probe_uid_for_connect(board_id)
+            if not _connect_selector_matches(selector, connection):
+                raise TargetConnectionError(
+                    "The assigned probe differs from this live connection; "
+                    "disconnect and rerun setup_overview."
+                )
+        if (
+            connection.runtime_session.closed_at is not None
+            or not _selected_setup_connection_matches(request.probe_id, connection)
+            or (
+                session_metadata(connection.handle).target_override or _current_target(board_id)
+            ).casefold()
+            != profile.board.pyocd_target.casefold()
+        ):
+            raise TargetConnectionError(
+                "The live session, probe, or backend target differs from the saved LITE binding. "
+                "Disconnect, rerun setup_overview, and validate the intended board."
+            )
+        # A fresh non-mutating provider call is required even for an already open
+        # handle. Saved metadata/capabilities alone cannot show a live connection.
+        target_state = target_control.get_state(connection.handle)
+        cancellation_checkpoint()
+        assignment_store.require(request.probe_id, board_id)
+        if connection_manager.maybe_connection(board_id) is not connection:
+            raise TargetConnectionError(
+                "The connection changed during LITE validation; retry validation."
+            )
+    except BaseException as exc:
+        # LITE has no FULL gate that could contain a mismatched/failed handle.
+        # Use normal disconnection to revoke plans and release only this handle.
+        if connection is not None and connection_manager.maybe_connection(board_id) is connection:
+            try:
+                disconnect(board_id)
+            except Exception as cleanup_error:
+                raise exc from cleanup_error
+        raise
+    return {
+        "status": "validation_passed",
+        "code": "validation/lite-binding-checked",
+        "continuation_id": _safety_continuation("validation"),
+        "agent_prompt": (
+            "The assigned LITE connection and confirmed partial policy are usable. Identity remains "
+            "trusted-not-proven; no immutable silicon identity or FULL gate was established. "
+            "Use the advertised contained operations with their required plans and permissions."
+        ),
+        "choices": [],
+        "observed": {
+            "board_id": board_id,
+            "tier": state.tier.value,
+            "identity_assertion": "trusted-not-proven",
+            "identity_capability": None,
+            "server_run_id": server_run.run_id,
+            "connection_id": connection.connection_id,
+            "session_id": connection.runtime_session.session_id,
+            "probe_id": request.probe_id,
+            "target": profile.board.pyocd_target,
+            "target_state": target_state,
+            "policy_digest": state.policy_digest,
+            "map_kind": "partial",
+        },
+        "constraints": [
+            "This checks the current LITE binding, not immutable MCU/package identity.",
+            "Only confirmed ranges and capabilities are available; plans and permissions still apply.",
+            "Validation does not write memory, flash, recover, use UART, or change policy.",
+        ],
+        "rejected_candidates": [],
+        "accepted_response": None,
+        "validation_plan": [
+            "Replay the committed partial policy.",
+            "Resolve the current assigned probe and saved backend target.",
+            "Read the live target state without mutation.",
+        ],
+    }
+
+
 def _get_setup_status(board_id: str) -> Mapping[str, object]:
     """Return a non-authoritative setup barrier for external orchestration."""
 
     tier_state = _capability_policies.resolve(board_id)
+    if not tier_state.hardware_allowed:
+        recovery = _capability_policies.recovery_requirements(board_id)
+        return {
+            "status": "setup_not_ready",
+            "board_id": board_id,
+            "configuration_ready": False,
+            "live_session_ready": False,
+            "ready_for_code": False,
+            "ready_for_flash_planning": False,
+            "ready_for_uart_work": False,
+            "uart_attachment_ready": False,
+            "identity_capability": None,
+            "tier": None,
+            "policy_status": "corrupt",
+            "policy_digest": None,
+            "remedy": recovery["prerequisite"],
+            "recovery": recovery,
+            "project_root": str(_project_root),
+        }
     # Explicit lower tiers never consult compatibility profile/map paths.  A
     # named no-setup board is intentionally usable through raw routes; a lite
     # board carries its own immutable partial facts.  Treating either as a
@@ -6602,7 +7384,10 @@ def _setup_overview(
         reason = "incomplete profile; repair is required"
         route_kind = "repair"
         tier_state = _capability_policies.resolve(profile.board_id)
-        if tier_state.tier is Tier.NO_SETUP:
+        if tier_state.tier is None:
+            route_kind = "policy-restore"
+            reason = "committed policy is corrupt; exact trusted backup restoration is required"
+        elif tier_state.tier is Tier.NO_SETUP:
             complete = True
             route_kind = "no-setup"
             reason = "explicit no-setup policy; raw connect and raw operations are available"
@@ -6706,6 +7491,35 @@ def _setup_overview(
             validated_names.append((name, key))
 
     if board_names is not None and validated_names and not no_board_sentinel:
+        recovery_routes = []
+        for name, key in validated_names:
+            match = by_name.get(key)
+            if match is not None and match[1] == "policy-restore":
+                recovery = _capability_policies.recovery_requirements(match[0].board_id)
+                recovery_routes.append(
+                    {
+                        "display_name": name,
+                        "board_id": match[0].board_id,
+                        "route": "policy-restore",
+                        "next_tool": "board_policy_restore",
+                        "load_call": recovery["load_call"],
+                        "recovery": recovery,
+                    }
+                )
+        if recovery_routes:
+            return {
+                "status": "setup_policy_recovery_required",
+                "agent_prompt": (
+                    "Restore the requested corrupt committed policies from their exact backups "
+                    "before hardware access, then repeat setup_overview for the requested names. "
+                    "This host-only restoration needs no probe assignment."
+                ),
+                "profiles": profile_rows,
+                "connections": connection_rows,
+                "serial_choices": serial_rows,
+                "inventory_error": inventory_error,
+                "routes": recovery_routes,
+            }
         available_connections = {str(row["connection_id"]) for row in connection_rows}
         assignments = dict(connection_assignments or {})
         expected_names = {name for name, _key in validated_names}
@@ -6717,6 +7531,102 @@ def _setup_overview(
             or not set(assignments.values()).issubset(available_connections)
         ):
             raise ValueError("connection assignments must be unique current server connection IDs")
+        # A familiar profile constrains routing before singleton auto-assignment.
+        # A missing run binding stays missing; provider compatibility alone never
+        # replaces an exact binding. Absence is not evidence of external contention.
+        unavailable: list[dict[str, object]] = []
+        for name, key in validated_names:
+            match = by_name.get(key)
+            if match is None:
+                continue
+            profile = match[0]
+            expected = assignment_store.connection_for(profile.board_id)
+            compatible = [
+                str(row["connection_id"])
+                for row in connection_rows
+                if str(row["probe_family"]).casefold() == profile.board.probe_family.casefold()
+            ]
+            bound = next(
+                (
+                    candidate
+                    for candidate in compatible
+                    if expected is not None and _same_setup_connection(candidate, expected)
+                ),
+                None,
+            )
+            selected = assignments.get(name)
+            reason = None
+            if expected is not None and bound is None:
+                reason = "The assigned probe is not visible in current inventory. Attach it and retry."
+            elif (
+                expected is not None
+                and selected is not None
+                and not _same_setup_connection(selected, expected)
+            ):
+                reason = (
+                    "The selected connection differs from this profile's saved run binding. "
+                    "Select its assigned probe."
+                )
+            elif selected is not None and selected not in compatible:
+                reason = (
+                    "The selected connection does not match this profile's probe provider. "
+                    "Attach its intended probe."
+                )
+            elif not compatible:
+                reason = (
+                    "No probe matching this profile's provider is visible. "
+                    "Attach its intended probe and retry."
+                )
+            selected = selected or bound or (compatible[0] if len(compatible) == 1 else None)
+            if reason is None and selected is not None:
+                for owner in connection_manager.assigned_board_ids():
+                    connection = connection_manager.maybe_connection(owner)
+                    if (
+                        owner != profile.board_id
+                        and connection is not None
+                        and _selected_setup_connection_matches(selected, connection)
+                    ):
+                        reason = (
+                            f"The assigned probe is busy in this server, owned by '{owner}'. "
+                            "Disconnect that owner before retrying."
+                        )
+                        break
+            if reason is not None:
+                unavailable.append(
+                    {
+                        "display_name": name,
+                        "board_id": profile.board_id,
+                        "route": "probe-unavailable",
+                        "next_tool": None,
+                        "assigned_connection_id": expected,
+                        "reason": reason,
+                    }
+                )
+            elif selected is not None:
+                assignments[name] = selected
+        if unavailable:
+            return {
+                "status": "setup_probe_unavailable",
+                "code": "setup/assigned-probe-unavailable",
+                "agent_prompt": (
+                    "The requested profile's probe is unavailable or its selection conflicts "
+                    "with the saved binding. Follow each route's reason. Other visible probes "
+                    "are inventory options, not replacements for this profile. Absence alone "
+                    "does not establish that another process owns the probe."
+                ),
+                "profiles": profile_rows,
+                "connections": [
+                    row | {
+                        "assigned_board_id": assignment_store.bindings().get(
+                            str(row["connection_id"])
+                        )
+                    }
+                    for row in connection_rows
+                ],
+                "serial_choices": serial_rows,
+                "inventory_error": inventory_error,
+                "routes": unavailable,
+            }
         if not connection_rows:
             return _no_native_probe_overview(
                 profile_rows,
@@ -6740,7 +7650,7 @@ def _setup_overview(
                 "inventory_error": inventory_error,
                 "routes": [],
             }
-        if len(connection_rows) > 1 and not assignments:
+        if len(connection_rows) > 1 and set(assignments) != expected_names:
             _replace_setup_assignments({}, "setup overview requires explicit assignments")
             return {
                 "status": "setup_assignment_required",
@@ -6891,15 +7801,30 @@ def _setup_overview(
                 continue
             provisional_bindings[selected_connection] = profile.board_id
             if route_kind in {"no-setup", "lite"}:
+                lite = route_kind == "lite"
                 routes.append(
                     {
                         "display_name": name,
                         "board_id": profile.board_id,
                         "route": route_kind,
-                        "next_tool": "connect",
+                        "next_tool": "board_validate" if lite else "connect",
+                        **(
+                            {
+                                "load_call": {
+                                    "tool": "load_setup_tool",
+                                    "arguments": {
+                                        "board_id": profile.board_id,
+                                        "tool_name": "board_validate",
+                                    },
+                                },
+                            } if lite else {}
+                        ),
                         "next_call": {
-                            "tool": "connect",
-                            "arguments": {"board_id": profile.board_id},
+                            "tool": "board_validate" if lite else "connect",
+                            "arguments": {
+                                "board_id": profile.board_id,
+                                **({"probe_id": selected_connection} if lite else {}),
+                            },
                         },
                         "reason": reason,
                         "capabilities": _tier_router.capabilities(
@@ -7133,7 +8058,8 @@ def _setup_pack_pipeline(
         )
         for protocol, mode, frequency in attempts:
             try:
-                handle = target_control.open_session(
+                borrowed = _borrow_setup_handle(board_id, probe_uid, target)
+                handle = borrowed or target_control.open_session(
                     board=None,
                     unique_id=probe_uid,
                     target=target,
@@ -7148,8 +8074,12 @@ def _setup_pack_pipeline(
             except TargetConnectionError as exc:
                 last_error = exc
                 continue
-            target_control.close_session(handle)
-            selected_policies[:] = [(protocol, mode, frequency)]
+            if borrowed is None:
+                target_control.close_session(handle)
+            selected_policies[:] = [
+                _borrowed_setup_policy(borrowed) if borrowed is not None
+                else (protocol, mode, frequency)
+            ]
             return
         assert last_error is not None
         raise last_error
@@ -7171,6 +8101,7 @@ def _live_test_builtin_setup_target(
     probe_uid: str,
     candidate: BuiltInTargetSupportCandidate,
     requested_policy: tuple[str | None, str, int | None] | None,
+    board_id: str | None = None,
 ) -> tuple[BuiltInTargetSupportCandidate, tuple[str | None, str, int | None]]:
     """Prove one target and attachment policy before setup permission is consumed."""
 
@@ -7186,8 +8117,11 @@ def _live_test_builtin_setup_target(
     last_error: TargetControlError | PackProvisionError | None = None
     for protocol, mode, frequency in attempts:
         handle = None
+        borrowed = None
         try:
-            handle = target_control.open_session(
+            if board_id is not None:
+                borrowed = _borrow_setup_handle(board_id, probe_uid, candidate.pyocd_target)
+            handle = borrowed or target_control.open_session(
                 board=None,
                 unique_id=probe_uid,
                 target=candidate.pyocd_target,
@@ -7205,9 +8139,11 @@ def _live_test_builtin_setup_target(
             last_error = exc
             continue
         finally:
-            if handle is not None:
+            if handle is not None and borrowed is None:
                 target_control.close_session(handle)
-        return proven, (protocol, mode, frequency)
+        return proven, (
+            _borrowed_setup_policy(borrowed) if borrowed is not None else (protocol, mode, frequency)
+        )
     assert last_error is not None
     raise last_error
 
@@ -7218,6 +8154,34 @@ def _setup_continue(
     response: Mapping[str, object],
 ) -> Mapping[str, object]:
     """Validate one setup choice/research response without granting authority."""
+
+    with connection_manager.lock_for(board_id):
+        user_input, _status, _decision = _setup_workflow.continuation_context(continuation_id)
+        if user_input.board_id != board_id:
+            raise ValueError("continuation_id does not belong to board_id")
+        allowance_id = setup_tool_loader.allowance_for(board_id)
+        if allowance_id is None:
+            raise SetupWorkflowError("No current setup allowance; submit a fresh board_setup-plan")
+        try:
+            plan_engine.setup_continuation(
+                board_id, allowance_id, session_id=_active_session_id(board_id),
+            )
+            assignment_store.require(user_input.connection_id, board_id)
+            result = _setup_continue_response(board_id, continuation_id, response)
+            if result.get("status") == "setup_continuation_accepted":
+                plan_engine.setup_continuation(
+                    board_id, allowance_id, session_id=_active_session_id(board_id), accept_reply=True,
+                )
+            return result
+        except (PolicyRefusal, SetupWorkflowError, OperationCancelledError) as exc:
+            if not isinstance(exc, PolicyRefusal) or exc.code != "plan/setup-answer-pending":
+                _setup_workflow.close_allowance(allowance_id, str(exc))
+            raise
+
+
+def _setup_continue_response(
+    board_id: str, continuation_id: str, response: Mapping[str, object],
+) -> Mapping[str, object]:
 
     user_input, status, decision = _setup_workflow.continuation_context(continuation_id)
     if user_input.board_id != board_id:
@@ -7296,12 +8260,8 @@ def _setup_continue(
     # confirmation is a separate, exact schema that becomes the partial
     # immutable capability snapshot used by containment after the next
     # board_fix_setup continuation.
-    if _setup_target_tier(board_id) is Tier.SETUP_LITE and set(response) == {
-        "decision",
-        "regions",
-        "flash",
-        "recovery",
-    }:
+    phase = _setup_workflow.continuation_phase(continuation_id)
+    if _setup_target_tier(board_id) is Tier.SETUP_LITE and phase is SetupPhase.SAFETY_RESEARCH:
         try:
             _setup_lite_confirmations[board_id] = normalize_lite_confirmation(board_id, response)
         except LiteConfirmationError as exc:
@@ -7313,6 +8273,14 @@ def _setup_continue(
             "identity": {"assertion": "trusted-not-proven", "capability": None},
             "redirect": "Call board_fix_setup now under the active paired setup allowance.",
         }
+    if (
+        not fields or fields.intersection({"decision", "regions", "flash", "recovery"})
+    ):
+        raise ResearchError(
+            "setup/response-phase-mismatch",
+            "This prompt requires target/pack research; submit its advertised fields. "
+            "Wait for the LITE confirmation prompt before supplying regions, flash, and recovery.",
+        )
 
     target_fields = {"pyocd_target", "evidence", "reasoning_summary"}
     pack_fields = {
@@ -7336,9 +8304,13 @@ def _setup_continue(
         frozenset(pack_fields | attachment_fields),
     }
     if not is_target_response and not is_pack_response:
+        expected = target_fields if "pyocd_target" in fields else pack_fields
+        if fields.intersection(attachment_fields):
+            expected = expected | attachment_fields
         raise ResearchError(
             "research/field-set-mismatch",
-            "response fields must exactly match the requested target or pack schema",
+            "response fields must exactly match the requested target or pack schema; "
+            f"missing={sorted(expected - fields)}, unexpected={sorted(fields - expected)}",
         )
     _validated_research_prose(response)
     target_value = response.get("pyocd_target")
@@ -7363,6 +8335,12 @@ def _setup_continue(
 
     staged_attachment: tuple[str | None, str, int | None] | None = None
     if attachment_fields <= fields:
+        if connection_manager.maybe_connection(board_id) is not None:
+            raise ResearchError(
+                "connection/session-settings-immutable",
+                "The current live session is already attached. Omit optional attachment fields "
+                "to reuse it unchanged. To change settings, disconnect and submit a fresh setup plan.",
+            )
         protocol = response.get("debug_protocol")
         mode = response.get("debug_connect_mode")
         frequency = response.get("debug_clock_hz")
@@ -7422,7 +8400,7 @@ def _setup_continue(
                     resolved_builtin = resolve_builtin_target_support(
                         user_input.mcu_part_number, candidate_target
                     )
-            except BuiltInTargetGeometryError as exc:
+            except (BuiltInTargetGeometryError, BuiltInTargetCompatibilityError) as exc:
                 return ValidationOutcome(False, str(exc), {"research_route": "official_pack"})
             except (TargetResolutionError, PackProvisionError) as exc:
                 return ValidationOutcome(
@@ -7443,7 +8421,8 @@ def _setup_continue(
                     "status": "setup_research_required",
                     "continuation_id": continuation_id,
                     "agent_prompt": (
-                        "The target is plausible but unavailable. Research one official local "
+                        "Installed support is unavailable, insufficient, or cannot establish "
+                        "compatibility with the supplied MCU part. Research one official local "
                         "CMSIS-Pack candidate and submit the exact pack response through "
                         "continue_setup. Do not ask the user for a target or expose this payload."
                     ),
@@ -7462,6 +8441,7 @@ def _setup_continue(
         if resolved_builtin is not None:
             try:
                 resolved_builtin, selected_policy = _live_test_builtin_setup_target(
+                    board_id=board_id,
                     probe_uid=_resolved_probe_uid_for_connection(user_input.connection_id),
                     candidate=resolved_builtin,
                     requested_policy=staged_attachment,
@@ -7604,6 +8584,12 @@ def _setup_plan_eligibility(board_id: str) -> tuple[bool, str]:
     """Expose populated setup only for first setup or an exact live mismatch route."""
 
     tier_state = _capability_policies.resolve(board_id)
+    if not tier_state.hardware_allowed:
+        return (
+            False,
+            "Load board_policy_restore for exact committed-generation recovery before setup. "
+            + str(_capability_policies.recovery_requirements(board_id)["prerequisite"]),
+        )
     if tier_state.tier is Tier.NO_SETUP:
         return (
             True,
@@ -7655,6 +8641,53 @@ def _setup_plan_eligibility(board_id: str) -> tuple[bool, str]:
         "This established profile has no exact live mismatch allowance. Use board_validate or "
         "board_safety_refresh only when its reported remedy requires it; setup remains locked.",
     )
+
+
+def _setup_session_for_plan(board_id: str, parameters: Mapping[str, object]) -> str | None:
+    """Disclose required disconnection before accepting an unusable attached plan."""
+
+    connection = connection_manager.maybe_connection(board_id)
+    if connection is None:
+        return None
+    part = parameters.get("mcu_part_number")
+    if not isinstance(part, str) or not part.strip():
+        return connection.runtime_session.session_id  # ordinary plan validation names this field
+    target = (session_metadata(connection.handle).target_override or _current_target(board_id)).casefold()
+    qualified = target in _installed_setup_target_candidates(part)
+    if not qualified:
+        try:
+            support = _resolve_setup_support(SetupUserInput(
+                board_id=board_id,
+                connection_id=str(parameters.get("connection_id", "")),
+                display_name=str(parameters.get("display_name", "")),
+                mcu_part_number=part,
+                serial_baudrate=None,
+                requires_uart=False,
+                datasheet_path=str(parameters.get("datasheet_path", "")),
+            ))
+            qualified = target == (
+                cast(_ResolvedGenericSetupSupport, support).candidate.pyocd_target
+                if _is_generic_support(support) else cast(Any, support).catalog.pyocd_target
+            ).casefold()
+        except (BoardCatalogError, PackProvisionError, OSError, ValueError):
+            pass
+    if not qualified:
+        raise PlanRefusal(
+            "plan/setup-disconnect-required",
+            "The live backend target cannot be reused with this exact part's qualified support. "
+            "Disconnect before submitting a populated setup plan, then repeat setup_overview "
+            "and research the exact target or official pack. No setup plan was accepted.",
+            session_id=connection.runtime_session.session_id,
+        )
+    if connection.runtime_session.closed_at is not None or not _same_setup_connection(
+        connection.connection_id, str(parameters.get("connection_id", ""))
+    ):
+        raise PlanRefusal(
+            "plan/setup-session-invalid",
+            "The live session does not match the assigned probe. Repeat setup_overview before planning.",
+            session_id=connection.runtime_session.session_id,
+        )
+    return connection.runtime_session.session_id
 
 
 def _tiered_setup_phase(
@@ -7711,6 +8744,10 @@ setup_tool_handlers = build_setup_handlers(
             connection_id, board_id
         ),
         assigned_connection=assignment_store.connection_for,
+        setup_session_for_plan=_setup_session_for_plan,
+        validate_board=_run_board_validation,
+        policy_recovery=_policy_recovery_route,
+        policy_restore=_run_board_policy_restore,
     )
 )
 
@@ -7734,6 +8771,11 @@ for _setup_name, _setup_handler in setup_tool_handlers.items():
     )
     if _setup_name.endswith("-plan"):
         forbid_unknown_tool_arguments(mcp, _setup_name)
+
+# Host filesystem restoration must remain reachable while hardware tier guards
+# are closed. Its handler takes the board operation lock and verifies exact
+# committed evidence; it cannot create hardware readiness or choose a pointer.
+forbid_unknown_tool_arguments(mcp, "board_policy_restore")
 
 discovery_tool_handlers = build_discovery_handlers(
     DiscoveryToolServices(
@@ -7814,10 +8856,10 @@ mcp.configure_guarded_dispatch(
     guard=_enforce_direct_tiered_hardware,
     lock_for_board=lambda board_id: connection_manager.lock_for(board_id),
 )
-mcp.configure_route_guard("board_validate", guard=_enforce_full_identity_route)
+mcp.configure_route_guard("board_validate", guard=_enforce_board_validation_route)
 mcp.configure_guarded_dispatch(
     "board_validate",
-    guard=_enforce_full_identity_route,
+    guard=_enforce_board_validation_route,
     lock_for_board=lambda board_id: connection_manager.lock_for(board_id),
 )
 
@@ -7854,17 +8896,26 @@ def _revoke_unlock_permission(board_id: str, reason: str) -> None:
 
 
 def _manual_mass_erase_binding_digest(binding: object) -> tuple[str, str]:
-    """Bind a manual erase grant to policy, live connection, mechanism and loss scope."""
+    """Bind a manual erase grant to policy, live session, mechanism and loss scope.
+
+    ``connection_id`` is probe-derived and survives a reconnect, so the runtime
+    session id is what keeps a grant from outliving the session it was shown for.
+    """
 
     from pyocd_debug_mcp.tools.unlock import UnlockBinding
 
     if not isinstance(binding, UnlockBinding):
         raise TypeError("manual mass-erase binding has an invalid type")
-    state = _tier_router.state_for(binding.identity.board_id)
+    board_id = binding.identity.board_id
+    state = _tier_router.state_for(board_id)
     if state.policy_digest is None:
         raise ManualPermissionError("stale-policy", "the board has no current committed policy")
+    session_id = _active_session_id(board_id)
+    if session_id is None:
+        raise ManualPermissionError("stale-session", "the board has no live runtime session")
     material = {
-        "board_id": binding.identity.board_id,
+        "board_id": board_id,
+        "session_id": session_id,
         "policy_digest": state.policy_digest,
         "live_identity": asdict(binding.identity),
         "mechanism": asdict(binding.mechanism),
@@ -7958,6 +9009,45 @@ def _abandon_manual_mass_erase(binding: object, claim_id: str) -> None:
     _manual_permissions.abandon_mass_erase(binding.identity.board_id, claim_id)
 
 
+def _authorize_raw_recovery(board_id: str, recovery_mechanism: str) -> None:
+    """Spend one exact fresh $mass-erase grant before raw recovery reaches the backend.
+
+    Any refusal leaves the grant and the live session untouched except for a
+    claim this call itself reserved, which is abandoned so a later fresh grant
+    is not blocked.
+    """
+
+    try:
+        binding = _unlock_coordinator.raw_recovery_binding(board_id, recovery_mechanism)
+        grant = _manual_mass_erase_disclosure(binding, None)
+    except PlanRefusal as exc:
+        raise RawRecoveryRefusal(
+            exc.code, str(exc), remedies=exc.remedies or ("Correct the request and retry.",)
+        ) from exc
+    except ManualPermissionError as exc:
+        raise RawRecoveryRefusal(f"manual/{exc.code}", str(exc)) from exc
+    details: dict[str, object] = {
+        "live_identity": asdict(binding.identity),
+        "mechanism": asdict(binding.mechanism),
+        "disclosure": json.loads(binding.erase_disclosure_json),
+        "manual_grant": dict(grant),
+    }
+    try:
+        claim = _reserve_manual_mass_erase(binding)
+    except ManualPermissionError as exc:
+        raise RawRecoveryRefusal(f"manual/{exc.code}", str(exc), details) from exc
+    try:
+        _consume_manual_mass_erase(binding, claim)
+    except BaseException as exc:
+        try:
+            _abandon_manual_mass_erase(binding, claim)
+        except Exception as cleanup_error:  # noqa: BLE001 - keep the primary refusal
+            exc.add_note(f"manual grant abandon also failed: {cleanup_error}")
+        if isinstance(exc, ManualPermissionError):
+            raise RawRecoveryRefusal(f"manual/{exc.code}", str(exc), details) from exc
+        raise
+
+
 _unlock_coordinator = UnlockCoordinator(
     UnlockToolServices(
         server_run=server_run,
@@ -7981,7 +9071,7 @@ _unlock_coordinator = UnlockCoordinator(
         consume_manual_mass_erase=_consume_manual_mass_erase,
         abandon_manual_mass_erase=_abandon_manual_mass_erase,
         policy_profile=_active_policy_profile,
-        policy_safety=lambda board_id: cast(SafetyMapDocument, _active_full_document(board_id)),
+        policy_safety=_active_full_document,
         policy_lite_recovery=_active_lite_recovery_policy,
     )
 )
@@ -8062,7 +9152,7 @@ def _bind_managed_board_resources(operation: ManagedOperation) -> None:
     handle = connection.handle
 
     def target_connection_failed() -> bool:
-        current = operation.error
+        current = operation.error or operation.response_error
         seen: set[int] = set()
         while current is not None and id(current) not in seen:
             seen.add(id(current))
@@ -8096,15 +9186,21 @@ def _bind_managed_board_resources(operation: ManagedOperation) -> None:
             if interrupted
             else "target connection failed during operation"
         )
-        evict_captured_connection(reason)
+        try:
+            evict_captured_connection(reason)
+        except TargetStateError as exc:
+            # Preserve reported breakpoint restoration uncertainty alongside
+            # the original step/transport error after releasing host resources.
+            operation.resources.fatal_cleanup_errors.append(str(exc))
+            raise
 
     def release_reset() -> None:
         # A guarded child can be rejected by plan/containment before its handler
         # begins. It has not acquired or changed target state, so an otherwise
         # unconditional reset release would itself be backend I/O after the
         # refusal. This is especially visible through an ``action_batch``
-        # fallback, which intentionally normalizes that child refusal and lets
-        # the outer batch complete. Keep release cleanup for handlers that did
+        # fallback, which preserves that child refusal in the failed batch.
+        # Keep release cleanup for handlers that did
         # begin (and therefore may have touched the debug target).
         if operation.handler_started_at is None:
             return

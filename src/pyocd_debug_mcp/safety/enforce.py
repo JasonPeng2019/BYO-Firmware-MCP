@@ -139,6 +139,29 @@ class SafetyPolicy:
                 ActionCategory.FLASH_BOOTLOADER, (requested,)
             )
         if isinstance(partition_result, Refusal):
+            document = loaded.document
+            if (
+                isinstance(document, GenericSafetyMapDocument)
+                and document.deployment_policy["kind"] == "none"
+                and document.partitions.bootloader is None
+            ):
+                # This replayable map has never had an artifact deployment
+                # allocation, and a refresh only re-derives from the same
+                # immutable sources, so it cannot create one. Point at the
+                # existing guarded route that does establish it instead of
+                # prescribing refresh that would repeat unchanged.
+                raise SafetyPolicyError(
+                    "safety/no-deployment-allocation",
+                    f"Board '{board_id}' has no application deployment allocation yet, so no "
+                    "address can be a breakpoint. Establish the allocation by deploying the "
+                    "current build through the existing guarded route: accept a "
+                    "flash_application-plan that binds the current ELF, then run "
+                    "flash_application. Both steps need a live-validated board with the write "
+                    "gate open (exact or processor-compatible identity), the current build "
+                    "artifact, and a device support package that proves bounded sector "
+                    "erase/program. A safety refresh cannot create this allocation.",
+                    remedy=("flash_application-plan", "flash_application"),
+                )
             raise SafetyPolicyError(
                 "safety/breakpoint-outside-partition",
                 "The breakpoint is outside every reviewed executable deployment partition.",

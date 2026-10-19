@@ -18,6 +18,74 @@ from pyocd_debug_mcp.timeouts import DEFAULT_EXTERNAL_COMMAND_TIMEOUT_SECONDS
 
 
 class ProcessIsolationContractTests(unittest.TestCase):
+    def test_worker_argument_refusal_keeps_request_sequence_and_backend_failure_category(self) -> None:
+        from pyocd_debug_mcp.adapters import provider_worker_runtime as runtime
+        from pyocd_debug_mcp.adapters.swd_interface import TargetSessionHandle
+        from pyocd_debug_mcp.timeouts import default_server_timeout_config
+
+        handle = TargetSessionHandle(SimpleNamespace(), None, None, "fake", None)
+        adapter = Mock()
+        adapter.open.return_value = handle
+        adapter.read_core_register.return_value = 42
+        adapter.write_core_register.side_effect = (None, ValueError("backend crash"))
+        open_arguments = {
+            "board": None, "unique_id": None, "target": None,
+            "server_timeouts": default_server_timeout_config().to_record(),
+            "protocol": None, "connect_mode": None, "pack_path": None,
+            "pack_sha256": None, "pdsc_device": None, "frequency_hz": None,
+        }
+        requests = [
+            ("open", open_arguments),
+            ("write_core_register", {"name": "r0", "value": -1}),
+            ("read_core_register", {"name": "r0"}),
+            ("write_core_register", {"name": "d0", "value": 0x123456789ABCDEF0}),
+            ("write_core_register", {"name": "r0", "value": 1}),
+        ]
+        frames = b"".join(
+            (json.dumps({"version": 1, "request_id": index, "operation": operation,
+                         "arguments": arguments}) + "\n").encode()
+            for index, (operation, arguments) in enumerate(requests, 1)
+        )
+        protocol = BytesIO()
+        with (
+            patch.object(runtime, "PyOCDSWDInterface", return_value=adapter),
+            patch.object(runtime.sys, "stdin", SimpleNamespace(buffer=BytesIO(frames))),
+        ):
+            runtime.main(protocol)
+        replies = [json.loads(line) for line in protocol.getvalue().splitlines()][1:]
+        self.assertEqual([reply["request_id"] for reply in replies], list(range(1, 6)))
+        self.assertEqual(replies[1]["error"]["kind"], "target_input")
+        self.assertEqual(replies[2]["result"], 42)
+        self.assertTrue(replies[3]["ok"])
+        self.assertEqual(replies[4]["error"]["kind"], "provider_failure")
+        self.assertEqual(adapter.write_core_register.call_args_list, [
+            unittest.mock.call(handle, "d0", 0x123456789ABCDEF0),
+            unittest.mock.call(handle, "r0", 1),
+        ])
+        adapter.read_core_register.assert_called_once_with(handle, "r0")
+        adapter.close.assert_not_called()
+
+    def test_proxy_preserves_typed_input_refusal_and_accepts_next_reply(self) -> None:
+        from pyocd_debug_mcp.adapters.swd_process import _WorkerClient
+        from pyocd_debug_mcp.target_errors import TargetInputError
+
+        client = cast(Any, object.__new__(_WorkerClient))
+        client._guard = RLock()
+        client._closed = False
+        client._request_id = 0
+        client._write = Mock()
+        client._read = Mock(side_effect=[
+            {"version": 1, "request_id": 1, "ok": False,
+             "error": {"kind": "target_input", "message": "value is below its allowed range"}},
+            {"version": 1, "request_id": 2, "ok": True, "result": 42},
+        ])
+        client._terminate = Mock()
+        with self.assertRaises(TargetInputError):
+            client.call("write_core_register", {"name": "r0", "value": -1})
+        self.assertFalse(client._closed)
+        self.assertEqual(client.call("read_core_register", {"name": "r0"}), 42)
+        client._terminate.assert_not_called()
+
     def test_worker_bootstrap_isolates_import_and_between_request_stdout(self) -> None:
         script = r'''
 import builtins
@@ -215,6 +283,7 @@ print(json.dumps(payload, separators=(",", ":")))
             "reset",
             "reset_and_halt",
             "release_reset",
+            "check_flash_support",
             "flash",
             "recover",
             "supports_recovery",
@@ -749,6 +818,7 @@ print(json.dumps(payload, separators=(",", ":")))
         from pyocd_debug_mcp.adapters.swd_interface import TargetSessionHandle
         from pyocd_debug_mcp.adapters.swd_process import _board_record
         from pyocd_debug_mcp.board_config import BoardConfig
+        from pyocd_debug_mcp.flash_image import FlashResult
         from pyocd_debug_mcp.timeouts import default_server_timeout_config
 
         long_text = "x" * 20_000
@@ -767,7 +837,16 @@ print(json.dumps(payload, separators=(",", ":")))
         record = json.loads(json.dumps(_board_record(board)))
         self.assertEqual(_board(record), board)
         _validate_arguments("read_memory_block", {"address": 0, "length": 70_000})
-        _validate_arguments("flash", {"path": long_text, "halt_after_reset": False})
+        _validate_arguments(
+            "flash",
+            {
+                "path": long_text,
+                "halt_after_reset": False,
+                "base_address": None,
+                "artifact_sha256": None,
+            },
+        )
+        flashed = FlashResult(((0x0800_0000, 0x0800_0010),), "running")
 
         reset = Mock(return_value=None)
         session = SimpleNamespace(
@@ -794,11 +873,12 @@ print(json.dumps(payload, separators=(",", ":")))
                     "supported_core_registers": ("pc", "r0"),
                     "halt": None,
                     "resume": None,
-                    "step": None,
+                    "step": 0x08000002,
                     "reset": None,
                     "reset_and_halt": None,
                     "release_reset": None,
-                    "flash": None,
+                    "check_flash_support": None,
+                    "flash": flashed,
                     "recover": None,
                     "supports_recovery": True,
                     "set_breakpoint": None,
@@ -851,11 +931,23 @@ print(json.dumps(payload, separators=(",", ":")))
             "supported_core_registers": ({}, ["pc", "r0"]),
             "halt": ({}, None),
             "resume": ({}, None),
-            "step": ({}, None),
+            "step": ({}, 0x08000002),
             "reset": ({}, None),
             "reset_and_halt": ({}, None),
             "release_reset": ({}, None),
-            "flash": ({"path": long_text, "halt_after_reset": False}, None),
+            "check_flash_support": (
+                {"path": long_text, "base_address": None, "artifact_sha256": "a" * 64},
+                None,
+            ),
+            "flash": (
+                {
+                    "path": long_text,
+                    "halt_after_reset": False,
+                    "base_address": 0x0800_0000,
+                    "artifact_sha256": None,
+                },
+                flashed.to_document(),
+            ),
             "recover": ({}, None),
             "supports_recovery": ({"mechanism": "fake"}, True),
             "set_breakpoint": ({"address": 4}, None),

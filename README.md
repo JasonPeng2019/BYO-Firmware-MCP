@@ -80,12 +80,22 @@ server startup and hardware behavior continue normally.
 ### Tiered capability routing
 
 Each named logical board has an explicit project-local safety tier. A newly
-named board is `no-setup`: use `connect` (optionally with its explicit
-`probe_uid` or `target`) and the `*_raw` tools when the operator deliberately
+named board is `no-setup`: use `connect` with a current `setup_overview`
+assignment or an explicit `probe_uid` (optionally a `target` override), and
+the `*_raw` tools when the operator deliberately
 owns unbounded-address risk. `setup-lite` adds confirmed coarse map containment
 and retains raw escape hatches; every lite raw response instructs the agent to
 display that bypass warning to the human. `setup-full` preserves the existing
 validated/guarded workflow and refuses new raw routes.
+
+A UID must resolve to exactly one current probe; a full UID or an unambiguous
+partial UID is supported. A mistaken UID, the string `"null"`, or an unknown
+label without a probe selection refuses before opening hardware. A target
+override alone never selects a singleton. Raw identity remains unasserted;
+generic/core compatibility does not establish an exact MCU package or flash
+programming support. When a known profile's probe is missing or owned by another
+board in this server, discovery reports that condition and preserves its binding.
+Other visible probes are inventory options, without a substitute validation route.
 
 Use `get_capabilities(board_id)` or `get_setup_status(board_id)` before acting;
 both report the per-board tier, policy status and authoritative project root.
@@ -101,6 +111,37 @@ the human to invoke the named skill; do not create or edit a grant directly.
 Mass erase reserves that exact disclosure before plan acceptance and consumes it
 before the backend call; a cancelled, changed, or failed plan discards the old
 grant and requires a fresh skill invocation.
+
+`target_unlock_raw` is also a mass erase and needs its own fresh `$mass-erase`
+grant. Without one it is refused before any backend I/O and returns the live
+identity, the uncontained whole-device erase disclosure, and the `manual_grant`
+bindings to relay to the human; retry unchanged after the skill runs. The grant
+is bound to the board, live session, policy, mechanism, and that raw scope, so a
+reconnect or a safe-route grant does not authorize it. An attempt spends the
+grant and disconnects the board even when the backend fails.
+
+Connecting never erases. `connect`, `connect_under_reset`, setup, and validation
+open pyOCD with `auto_unlock` disabled, so a debug-protected target (for example
+Nordic APPROTECT or Kinetis flash security) fails with a locked-target error
+(event code `target/locked`) and no session instead of being mass-erased to
+attach. Both unlock tools need a connected session, so this server cannot
+recover such a target; removing the protection erases the whole device and is
+the owner's decision, made outside the server with the vendor's procedure.
+
+Every flash route (`flash_application`, `flash_bootloader`, and `flash_raw`)
+succeeds only after it reads back every byte the artifact addresses and finds
+it unchanged. Before any reset or programming, a live target without a usable
+flash algorithm for each addressed byte is refused with
+`flash/unsupported-target`; a generic `cortex_m` connection is refused this way
+because its default memory map has no flash. A no-op, partial, or unreadable
+write fails with `flash/verification-failed`. A result reports `programming`
+(verified byte count and ranges) separately from `target_state` (`running`,
+`halted`, or `reset_state_unconfirmed`); an unconfirmed final reset leaves only
+execution state unknown, never the verified bytes. ELF/AXF/HEX load addresses
+come only from the artifact, and holes between them are neither padded nor
+read. `flash_raw` also accepts a `.bin`, but only with an explicit
+`base_address`; the server never infers one. Guarded flash still accepts only
+ELF/AXF/HEX, and a raw base address grants no partition authority.
 
 Raw memory, flash, and UART routes are deliberately bounded: raw serial reads,
 writes, exchanges, payloads, and captured output have finite operation limits.

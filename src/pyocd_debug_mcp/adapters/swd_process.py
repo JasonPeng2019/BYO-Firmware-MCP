@@ -24,17 +24,23 @@ from pyocd_debug_mcp.adapters.swd_interface import (
     TargetSessionMetadata,
 )
 from pyocd_debug_mcp.board_config import BoardConfig
+from pyocd_debug_mcp.flash_image import FlashResult
 from pyocd_debug_mcp.kernel.operations import (
     CANCELLATION_CLEANUP_GRACE_SECONDS,
     current_operation,
 )
 from pyocd_debug_mcp.kernel.processes import ProcessMarkerStore, popen_owned, terminate_process_group
 from pyocd_debug_mcp.target_errors import (
+    FlashArtifactChangedError,
+    FlashReadbackConnectionError,
+    FlashTargetSupportError,
+    FlashVerificationError,
     LockedTargetError,
     ProbeNotFoundError,
     ResetLineUnavailableError,
     TargetConnectionError,
     TargetControlError,
+    TargetInputError,
     TargetStateError,
     UnsupportedArtifactError,
 )
@@ -46,6 +52,7 @@ from pyocd_debug_mcp.timeouts import (
 
 _VERSION = 1
 _ERROR_TYPES: dict[str, type[TargetControlError]] = {
+    "target_input": TargetInputError,
     "target_connection": TargetConnectionError,
     "target_control": TargetControlError,
     "locked_target": LockedTargetError,
@@ -53,6 +60,10 @@ _ERROR_TYPES: dict[str, type[TargetControlError]] = {
     "reset_line_unavailable": ResetLineUnavailableError,
     "target_state": TargetStateError,
     "unsupported_artifact": UnsupportedArtifactError,
+    "flash_artifact_changed": FlashArtifactChangedError,
+    "flash_target_unsupported": FlashTargetSupportError,
+    "flash_readback_connection": FlashReadbackConnectionError,
+    "flash_verification": FlashVerificationError,
 }
 
 
@@ -83,12 +94,12 @@ def _memory_arguments(arguments: dict[str, Any], *, write: bool) -> tuple[int, i
 
 def _validate_result(operation: str, value: object, arguments: dict[str, Any] | None = None) -> Any:
     void_operations = {
+        "check_flash_support",
         "close",
         "write_memory",
         "write_core_register",
         "halt",
         "resume",
-        "step",
         "reset",
         "reset_and_halt",
         "recover",
@@ -101,9 +112,12 @@ def _validate_result(operation: str, value: object, arguments: dict[str, Any] | 
             raise ValueError("worker void operation returned data")
         return None
     if operation == "flash":
-        if value not in {"running", "halted", "reset_state_unconfirmed"}:
-            raise ValueError("worker flash state result was invalid")
-        return value
+        return FlashResult.from_document(value)
+    if operation == "step":
+        result = _strict_int(value, operation)
+        if not 0 <= result <= 0xFFFFFFFF:
+            raise ValueError("worker step PC exceeded the target address width")
+        return result
     if operation == "get_state":
         if not isinstance(value, str) or not value:
             raise ValueError("worker state result was invalid")
@@ -428,11 +442,16 @@ class _WorkerClient:
                 raise TargetConnectionError(
                     "Worker cleanup could not be confirmed; recovery marker retained."
                 )
+            target_cleanup_error: TargetStateError | None = None
             try:
                 try:
                     close_deadline = deadline if deadline is not None else _operation_deadline()
                     if close_deadline > time.monotonic():
                         self.call("close", {}, deadline=close_deadline)
+                except TargetStateError as exc:
+                    # A reported target restoration failure survives even when
+                    # process termination successfully releases the owned probe.
+                    target_cleanup_error = exc
                 except Exception:
                     # Process termination is the ownership authority. Graceful-close
                     # failures, including a deadline race, are only diagnostics.
@@ -444,10 +463,12 @@ class _WorkerClient:
                     if self._cleanup_confirmed:
                         self._remove_confirmed_marker("Worker process cleanup was confirmed.")
             if self._cleanup_confirmed:
+                if target_cleanup_error is not None:
+                    raise target_cleanup_error
                 return
             raise TargetConnectionError(
                 "Worker cleanup could not be confirmed; recovery marker retained."
-            )
+            ) from target_cleanup_error
 
 
 def _board_record(board: BoardConfig | None) -> dict[str, Any] | None:
@@ -645,8 +666,8 @@ class ProcessIsolatedSWDInterface(SWDInterface):
     def resume(self, handle: TargetSessionHandle) -> None:
         self._call(handle, "resume")
 
-    def step(self, handle: TargetSessionHandle) -> None:
-        self._call(handle, "step")
+    def step(self, handle: TargetSessionHandle) -> int:
+        return cast(int, self._call(handle, "step"))
 
     def reset(self, handle: TargetSessionHandle) -> None:
         self._call(handle, "reset")
@@ -657,17 +678,42 @@ class ProcessIsolatedSWDInterface(SWDInterface):
     def release_reset(self, handle: TargetSessionHandle) -> None:
         self._call(handle, "release_reset")
 
+    def check_flash_support(
+        self,
+        handle: TargetSessionHandle,
+        firmware: Path,
+        *,
+        base_address: int | None = None,
+        artifact_sha256: str | None = None,
+    ) -> None:
+        self._call(
+            handle,
+            "check_flash_support",
+            {
+                "path": str(firmware),
+                "base_address": base_address,
+                "artifact_sha256": artifact_sha256,
+            },
+        )
+
     def flash(
         self,
         handle: TargetSessionHandle,
         firmware: Path,
         *,
         halt_after_reset: bool,
-    ) -> str:
-        return cast(str, self._call(
+        base_address: int | None = None,
+        artifact_sha256: str | None = None,
+    ) -> FlashResult:
+        return cast(FlashResult, self._call(
             handle,
             "flash",
-            {"path": str(firmware), "halt_after_reset": halt_after_reset},
+            {
+                "path": str(firmware),
+                "halt_after_reset": halt_after_reset,
+                "base_address": base_address,
+                "artifact_sha256": artifact_sha256,
+            },
         ))
 
     def recover(self, handle: TargetSessionHandle) -> None:

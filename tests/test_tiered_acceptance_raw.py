@@ -9,8 +9,12 @@ from unittest.mock import patch
 
 from pyocd_debug_mcp.capabilities.policy import CapabilityPolicyRepository, Tier
 from pyocd_debug_mcp.capabilities.routing import TierRouteRefusal, TierRouter
+from pyocd_debug_mcp.flash_image import FlashResult, derive_flash_image
+from pyocd_debug_mcp.setup_flow.validate import ValidationInventory, ValidationProbe
+from pyocd_debug_mcp.target_errors import FlashTargetSupportError, FlashVerificationError
 from pyocd_debug_mcp.tools.raw import RawToolServices, build_raw_handlers
 
+from tests.flash_test_support import write_intel_hex
 from tests.tiered_acceptance_support import (
     DeterministicTargetBackend,
     assert_lite_raw_warning,
@@ -22,9 +26,18 @@ from tests.tiered_acceptance_support import (
 )
 
 
+def _raw_probe_inventory() -> ValidationInventory:
+    return ValidationInventory(
+        probes=(ValidationProbe("fake-probe", "Fixture probe", "jlink", "fake-probe"),)
+    )
+
+
 class _RawBackend:
     def __init__(self) -> None:
         self.calls: list[tuple[object, ...]] = []
+        self.flash_error: BaseException | None = None
+        # A non-FlashResult return models a backend that offers no readback proof.
+        self.flash_result: object | None = None
 
     def handle(self, board_id: str) -> str:
         self.calls.append(("handle", board_id))
@@ -50,9 +63,16 @@ class _RawBackend:
     def reset(self, handle: object, halt_after: bool) -> None:
         self.calls.append(("reset", handle, halt_after))
 
-    def flash(self, handle: object, artifact: Path) -> tuple[Path, str]:
-        self.calls.append(("flash", handle, artifact))
-        return artifact, "halted"
+    def flash(
+        self, handle: object, artifact: Path, base_address: int | None
+    ) -> tuple[Path, object]:
+        self.calls.append(("flash", handle, artifact, base_address))
+        if self.flash_error is not None:
+            raise self.flash_error
+        if self.flash_result is not None:
+            return artifact, self.flash_result
+        image = derive_flash_image(artifact, base_address=base_address)
+        return artifact, FlashResult.for_image(image, "halted")
 
     def recover(self, handle: object, mechanism: str) -> str:
         self.calls.append(("recover", handle, mechanism))
@@ -170,6 +190,39 @@ class TieredRawAcceptanceTests(unittest.TestCase):
         self.assertEqual(self.global_stops, 0)
         self.assertEqual(self.backend.calls, [])
 
+    def test_raw_register_negative_values_refuse_before_handle_lookup(self) -> None:
+        for operation, name in (
+            ("write_cpu_register_raw", "r0"),
+            ("set_execution_state_raw", "xpsr"),
+        ):
+            for value in (-1, "-1", "-0x1"):
+                with self.subTest(operation=operation, value=value):
+                    result = json.loads(self.handlers[operation]("lite_board", name, value))
+                    self.assertEqual(result["status"], "error")
+                    self.assertEqual(result["code"], "input/invalid-argument")
+                    assert_lite_raw_warning(self, result, operation)
+                    self.assertEqual(self.backend.calls, [])
+
+    def test_raw_register_values_keep_backend_widths(self) -> None:
+        for operation in ("write_cpu_register_raw", "set_execution_state_raw"):
+            for value in (0, 0xFFFFFFFF, 0x123456789ABCDEF0):
+                with self.subTest(operation=operation, value=value):
+                    result = json.loads(self.handlers[operation]("raw_board", "d0", hex(value)))
+                    self.assertEqual(result["status"], "ok")
+                    self.assertEqual(
+                        self.backend.calls[-1],
+                        ("write_register", "handle:raw_board", "d0", value),
+                    )
+
+    def test_raw_register_backend_value_error_is_not_an_input_error(self) -> None:
+        with patch.object(self.backend, "calls") as calls:
+            # Handle lookup succeeds; the register write itself fails.
+            calls.append.side_effect = (None, ValueError("backend failed"))
+            result = json.loads(self.handlers["write_cpu_register_raw"]("raw_board", "r0", 1))
+            self.assertEqual(calls.append.call_args.args[0][0], "write_register")
+        self.assertEqual(result["status"], "error")
+        self.assertEqual(result["code"], "backend/register-write-failed")
+
     def test_raw_read_cap_is_exactly_4096_bytes(self) -> None:
         """AT05: raw remains bounded even where containment deliberately does not apply."""
 
@@ -185,19 +238,103 @@ class TieredRawAcceptanceTests(unittest.TestCase):
     ) -> None:
         """AT05/C04: raw flash has backend geometry limits, not map containment."""
 
-        artifact = Path(__file__).resolve()
+        artifact = write_intel_hex(
+            self.root / "raw.hex", [(0x0800_0000, b"\x01\x02"), (0x0800_0100, b"\x03")]
+        )
         payload = json.loads(self.handlers["flash_raw"]("raw_board", str(artifact)))
         self.assertEqual(payload["status"], "ok")
         self.assertEqual(payload["tier"], "no-setup")
-        self.assertEqual(payload["result"]["artifact"], str(artifact))
-        self.assertIn(("flash", "handle:raw_board", artifact), self.backend.calls)
+        self.assertEqual(payload["result"]["artifact"], str(artifact.resolve()))
+        self.assertEqual(
+            payload["result"]["programming"],
+            {
+                "status": "verified",
+                "verified_bytes": 3,
+                "ranges": [
+                    {"start": "0x08000000", "end": "0x08000002"},
+                    {"start": "0x08000100", "end": "0x08000101"},
+                ],
+            },
+        )
+        self.assertEqual(payload["result"]["target_state"], "halted")
+        self.assertIn(("flash", "handle:raw_board", artifact.resolve(), None), self.backend.calls)
 
-    def test_public_no_profile_connect_auto_resolution_then_raw_read_uses_the_real_mcp_dispatch(
+    def test_raw_bin_flash_requires_an_explicit_nonzero_base_address(self) -> None:
+        """A raw .bin has no addresses; the server refuses to infer one."""
+
+        artifact = self.root / "raw.bin"
+        artifact.write_bytes(b"\xaa\xbb\xcc\xdd")
+        refused = json.loads(self.handlers["flash_raw"]("raw_board", str(artifact)))
+        self.assertEqual(refused["status"], "refused")
+        self.assertEqual(refused["code"], "flash/unsupported-artifact")
+        self.assertFalse(refused["attempted"])
+        self.assertIn("explicit base_address", refused["message"])
+        self.assertEqual(self.backend.calls, [])
+
+        payload = json.loads(
+            self.handlers["flash_raw"]("raw_board", str(artifact), base_address="0x08004000")
+        )
+        self.assertEqual(payload["status"], "ok")
+        self.assertEqual(
+            payload["result"]["programming"]["ranges"],
+            [{"start": "0x08004000", "end": "0x08004004"}],
+        )
+        self.assertIn(
+            ("flash", "handle:raw_board", artifact.resolve(), 0x0800_4000), self.backend.calls
+        )
+
+    def test_raw_flash_refuses_unsupported_artifacts_and_targets_without_attempting(
+        self,
+    ) -> None:
+        hex_artifact = write_intel_hex(self.root / "raw.hex", [(0x0800_0000, b"\x01")])
+        script = self.root / "firmware.py"
+        script.write_text("print('not firmware')\n", encoding="utf-8")
+        for arguments in ((str(script),), (str(hex_artifact), 0x0800_0000)):
+            with self.subTest(arguments=arguments):
+                refused = json.loads(self.handlers["flash_raw"]("raw_board", *arguments))
+                self.assertEqual(refused["status"], "refused")
+                self.assertEqual(refused["code"], "flash/unsupported-artifact")
+                self.assertFalse(refused["attempted"])
+                self.assertEqual(self.backend.calls, [])
+
+        self.backend.flash_error = FlashTargetSupportError(
+            "The live target 'cortex_m' has no programmable flash algorithm"
+        )
+        refused = json.loads(self.handlers["flash_raw"]("raw_board", str(hex_artifact)))
+        self.assertEqual(refused["status"], "refused")
+        self.assertEqual(refused["code"], "flash/unsupported-target")
+        self.assertFalse(refused["attempted"])
+        self.assertIn("cortex_m", refused["message"])
+        self.assertTrue(any("exact pyOCD" in remedy for remedy in refused["remedies"]))
+        self.assertNotIn("result", refused)
+
+    def test_raw_flash_without_matching_readback_is_an_error_not_success(self) -> None:
+        artifact = write_intel_hex(self.root / "raw.hex", [(0x0800_0000, b"\x01")])
+        self.backend.flash_error = FlashVerificationError(
+            "Flash readback does not match the artifact at 0x08000000"
+        )
+        failed = json.loads(self.handlers["flash_raw"]("raw_board", str(artifact)))
+        self.assertEqual(failed["status"], "error")
+        self.assertEqual(failed["code"], "flash/verification-failed")
+        self.assertNotIn("result", failed)
+
+        self.backend.flash_error = None
+        self.backend.flash_result = "halted"
+        failed = json.loads(self.handlers["flash_raw"]("raw_board", str(artifact)))
+        self.assertEqual(failed["status"], "error")
+        self.assertEqual(failed["code"], "flash/verification-failed")
+        self.assertIn("no readback proof", failed["message"])
+
+    def test_public_no_profile_explicit_probe_auto_target_then_raw_read_uses_real_mcp_dispatch(
         self,
     ) -> None:
         """AT03: discovery assignment/connection/raw operation is not only a private helper test."""
 
-        with isolated_project() as root, tiered_test_server(root) as server:
+        with (
+            isolated_project() as root,
+            tiered_test_server(root) as server,
+            patch.object(server, "_validation_inventory", return_value=_raw_probe_inventory()),
+        ):
             backend = DeterministicTargetBackend()
             server.configure_tiered_test_seams(
                 backend=backend,
@@ -209,7 +346,11 @@ class TieredRawAcceptanceTests(unittest.TestCase):
             # raw tool below has the frozen JSON envelope.
             import asyncio
 
-            connection = asyncio.run(server.mcp.call_tool("connect", {"board_id": "fresh_board"}))
+            connection = asyncio.run(
+                server.mcp.call_tool(
+                    "connect", {"board_id": "fresh_board", "probe_uid": "fake-probe"}
+                )
+            )
             self.assertTrue(connection)
             payload = public_call(
                 server,
@@ -228,7 +369,11 @@ class TieredRawAcceptanceTests(unittest.TestCase):
     ) -> None:
         """AT03: caller-supplied target fallback is accepted only for no-setup."""
 
-        with isolated_project() as root, tiered_test_server(root) as server:
+        with (
+            isolated_project() as root,
+            tiered_test_server(root) as server,
+            patch.object(server, "_validation_inventory", return_value=_raw_probe_inventory()),
+        ):
             backend = DeterministicTargetBackend()
             server.configure_tiered_test_seams(
                 backend=backend, auto_target_resolver=lambda _board: None
@@ -281,10 +426,15 @@ class TieredRawAcceptanceTests(unittest.TestCase):
                 self.subTest(board=board),
                 isolated_project() as root,
                 tiered_test_server(root) as server,
+                patch.object(server, "_validation_inventory", return_value=_raw_probe_inventory()),
             ):
                 server.configure_tiered_test_seams(backend=backend, auto_target_resolver=resolver)
                 with self.assertRaisesRegex(Exception, message):
-                    asyncio.run(server.mcp.call_tool("connect", {"board_id": board}))
+                    asyncio.run(
+                        server.mcp.call_tool(
+                            "connect", {"board_id": board, "probe_uid": "fake-probe"}
+                        )
+                    )
                 self.assertEqual(backend.calls[0][0], "open")
                 raw = public_call(
                     server,
@@ -304,14 +454,22 @@ class TieredRawAcceptanceTests(unittest.TestCase):
             def check_block(self) -> None:
                 raise RuntimeError("fixture global hardware stop")
 
-        with isolated_project() as root, tiered_test_server(root) as server:
+        with (
+            isolated_project() as root,
+            tiered_test_server(root) as server,
+            patch.object(server, "_validation_inventory", return_value=_raw_probe_inventory()),
+        ):
             backend = DeterministicTargetBackend()
             server.configure_tiered_test_seams(
                 backend=backend, auto_target_resolver=lambda _board: "nrf52840"
             )
             import asyncio
 
-            asyncio.run(server.mcp.call_tool("connect", {"board_id": "raw_board"}))
+            asyncio.run(
+                server.mcp.call_tool(
+                    "connect", {"board_id": "raw_board", "probe_uid": "fake-probe"}
+                )
+            )
             before = list(backend.calls)
             with patch.object(server, "_monitor", _StoppedMonitor()):
                 payload = public_call(

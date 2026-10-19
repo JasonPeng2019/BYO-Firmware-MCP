@@ -366,9 +366,15 @@ class TieredBackendRehearsalOverStdio(LifecycleTestCase):
             self.assertIn("result", initialized)
             connected = server.call(
                 "connect",
-                {"board_id": "stdio_fixture_board", "target": "nrf52840"},
+                {
+                    "board_id": "stdio_fixture_board",
+                    "probe_uid": acceptance_support.STDIO_REHEARSAL_PROBE_UID,
+                    "target": "nrf52840",
+                },
             )
             self.assertIn("result", connected)
+            self.assertFalse(connected["result"].get("isError"), connected)
+            self.assertIn("Connected", connected["result"]["content"][0]["text"])
             raw_response = server.call(
                 "read_memory_raw",
                 {"board_id": "stdio_fixture_board", "address": "0x20000000"},

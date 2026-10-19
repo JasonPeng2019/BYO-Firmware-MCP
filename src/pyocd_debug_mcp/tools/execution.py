@@ -33,7 +33,11 @@ def build_execution_handlers(
         return wrap_layer2_response(services.resume(board_id))
 
     def step(board_id: str) -> str:
-        """Single-step and return the resulting program counter."""
+        """Step once; return a confirmed single-step halt, HALTED state and PC.
+
+        Temporarily suspends/restores owned breakpoints. Incomplete execution or
+        uncertain restoration returns a tool error. A self-branch may retain PC.
+        """
 
         return wrap_layer2_response(services.step(board_id))
 

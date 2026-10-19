@@ -4,16 +4,24 @@ from __future__ import annotations
 
 import json
 import math
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 from pyocd_debug_mcp.capabilities.routing import TierRouter
+from pyocd_debug_mcp.flash_image import FlashResult, check_flash_request
+from pyocd_debug_mcp.kernel.operations import MAX_RAW_FLASH_ARTIFACT_BYTES, current_operation
 from pyocd_debug_mcp.services.uart_exchange_schema import (
     MAX_UART_SECONDS,
     MAX_UART_TEXT_BYTES,
     validate_serial_exchange_parameters,
+)
+from pyocd_debug_mcp.target_errors import (
+    FlashTargetSupportError,
+    FlashVerificationError,
+    TargetInputError,
+    UnsupportedArtifactError,
 )
 
 
@@ -31,6 +39,54 @@ _RAW_FAILURE_CODES = {
     "serial_exchange_raw": "backend/serial-exchange-failed",
     "target_unlock_raw": "backend/recovery-failed",
 }
+
+_MASS_ERASE_REMEDY = (
+    "Relay the disclosure to the human and ask them to invoke $mass-erase with the returned "
+    "manual_grant bindings, then retry target_unlock_raw unchanged."
+)
+
+
+_FLASH_TARGET_REMEDY = (
+    "Reconnect with the exact pyOCD or CMSIS-pack target for this device instead of a "
+    "generic target such as cortex_m, then retry with an artifact addressed to its flash."
+)
+_FLASH_ARTIFACT_REMEDY = (
+    "Pass an .elf, .axf or .hex artifact, or a .bin with an explicit base_address."
+)
+# Failures whose evidence is more specific than the operation's generic backend code.
+_RAW_ERROR_CODES: tuple[tuple[type[BaseException], str], ...] = (
+    (TargetInputError, "input/invalid-argument"),
+    (FlashVerificationError, "flash/verification-failed"),
+)
+
+
+class RawRefusal(RuntimeError):
+    """A raw operation stopped before any target effect; ``attempted`` is reported false."""
+
+    def __init__(
+        self,
+        code: str,
+        message: str,
+        details: Mapping[str, object] | None = None,
+        remedies: tuple[str, ...] = (),
+    ) -> None:
+        super().__init__(message)
+        self.code = code
+        self.details = dict(details or {})
+        self.remedies = remedies
+
+
+class RawRecoveryRefusal(RawRefusal):
+    """Raw recovery stopped before any backend call for lack of exact human authority."""
+
+    def __init__(
+        self,
+        code: str,
+        message: str,
+        details: Mapping[str, object] | None = None,
+        remedies: tuple[str, ...] = (_MASS_ERASE_REMEDY,),
+    ) -> None:
+        super().__init__(code, message, details, remedies)
 
 
 def _integer(value: object, name: str) -> int:
@@ -71,12 +127,17 @@ class RawToolServices:
     write_register: Callable[[Any, str, int], None]
     set_breakpoint: Callable[[Any, int], None]
     reset: Callable[[Any, bool], None]
-    flash: Callable[[Any, Path], tuple[Path, str]]
+    # (handle, artifact, base_address) -> artifact and readback-verified FlashResult.
+    flash: Callable[[Any, Path, int | None], tuple[Path, FlashResult]]
     recover: Callable[[Any, str], str]
     capture_uart: Callable[..., Any]
     write_uart: Callable[..., Any]
     exchange_uart: Callable[..., Any]
     finalize_recovery: Callable[[str], None] | None = None
+    # Spends one fresh human mass-erase grant bound to this board, live session,
+    # mechanism and disclosed scope, or raises RawRecoveryRefusal. Raw recovery
+    # is refused while this or ``finalize_recovery`` is absent.
+    authorize_recovery: Callable[[str, str], None] | None = None
 
 
 def build_raw_handlers(services: RawToolServices) -> dict[str, Callable[..., str]]:
@@ -93,14 +154,43 @@ def build_raw_handlers(services: RawToolServices) -> dict[str, Callable[..., str
         try:
             services.global_stop()
             result = action()
+        except RawRefusal as exc:
+            if state.tier is None:
+                raise RuntimeError("raw route lost its resolved capability tier") from exc
+            refused: dict[str, object] = dict(exc.details)
+            refused.update(
+                {
+                    "schema_version": 1,
+                    "status": "refused",
+                    "code": exc.code,
+                    "board_id": board_id,
+                    "tier": state.tier.value,
+                    "operation": operation,
+                    "raw": True,
+                    "attempted": False,
+                    "message": str(exc),
+                    "remedies": list(exc.remedies),
+                }
+            )
+            failed_warning = active_router.raw_error_warning(operation, board_id, state=state)
+            if failed_warning is not None:
+                refused["warning"] = failed_warning
+            return json.dumps(refused, sort_keys=True)
         except Exception as exc:  # raw failures still carry lite bypass instruction
+            managed = current_operation()
+            if managed is not None:
+                managed.response_error = exc
             failed_warning = active_router.raw_error_warning(operation, board_id, state=state)
             if state.tier is None:
                 raise RuntimeError("raw route lost its resolved capability tier")
+            code = next(
+                (code for kind, code in _RAW_ERROR_CODES if isinstance(exc, kind)),
+                _RAW_FAILURE_CODES[operation],
+            )
             payload: dict[str, object] = {
                 "schema_version": 1,
                 "status": "error",
-                "code": _RAW_FAILURE_CODES[operation],
+                "code": code,
                 "board_id": board_id,
                 "tier": state.tier.value,
                 "operation": operation,
@@ -185,7 +275,11 @@ def build_raw_handlers(services: RawToolServices) -> dict[str, Callable[..., str
         return execute("register_write_raw", board_id, action)
 
     def write_cpu_register_raw(board_id: str, name: str, value: int | str) -> str:
-        """Write one backend-supported CPU register without a plan or permission prompt."""
+        """Write a non-negative value to a backend-supported CPU register.
+
+        Negative values return an input error and preserve the live session.
+        Register width is determined by the backend.
+        """
 
         return execute(
             "write_cpu_register_raw",
@@ -194,12 +288,20 @@ def build_raw_handlers(services: RawToolServices) -> dict[str, Callable[..., str
         )
 
     def _write_register(board_id: str, name: str, value: int | str) -> str:
-        parsed = _integer(value, "value")
+        try:
+            parsed = _integer(value, "value")
+        except ValueError as exc:
+            raise TargetInputError(str(exc)) from exc
+        if parsed < 0:
+            raise TargetInputError("value must be non-negative")
         services.write_register(services.handle_for(board_id), name, parsed)
         return f"wrote 0x{parsed:X} to {name}"
 
     def set_execution_state_raw(board_id: str, name: str, value: int | str) -> str:
-        """Set a raw backend-supported execution-state register."""
+        """Set a non-negative raw execution-state value with backend-defined width.
+
+        Negative values return an input error and preserve the live session.
+        """
 
         return execute(
             "set_execution_state_raw",
@@ -208,7 +310,12 @@ def build_raw_handlers(services: RawToolServices) -> dict[str, Callable[..., str
         )
 
     def set_breakpoint_raw(board_id: str, address: int | str) -> str:
-        """Place a raw execution breakpoint at an explicit address."""
+        """Place a raw execution breakpoint at an explicit byte address.
+
+        Flash and unknown regions require supported hardware comparators; exhausted
+        capacity refuses without patching code. Only confirmed writable RAM permits
+        software breakpoints. Remove an owned comparator and retry on exhaustion.
+        """
 
         def action() -> object:
             parsed = _integer(address, "address")
@@ -232,15 +339,42 @@ def build_raw_handlers(services: RawToolServices) -> dict[str, Callable[..., str
         services.reset(services.handle_for(board_id), True)
         return "reset and halted"
 
-    def flash_raw(board_id: str, artifact: str) -> str:
-        """Program an explicit artifact without safety-map containment."""
+    def flash_raw(board_id: str, artifact: str, base_address: int | str | None = None) -> str:
+        """Program an explicit artifact without safety-map containment.
+
+        Success requires readback of every addressed artifact byte; ``programming``
+        reports that proof and ``target_state`` only the final reset. A .bin needs an
+        explicit ``base_address``; ELF/AXF/HEX artifacts carry their own addresses.
+        The finite timeout is max(120, 30 + 2 * addressed_bytes / 8192) seconds,
+        covering programming and complete readback with one second reserved for
+        provider cleanup. Slow or stalled work still fails when that budget expires.
+        """
 
         def action() -> object:
+            parsed_base = None if base_address is None else _integer(base_address, "base_address")
             path = Path(artifact).expanduser().resolve(strict=True)
-            if not path.is_file() or path.stat().st_size > 64 * 1024 * 1024:
+            if not path.is_file() or path.stat().st_size > MAX_RAW_FLASH_ARTIFACT_BYTES:
                 raise ValueError("artifact must be a regular local file no larger than 64 MiB")
-            flashed, state = services.flash(services.handle_for(board_id), path)
-            return {"artifact": str(flashed), "target_state": state}
+            try:
+                check_flash_request(path, parsed_base)
+                flashed, result = services.flash(services.handle_for(board_id), path, parsed_base)
+            except UnsupportedArtifactError as exc:
+                raise RawRefusal(
+                    "flash/unsupported-artifact", str(exc), remedies=(_FLASH_ARTIFACT_REMEDY,)
+                ) from exc
+            except FlashTargetSupportError as exc:
+                raise RawRefusal(
+                    "flash/unsupported-target", str(exc), remedies=(_FLASH_TARGET_REMEDY,)
+                ) from exc
+            if not isinstance(result, FlashResult):
+                raise FlashVerificationError(
+                    "The flash backend returned no readback proof; programming is not verified"
+                )
+            return {
+                "artifact": str(flashed),
+                "programming": result.programming_summary(),
+                "target_state": result.target_state,
+            }
 
         return execute("flash_raw", board_id, action)
 
@@ -400,13 +534,38 @@ def build_raw_handlers(services: RawToolServices) -> dict[str, Callable[..., str
         return execute("serial_exchange_raw", board_id, action)
 
     def target_unlock_raw(board_id: str, recovery_mechanism: str) -> str:
-        """Invoke one backend-provided raw recovery mechanism without safe-map authority."""
+        """Run one typed backend mass erase after a fresh one-time human $mass-erase grant.
+
+        Without a grant matching this board, live session, policy, mechanism and
+        uncontained whole-device scope, the call is refused before any backend I/O
+        and returns that disclosure with manual_grant bindings. Relay it to the
+        human, who may invoke $mass-erase; then retry unchanged. An attempt spends
+        the grant and disconnects the board even when the backend fails.
+        """
 
         def action() -> str:
-            # Recovery can reset or erase a target even when the backend raises.
-            # The old connection/gate/assignment is therefore unusable in both
-            # outcomes; unlike the safe route this deliberately has no manual
-            # permission requirement.
+            authorize = services.authorize_recovery
+            finalize = services.finalize_recovery
+            if authorize is None or finalize is None:
+                raise RawRecoveryRefusal(
+                    "manual/unavailable",
+                    "Raw recovery needs the server's human $mass-erase authorization and "
+                    "post-attempt disconnect; one is not configured, so nothing was attempted.",
+                    remedies=("Use a server build that wires raw recovery authorization.",),
+                )
+            try:
+                authorize(board_id, recovery_mechanism)
+            except RawRecoveryRefusal:
+                raise
+            except Exception as exc:
+                raise RawRecoveryRefusal(
+                    "manual/authorization-failed",
+                    f"Raw recovery authorization could not be established; nothing was "
+                    f"attempted: {exc}",
+                ) from exc
+            # The grant is spent. Recovery can reset or erase a target even when
+            # the backend raises or the call is cancelled, so the old
+            # connection/gate/assignment is unusable in every outcome.
             backend_error: BaseException | None = None
             try:
                 try:
@@ -415,16 +574,13 @@ def build_raw_handlers(services: RawToolServices) -> dict[str, Callable[..., str
                     backend_error = exc
                     raise
             finally:
-                if services.finalize_recovery is not None:
-                    try:
-                        services.finalize_recovery(board_id)
-                    except Exception as cleanup_error:
-                        if backend_error is not None:
-                            backend_error.add_note(
-                                f"raw recovery cleanup also failed: {cleanup_error}"
-                            )
-                        else:
-                            raise
+                try:
+                    finalize(board_id)
+                except Exception as cleanup_error:
+                    if backend_error is not None:
+                        backend_error.add_note(f"raw recovery cleanup also failed: {cleanup_error}")
+                    else:
+                        raise
 
         return execute(
             "target_unlock_raw",

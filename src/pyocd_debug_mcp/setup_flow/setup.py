@@ -4,12 +4,17 @@ from __future__ import annotations
 
 import secrets
 import threading
+import time
 from collections.abc import Callable, Mapping
 from dataclasses import asdict, dataclass, field
 from enum import Enum
 from typing import Any, Literal
 
 from pyocd_debug_mcp.firmstore.reports import ReportPaths, ReportWriter
+from pyocd_debug_mcp.guardrails.plan_defs import (
+    SETUP_CONTINUATION_LIMIT,
+    SETUP_CONTINUATION_SECONDS,
+)
 from pyocd_debug_mcp.kernel.operations import OperationCancelledError
 from pyocd_debug_mcp.setup_flow.preflight import (
     NO_INTERNALS_RELAY_INSTRUCTION,
@@ -43,6 +48,7 @@ SetupTerminalStatus = Literal[
     "setup_safety_incomplete",
 ]
 SetupMode = Literal["setup", "repair"]
+PENDING_SETUP_STATUSES = frozenset({"setup_needs_user_input", "setup_research_required"})
 
 
 class SetupWorkflowError(RuntimeError):
@@ -150,9 +156,10 @@ class _SetupAllowance:
     connection_id: str
     mode: SetupMode
     setup_called: bool = False
-    fix_called: bool = False
+    fix_calls: int = 0
     closed: bool = False
     close_reason: str | None = None
+    expires_at: float = field(default_factory=lambda: time.monotonic() + SETUP_CONTINUATION_SECONDS)
 
 
 @dataclass(slots=True)
@@ -208,6 +215,14 @@ class SetupResponse:
                 "evidence": [{"source": "official source", "claim": "resolved fact"}],
                 "reasoning_summary": "why the evidence resolves the exact requested fact",
             }
+            form_details = next(
+                (
+                    record.details
+                    for record in reversed(self.phase_records)
+                    if "response_schema" in record.details
+                ),
+                {},
+            )
             response_fields = (
                 tuple(str(field) for field in exact_fields)
                 if exact_fields is not None
@@ -228,6 +243,49 @@ class SetupResponse:
                     field: placeholders.get(field, "required value") for field in response_fields
                 },
             }
+            if form_details:
+                for key in ("response_schema", "response_example", "confirmation_rules"):
+                    if key in form_details:
+                        accepted_response[key] = form_details[key]
+                accepted_response["response"] = form_details["response_example"]
+            else:
+                installed_targets = next(
+                    (
+                        record.details["installed_target_candidates"]
+                        for record in reversed(self.phase_records)
+                        if record.details.get("installed_target_candidates")
+                    ),
+                    [],
+                )
+                if (
+                    installed_targets
+                    and self.first_unverified_phase is SetupPhase.TARGET_RESOLUTION
+                ):
+                    accepted_response["alternatives"] = [
+                        {
+                            "route": "installed_target",
+                            "eligible_targets": installed_targets,
+                            "response": {
+                                key: placeholders[key]
+                                for key in ("pyocd_target", "evidence", "reasoning_summary")
+                            },
+                            "requirements": (
+                                "Choose an eligible installed target only with official evidence "
+                                "that it supports the unchanged exact mcu_part_number. Installed "
+                                "device identifiers and geometry are checked again before live "
+                                "attachment; neither they nor CPUID prove exact live package identity. "
+                                "Use the pack response if support is incompatible or insufficient."
+                            ),
+                        }
+                    ]
+                accepted_response["optional_response_fields"] = {
+                    "when": "Include all three only when documented attachment settings are needed.",
+                    "fields": {
+                        "debug_protocol": ["default", "swd", "jtag"],
+                        "debug_connect_mode": ["attach", "halt", "pre-reset", "under-reset"],
+                        "debug_clock_hz": "positive integer Hz",
+                    },
+                }
         return {
             "status": self.status,
             "continuation_id": self.continuation_id,
@@ -408,7 +466,11 @@ class SetupWorkflow:
             )
             self._states[continuation_id] = state
             self._continuation_by_allowance[allowance_id] = continuation_id
-        return self._run_attempt(state, allowance, selections or PreflightSelections())
+        try:
+            return self._run_attempt(state, allowance, selections or PreflightSelections())
+        except OperationCancelledError:
+            self.close_allowance(allowance_id, "managed setup operation cancelled")
+            raise
 
     def board_fix_setup(
         self,
@@ -420,28 +482,27 @@ class SetupWorkflow:
             allowance = self._require_open_allowance_locked(allowance_id)
             if not allowance.setup_called:
                 raise SetupWorkflowError("board_fix_setup cannot run before board_setup")
-            if allowance.fix_called:
+            if allowance.fix_calls >= SETUP_CONTINUATION_LIMIT:
+                self._close_allowance_locked(allowance_id, "setup continuation budget exhausted")
                 raise SetupWorkflowError(
-                    "board_fix_setup is allowed exactly once by this setup plan; replace the plan"
+                    "The bounded setup continuation is exhausted; submit a fresh setup plan"
                 )
             continuation_id = self._continuation_by_allowance.get(allowance_id)
             if continuation_id is None:
                 raise SetupWorkflowError("No incomplete setup attempt is available to repair")
             state = self._states[continuation_id]
-            allowance.fix_called = True
-        response = self._run_attempt(
-            state,
-            allowance,
-            selections or PreflightSelections(),
-            repair=True,
-        )
-        with self._guard:
-            if not allowance.closed:
-                self._close_allowance_locked(
-                    allowance.allowance_id,
-                    f"paired board_fix_setup ended with {response.status}",
-                )
-        return response
+            allowance.fix_calls += 1
+            state.last_status = None
+        try:
+            return self._run_attempt(
+                state,
+                allowance,
+                selections or PreflightSelections(),
+                repair=True,
+            )
+        except OperationCancelledError:
+            self.close_allowance(allowance_id, "managed setup operation cancelled")
+            raise
 
     def _run_attempt(
         self,
@@ -502,6 +563,10 @@ class SetupWorkflow:
             )
 
         self.cancellation_checkpoint()
+        if terminal in PENDING_SETUP_STATUSES and allowance.fix_calls >= SETUP_CONTINUATION_LIMIT:
+            terminal = "setup_blocked"
+            prompt = "Setup's answered-step budget is exhausted. Submit a fresh board_setup-plan."
+            choices = ()
         state.last_status = terminal
         report_paths = self._write_report(
             state,
@@ -524,7 +589,7 @@ class SetupWorkflow:
             report_paths,
         )
         with self._guard:
-            if terminal in {"setup_completed", "setup_blocked", "setup_unresolved"}:
+            if terminal not in PENDING_SETUP_STATUSES:
                 self._close_allowance_locked(
                     allowance.allowance_id,
                     f"workflow ended with {terminal}",
@@ -579,7 +644,12 @@ class SetupWorkflow:
                 SetupPhase.TARGET_RESOLUTION,
                 PhaseState.UNVERIFIED,
                 decision.code,
-                {"detected_targets": decision.observed.get("exact_detected_targets", [])},
+                {
+                    "detected_targets": decision.observed.get("exact_detected_targets", []),
+                    "installed_target_candidates": decision.observed.get(
+                        "installed_target_candidates", []
+                    ),
+                },
             )
             return
         state.phase_records[SetupPhase.TARGET_RESOLUTION] = PhaseRecord(
@@ -684,8 +754,9 @@ class SetupWorkflow:
         return (
             "setup_completed",
             _relay_prompt(
-                "Setup and its automatic validation completed. The setup actions are now "
-                "closed; continue only with the newly validated board assignment."
+                "Setup completed and its setup actions are now closed. Load and call "
+                "board_validate before continuing: LITE checks its live binding and partial "
+                "policy without proving identity; FULL validates live identity and its gate."
             ),
             (),
         )
@@ -764,6 +835,17 @@ class SetupWorkflow:
                 raise SetupWorkflowError(f"Unknown continuation '{continuation_id}'")
             self._close_allowance_locked(state.allowance_id, "setup workflow cancelled")
 
+    def close_allowance(self, allowance_id: str, reason: str) -> None:
+        """Retire exactly the captured allowance, preserving any replacement."""
+
+        with self._guard:
+            self._close_allowance_locked(allowance_id, reason)
+
+    def continuation_phase(self, continuation_id: str) -> SetupPhase | None:
+        with self._guard:
+            self.continuation_context(continuation_id)
+            return first_unverified_phase(self._states[continuation_id].phase_records)
+
     def continuation_context(
         self, continuation_id: str
     ) -> tuple[SetupUserInput, SetupTerminalStatus | None, PreflightDecision | None]:
@@ -831,6 +913,9 @@ class SetupWorkflow:
             raise SetupWorkflowError(
                 f"Setup allowance '{allowance_id}' is closed: {allowance.close_reason}"
             )
+        if time.monotonic() >= allowance.expires_at:
+            self._close_allowance_locked(allowance_id, "setup continuation expired")
+            raise SetupWorkflowError("Setup continuation expired; submit a fresh board_setup-plan")
         return allowance
 
     def _close_allowance_locked(self, allowance_id: str, reason: str) -> None:

@@ -5,12 +5,14 @@ from __future__ import annotations
 import json
 import threading
 import unittest
+from unittest.mock import patch
 
 from pyocd_debug_mcp.capabilities.manual_permissions import (
     ManualPermissionError,
     ManualPermissionRepository,
 )
 from pyocd_debug_mcp.capabilities.policy import CapabilityPolicyRepository, Tier
+from pyocd_debug_mcp.probe_inventory import NativeProbeListing, ProbeInfo
 
 from tests.tiered_acceptance_support import (
     DeterministicTargetBackend,
@@ -328,12 +330,32 @@ class TieredManualPermissionAcceptanceTests(unittest.TestCase):
 
             import asyncio
 
-            asyncio.run(server.mcp.call_tool("connect", {"board_id": "raw_board"}))
-            raw = public_call(
-                server,
-                "read_memory_raw",
-                {"board_id": "raw_board", "address": 0x20000000},
+            # Raw labels still need an explicit, currently visible probe when
+            # optional manual-permission storage is unavailable.
+            probe_uid = "manual-reset-raw-probe"
+            inventory = NativeProbeListing(
+                (ProbeInfo(probe_uid, "Private raw probe", "", family="jlink"),),
+                (),
+                0,
+                False,
+                "private fixture",
+                "",
             )
+            with (
+                patch.object(server, "list_connected_probes_detailed", return_value=inventory),
+                patch.object(server._hardware_inventory, "native_uarts", return_value=[]),
+                patch.object(server._hardware_inventory, "vendor_uarts", return_value=[]),
+            ):
+                asyncio.run(
+                    server.mcp.call_tool(
+                        "connect", {"board_id": "raw_board", "probe_uid": probe_uid}
+                    )
+                )
+                raw = public_call(
+                    server,
+                    "read_memory_raw",
+                    {"board_id": "raw_board", "address": 0x20000000},
+                )
             self.assertEqual(raw["status"], "ok")
             self.assertTrue(any(call[0] == "read_memory" for call in backend.calls))
 

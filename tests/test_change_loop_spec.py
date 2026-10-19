@@ -19,6 +19,14 @@ from pyocd_debug_mcp.adapters.swd_interface import TargetSessionHandle
 from pyocd_debug_mcp.adapters.swd_process import _validate_result
 from pyocd_debug_mcp.board_config import BoardConfig
 from pyocd_debug_mcp.services.connections import BoardNotConnectedError, ConnectionManager
+from tests.flash_test_support import (
+    FLASH_START,
+    FakeFlashTarget,
+    file_programmer,
+    flash_handle,
+    programmed_files,
+    write_intel_hex,
+)
 
 
 def _board() -> BoardConfig:
@@ -55,7 +63,7 @@ class ChangeLoopSpecTests(unittest.TestCase):
     def test_cl001_ordinary_open_retains_ambient_compatibility(self) -> None:
         from pyocd_debug_mcp.adapters import swd_pyocd
 
-        session = SimpleNamespace(probe=SimpleNamespace(unique_id=None), open=Mock())
+        session = SimpleNamespace(probe=SimpleNamespace(unique_id="ambient-probe"), open=Mock())
         interface = swd_pyocd.PyOCDSWDInterface()
         with (
             patch.dict("os.environ", {"PYOCD_PROBE_UID": "ambient-probe", "PYOCD_TARGET": "ambient-target"}, clear=False),
@@ -160,85 +168,93 @@ class ChangeLoopSpecTests(unittest.TestCase):
                 )
 
     def test_cl003_flash_state_is_validated_across_process_boundary(self) -> None:
+        from pyocd_debug_mcp.flash_image import FlashResult
+
         for state in ("running", "halted", "reset_state_unconfirmed"):
             with self.subTest(state=state):
-                self.assertEqual(_validate_result("flash", state, {}), state)
-        for invalid in (None, "RUNNING", "unknown"):
+                document = FlashResult(((FLASH_START, FLASH_START + 4),), state).to_document()
+                self.assertEqual(_validate_result("flash", document, {}).target_state, state)
+        # A bare reset state is no longer proof of programming.
+        for invalid in (None, "running", "RUNNING", {"target_state": "running"}):
             with self.subTest(invalid=invalid), self.assertRaises(ValueError):
                 _validate_result("flash", invalid, {})
+        for state in ("RUNNING", "unknown"):
+            document = FlashResult(((FLASH_START, FLASH_START + 4),), "running").to_document()
+            document["target_state"] = state
+            with self.subTest(state=state), self.assertRaises(ValueError):
+                _validate_result("flash", document, {})
+
+    def _flash_hex(
+        self, target: FakeFlashTarget, *, halt_after_reset: bool = False
+    ) -> tuple[object, Mock, Path]:
+        from pyocd_debug_mcp.adapters import swd_pyocd
+
+        data = b"\x01\x02\x03\x04"
+        with tempfile.TemporaryDirectory() as temporary:
+            firmware = write_intel_hex(Path(temporary) / "firmware.hex", [(FLASH_START, data)])
+            programmer = file_programmer(target, [(FLASH_START, data)])
+            programmed = programmed_files(programmer)
+            with patch.object(swd_pyocd, "FileProgrammer", programmer):
+                result = swd_pyocd.PyOCDSWDInterface().flash(
+                    flash_handle(target), firmware, halt_after_reset=halt_after_reset
+                )
+            # pyOCD programs a private copy of the checked bytes, not the original path.
+            ((snapshot, content),) = programmed
+            self.assertNotEqual(snapshot, firmware)
+            self.assertEqual((snapshot.name, content), (firmware.name, firmware.read_bytes()))
+        return result, programmer, snapshot
 
     def test_cl003_final_reset_transport_loss_is_successful_but_unconfirmed(self) -> None:
         from pyocd.core.exceptions import TransferError
-        from pyocd_debug_mcp.adapters import swd_pyocd
 
-        target = SimpleNamespace(
-            reset_and_halt=Mock(side_effect=[None, None]),
-            reset=Mock(side_effect=TransferError("link dropped")),
-            get_state=Mock(),
-        )
-        session = SimpleNamespace(target=target)
-        interface = swd_pyocd.PyOCDSWDInterface()
-        handle = TargetSessionHandle(session, _board(), "probe", "fake", None)
-        with patch.object(swd_pyocd, "FileProgrammer") as programmer:
-            self.assertEqual(interface.flash(handle, Path("firmware.hex"), halt_after_reset=False), "reset_state_unconfirmed")
-        programmer.return_value.program.assert_called_once_with("firmware.hex")
-        target.get_state.assert_not_called()
+        target = FakeFlashTarget()
+        target.final_reset_error = TransferError("link dropped")
+        result, programmer, snapshot = self._flash_hex(target)
+
+        self.assertEqual(getattr(result, "target_state"), "reset_state_unconfirmed")
+        self.assertEqual(getattr(result, "verified_bytes"), 4)
+        programmer.return_value.program.assert_called_once_with(str(snapshot))
+        self.assertEqual(target.calls, ["reset_and_halt", "program", "read", "reset"])
 
     def test_cl003_any_final_reset_failure_after_programming_is_unconfirmed(self) -> None:
         """Only pre-program/programmer errors are fatal; final reset is observationally uncertain."""
-        from pyocd_debug_mcp.adapters import swd_pyocd
+        target = FakeFlashTarget()
+        target.final_reset_error = OSError("reset transport vanished")
+        result, programmer, snapshot = self._flash_hex(target)
 
-        target = SimpleNamespace(
-            reset_and_halt=Mock(),
-            reset=Mock(side_effect=OSError("reset transport vanished")),
-            get_state=Mock(),
-        )
-        handle = TargetSessionHandle(SimpleNamespace(target=target), _board(), "probe", "fake", None)
-        with patch.object(swd_pyocd, "FileProgrammer") as programmer:
-            self.assertEqual(
-                swd_pyocd.PyOCDSWDInterface().flash(
-                    handle, Path("firmware.hex"), halt_after_reset=False
-                ),
-                "reset_state_unconfirmed",
-            )
-        programmer.return_value.program.assert_called_once_with("firmware.hex")
-        target.get_state.assert_not_called()
+        self.assertEqual(getattr(result, "target_state"), "reset_state_unconfirmed")
+        self.assertEqual(getattr(result, "verified_bytes"), 4)
+        programmer.return_value.program.assert_called_once_with(str(snapshot))
+        self.assertEqual(target.calls, ["reset_and_halt", "program", "read", "reset"])
 
     def test_cl003_programmer_failure_remains_fatal_not_a_success_state(self) -> None:
         from pyocd_debug_mcp.adapters import swd_pyocd
         from pyocd_debug_mcp.target_errors import TargetConnectionError
 
-        target = SimpleNamespace(reset_and_halt=Mock(), reset=Mock(), get_state=Mock())
-        handle = TargetSessionHandle(SimpleNamespace(target=target), _board(), "probe", "fake", None)
-        with patch.object(swd_pyocd, "FileProgrammer") as programmer:
-            programmer.return_value.program.side_effect = OSError("verify failed")
-            with self.assertRaisesRegex(TargetConnectionError, "verify failed"):
-                swd_pyocd.PyOCDSWDInterface().flash(
-                    handle, Path("firmware.hex"), halt_after_reset=False
-                )
-        target.reset.assert_not_called()
-        target.get_state.assert_not_called()
+        target = FakeFlashTarget()
+        with tempfile.TemporaryDirectory() as temporary:
+            firmware = write_intel_hex(Path(temporary) / "firmware.hex", [(FLASH_START, b"\x01")])
+            programmer = file_programmer(target, error=OSError("verify failed"))
+            with patch.object(swd_pyocd, "FileProgrammer", programmer):
+                with self.assertRaisesRegex(TargetConnectionError, "verify failed"):
+                    swd_pyocd.PyOCDSWDInterface().flash(
+                        flash_handle(target), firmware, halt_after_reset=False
+                    )
+        self.assertEqual(target.calls, ["reset_and_halt", "program"])
 
     def test_cl003_only_an_observed_final_state_is_reported(self) -> None:
-        from pyocd_debug_mcp.adapters import swd_pyocd
+        target = FakeFlashTarget(state="HALTED")
+        result, _programmer, _snapshot = self._flash_hex(target, halt_after_reset=True)
+        self.assertEqual(getattr(result, "target_state"), "halted")
 
-        target = SimpleNamespace(
-            reset_and_halt=Mock(), reset=Mock(),
-            get_state=Mock(return_value=SimpleNamespace(name="HALTED")),
-        )
-        interface = swd_pyocd.PyOCDSWDInterface()
-        handle = TargetSessionHandle(SimpleNamespace(target=target), _board(), "probe", "fake", None)
-        with patch.object(swd_pyocd, "FileProgrammer"):
-            self.assertEqual(interface.flash(handle, Path("firmware.hex"), halt_after_reset=True), "halted")
-
-        target.get_state.side_effect = OSError("state unreadable")
-        with patch.object(swd_pyocd, "FileProgrammer"):
-            self.assertEqual(
-                interface.flash(handle, Path("firmware.hex"), halt_after_reset=False),
-                "reset_state_unconfirmed",
-            )
+        target = FakeFlashTarget()
+        target.state_error = OSError("state unreadable")
+        result, _programmer, _snapshot = self._flash_hex(target)
+        self.assertEqual(getattr(result, "target_state"), "reset_state_unconfirmed")
+        self.assertEqual(getattr(result, "verified_bytes"), 4)
 
     def test_cl003_flash_tool_logs_and_explains_unconfirmed_state_without_running_claim(self) -> None:
+        from pyocd_debug_mcp.flash_image import FlashResult
         from pyocd_debug_mcp.services.session_runtime import ActionContext, SessionRecord, ToolOutcome
         from pyocd_debug_mcp.tools.flash import FlashToolServices, build_flash_handlers
 
@@ -247,8 +263,11 @@ class ChangeLoopSpecTests(unittest.TestCase):
         events: list[dict[str, object]] = []
         request = SimpleNamespace(
             artifact_path=Path("firmware.elf"),
-            identity=SimpleNamespace(as_log_fields=lambda: {"artifact_sha256": "digest"}),
+            identity=SimpleNamespace(
+                sha256="digest", as_log_fields=lambda: {"artifact_sha256": "digest"}
+            ),
         )
+        result = FlashResult(((FLASH_START, FLASH_START + 4),), "reset_state_unconfirmed")
         services = FlashToolServices(
             runtime_for=lambda _board: runtime, active_session_id=lambda _board: "session",
             duration_ms=lambda _started: 1, record_event=lambda *_args, **kwargs: events.append(kwargs),
@@ -256,15 +275,23 @@ class ChangeLoopSpecTests(unittest.TestCase):
             action_context=lambda tool, board: ActionContext("test", tool, board),
             maybe_handle_for=lambda _board: None, handle_for=lambda _board: object(),
             resolve_request=lambda *_args: request,
-            flash_target=lambda *_args: (Path("firmware.elf"), "reset_state_unconfirmed"),
+            flash_target=lambda *_args: (Path("firmware.elf"), result),
             error_code=lambda _exc: "flash/backend",
         )
         reply = build_flash_handlers(services)["flash_application"]("profile-board", "firmware.elf")
 
+        self.assertIn("read back 4 matching addressed bytes", reply)
         self.assertIn("reset state is unconfirmed", reply)
         self.assertNotIn("target left running", reply)
         self.assertEqual(events[-1]["outcome_kind"], ToolOutcome.SUCCESS)
-        self.assertEqual(events[-1]["details"], {"target_state": "reset_state_unconfirmed", "safety_map_checked": True})
+        self.assertEqual(
+            events[-1]["details"],
+            {
+                "programming": result.programming_summary(),
+                "target_state": "reset_state_unconfirmed",
+                "safety_map_checked": True,
+            },
+        )
 
     def test_cl004_recovery_finalization_revokes_assignment_even_when_close_fails(self) -> None:
         from pyocd_debug_mcp import server

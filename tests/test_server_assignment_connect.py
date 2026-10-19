@@ -392,8 +392,8 @@ class AssignmentAwareConnectTests(unittest.TestCase):
                 runtime_token="runtime-uidless",
             ),
         )
-        assignment = manager.assign("uidless-board", handle, Mock(name="runtime"))
-        profile = SimpleNamespace(board_id="uidless-board")
+        assignment = manager.assign("uidless-board", handle, SimpleNamespace(closed_at=None))
+        profile = SimpleNamespace(board_id="uidless-board", board=handle.board)
 
         with patch.object(server, "connection_manager", manager):
             reused = cast(

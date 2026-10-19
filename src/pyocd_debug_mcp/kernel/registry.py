@@ -18,7 +18,7 @@ from mcp.server.fastmcp import FastMCP
 from mcp.server.fastmcp.exceptions import ToolError
 from mcp.server.lowlevel import NotificationOptions
 from mcp.server.stdio import stdio_server
-from mcp.types import Icon, TextContent, ToolAnnotations
+from mcp.types import CallToolResult, Icon, TextContent, ToolAnnotations
 from pydantic import ValidationError
 
 from pyocd_debug_mcp.kernel.operations import (
@@ -452,16 +452,16 @@ class RegistryFastMCP(FastMCP):
             _dispatch_depth.reset(depth_token)
         if observation is not None:
             observation.completed(result)
-        return self._maybe_append_checkin_prompt(result, name)
+        return self._maybe_append_checkin_prompt(result)
 
-    def _maybe_append_checkin_prompt(self, result: Any, tool_name: str | None = None) -> Any:
-        """Append a due check-in request to the server's own response.
+    def _maybe_append_checkin_prompt(self, result: Any) -> Any:
+        """Append a due check-in request as a separate MCP text content block.
 
         This is the one place monitoring writes into a tool response instead of
-        observing passively. It is a bounded annotation: it does not alter the
-        tool's result, its ordering, its timing, any lock, or any authority, it
-        reads nothing from the conversation, and the agent's compliance is
-        behavioural rather than gate-enforced.
+        observing passively. Original blocks (including JSON text), structured
+        output and protocol status/meta remain intact. Annotation happens after
+        dispatch and observation, outside all locks; it grants no authority and
+        the agent's compliance is behavioural rather than gate-enforced.
         """
 
         monitor = self._monitor
@@ -469,24 +469,18 @@ class RegistryFastMCP(FastMCP):
             return result
         try:
             prompt = monitor.consume_checkin_prompt()
-        except BaseException:  # noqa: BLE001
-            return result
-        if not prompt:
-            return result
-        if tool_name in {
-            "get_code_analysis_status",
-            "find_code_definition",
-            "find_code_references",
-            "get_code_hover",
-            "get_code_diagnostics",
-        } and isinstance(result, list):
-            return [*result, TextContent(type="text", text=prompt)]
-        try:
-            for block in result if isinstance(result, list) else ():
-                text = getattr(block, "text", None)
-                if isinstance(text, str):
-                    block.text = text + prompt
-                    break
+            if not prompt:
+                return result
+            advisory = TextContent(type="text", text=prompt)
+            # FastMCP's locked SDK conversion produces these three shapes.
+            # Copy only the content container, never any original block.
+            if isinstance(result, CallToolResult):
+                return result.model_copy(update={"content": [*result.content, advisory]})
+            if isinstance(result, tuple) and len(result) == 2:
+                content, structured = result
+                return ([*content, advisory], structured)
+            if isinstance(result, list):
+                return [*result, advisory]
         except BaseException:  # noqa: BLE001 - never damage a real response
             return result
         return result
@@ -551,14 +545,16 @@ class RegistryFastMCP(FastMCP):
         if tool is None:
             raise ToolError(f"Unknown tool: {name}")
         if name in {
+            "wait",
             "get_code_analysis_status",
             "find_code_definition",
             "find_code_references",
             "get_code_hover",
             "get_code_diagnostics",
         }:
-            # Reject overrides before interpreting board/finalizer extras. These
-            # metadata tools must never reach a hardware finalizer on bad input.
+            # Validate wait's normalized duration before creating any operation
+            # or acquiring a board reservation. Keep the SDK's existing coercion.
+            # Metadata tools must never reach a hardware finalizer on bad input.
             try:
                 tool.fn_metadata.arg_model.model_validate(arguments)
             except ValidationError as exc:

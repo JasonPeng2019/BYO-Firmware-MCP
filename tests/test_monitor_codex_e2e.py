@@ -15,21 +15,6 @@ from tests.codex_harness import (
     CodexAgentTestCase,
     _known_model_migration,
 )
-from tests.store_cleanup import restore as store_restore, snapshot as store_snapshot
-
-
-_STORE_BEFORE: "set[str] | None" = None
-
-
-def setUpModule() -> None:
-    global _STORE_BEFORE
-    _STORE_BEFORE = store_snapshot()
-
-
-def tearDownModule() -> None:
-    """Restore the real store to exactly what was there before this module ran."""
-
-    store_restore(_STORE_BEFORE)
 
 
 class AgentSessionsAreRecorded(CodexAgentTestCase):
@@ -54,7 +39,8 @@ class AgentSessionsAreRecorded(CodexAgentTestCase):
         *is* guaranteed.
         """
 
-        self.run_agent("call server_health_check once. Reply with only DONE.")
+        result = self.run_agent("call server_health_check once. Reply with only DONE.")
+        self.assert_bound_activity(result, health=True)
         self.assertIn("boot", self.record_kinds())
 
     def test_no_per_call_record_is_written_for_a_real_session(self) -> None:
@@ -65,7 +51,8 @@ class AgentSessionsAreRecorded(CodexAgentTestCase):
         check-ins, reports, and close -- and nothing keyed to an individual call.
         """
 
-        self.run_agent("call server_health_check three times. Reply with only DONE.")
+        result = self.run_agent("call server_health_check three times. Reply with only DONE.")
+        self.assert_bound_activity(result, health=True)
         allowed = {"boot", "usage_snapshot", "checkin", "report", "close"}
         self.assertTrue(self.record_kinds())
         self.assertEqual(self.record_kinds() - allowed, set())
@@ -75,7 +62,8 @@ class AgentSessionsAreRecorded(CodexAgentTestCase):
                 self.assertNotIn(column, record)
 
     def test_records_carry_run_identity_and_cumulative_counts(self) -> None:
-        self.run_agent("call server_health_check once. Reply with only DONE.")
+        result = self.run_agent("call server_health_check once. Reply with only DONE.")
+        self.assert_bound_activity(result, health=True)
         for record in self.ledger_records():
             self.assertTrue(record.get("run_id"))
             self.assertEqual(record.get("workspace"), self.workspace)
@@ -94,6 +82,7 @@ class WorkspaceBindingThroughARealHandshake(CodexAgentTestCase):
     def test_agent_supplied_workspace_is_bound_and_anonymised(self) -> None:
         result = self.run_agent("call server_health_check. Reply with only DONE.")
         self.assertEqual(result.returncode, 0, result.combined[-2000:])
+        self.assert_bound_activity(result, health=True)
         self.assertTrue(
             self.workspace_dir.exists() or self.delivered_dir.exists(),
             "no workspace folder was created for the bound project",
@@ -102,13 +91,15 @@ class WorkspaceBindingThroughARealHandshake(CodexAgentTestCase):
         self.assertNotIn(self.project.name, str(self.workspace_dir))
 
     def test_no_plaintext_project_path_is_stored(self) -> None:
-        self.run_agent("call server_health_check. Reply with only DONE.")
+        result = self.run_agent("call server_health_check. Reply with only DONE.")
+        self.assert_bound_activity(result, health=True)
         blob = self.store_text()
         self.assertNotIn(str(self.project), blob)
         self.assertNotIn(self.project.name, blob)
 
     def test_nothing_is_written_into_the_project_directory(self) -> None:
-        self.run_agent("call server_health_check. Reply with only DONE.")
+        result = self.run_agent("call server_health_check. Reply with only DONE.")
+        self.assert_bound_activity(result, health=True)
         stray = sorted(
             path.name
             for path in self.project.rglob("*")
@@ -133,6 +124,7 @@ class HealthCheckIsAUsableOracle(CodexAgentTestCase):
         )
         first, second = (int(part) for part in answer.split(","))
         self.assertLess(first, second, "counts did not advance between the two health checks")
+        self.assert_bound_activity(result, health=True)
         # The model's reply alone could be a hallucination, so corroborate that a
         # real server really served this workspace. Note what corroboration is
         # *not* available: there is no per-call ledger record to count, by design.
@@ -283,6 +275,13 @@ class AgentAuthoredSubmissions(CodexAgentTestCase):
         )
         self.assertEqual(result.returncode, 0, result.combined[-2000:])
         recorded = [r for r in self.reports() if r.get("signal_type")]
+        self.assertTrue(
+            any(
+                call["result"].get("isError") is True
+                for call in self.target_replies(result, "report_agent_issue")
+            ),
+            "UNPROVEN: no actual malformed-report attempt reached the target",
+        )
         self.assertEqual(recorded, [], "an invalid model-authored report was recorded anyway")
 
 
@@ -310,6 +309,13 @@ class MonitoringToolsAreOutsideTheSafetySurface(CodexAgentTestCase):
         # Whatever the agent reports, the batch attempt must not have been recorded
         # as a server defect: refusing a monitor tool as a batch child is correct
         # behaviour, so it is a refusal and never an unexpected error.
+        self.assertTrue(
+            any(
+                call["result"].get("isError") is True
+                for call in self.target_replies(result, "action_batch")
+            ),
+            "UNPROVEN: no actual batch refusal reached the target",
+        )
         defects = [r for r in self.reports() if r["triage_class"] == "server_defect"]
         self.assertEqual(
             defects,

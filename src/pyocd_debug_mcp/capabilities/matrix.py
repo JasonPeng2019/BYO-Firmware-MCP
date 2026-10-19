@@ -33,6 +33,7 @@ def _routes() -> tuple[TierRoute, ...]:
     rows = (
         TierRoute("action_batch", "indirect", "batch"),
         TierRoute("board_fix_setup", "metadata", "setup"),
+        TierRoute("board_policy_restore", "metadata", "setup"),
         TierRoute("board_safety_refresh", "indirect", "maintenance"),
         TierRoute("board_setup", "metadata", "setup"),
         TierRoute("board_setup-plan", "metadata", "setup"),

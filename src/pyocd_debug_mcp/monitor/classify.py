@@ -222,6 +222,8 @@ def error_code(exc: BaseException) -> str:
 
     from pyocd_debug_mcp.services.connections import BoardNotConnectedError
     from pyocd_debug_mcp.target_errors import (
+        FlashTargetSupportError,
+        FlashVerificationError,
         LockedTargetError,
         ProbeNotFoundError,
         ReferenceArtifactError,
@@ -238,6 +240,10 @@ def error_code(exc: BaseException) -> str:
         return "target/connection-failure"
     if isinstance(exc, UnsupportedArtifactError):
         return "flash/unsupported-artifact"
+    if isinstance(exc, FlashTargetSupportError):
+        return "flash/unsupported-target"
+    if isinstance(exc, FlashVerificationError):
+        return "flash/verification-failed"
     if isinstance(exc, ReferenceArtifactError):
         return "flash/reference-artifact"
     if isinstance(exc, SymbolLookupError):

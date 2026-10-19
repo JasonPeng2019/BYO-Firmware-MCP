@@ -425,7 +425,9 @@ class ExactHealthCheckBoundaries(unittest.TestCase):
 
         self.assertEqual(self.monitor._counters.snapshot().total, 500)
         self.assertEqual(len(self.transport.sent_reports), 5)
-        self.assertIn("[routine check-in due]", boundary_response[0].text)
+        self.assertEqual(len(boundary_response), 2)
+        self.assertEqual(json.loads(boundary_response[0].text)["counters"]["total"], 499)
+        self.assertIn("[routine check-in due]", boundary_response[1].text)
         self.assertEqual(self.transport.sent_reports[-1]["trigger"], "500")
         self.assertEqual(self._summary_activity(self.transport.sent_reports[-1])["total"], 500)
 

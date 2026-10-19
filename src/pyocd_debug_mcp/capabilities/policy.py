@@ -116,6 +116,82 @@ class CapabilityPolicyRepository:
     def pointer_path(self, board_id: str) -> Path:
         return self.board_root(board_id) / "current.json"
 
+    def recovery_requirements(self, board_id: str) -> dict[str, object]:
+        """Name the exact committed backup prerequisite without selecting new authority."""
+
+        identity = self._board_id(board_id)
+        result: dict[str, object] = {
+            "board_id": identity,
+            "load_call": {
+                "tool": "load_setup_tool",
+                "arguments": {"board_id": identity, "tool_name": "board_policy_restore"},
+            },
+            "next_call": {
+                "tool": "board_policy_restore",
+                "arguments": {"board_id": identity, "generation_backup_path": None},
+            },
+        }
+        with self.lock_for(identity):
+            try:
+                pointer = self._read_pointer(identity)
+            except CapabilityPolicyError as exc:
+                result.update(
+                    prerequisite=(
+                        "Restore the original committed current.json and its selected generation "
+                        "from a trusted project backup. The pointer is missing or invalid; this "
+                        "tool cannot select or replace it. Keep hardware blocked."
+                    ),
+                    reason=str(exc),
+                )
+            else:
+                result.update(
+                    generation_id=pointer["generation_id"],
+                    generation_digest=pointer["generation_digest"],
+                    prerequisite=(
+                        "Supply generation_backup_path for a byte-for-byte backup of the generation "
+                        f"{pointer['generation_id']}.json selected by the surviving current.json "
+                        f"(full-file SHA-256 {pointer['generation_digest']}). No automatic backup "
+                        "was saved. If no matching backup exists, stop hardware work; mutable "
+                        "profile/map files and other generations cannot recover lost ownership."
+                    ),
+                )
+        return result
+
+    def restore_committed_generation(self, board_id: str, backup_path: str) -> CapabilityState:
+        """Atomically restore only exact, semantically valid bytes bound by the current pointer.
+
+        The caller owns live-gate invalidation and the board operation lock. This
+        method never changes the pointer, compatibility files, or source backup.
+        """
+
+        identity = self._board_id(board_id)
+        if not isinstance(backup_path, str) or not backup_path.strip():
+            raise CapabilityPolicyError("generation_backup_path must be a nonblank local pathname")
+        source = Path(backup_path).expanduser()
+        if not source.is_absolute():
+            source = self.project_root / source
+        with self.lock_for(identity):
+            pointer = self._read_pointer(identity)
+            try:
+                payload = source.read_bytes()
+            except OSError as exc:
+                raise CapabilityPolicyError(
+                    "the supplied generation backup is not readable"
+                ) from exc
+            generation_id = cast_string(pointer["generation_id"])
+            state = self._load_generation(
+                identity, generation_id, payload, pointer["generation_digest"]
+            )
+            if self._read_pointer(identity) != pointer:
+                raise CapabilityPolicyError(
+                    "the committed pointer changed; inspect recovery requirements again"
+                )
+            destination = self.board_root(identity) / "generations" / f"{generation_id}.json"
+            self._trip_fault("before_generation_restore")
+            self._atomic_write(destination, payload)
+            self._trip_fault("after_generation_restore")
+            return state
+
     def resolve(self, board_id: str) -> CapabilityState:
         """Return the active explicit state, migrating only recognized legacy facts."""
 
@@ -289,7 +365,7 @@ class CapabilityPolicyRepository:
             retained_generations=retained_generations,
         )
 
-    def _load_pointer(self, board_id: str) -> CapabilityState:
+    def _read_pointer(self, board_id: str) -> dict[str, object]:
         pointer = self._read_json(self.pointer_path(board_id), "current policy pointer")
         self._require_exact_keys(
             pointer,
@@ -307,15 +383,35 @@ class CapabilityPolicyRepository:
             or re.fullmatch(r"[0-9a-f]{32}", generation_id) is None
         ):
             raise CapabilityPolicyError("current policy pointer has an invalid generation id")
+        if not isinstance(digest, str) or re.fullmatch(r"[0-9a-f]{64}", digest) is None:
+            raise CapabilityPolicyError("current policy pointer has an invalid generation digest")
+        return pointer
+
+    def _load_pointer(self, board_id: str) -> CapabilityState:
+        pointer = self._read_pointer(board_id)
+        generation_id = cast_string(pointer["generation_id"])
         generation_path = self.board_root(board_id) / "generations" / f"{generation_id}.json"
-        if not generation_path.is_file():
-            raise CapabilityPolicyError("committed policy generation is missing")
-        if (
-            not isinstance(digest, str)
-            or hashlib.sha256(generation_path.read_bytes()).hexdigest() != digest
-        ):
+        try:
+            payload = generation_path.read_bytes()
+        except OSError as exc:
+            raise CapabilityPolicyError(
+                "committed policy generation is missing or unreadable"
+            ) from exc
+        return self._load_generation(board_id, generation_id, payload, pointer["generation_digest"])
+
+    def _load_generation(
+        self, board_id: str, generation_id: str, payload: bytes, digest: object
+    ) -> CapabilityState:
+        if hashlib.sha256(payload).hexdigest() != digest:
             raise CapabilityPolicyError("committed policy generation digest is invalid")
-        document = self._read_json(generation_path, "committed policy generation")
+        try:
+            document = json.loads(payload)
+        except (UnicodeError, json.JSONDecodeError) as exc:
+            raise CapabilityPolicyError(
+                "committed policy generation is unreadable or malformed"
+            ) from exc
+        if not isinstance(document, dict):
+            raise CapabilityPolicyError("committed policy generation must be an object")
         required = {
             "schema_version",
             "board_id",

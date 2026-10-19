@@ -17,7 +17,9 @@ from pyocd_debug_mcp.capabilities.manual_permissions import ManualPermissionRepo
 from tests.tiered_acceptance_support import fixture, isolated_project, manual_permission_root
 
 
-WORKSPACE = Path(__file__).resolve().parents[2] / ".agent-workspace"
+# The source distribution is a sibling checkout. `.agent-workspace` is the
+# installation name created inside each customer project by attach-project.
+WORKSPACE = Path(__file__).resolve().parents[2] / "CodexClaudeWorkflow"
 WORKSPACE_HELPER = WORKSPACE / "internal" / "manual_permissions.py"
 ATTACH_PROJECT = WORKSPACE / "bin" / "attach-project"
 HARDWARE_RUNNER = Path(__file__).with_name("manual") / "manual_tiered_hardware_check.py"

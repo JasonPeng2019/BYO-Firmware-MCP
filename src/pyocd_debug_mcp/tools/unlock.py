@@ -40,6 +40,7 @@ from pyocd_debug_mcp.safety.regions import (
     RegionKind,
     SafetyRegion,
     SourceAuthority,
+    build_generic_recovery_erase_disclosure,
     build_recovery_erase_disclosure,
 )
 
@@ -128,7 +129,7 @@ class UnlockToolServices:
     consume_manual_mass_erase: Callable[[UnlockBinding, str], None] | None = None
     abandon_manual_mass_erase: Callable[[UnlockBinding, str], None] | None = None
     policy_profile: Callable[[str], BoardProfile] | None = None
-    policy_safety: Callable[[str], SafetyMapDocument] | None = None
+    policy_safety: Callable[[str], SafetyMapDocument | GenericSafetyMapDocument] | None = None
     policy_lite_recovery: Callable[[str], LiteRecoveryPolicy | None] | None = None
 
 
@@ -136,22 +137,27 @@ def _json(document: Mapping[str, Any]) -> str:
     return json.dumps(document, ensure_ascii=False, sort_keys=True)
 
 
-def _geometry(document: SafetyMapDocument) -> Mapping[str, object]:
-    geometry = document.geometry
-    if geometry.erase_sectors:
+def _geometry(document: SafetyMapDocument | GenericSafetyMapDocument) -> Mapping[str, object]:
+    # Generic setup records only explicit sectors, and none when erase is unavailable.
+    if isinstance(document, GenericSafetyMapDocument) or document.geometry.erase_sectors:
         return {
-            "sectors": [sector.to_document() for sector in geometry.erase_sectors],
+            "sectors": [sector.to_document() for sector in document.geometry.erase_sectors],
         }
     return {
-        "erase_origin": geometry.erase_origin,
-        "erase_size": geometry.erase_size,
+        "erase_origin": document.geometry.erase_origin,
+        "erase_size": document.geometry.erase_size,
     }
 
 
-def _recovery_regions(document: SafetyMapDocument) -> list[SafetyRegion]:
+def _recovery_regions(document: SafetyMapDocument | GenericSafetyMapDocument) -> list[SafetyRegion]:
     """Combine persisted hazards with reviewed deployment partitions for disclosure."""
 
     regions = list(document.regions)
+    if isinstance(document, GenericSafetyMapDocument):
+        # Generic maps persist both proven deployment regions, including a
+        # bounded user bootloader when it has been admitted. Include these
+        # actual regions in the approved whole-device erase disclosure/binding.
+        return regions
     provenance = (
         Provenance(
             SourceAuthority.RECONCILED,
@@ -216,7 +222,9 @@ class UnlockCoordinator:
 
     def _identity(
         self, board_id: str
-    ) -> tuple[LiveUnlockIdentity, SafetyMapDocument | LiteRecoveryPolicy]:
+    ) -> tuple[
+        LiveUnlockIdentity, SafetyMapDocument | GenericSafetyMapDocument | LiteRecoveryPolicy
+    ]:
         lite = (
             self.services.policy_lite_recovery(board_id)
             if self.services.policy_lite_recovery is not None
@@ -288,14 +296,6 @@ class UnlockCoordinator:
             raise PlanRefusal(
                 "unlock/safety-map-digest-mismatch",
                 "The current safety map digest changed; run board_safety_refresh first.",
-            )
-        if isinstance(artifacts, GenericSafetyMapDocument):
-            # A resolved device support record proves neither board ownership
-            # nor a safe recovery mechanism. Do not turn generic physical-map
-            # knowledge into a whole-device destructive capability.
-            raise PlanRefusal(
-                "unlock/generic-device-policy-unavailable",
-                "Generic device support has no reviewed recovery policy; target recovery is unavailable.",
             )
         return (
             LiveUnlockIdentity(
@@ -385,10 +385,16 @@ class UnlockCoordinator:
             disclosure = artifacts.disclosure
         else:
             try:
-                disclosure = build_recovery_erase_disclosure(
-                    _recovery_regions(artifacts),
-                    _geometry(artifacts),
-                    mass_erase=mechanism.mass_erase,
+                disclosure = (
+                    build_generic_recovery_erase_disclosure(
+                        _recovery_regions(artifacts), _geometry(artifacts)
+                    )
+                    if isinstance(artifacts, GenericSafetyMapDocument)
+                    else build_recovery_erase_disclosure(
+                        _recovery_regions(artifacts),
+                        _geometry(artifacts),
+                        mass_erase=mechanism.mass_erase,
+                    )
                 )
             except RegionError as exc:
                 raise PlanRefusal(
@@ -406,6 +412,71 @@ class UnlockCoordinator:
             ),
             disclosure,
             identity,
+        )
+
+    def raw_recovery_binding(self, board_id: str, recovery_mechanism: str) -> UnlockBinding:
+        """Bind one raw recovery request to its live session and uncontained erase scope.
+
+        The raw route has no plan and no committed erase ranges, so its disclosed
+        scope is the backend's whole-device erase without containment. The
+        binding feeds the same manual mass-erase grant protocol as the safe
+        route; its distinct scope means neither route's grant authorizes the other.
+        """
+
+        handle = self.services.handle_for(board_id)
+        metadata = session_metadata(handle)
+        probe = (metadata.probe_uid or "").strip()
+        if not probe:
+            raise PlanRefusal(
+                "unlock/probe-identity-missing",
+                "The active probe has no stable identity; reconnect with an identifiable probe.",
+            )
+        board = handle.board
+        identity = LiveUnlockIdentity(
+            self.services.server_run.run_id,
+            board_id,
+            board.display_name if board is not None else board_id,
+            "not-asserted",
+            str(metadata.live_part_number or metadata.target_override or "not-asserted"),
+            str(
+                metadata.target_override
+                or (board.pyocd_target if board is not None else "")
+                or "not-asserted"
+            ),
+            probe,
+            self.services.connection_id_for(board_id),
+            "not-applicable",
+        )
+        mechanism = self._mechanism(
+            identity,
+            board.recover_mode if board is not None else None,
+            recovery_mechanism,
+        )
+        if mechanism is None:
+            raise PlanRefusal(
+                "unlock/mechanism-required",
+                "Raw recovery requires one typed recovery_mechanism, such as backend_mass_erase.",
+            )
+        scope = {
+            "route": "target_unlock_raw",
+            "containment": "none",
+            "mass_erase": mechanism.mass_erase,
+            "all_nonvolatile_erased": True,
+            "erased_ranges": (
+                "every nonvolatile range the backend's whole-device recovery reaches; "
+                "no committed safety map bounds or confirms it"
+            ),
+            "expected_losses": [
+                "all application and bootloader code",
+                "all data persisted in erased nonvolatile memory",
+            ],
+        }
+        return UnlockBinding(
+            "target_unlock_raw",
+            identity,
+            mechanism,
+            canonical_json(scope),
+            canonical_json({"board_id": board_id, "recovery_mechanism": mechanism.mechanism_id}),
         )
 
     def _report(
@@ -486,11 +557,13 @@ class UnlockCoordinator:
             for item in disclosure.affected_regions
         )
         losses = ", ".join(disclosure.expected_losses)
-        all_nv = (
-            "The entire addressable nonvolatile memory will be erased."
-            if disclosure.all_nonvolatile_erased
-            else "Only the listed nonvolatile ranges will be erased."
-        )
+        if disclosure.all_nonvolatile_erased:
+            all_nv = "The entire addressable nonvolatile memory will be erased."
+        elif disclosure.unknown_effects:
+            all_nv = "The listed ranges will be erased. Effects the setup data cannot rule out: "
+            all_nv += " ".join(disclosure.unknown_effects)
+        else:
+            all_nv = "Only the listed nonvolatile ranges will be erased."
         report = self._report(
             status="unlock_permission_requested",
             board_id=identity.board_id,
@@ -783,11 +856,19 @@ class UnlockCoordinator:
             )
         if approved.mechanism.mass_erase:
             if manual_claim is None or self.services.consume_manual_mass_erase is None:
-                raise PlanRefusal(
+                refusal = PlanRefusal(
                     "manual/locked",
                     "Ask the human to invoke $mass-erase for the current disclosed recovery scope.",
                 )
-            self.services.consume_manual_mass_erase(approved, manual_claim)
+                self._abandon_without_masking(approved, manual_claim, refusal)
+                raise refusal
+            try:
+                self.services.consume_manual_mass_erase(approved, manual_claim)
+            except BaseException as primary:
+                # Nothing reached the backend. Kill the claim so a stale
+                # reservation cannot block a fresh human grant.
+                self._abandon_without_masking(approved, manual_claim, primary)
+                raise
         plan_id = approved.plan_id
         fields = {
             "live_identity": asdict(approved.identity),
@@ -805,12 +886,15 @@ class UnlockCoordinator:
             )
         except BaseException as exc:
             backend_error = exc
-            self._report(
-                status="unlock_failed_revalidation_required",
-                board_id=board_id,
-                plan_id=plan_id,
-                fields=fields,
-            )
+            try:
+                self._report(
+                    status="unlock_failed_revalidation_required",
+                    board_id=board_id,
+                    plan_id=plan_id,
+                    fields=fields,
+                )
+            except Exception as report_error:  # noqa: BLE001 - readiness must still be revoked
+                exc.add_note(f"failed recovery attempt report could not be written: {report_error}")
         try:
             self.services.finalize_recovery(board_id)
         except Exception as cleanup_error:

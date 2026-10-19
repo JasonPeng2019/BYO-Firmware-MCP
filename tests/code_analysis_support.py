@@ -985,7 +985,12 @@ class AnalysisStdioServer:
             else:
                 self.proc.kill()
             self.proc.wait(timeout=10)
-        for stream in (self.proc.stdin, self.proc.stdout):
+        # The drain thread owns stderr until EOF. Closing its BufferedReader
+        # while it is reading can block; join after the owned server has exited.
+        self._stderr_thread.join(5)
+        if self._stderr_thread.is_alive():
+            raise AssertionError("stdio stderr reader outlived the owned server")
+        for stream in (self.proc.stdin, self.proc.stdout, self.proc.stderr):
             if stream is not None and not stream.closed:
                 with contextlib.suppress(OSError):
                     stream.close()

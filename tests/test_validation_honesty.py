@@ -181,6 +181,8 @@ class ValidationHonestyTests(unittest.TestCase):
             SimpleNamespace(
                 loader=loader,
                 validator=validator,
+                validate_board=None,
+                policy_recovery=None,
                 require_assignment=require_assignment,
                 assigned_connection=assignments.get,
             ),
@@ -396,6 +398,8 @@ class ValidationHonestyTests(unittest.TestCase):
                 SimpleNamespace(
                     loader=SetupToolLoadState(create_server_run()),
                     validator=validator,
+                    validate_board=None,
+                    policy_recovery=None,
                     require_assignment=require_assignment,
                     assigned_connection=lambda _board_id: assignment_token,
                 ),
@@ -635,13 +639,14 @@ class ValidationHonestyTests(unittest.TestCase):
         from pyocd_debug_mcp import server
 
         manager = ConnectionManager()
-        first_handle = TargetSessionHandle(None, self._jlink_board(), "probe-1", "worker-1", None)
+        board = self._jlink_board()
+        first_handle = TargetSessionHandle(None, board, "probe-1", "worker-1", board.pyocd_target)
         second_handle = TargetSessionHandle(None, None, "probe-2", "worker-2", None)
-        first_runtime = Mock(name="first_runtime")
+        first_runtime = SimpleNamespace(closed_at=None)
         second_runtime = Mock(name="second_runtime")
         first_assignment = manager.assign("board-1", first_handle, first_runtime)
         second_assignment = manager.assign("board-2", second_handle, second_runtime)
-        profile = SimpleNamespace(board_id="board-1")
+        profile = SimpleNamespace(board_id="board-1", board=board)
         probe = ValidationProbe("probe-1", "Probe 1", "jlink", "probe-1")
         gate = SimpleNamespace(clear=Mock())
 
@@ -671,12 +676,13 @@ class ValidationHonestyTests(unittest.TestCase):
         from pyocd_debug_mcp import server
 
         manager = ConnectionManager()
-        stale_handle = TargetSessionHandle(None, self._jlink_board(), "probe-1", "worker-1", None)
+        board = self._jlink_board()
+        stale_handle = TargetSessionHandle(None, board, "probe-1", "worker-1", board.pyocd_target)
         replacement_handle = TargetSessionHandle(None, None, "probe-2", "worker-2", None)
-        stale_runtime = Mock(name="stale_runtime")
+        stale_runtime = SimpleNamespace(closed_at=None)
         replacement_runtime = Mock(name="replacement_runtime")
         manager.assign("board-1", stale_handle, stale_runtime)
-        profile = SimpleNamespace(board_id="board-1")
+        profile = SimpleNamespace(board_id="board-1", board=board)
         probe = ValidationProbe("probe-1", "Probe 1", "jlink", "probe-1")
         gate = SimpleNamespace(clear=Mock())
 
@@ -707,10 +713,11 @@ class ValidationHonestyTests(unittest.TestCase):
         from pyocd_debug_mcp import server
 
         manager = ConnectionManager()
-        handle = TargetSessionHandle(None, self._jlink_board(), "probe-1", "worker-1", None)
-        runtime = Mock(name="runtime")
+        board = self._jlink_board()
+        handle = TargetSessionHandle(None, board, "probe-1", "worker-1", board.pyocd_target)
+        runtime = SimpleNamespace(closed_at=None)
         assignment = manager.assign("board-1", handle, runtime)
-        profile = SimpleNamespace(board_id="board-1")
+        profile = SimpleNamespace(board_id="board-1", board=board)
         probe = ValidationProbe("probe-1", "Probe 1", "jlink", "probe-1")
         gate_failure = OSError("gate persistence failed")
         gate = SimpleNamespace(clear=Mock(side_effect=gate_failure))

@@ -63,6 +63,133 @@ class LiteConfirmationError(ValueError):
     """The operator response did not establish an explicit partial capability."""
 
 
+def lite_confirmation_form() -> dict[str, object]:
+    """Describe the accepted wire shape, including evidence, without inventing geometry."""
+
+    address = {
+        "type": ["integer", "string"],
+        "minimum": 0,
+        "maximum": (1 << 64) - 1,
+        "description": "Unsigned 64-bit address; integer or 0x hex text. End is exclusive.",
+    }
+    pages = {"type": "array", "minItems": 1, "items": {"type": "integer", "minimum": 1}}
+    note = {
+        "type": "string",
+        "minLength": 1,
+        "description": "Nonblank official datasheet evidence for this fact.",
+    }
+
+    def exact_object(keys: frozenset[str], properties: dict[str, object]) -> dict[str, object]:
+        return {
+            "type": "object",
+            "required": sorted(keys),
+            "additionalProperties": False,
+            "properties": properties,
+        }
+
+    return {
+        "response_schema": exact_object(
+            _CONFIRMATION_KEYS,
+            {
+                "decision": {"const": "confirm-or-correct"},
+                "regions": {
+                    "type": "array",
+                    "minItems": 1,
+                    "items": exact_object(
+                        _REGION_KEYS,
+                        {
+                            "name": {"type": "string", "minLength": 1},
+                            "kind": {"enum": sorted(_LITE_KINDS)},
+                            "start": address,
+                            "end": address,
+                            "readable": {"type": "boolean"},
+                            "writable": {"type": "boolean"},
+                            "executable": {"type": "boolean"},
+                            "source_pages": pages,
+                            "source_note": note,
+                        },
+                    ),
+                },
+                "flash": exact_object(
+                    _FLASH_KEYS,
+                    {
+                        "backend_target": {
+                            "type": ["string", "null"],
+                            "description": "Matching installed backend target, or null when flash is unconfirmed.",
+                        },
+                        "erase_sectors": {
+                            "type": "array",
+                            "items": {
+                                "type": "object",
+                                "required": ["start", "end"],
+                                "properties": {
+                                    "start": {"type": "integer", "minimum": 0},
+                                    "end": {"type": "integer", "minimum": 1},
+                                    "bank": {"type": "string"},
+                                },
+                            },
+                            "description": "Complete confirmed sectors with integer byte endpoints, end exclusive. Use [] if unknown.",
+                        },
+                    },
+                ),
+                "recovery": {
+                    "anyOf": [
+                        {"type": "null"},
+                        exact_object(
+                            _RECOVERY_KEYS,
+                            {
+                                "mechanism": {"const": "backend_mass_erase"},
+                                "source_pages": pages,
+                                "source_note": note,
+                            },
+                        ),
+                    ],
+                    "description": "Use null unless documented native recovery and complete physical_flash spans/erase sectors are confirmed.",
+                },
+            },
+        ),
+        "response_example": {
+            "decision": "confirm-or-correct",
+            "regions": [
+                {
+                    "name": "documented SRAM",
+                    "kind": "ram",
+                    "start": "0x20000000",
+                    "end": "0x20001000",
+                    "readable": True,
+                    "writable": True,
+                    "executable": False,
+                    "source_pages": [1],
+                    "source_note": "Illustrative only: replace with the actual datasheet RAM table and page.",
+                }
+            ],
+            "flash": {"backend_target": None, "erase_sectors": []},
+            "recovery": None,
+        },
+        "confirmation_rules": [
+            "The example is schema-valid, not evidence about your board; replace every fact using the supplied official datasheet.",
+            "Provide only known regions, with start < end and literal boolean permissions. Whitespace-only names/notes are invalid.",
+            "Unknown geometry stays omitted; at least one confirmed region is required. Null flash target and recovery disable those capabilities.",
+            "Evidence is source_pages (positive PDF page numbers) and source_note on every region and non-null recovery; do not add a top-level evidence field.",
+        ],
+    }
+
+
+def _exact_fields(value: object, keys: frozenset[str], field: str) -> Mapping[str, object]:
+    expected = ", ".join(sorted(keys))
+    if not isinstance(value, Mapping):
+        raise LiteConfirmationError(f"{field} must be an object containing exactly {expected}")
+    missing = sorted(keys - set(value))
+    extra = sorted(str(key) for key in set(value) - keys)
+    if missing or extra:
+        raise LiteConfirmationError(
+            f"{field} must contain exactly {expected}; "
+            f"missing fields: {', '.join(f'{field}.{key}' for key in missing) or 'none'}; "
+            f"extra fields: {', '.join(f'{field}.{key}' for key in extra) or 'none'}"
+        )
+    return value
+
+
 @dataclass(frozen=True, slots=True)
 class LiteConfirmation:
     """Normalized containment map plus verbatim operator confirmation evidence."""
@@ -137,10 +264,7 @@ def normalize_lite_confirmation(board_id: str, response: Mapping[str, object]) -
     reparsing a PDF over the operator's work.
     """
 
-    if set(response) != _CONFIRMATION_KEYS:
-        raise LiteConfirmationError(
-            "lite confirmation must contain exactly decision, regions, flash, and recovery"
-        )
+    _exact_fields(response, _CONFIRMATION_KEYS, "response")
     if response.get("decision") != "confirm-or-correct":
         raise LiteConfirmationError("decision must be exactly confirm-or-correct")
     regions = response.get("regions")
@@ -149,8 +273,7 @@ def normalize_lite_confirmation(board_id: str, response: Mapping[str, object]) -
             "lite confirmation requires at least one confirmed map-dependent region"
         )
     flash = response.get("flash")
-    if not isinstance(flash, Mapping) or set(flash) != _FLASH_KEYS:
-        raise LiteConfirmationError("flash must contain exactly backend_target and erase_sectors")
+    flash = _exact_fields(flash, _FLASH_KEYS, "flash")
     target = flash.get("backend_target")
     if target is not None and (not isinstance(target, str) or not target.strip()):
         raise LiteConfirmationError("flash.backend_target must be non-empty text or null")
@@ -159,10 +282,7 @@ def normalize_lite_confirmation(board_id: str, response: Mapping[str, object]) -
         raise LiteConfirmationError("flash.erase_sectors must be a list")
     recovery = response.get("recovery")
     if recovery is not None:
-        if not isinstance(recovery, Mapping) or set(recovery) != _RECOVERY_KEYS:
-            raise LiteConfirmationError(
-                "recovery must be null or contain exactly mechanism, source_pages, and source_note"
-            )
+        recovery = _exact_fields(recovery, _RECOVERY_KEYS, "recovery")
         # The target-control service deliberately exposes only this typed primitive.
         # Do not persist a datasheet label as though it were a callable backend API.
         if recovery.get("mechanism") != "backend_mass_erase":
@@ -184,8 +304,7 @@ def normalize_lite_confirmation(board_id: str, response: Mapping[str, object]) -
 
     normalized_regions: list[dict[str, object]] = []
     for index, item in enumerate(regions):
-        if not isinstance(item, Mapping) or set(item) != _REGION_KEYS:
-            raise LiteConfirmationError(f"regions[{index}] must use the exact lite region schema")
+        item = _exact_fields(item, _REGION_KEYS, f"regions[{index}]")
         name = item.get("name")
         kind = item.get("kind")
         note = item.get("source_note")
@@ -208,10 +327,9 @@ def normalize_lite_confirmation(board_id: str, response: Mapping[str, object]) -
             raise LiteConfirmationError(
                 f"regions[{index}].source_pages must be non-empty positive integers"
             )
-        if any(
-            not isinstance(item.get(key), bool) for key in ("readable", "writable", "executable")
-        ):
-            raise LiteConfirmationError(f"regions[{index}] permissions must be booleans")
+        for key in ("readable", "writable", "executable"):
+            if not isinstance(item.get(key), bool):
+                raise LiteConfirmationError(f"regions[{index}].{key} must be a boolean")
         start = _address(item.get("start"), f"regions[{index}].start")
         end = _address(item.get("end"), f"regions[{index}].end")
         if start >= end:
@@ -381,5 +499,6 @@ __all__ = [
     "LiteConfirmation",
     "LiteConfirmationError",
     "conservative_lite_proposal",
+    "lite_confirmation_form",
     "normalize_lite_confirmation",
 ]

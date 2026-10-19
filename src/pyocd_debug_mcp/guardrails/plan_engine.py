@@ -8,6 +8,7 @@ import math
 import re
 import secrets
 import threading
+import time
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from enum import Enum
@@ -20,6 +21,8 @@ from pyocd_debug_mcp.guardrails.plan_defs import (
     FieldType,
     PermissionMode,
     PlanDefinition,
+    SETUP_CONTINUATION_LIMIT,
+    SETUP_CONTINUATION_SECONDS,
     definition_for_action,
     definition_for_plan_tool,
 )
@@ -149,6 +152,7 @@ class ArtifactDigestBinding:
     supplied_path: str
     resolved_path: Path
     sha256: str
+    timeout_seconds: float | None = None
 
 
 def _hash_file(path: Path) -> str:
@@ -211,7 +215,9 @@ class PlanResult:
     plan: ActivePlan | None = None
 
 
-def accepted_plan_payload(plan: ActivePlan) -> dict[str, object]:
+def accepted_plan_payload(
+    plan: ActivePlan, *, timeout_seconds: float | None = None
+) -> dict[str, object]:
     """Return exact direct and static-client calls derived from an accepted snapshot."""
 
     parameters = plan.action_parameters
@@ -252,7 +258,7 @@ def accepted_plan_payload(plan: ActivePlan) -> dict[str, object]:
             "If they change before execution starts, the server invalidates and relocks the plan; "
             "submit a replacement plan for the new bytes.",
         )
-    return {
+    payload = {
         "status": "plan_accepted",
         "message": (
             f"Accepted plan {plan.plan_id}. Unlocked {plan.action_name} for {plan.board_id} with "
@@ -281,6 +287,20 @@ def accepted_plan_payload(plan: ActivePlan) -> dict[str, object]:
             for action_name in definition.paired_actions
         ],
     }
+    if timeout_seconds is not None:
+        payload["timeout_seconds"] = timeout_seconds
+        payload["guidance"] = (
+            f"{payload['guidance']} The finite timeout for this bound artifact is {timeout_seconds:g}s, "
+            "including the provider's one-second cleanup reservation."
+        )
+    if plan.action_name == "board_setup":
+        payload["setup_continuation"] = {
+            "max_answered_resumptions": SETUP_CONTINUATION_LIMIT,
+            "lifetime_seconds": SETUP_CONTINUATION_SECONDS,
+            "resume_rule": "One accepted continue_setup answer, then one board_fix_setup. Repeat only for a new prompt.",
+            "binding": "The same run, plan, session, assigned probe, exact part, and target tier.",
+        }
+    return payload
 
 
 @dataclass(frozen=True, slots=True)
@@ -312,6 +332,9 @@ class _PlanState:
     artifact_binding: ArtifactDigestBinding | None
     status: PlanStatus = PlanStatus.ACTIVE
     close_reason: str | None = None
+    setup_replies_remaining: int = 0
+    setup_reply_ready: bool = False
+    setup_expires_at: float | None = None
 
     def snapshot(self) -> ActivePlan:
         return ActivePlan(
@@ -593,6 +616,14 @@ class PlanEngine:
                 canonical_plan_fields=canonical_plan_fields,
                 authorization=authorization,
                 artifact_binding=artifact_binding,
+                setup_replies_remaining=(
+                    SETUP_CONTINUATION_LIMIT if definition.action_name == "board_setup" else 0
+                ),
+                setup_expires_at=(
+                    time.monotonic() + SETUP_CONTINUATION_SECONDS
+                    if definition.action_name == "board_setup"
+                    else None
+                ),
             )
             previous = self.server_run.plans.get(key)
             self.server_run.plans[key] = state
@@ -610,7 +641,10 @@ class PlanEngine:
                 previous.artifact_binding = None
             snapshot = state.snapshot()
 
-        payload = accepted_plan_payload(snapshot)
+        payload = accepted_plan_payload(
+            snapshot,
+            timeout_seconds=artifact_binding.timeout_seconds if artifact_binding else None,
+        )
         return PlanResult(
             status="accepted",
             message=json.dumps(payload, ensure_ascii=False, sort_keys=True),
@@ -923,10 +957,16 @@ class PlanEngine:
                 )
             if action_name == definition.action_name:
                 state.remaining_calls -= 1
+            elif action_name == "board_fix_setup":
+                # Spend one answer-driven step inside the single paired workflow.
+                # Its original permission remains reserved until real closure.
+                state.paired_remaining[action_name] = 0
+                state.setup_reply_ready = False
+                state.setup_replies_remaining -= 1
             else:
                 state.paired_remaining[action_name] -= 1
             exhausted = state.remaining_calls == 0 and not any(state.paired_remaining.values())
-            if exhausted:
+            if exhausted and definition.action_name != "board_setup":
                 if definition.permission_mode is not PermissionMode.NONE:
                     assert state.authorization is not None
                     self.permission_provider.consume_execution(
@@ -998,7 +1038,26 @@ class PlanEngine:
                 f"Cannot hash the selected {field_name} artifact: {exc}",
                 session_id=session_id,
             ) from exc
-        return ArtifactDigestBinding(field_name, supplied, resolved, digest)
+        timeout_seconds = None
+        if definition.action_name in {"flash_application", "flash_bootloader"}:
+            from pyocd_debug_mcp.flash_image import snapshot_flash_artifact
+            from pyocd_debug_mcp.kernel.operations import operation_timeout_seconds
+            from pyocd_debug_mcp.target_errors import UnsupportedArtifactError
+
+            try:
+                # Disclose the budget for the digest being accepted, even if a
+                # build replaces the selected path during plan submission.
+                with snapshot_flash_artifact(resolved, expected_sha256=digest) as snapshot:
+                    timeout_seconds = operation_timeout_seconds(
+                        definition.action_name, {"artifact": str(snapshot)}
+                    )
+            except UnsupportedArtifactError as exc:
+                raise _refuse(
+                    "plan/artifact-unreadable",
+                    f"Cannot bind the selected artifact bytes: {exc}",
+                    session_id=session_id,
+                ) from exc
+        return ArtifactDigestBinding(field_name, supplied, resolved, digest, timeout_seconds)
 
     def _verify_artifact_binding(
         self,
@@ -1052,6 +1111,7 @@ class PlanEngine:
         *,
         invoked_action: str,
         expected_plan_id: str | None = None,
+        require_budget: bool = True,
     ) -> _PlanState:
         state = self.server_run.plans.get(key)
         if not isinstance(state, _PlanState) or state.status is not PlanStatus.ACTIVE:
@@ -1080,13 +1140,22 @@ class PlanEngine:
                 "The active plan belongs to a different Server Run; submit a new plan.",
                 session_id=session_id,
             )
+        if state.setup_expires_at is not None and time.monotonic() >= state.setup_expires_at:
+            self._invalidate_locked(key, "setup continuation expired")
+            raise _refuse(
+                "plan/setup-expired",
+                "The setup continuation expired; submit a fresh board_setup-plan.",
+                session_id=session_id,
+            )
         if invoked_action == definition.action_name:
             action_remaining = state.remaining_calls
         elif invoked_action in definition.paired_actions:
             action_remaining = state.paired_remaining.get(invoked_action, 0)
         else:  # pragma: no cover - definition lookup already constrains this branch
             action_remaining = 0
-        if action_remaining <= 0:
+        if invoked_action == "board_fix_setup" and state.setup_expires_at is not None:
+            action_remaining = state.setup_replies_remaining if state.setup_reply_ready else 0
+        if require_budget and action_remaining <= 0:
             raise _refuse(
                 "plan/action-exhausted",
                 f"Plan {state.plan_id} has no remaining {invoked_action} allowance; submit a "
@@ -1113,6 +1182,80 @@ class PlanEngine:
             )
         return state
 
+    def setup_continuation(
+        self,
+        board_id: str,
+        expected_plan_id: str,
+        *,
+        session_id: str | None,
+        accept_reply: bool = False,
+    ) -> ActivePlan:
+        """Check current setup authority, optionally reserve one answered resume.
+
+        This never refills primary/paired budgets or issues a new permission.
+        Replayed answers refuse before evidence validation or attachment I/O.
+        """
+
+        definition = _definition("board_setup")
+        key = (definition.action_name, board_id)
+        with self._guard:
+            current = self.server_run.plans.get(key)
+            parameters = current.canonical_parameters if isinstance(current, _PlanState) else ""
+            state = self._precheck_locked(
+                key,
+                definition,
+                parameters,
+                session_id,
+                invoked_action="board_fix_setup",
+                expected_plan_id=expected_plan_id,
+                require_budget=False,
+            )
+            if state.setup_reply_ready:
+                raise _refuse(
+                    "plan/setup-answer-pending",
+                    "An answer is already accepted; call board_fix_setup before another reply.",
+                    session_id=session_id,
+                )
+            if state.setup_replies_remaining <= 0:
+                self._invalidate_locked(key, "setup continuation budget exhausted")
+                raise _refuse(
+                    "plan/setup-exhausted",
+                    "Setup's answered-step budget is exhausted; submit a fresh plan.",
+                    session_id=session_id,
+                )
+            self.scope_validator(definition, board_id, session_id)
+            if state.authorization is not None:
+                self.permission_provider.validate_execution(
+                    definition, board_id, state.authorization
+                )
+            if accept_reply:
+                state.setup_reply_ready = True
+            return state.snapshot()
+
+    def bind_setup_session(
+        self,
+        board_id: str,
+        expected_plan_id: str,
+        *,
+        previous_session_id: str | None,
+        session_id: str,
+    ) -> None:
+        """Bind only setup's own disconnected-to-validated connection transition."""
+
+        with self._guard:
+            state = self.server_run.plans.get(("board_setup", board_id))
+            if (
+                not isinstance(state, _PlanState)
+                or state.status is not PlanStatus.ACTIVE
+                or state.plan_id != expected_plan_id
+                or state.session_id != previous_session_id
+                or previous_session_id is not None
+            ):
+                raise _refuse(
+                    "plan/session-mismatch", "Setup connection no longer belongs to this plan."
+                )
+            state.session_id = session_id
+
     def complete_paired_plan(
         self,
         action_name: str,
@@ -1123,8 +1266,8 @@ class PlanEngine:
     ) -> None:
         """Close a paired workflow early and consume any one-time authorization.
 
-        Setup calls this when it completes, is cancelled, or reaches a terminal
-        stop before both statically granted calls are used. Full-session grants
+        Setup calls this on real completion, cancellation, or terminal failure;
+        pending research retains the reserved paired permission. Full-session grants
         remain reusable because their provider consumption is intentionally a no-op.
         """
 
@@ -1132,7 +1275,15 @@ class PlanEngine:
         key = (definition.action_name, board_id)
         with self._guard:
             state = self.server_run.plans.get(key)
-            if not isinstance(state, _PlanState) or state.status is not PlanStatus.ACTIVE:
+            if not isinstance(state, _PlanState):
+                return
+            closing_invalidated_setup = (
+                definition.action_name == "board_setup"
+                and expected_plan_id is not None
+                and state.status is PlanStatus.INVALIDATED
+                and state.authorization is not None
+            )
+            if state.status is not PlanStatus.ACTIVE and not closing_invalidated_setup:
                 return
             if expected_plan_id is not None and state.plan_id != expected_plan_id:
                 return
@@ -1150,12 +1301,10 @@ class PlanEngine:
                 pass
         with self._guard:
             state = self.server_run.plans.get(key)
-            if (
-                isinstance(state, _PlanState)
-                and state.status is PlanStatus.ACTIVE
-                and state.plan_id == matched_plan_id
-            ):
-                self._invalidate_locked(key, reason)
+            if isinstance(state, _PlanState) and state.plan_id == matched_plan_id:
+                state.authorization = None
+                if state.status is PlanStatus.ACTIVE:
+                    self._invalidate_locked(key, reason)
 
     def active_plan(self, action_name: str, board_id: str) -> ActivePlan | None:
         definition = _definition(action_name)

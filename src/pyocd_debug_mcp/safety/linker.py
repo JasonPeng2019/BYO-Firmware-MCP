@@ -6,8 +6,9 @@ import re
 from hashlib import sha256
 from dataclasses import dataclass
 from enum import Enum
+from collections.abc import Callable, Iterable, Iterator
 from pathlib import Path
-from typing import BinaryIO, Final
+from typing import Any, BinaryIO, Final, TypeVar
 
 from elftools.common.exceptions import ELFError  # type: ignore[import-untyped]
 from elftools.elf.elffile import ELFFile  # type: ignore[import-untyped]
@@ -15,6 +16,7 @@ from elftools.elf.sections import SymbolTableSection  # type: ignore[import-unty
 
 from pyocd_debug_mcp.safety.regions import AddressRange, RegionError
 
+_T = TypeVar("_T")
 _CONFIGURATION_ID: Final = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]*")
 _MAP_ASSIGNMENT: Final = re.compile(
     r"^\s*(?P<name>[A-Za-z_.$][A-Za-z0-9_.$]*)\s*=\s*"
@@ -222,9 +224,9 @@ def _looks_like_malformed_safety_symbol(line: str) -> bool:
     return False
 
 
-def _read_elf(
-    path: Path,
-) -> tuple[dict[str, int], tuple[LoadableSegment, ...], int, dict[int, int]]:
+def _parse_elf(path: Path, read: Callable[[Any], _T]) -> _T:
+    """Open a 32/64-bit ELF and apply ``read``, mapping parser faults to evidence codes."""
+
     if not path.is_file():
         raise LinkerEvidenceError("build/elf-missing", f"ELF artifact does not exist: {path}")
     try:
@@ -233,83 +235,148 @@ def _read_elf(
             elf = ELFFile(handle)
             if elf.elfclass not in {32, 64}:
                 raise LinkerEvidenceError("build/elf-class", "ELF class must be 32 or 64 bit")
-            symbols: dict[str, int] = {}
-            for section in elf.iter_sections():
-                if not isinstance(section, SymbolTableSection):
-                    continue
-                for symbol in section.iter_symbols():
-                    name = symbol.name
-                    if name not in _INTERESTING_SYMBOLS:
-                        continue
-                    value = int(symbol.entry.st_value)
-                    prior = symbols.get(name)
-                    if prior is not None and prior != value:
-                        raise LinkerEvidenceError(
-                            "build/elf-symbol-conflict",
-                            f"ELF gives conflicting values for {name}",
-                        )
-                    symbols[name] = value
-
-            segments: list[LoadableSegment] = []
-            image: dict[int, int] = {}
-            for index, segment in enumerate(elf.iter_segments()):
-                if segment.header.p_type != "PT_LOAD":
-                    continue
-                file_size = int(segment.header.p_filesz)
-                memory_size = int(segment.header.p_memsz)
-                if memory_size <= 0 or file_size < 0 or file_size > memory_size:
-                    raise LinkerEvidenceError(
-                        "build/segment-size", f"Malformed PT_LOAD segment {index}"
-                    )
-                try:
-                    runtime = AddressRange.from_start_size(int(segment.header.p_vaddr), memory_size)
-                    load = (
-                        AddressRange.from_start_size(int(segment.header.p_paddr), file_size)
-                        if file_size
-                        else None
-                    )
-                except RegionError as exc:
-                    raise LinkerEvidenceError(
-                        "build/segment-range", f"Invalid PT_LOAD segment {index}: {exc}"
-                    ) from exc
-                flags = int(segment.header.p_flags)
-                load_address = int(segment.header.p_paddr)
-                data = bytes(segment.data())
-                if len(data) != file_size:
-                    raise LinkerEvidenceError(
-                        "build/segment-data", f"PT_LOAD segment {index} has incomplete file data"
-                    )
-                for offset, value in enumerate(data):
-                    address = load_address + offset
-                    prior = image.get(address)
-                    if prior is not None and prior != value:
-                        raise LinkerEvidenceError(
-                            "build/segment-overlap",
-                            f"PT_LOAD segments disagree at address 0x{address:x}",
-                        )
-                    image[address] = value
-                segments.append(
-                    LoadableSegment(
-                        index,
-                        load,
-                        runtime,
-                        file_size,
-                        memory_size,
-                        bool(flags & 4),
-                        bool(flags & 2),
-                        bool(flags & 1),
-                    )
-                )
-            if not segments:
-                raise LinkerEvidenceError(
-                    "build/no-loadable-segments", "ELF contains no PT_LOAD segments"
-                )
-            entry_point = int(elf.header.e_entry)
+            return read(elf)
     except LinkerEvidenceError:
         raise
     except (OSError, ELFError, ValueError, TypeError, KeyError) as exc:
         raise LinkerEvidenceError("build/elf-malformed", f"Cannot parse ELF: {exc}") from exc
-    return symbols, tuple(segments), entry_point, image
+
+
+def _elf_loadable_segments(elf: Any) -> Iterator[tuple[LoadableSegment, int, bytes]]:
+    """Validate each PT_LOAD segment, yielding it with its load address and file bytes."""
+
+    for index, segment in enumerate(elf.iter_segments()):
+        if segment.header.p_type != "PT_LOAD":
+            continue
+        file_size = int(segment.header.p_filesz)
+        memory_size = int(segment.header.p_memsz)
+        if memory_size <= 0 or file_size < 0 or file_size > memory_size:
+            raise LinkerEvidenceError("build/segment-size", f"Malformed PT_LOAD segment {index}")
+        try:
+            runtime = AddressRange.from_start_size(int(segment.header.p_vaddr), memory_size)
+            load = (
+                AddressRange.from_start_size(int(segment.header.p_paddr), file_size)
+                if file_size
+                else None
+            )
+        except RegionError as exc:
+            raise LinkerEvidenceError(
+                "build/segment-range", f"Invalid PT_LOAD segment {index}: {exc}"
+            ) from exc
+        flags = int(segment.header.p_flags)
+        load_address = int(segment.header.p_paddr)
+        data = bytes(segment.data())
+        if len(data) != file_size:
+            raise LinkerEvidenceError(
+                "build/segment-data", f"PT_LOAD segment {index} has incomplete file data"
+            )
+        yield (
+            LoadableSegment(
+                index,
+                load,
+                runtime,
+                file_size,
+                memory_size,
+                bool(flags & 4),
+                bool(flags & 2),
+                bool(flags & 1),
+            ),
+            load_address,
+            data,
+        )
+
+
+def _read_elf(
+    path: Path,
+) -> tuple[dict[str, int], tuple[LoadableSegment, ...], int, dict[int, int]]:
+    def read(elf: Any) -> tuple[dict[str, int], tuple[LoadableSegment, ...], int, dict[int, int]]:
+        symbols: dict[str, int] = {}
+        for section in elf.iter_sections():
+            if not isinstance(section, SymbolTableSection):
+                continue
+            for symbol in section.iter_symbols():
+                name = symbol.name
+                if name not in _INTERESTING_SYMBOLS:
+                    continue
+                value = int(symbol.entry.st_value)
+                prior = symbols.get(name)
+                if prior is not None and prior != value:
+                    raise LinkerEvidenceError(
+                        "build/elf-symbol-conflict",
+                        f"ELF gives conflicting values for {name}",
+                    )
+                symbols[name] = value
+
+        segments: list[LoadableSegment] = []
+        image: dict[int, int] = {}
+        for segment, load_address, data in _elf_loadable_segments(elf):
+            for offset, value in enumerate(data):
+                address = load_address + offset
+                prior = image.get(address)
+                if prior is not None and prior != value:
+                    raise LinkerEvidenceError(
+                        "build/segment-overlap",
+                        f"PT_LOAD segments disagree at address 0x{address:x}",
+                    )
+                image[address] = value
+            segments.append(segment)
+        if not segments:
+            raise LinkerEvidenceError(
+                "build/no-loadable-segments", "ELF contains no PT_LOAD segments"
+            )
+        return symbols, tuple(segments), int(elf.header.e_entry), image
+
+    return _parse_elf(path, read)
+
+
+def read_elf_load_runs(path: Path) -> tuple[tuple[int, bytes], ...]:
+    """Return the bytes an ELF programs: PT_LOAD file data at physical load addresses.
+
+    This is the image pyOCD's ELF programmer writes. Runs are sorted, disjoint and
+    coalesced; bytes outside them (gaps and ``.bss`` tails) are holes, never padding.
+    """
+
+    def read(elf: Any) -> tuple[tuple[int, bytes], ...]:
+        chunks: list[tuple[int, bytes]] = []
+        segment_count = 0
+        for _segment, load_address, data in _elf_loadable_segments(elf):
+            segment_count += 1
+            if data:
+                chunks.append((load_address, data))
+        if not segment_count:
+            raise LinkerEvidenceError(
+                "build/no-loadable-segments", "ELF contains no PT_LOAD segments"
+            )
+        return _merge_load_chunks(
+            chunks, overlap_code="build/segment-overlap", identical_overlap_allowed=True
+        )
+
+    return _parse_elf(path, read)
+
+
+def _merge_load_chunks(
+    chunks: Iterable[tuple[int, bytes]], *, overlap_code: str, identical_overlap_allowed: bool
+) -> tuple[tuple[int, bytes], ...]:
+    runs: list[tuple[int, bytearray]] = []
+    for start, data in sorted(chunks, key=lambda chunk: chunk[0]):
+        if runs:
+            run_start, run = runs[-1]
+            run_end = run_start + len(run)
+            if start <= run_end:
+                shared = min(run_end, start + len(data)) - start
+                existing = run[start - run_start : start - run_start + shared]
+                if shared and (not identical_overlap_allowed or existing != data[:shared]):
+                    offset = next(
+                        (index for index in range(shared) if existing[index] != data[index]), 0
+                    )
+                    raise LinkerEvidenceError(
+                        overlap_code,
+                        f"Artifact data overlaps inconsistently at address 0x{start + offset:x}",
+                    )
+                run.extend(data[shared:])
+                continue
+        runs.append((start, bytearray(data)))
+    return tuple((start, bytes(run)) for start, run in runs)
 
 
 def _hex_record(line: str, *, path: Path, line_number: int) -> bytes:
@@ -344,8 +411,8 @@ def _address_ranges(addresses: list[int]) -> tuple[AddressRange, ...]:
     return tuple(ranges)
 
 
-def _read_hex(path: Path) -> tuple[dict[int, int], tuple[AddressRange, ...]]:
-    """Strictly parse data records from an Intel HEX build companion."""
+def _hex_data_records(path: Path) -> Iterator[tuple[int, bytes]]:
+    """Strictly parse an Intel HEX build companion, yielding each data record."""
 
     if not path.is_file():
         raise LinkerEvidenceError("build/hex-missing", f"HEX artifact does not exist: {path}")
@@ -355,9 +422,9 @@ def _read_hex(path: Path) -> tuple[dict[int, int], tuple[AddressRange, ...]]:
         raise LinkerEvidenceError(
             "build/hex-unreadable", f"Cannot read HEX artifact: {exc}"
         ) from exc
-    image: dict[int, int] = {}
     base = 0
     eof_seen = False
+    data_seen = False
     for line_number, raw_line in enumerate(lines, 1):
         line = raw_line.strip()
         if not line:
@@ -377,13 +444,8 @@ def _read_hex(path: Path) -> tuple[dict[int, int], tuple[AddressRange, ...]]:
                 raise LinkerEvidenceError(
                     "build/hex-range", f"Invalid HEX data range: {exc}"
                 ) from exc
-            for index, value in enumerate(data):
-                address = start + index
-                if address in image:
-                    raise LinkerEvidenceError(
-                        "build/hex-overlap", f"Intel HEX repeats address 0x{address:x}"
-                    )
-                image[address] = value
+            data_seen = True
+            yield start, data
         elif record_type == 1:
             if length != 0 or offset != 0:
                 raise LinkerEvidenceError("build/hex-malformed", "Malformed Intel HEX EOF record")
@@ -409,12 +471,38 @@ def _read_hex(path: Path) -> tuple[dict[int, int], tuple[AddressRange, ...]]:
             raise LinkerEvidenceError(
                 "build/hex-record-type", f"Unsupported Intel HEX record type {record_type}"
             )
-    if not eof_seen or not image:
+    if not eof_seen or not data_seen:
         raise LinkerEvidenceError(
             "build/hex-incomplete", "Intel HEX requires an EOF record and non-empty image data"
         )
+
+
+def _read_hex(path: Path) -> tuple[dict[int, int], tuple[AddressRange, ...]]:
+    """Strictly parse data records from an Intel HEX build companion."""
+
+    image: dict[int, int] = {}
+    for start, data in _hex_data_records(path):
+        for index, value in enumerate(data):
+            address = start + index
+            if address in image:
+                raise LinkerEvidenceError(
+                    "build/hex-overlap", f"Intel HEX repeats address 0x{address:x}"
+                )
+            image[address] = value
     addresses = sorted(image)
     return image, _address_ranges(addresses)
+
+
+def read_hex_load_runs(path: Path) -> tuple[tuple[int, bytes], ...]:
+    """Return the bytes an Intel HEX file programs as sorted, disjoint, coalesced runs.
+
+    Uses the same strict record rules as build evidence; any repeated address is
+    refused and bytes between records are holes, never padding.
+    """
+
+    return _merge_load_chunks(
+        _hex_data_records(path), overlap_code="build/hex-overlap", identical_overlap_allowed=False
+    )
 
 
 def _artifact_provenance(kind: str, path: Path) -> BuildProvenance:

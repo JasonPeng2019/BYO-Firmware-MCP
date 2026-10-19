@@ -183,7 +183,7 @@ path and is never permission to invent hidden calls.
 
 Always-advertised operational tools cover:
 
-- connection and inspection: profile-only `connect`, `disconnect`, `get_board_info`,
+- connection and inspection: tier-aware `connect`, `disconnect`, `get_board_info`,
   `get_state`, `read_cpu_register`, `read_execution_state`, `find_symbol`, and
   `read_memory_symbol`;
 - ordinary execution: `halt`, `resume`, `step`, `reset_and_run`,
@@ -209,12 +209,31 @@ Guarded actions are registered but hidden until their exact plan unlocks them:
 - setup mutation: `board_setup` and `board_fix_setup`, exposed only through
   the setup loader and plan workflow.
 
-Normal `connect(board_id)` resolves only the named project profile and its
-profile-matched probe. It accepts no probe UID, target, external board-config,
-or launch-environment override. If an exceptional manual connection is truly
+For setup-lite/full, `connect(board_id)` resolves the named project profile and
+its assigned or profile-matched probe, without caller probe/target overrides.
+A no-setup label can use `connect(board_id, probe_uid, target)` deliberately:
+`probe_uid` must resolve to one currently visible probe, or may be omitted when
+`setup_overview` already assigned that label. Full and unambiguous partial UIDs
+are supported; `"null"` is a string and is invalid, while JSON null omits the
+selector. A target alone cannot select a probe. For example, after discovery,
+`connect(board_id="bench_raw", probe_uid="<selected current UID>", target="cortex_m")`
+opens an unverified raw session. A missing/mistaken/ambiguous UID refuses before
+opening; rediscover and select the intended probe. Raw identity is unasserted,
+and a generic core does not prove package identity or programming support.
+
+Known-profile discovery preserves its run binding. A missing assigned probe or
+one demonstrably owned by another board in this server produces unavailable
+guidance without a substitute `board_validate` route. Other inventory stays
+unassigned; absence alone does not prove external contention. A contradictory
+probe-board catalog vendor and requested target vendor refuse before target
+initialization. Catalog evidence is not exact live silicon proof; uncertain
+variants and deliberate generic targets remain unverified.
+
+Normal connect accepts no external board-config or launch-environment override.
+If an exceptional manual connection is truly
 needed, initialize `connect_override-plan` and use the hidden run-scoped
 `connect_override`; it never rewrites the profile. `action_batch` uses the same
-strict child schema and cannot smuggle those fields through normal `connect`.
+tier and selector rules as direct `connect`.
 
 Memory reads are contained to the exact bytes the backend will access. Mapped
 RAM, flash, ROM, CPU-system, and peripheral reads remain available, including
@@ -290,6 +309,26 @@ preserved. Lite flash/recovery need their
 explicit confirmed geometry/backend/native-mechanism facts; never infer them
 from the board name or a retained full profile.
 
+Setup research replies publish the complete accepted form. LITE includes nested
+region/flash/recovery fields, source evidence, and a parser-valid example in
+`accepted_response`; replace illustrative facts with the official datasheet.
+FULL target research offers an installed-target alternative only when installed
+device identifiers match the supplied part and usable geometry exists, alongside
+official-pack input. Compatibility is checked again before live attachment and
+when persisted support is replayed. Unestablished compatibility requires a pack;
+core CPUID never proves an exact package. See the
+[setup continuation examples](docs/client-contract.md) for accepted fields and
+missing-field recovery.
+
+Generic FULL users can deliberately admit a bounded user-bootloader partition
+through `board_safety_refresh(user_bootloader=...)` after live validation. Supply
+official source bytes/pages and factory device/group, flash-size and unique-ID
+register research. The server captures and checks live observations, preserves
+application ownership and requires fresh validation. Exact binding identifies the
+same supported unit with disclosed package limits. See the
+[public admission contract and example](docs/client-contract.md#bounded-user-bootloader-admission).
+Admission performs no programming and grants no erase or bootloader-flash permission.
+
 Each logical board has one live connection and one operation boundary.
 Same-board calls serialize while different boards can execute concurrently.
 Guarded requests are scoped to their run, board, session, exact parameters,
@@ -314,7 +353,43 @@ never restore authority.
 
 Target recovery and bootloader flash are destructive operations with stronger
 approval rules. Never treat conversational approval, a report, tool visibility,
-or a prior run as current authorization.
+or a prior run as current authorization. Every backend mass erase, including
+`target_unlock_raw`, spends one fresh `$mass-erase` grant bound to the board,
+live session, policy, mechanism, and disclosed erase scope; without it the call
+is refused before backend I/O and the session is kept. An attempted erase always
+disconnects the board, even after a backend failure or cancellation.
+
+Connecting is never an erase. Every session the server opens, including
+`connect_under_reset`, setup candidates, and validation, disables pyOCD's
+connect-time `auto_unlock`. When pyOCD reports debug protection (Nordic APPROTECT,
+Kinetis flash security), the open fails with a locked-target error (event code
+`target/locked`; validation reports `validation/target-locked`), the session is
+closed, and the target is not erased or unlocked. A part whose protection pyOCD
+does not report fails as an ordinary connection error, still without erasing.
+`target_unlock` and `target_unlock_raw` need a connected session, so a target
+that refuses to attach must be recovered outside the server, by its owner, with
+the vendor's whole-device erase procedure; connect again afterward.
+
+A flash reports success only after readback matches every byte the artifact
+addresses; `programming` and the final `target_state` are reported separately,
+and `reset_state_unconfirmed` means only that execution state is unknown. A
+target without a live flash algorithm for every addressed byte, such as a
+generic `cortex_m` connection, is refused (`flash/unsupported-target`) before
+any reset, erase, or write. A raw `.bin` needs an explicit `flash_raw`
+`base_address`; the server never infers one.
+
+`flash_raw`, `flash_application`, and `flash_bootloader` share a finite budget
+for programming and complete readback:
+`max(120, 30 + 2 * addressed_bytes / 8192)` seconds. This uses decoded artifact
+bytes, including addressed `0xFF` bytes, and excludes sparse address gaps. For
+example, a 1 MiB BIN receives 286 seconds; its provider deadline reserves one
+second for cleanup. Accepted guarded plans disclose the concrete `timeout_seconds`
+for their bound artifact bytes; direct calls and their exact batch fallback use
+that same action budget. A changed artifact invalidates the plan before
+programming and requires a replacement plan. Small images retain 120 seconds.
+An exhausted budget still fails and closes the failed worker; reconnect before
+further target access.
+Ordinary operations retain their existing bounds.
 
 ## Build and import check
 

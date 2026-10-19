@@ -48,9 +48,14 @@ def _child_setup_response(batch: dict[str, object]) -> dict[str, object]:
     """Extract the JSON setup result returned by the public one-child fallback."""
 
     completed = batch.get("completed")
-    if not isinstance(completed, list) or len(completed) != 1:
+    if batch.get("status") in {"batch_failed", "batch_pending"}:
+        if completed != []:
+            raise AssertionError(f"stopped setup must have no successful prefix: {batch!r}")
+        child = batch.get("failure")
+    elif isinstance(completed, list) and len(completed) == 1:
+        child = completed[0]
+    else:
         raise AssertionError(f"setup fallback did not run exactly one child: {batch!r}")
-    child = completed[0]
     if not isinstance(child, dict) or child.get("tool_name") not in {
         "board_setup",
         "board_fix_setup",
@@ -138,6 +143,7 @@ def _accepted_setup_plan(
     display_name: str,
     target_tier: str,
     datasheet: Path,
+    mcu_part_number: str = "NO-PACK-PART",
 ) -> tuple[str, dict[str, object], dict[str, object]]:
     """Walk the visible overview/load/plan protocol and return its exact fallback."""
 
@@ -185,7 +191,7 @@ def _accepted_setup_plan(
     action = {
         **template,
         "target_tier": target_tier,
-        "mcu_part_number": "NO-PACK-PART",
+        "mcu_part_number": mcu_part_number,
         "requires_uart": False,
         "serial_baudrate": None,
         "serial_id": None,
@@ -411,11 +417,12 @@ class TieredLiteEvidenceAcceptanceTests(unittest.TestCase):
                     batch = _batch_payload(
                         public_text(server, fallback["tool_name"], fallback["arguments"])
                     )
-                    self.assertEqual(batch["status"], "batch_completed", batch)
+                    expected_status = "batch_completed" if address == 0x20000000 else "batch_failed"
+                    self.assertEqual(batch["status"], expected_status, batch)
                     completed = batch["completed"]
                     self.assertIsInstance(completed, list)
                     assert isinstance(completed, list)
-                    child = completed[0]
+                    child = completed[0] if completed else batch["failure"]
                     self.assertIsInstance(child, dict)
                     assert isinstance(child, dict)
                     self.assertEqual(child["tool_name"], "read_memory_address")
@@ -637,7 +644,7 @@ class TieredLiteEvidenceAcceptanceTests(unittest.TestCase):
                 setup_batch = _batch_payload(
                     public_text(server, str(fallback["tool_name"]), fallback["arguments"])
                 )
-                self.assertEqual(setup_batch["status"], "batch_completed", setup_batch)
+                self.assertEqual(setup_batch["status"], "batch_pending", setup_batch)
                 pending = _child_setup_response(setup_batch)
                 self.assertEqual(pending["status"], "setup_research_required", pending)
                 self.assertIn("setup/lite-confirmation-required", _phase_codes(pending))
@@ -706,7 +713,7 @@ class TieredLiteEvidenceAcceptanceTests(unittest.TestCase):
                         full_fallback["arguments"],
                     )
                 )
-                self.assertEqual(full_batch["status"], "batch_completed", full_batch)
+                self.assertEqual(full_batch["status"], "batch_failed", full_batch)
                 full_failure = _child_setup_response(full_batch)
                 self.assertEqual(full_failure["status"], "setup_blocked", full_failure)
                 self.assertIn("setup/reviewed-support-not-found", _phase_codes(full_failure))
@@ -751,7 +758,7 @@ class TieredLiteEvidenceAcceptanceTests(unittest.TestCase):
                 batch = _batch_payload(
                     public_text(server, str(fallback["tool_name"]), fallback["arguments"])
                 )
-                self.assertEqual(batch["status"], "batch_completed", batch)
+                self.assertEqual(batch["status"], "batch_failed", batch)
                 failed = _child_setup_response(batch)
                 self.assertEqual(failed["status"], "setup_connection_failed", failed)
                 self.assertIn("setup/live-connect-failed", _phase_codes(failed))

@@ -9,6 +9,7 @@ from typing import Any
 from uuid import uuid4
 
 from pyocd_debug_mcp.board_config import BoardConfig
+from pyocd_debug_mcp.flash_image import FlashResult
 from pyocd_debug_mcp.timeouts import ServerTimeoutConfig
 
 
@@ -163,8 +164,12 @@ class SWDInterface(ABC):
         """Resume the target core."""
 
     @abstractmethod
-    def step(self, handle: TargetSessionHandle) -> None:
-        """Single-step one instruction."""
+    def step(self, handle: TargetSessionHandle) -> int:
+        """Return PC only after a fresh single-step halt and breakpoint restoration.
+
+        Raise TargetStateError for an incomplete or unverified step. PC equality
+        is valid control flow; PC movement alone does not establish completion.
+        """
 
     @abstractmethod
     def reset(self, handle: TargetSessionHandle) -> None:
@@ -179,14 +184,43 @@ class SWDInterface(ABC):
         """Deassert the connected probe's wired reset line."""
 
     @abstractmethod
+    def check_flash_support(
+        self,
+        handle: TargetSessionHandle,
+        firmware: Path,
+        *,
+        base_address: int | None = None,
+        artifact_sha256: str | None = None,
+    ) -> None:
+        """Refuse, without any target effect, an artifact the live target cannot program.
+
+        Raises ``UnsupportedArtifactError`` for an artifact or address request that
+        cannot be derived, ``FlashArtifactChangedError`` when ``artifact_sha256`` is
+        given and the artifact bytes no longer match it, and
+        ``FlashTargetSupportError`` when any addressed byte lacks a live flash
+        algorithm.
+        """
+
+    @abstractmethod
     def flash(
         self,
         handle: TargetSessionHandle,
         firmware: Path,
         *,
         halt_after_reset: bool,
-    ) -> str:
-        """Flash and return an observed or unconfirmed post-reset target state."""
+        base_address: int | None = None,
+        artifact_sha256: str | None = None,
+    ) -> FlashResult:
+        """Program, read back every addressed artifact byte, then reset.
+
+        The artifact bytes are read once; the bytes programmed are exactly those the
+        expected image is derived from, and with ``artifact_sha256`` they must match
+        that approved digest (``FlashArtifactChangedError`` before any effect).
+        Support is checked for every addressed byte before any reset or programming
+        effect. Success requires the independently derived artifact bytes to match
+        bounded readback; ``FlashVerificationError`` otherwise. The returned
+        ``target_state`` reports only the final reset, separately from that proof.
+        """
 
     @abstractmethod
     def recover(self, handle: TargetSessionHandle) -> None:

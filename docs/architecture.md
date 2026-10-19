@@ -135,6 +135,12 @@ lock or policy checks.
 
 `PlanEngine` scopes a plan to the current run, tool, board, session, canonical
 parameters, and call budget. It atomically decrements once at execution start.
+Setup reserves its single paired authorization across research pauses. Each
+fresh accepted answer admits one resumption from a separate finite step budget
+(ten, within thirty minutes); it never refills primary or paired call counters.
+Terminal workflow closure consumes the reserved permission and relocks the
+tools. Plans bind an attached session exactly; only a connection established by
+that setup's own FULL validation can bind a previously disconnected plan.
 Pre-start refusals do not consume a call; failure, timeout, or cancellation
 after start does. Replacement, exhaustion, invalidation, disconnect, and run
 closure relock the action.
@@ -147,8 +153,12 @@ empty after restart.
 
 ## Validation gate and safety
 
-The write gate is default closed. Only successful `board_validate` creates
-live identity proof. The stamp records logical board, current connection, probe
+The FULL write gate is default closed. Only successful FULL `board_validate`
+creates live identity proof. LITE uses the same public validation route to replay
+its partial policy, check the assigned probe and saved target, and query live
+target state. It retains `trusted-not-proven` and creates no identity stamp or
+additional authority. Its existing contained operations still require their
+plans and permissions. The FULL stamp records logical board, current connection, probe
 identity (hardware-stable when exposed, otherwise session-local to the current
 worker), observed MCU evidence, validation run, and canonical map digest.
 It is memory-only; disk artifacts, refresh, setup, plans, permissions, reports,

@@ -25,7 +25,13 @@ def build_session_handlers(services: SessionToolServices) -> dict[str, Callable[
         probe_uid: str | None = None,
         target: str | None = None,
     ) -> str:
-        """Connect a named board; no-setup may supply a probe UID or target fallback."""
+        """Connect an assigned board or explicitly selected no-setup raw probe.
+
+        A new raw label needs probe_uid or a current setup_overview assignment.
+        probe_uid must match one visible probe (full or unambiguous partial UID);
+        the string "null" is invalid. target overrides alone do not select a probe
+        or prove exact silicon/package identity. Setup-lite/full use their profile.
+        """
 
         return wrap_layer2_response(services.connect(board_id, probe_uid=probe_uid, target=target))
 
@@ -50,7 +56,11 @@ def build_session_handlers(services: SessionToolServices) -> dict[str, Callable[
         target_override: str | None = None,
         external_board_config: str | None = None,
     ) -> str:
-        """Connect with run-scoped manual identifiers without rewriting any profile."""
+        """Connect with run-scoped manual identifiers without rewriting any profile.
+
+        After success, load board_validate through load_setup_tool and execute its exact
+        next_call for this active session before protected I/O. Connection alone is not readiness.
+        """
 
         result = services.connect_override(
             board_id,
@@ -59,7 +69,9 @@ def build_session_handlers(services: SessionToolServices) -> dict[str, Callable[
             board_config=external_board_config,
         )
         return wrap_layer2_response(
-            f"{result}\nManual override values are run-scoped and did not rewrite a profile."
+            f"{result}\nManual override values are run-scoped and did not rewrite a profile. "
+            "Load board_validate through load_setup_tool and execute its exact next_call "
+            "before protected I/O."
         )
 
     return {

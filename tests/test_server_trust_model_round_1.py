@@ -255,7 +255,7 @@ class RoundOneTrustedCallerTests(unittest.TestCase):
         self.assertIn("positive integer", read("board", 0, 8, -1))
         self.assertIn("width must be one", read("board", 0, 64, 1))
 
-    def test_wait_and_native_build_accept_values_above_former_limits(self) -> None:
+    def test_wait_has_an_ordinary_operation_bound_and_native_build_retains_its_limits(self) -> None:
         waits: list[float] = []
         wait = build_misc_handlers(
             MiscToolServices(
@@ -265,8 +265,10 @@ class RoundOneTrustedCallerTests(unittest.TestCase):
                 sleep=waits.append,
             )
         )["wait"]
-        self.assertIn("60001", wait("board", 60_001))
-        self.assertEqual(waits, [60.001])
+        self.assertIn("Refused [wait/out-of-range]", wait("board", 60_001))
+        self.assertEqual(waits, [])
+        self.assertIn("Waited 30000 ms", wait("board", 30_000))
+        self.assertEqual(waits, [30.0])
         self.assertEqual(_timeout_seconds(86_401), 86_401.0)
         self.assertRaises(RuntimeError, _timeout_seconds, math.inf)
         role = "ArtifactRole" + ("x" * 80)

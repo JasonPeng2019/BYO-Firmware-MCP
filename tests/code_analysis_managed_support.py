@@ -474,6 +474,30 @@ def native_start_token(pid: int) -> str | None:
         kernel.CloseHandle(handle)
 
 
+def windows_child_start_token(process: Any) -> str:
+    """Read birth identity from this Popen's retained handle, including after exit.
+
+    A fast native --version can finish before observation. Its retained handle
+    still names the original child; reopening a PID or demanding STILL_ACTIVE
+    would conflate valid completion with missing creation evidence. Live absence
+    remains a separate native_start_token check during cleanup.
+    """
+    from ctypes import wintypes
+
+    kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel.GetProcessId.argtypes = [wintypes.HANDLE]
+    kernel.GetProcessId.restype = wintypes.DWORD
+    kernel.GetProcessTimes.argtypes = [wintypes.HANDLE] + [ctypes.POINTER(wintypes.FILETIME)] * 4
+    kernel.GetProcessTimes.restype = wintypes.BOOL
+    handle = wintypes.HANDLE(int(process._handle))
+    if kernel.GetProcessId(handle) != process.pid:
+        raise OSError("Retained child handle does not bind the original PID")
+    times = [wintypes.FILETIME() for _ in range(4)]
+    if not kernel.GetProcessTimes(handle, *(ctypes.byref(t) for t in times)):
+        raise ctypes.WinError(ctypes.get_last_error())
+    return f"win:{times[0].dwHighDateTime:08x}{times[0].dwLowDateTime:08x}"
+
+
 class OwnedSpawns:
     def __init__(self, directory: Path, redirect: Any = None) -> None:
         self.directory = directory
@@ -513,12 +537,19 @@ class OwnedSpawns:
             self.children.append((process, marker, record))
         # Retain the actual child for emergency cleanup even if an oracle fails.
         record["marker"] = json.loads(marker.read_bytes()) if marker else None
-        token = native_start_token(process.pid)
+        token = (
+            windows_child_start_token(process) if os.name == "nt" else native_start_token(process.pid)
+        )
         if token is None and os.name == "posix":
             # A fast version peer may already be a retained zombie with a real birth.
             observation = posix_process_identity(process.pid)
             token = observation[0] if observation else None
         record["native_creation"] = token
+        if os.name == "nt":
+            record["native_creation_source"] = "original retained Popen handle/GetProcessTimes"
+            assert record["marker"]["start_token"] == token, record
+            assert record["marker"]["owner_pid"] == os.getpid(), record
+            assert record["marker"]["owner_start_token"] == native_start_token(os.getpid()), record
         if marker is None and os.name == "posix":
             # The accepted early-terminal boundary returns only after scoped reap.
             # check_cleanup requires native ECHILD and the full receipt, not poll alone.

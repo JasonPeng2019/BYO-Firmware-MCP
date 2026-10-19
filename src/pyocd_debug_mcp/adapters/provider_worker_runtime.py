@@ -16,11 +16,16 @@ from pyocd_debug_mcp.adapters.swd_pyocd import (
 from pyocd_debug_mcp.board_config import BoardConfig
 from pyocd_debug_mcp.probe_inventory import probe_family_from_pyocd_probe
 from pyocd_debug_mcp.target_errors import (
+    FlashArtifactChangedError,
+    FlashReadbackConnectionError,
+    FlashTargetSupportError,
+    FlashVerificationError,
     LockedTargetError,
     ProbeNotFoundError,
     ResetLineUnavailableError,
     TargetConnectionError,
     TargetControlError,
+    TargetInputError,
     TargetStateError,
     UnsupportedArtifactError,
 )
@@ -30,11 +35,16 @@ _VERSION = 1
 _BOARD_FIELDS = {field.name for field in fields(BoardConfig)}
 _TIMEOUT_FIELDS = set(ServerTimeoutConfig().to_record())
 _ERROR_KINDS: tuple[tuple[type[TargetControlError], str], ...] = (
+    (TargetInputError, "target_input"),
     (LockedTargetError, "locked_target"),
     (ProbeNotFoundError, "probe_not_found"),
     (ResetLineUnavailableError, "reset_line_unavailable"),
     (TargetStateError, "target_state"),
+    (FlashArtifactChangedError, "flash_artifact_changed"),
     (UnsupportedArtifactError, "unsupported_artifact"),
+    (FlashTargetSupportError, "flash_target_unsupported"),
+    (FlashReadbackConnectionError, "flash_readback_connection"),
+    (FlashVerificationError, "flash_verification"),
     (TargetConnectionError, "target_connection"),
     (TargetControlError, "target_control"),
 )
@@ -113,10 +123,16 @@ def _validate_arguments(operation: str, arguments: dict[str, Any]) -> None:
         _exact(arguments, {"address"})
         _integer(arguments["address"], "address", minimum=0)
         return
-    if operation == "flash":
-        _exact(arguments, {"path", "halt_after_reset"})
+    if operation in {"flash", "check_flash_support"}:
+        expected = {"path", "base_address", "artifact_sha256"}
+        if operation == "flash":
+            expected.add("halt_after_reset")
+        _exact(arguments, expected)
         _text(arguments["path"], "path")
-        if not isinstance(arguments["halt_after_reset"], bool):
+        if arguments["base_address"] is not None:
+            _integer(arguments["base_address"], "base_address", minimum=0)
+        _text(arguments["artifact_sha256"], "artifact_sha256", nullable=True)
+        if operation == "flash" and not isinstance(arguments["halt_after_reset"], bool):
             raise ValueError("halt_after_reset must be boolean")
         return
     raise ValueError("unknown worker operation")
@@ -280,10 +296,21 @@ def _dispatch(adapter: PyOCDSWDInterface, handle: TargetSessionHandle | None, op
         result = adapter.reset(handle)
     elif operation == "reset_and_halt":
         result = adapter.reset_and_halt(handle)
+    elif operation == "check_flash_support":
+        result = adapter.check_flash_support(
+            handle,
+            Path(str(arguments["path"])),
+            base_address=arguments["base_address"],
+            artifact_sha256=arguments["artifact_sha256"],
+        )
     elif operation == "flash":
         result = adapter.flash(
-            handle, Path(str(arguments["path"])), halt_after_reset=bool(arguments["halt_after_reset"])
-        )
+            handle,
+            Path(str(arguments["path"])),
+            halt_after_reset=bool(arguments["halt_after_reset"]),
+            base_address=arguments["base_address"],
+            artifact_sha256=arguments["artifact_sha256"],
+        ).to_document()
     elif operation == "recover":
         result = adapter.recover(handle)
     elif operation == "supports_recovery":
@@ -331,8 +358,13 @@ def main(protocol: BinaryIO) -> None:
                     raise ValueError("worker request id was not the next monotonic id")
                 if not isinstance(operation, str) or not isinstance(arguments, dict):
                     raise ValueError("invalid worker request schema")
-                _validate_arguments(operation, arguments)
                 last_request_id = request_id
+                try:
+                    _validate_arguments(operation, arguments)
+                except ValueError as exc:
+                    # Only argument validation is nonfatal. A ValueError from
+                    # backend dispatch must retain its provider-failure meaning.
+                    raise TargetInputError(str(exc)) from exc
                 handle, result, exit_after = _dispatch(
                     adapter,
                     handle,
@@ -345,7 +377,7 @@ def main(protocol: BinaryIO) -> None:
                 )
                 if exit_after:
                     return
-            except Exception as exc:  # parent maps all child failures to typed connection failure
+            except Exception as exc:  # parent preserves typed input/target failures
                 kind = _error_kind(exc)
                 _send(
                     protocol,

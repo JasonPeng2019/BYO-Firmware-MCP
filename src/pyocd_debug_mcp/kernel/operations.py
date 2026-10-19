@@ -37,7 +37,15 @@ from pyocd_debug_mcp.timeouts import (
 )
 
 DEFAULT_OPERATION_TIMEOUT_SECONDS = 30.0
+# A wait is an ordinary operation; its public duration uses milliseconds.
+MAX_WAIT_DURATION_MS = int(DEFAULT_OPERATION_TIMEOUT_SECONDS * 1000)
 FLASH_OPERATION_TIMEOUT_SECONDS = 120.0
+# Flash images can address the entire flash, including erased bytes. Reserve two
+# full transfers (programming's scan/upload and independent readback) at a
+# conservative planning rate, plus the ordinary setup/reset allowance. This is
+# a finite work budget, not a promise about a probe's actual throughput.
+FLASH_TRANSFER_BYTES_PER_SECOND = 8 * 1024
+MAX_RAW_FLASH_ARTIFACT_BYTES = 64 * 1024 * 1024
 VALIDATION_OPERATION_TIMEOUT_SECONDS = 120.0
 RECOVERY_OPERATION_TIMEOUT_SECONDS = 300.0
 ARGUMENT_TIMEOUT_GRACE_SECONDS = 5.0
@@ -49,7 +57,7 @@ SAFE_EXIT_REMINDER = (
     "work is complete."
 )
 
-_FLASH_TOOLS = frozenset({"flash_application", "flash_bootloader", "flash_firmware"})
+_FLASH_TOOLS = frozenset({"flash_application", "flash_bootloader", "flash_firmware", "flash_raw"})
 _VALIDATION_TOOLS = frozenset({"board_validate"})
 _RECOVERY_TOOLS = frozenset({"target_unlock"})
 _PROBE_INVENTORY_TOOLS = frozenset(
@@ -318,6 +326,9 @@ class ManagedOperation:
     done: threading.Event = field(default_factory=threading.Event)
     result: object | None = None
     error: BaseException | None = None
+    # A handler may report a failure in its response while cleanup still needs
+    # the original typed exception. Keep it separate from dispatch's raised error.
+    response_error: BaseException | None = None
     _guard: threading.RLock = field(default_factory=threading.RLock)
 
     def request_cancel(self, reason: str) -> None:
@@ -537,6 +548,32 @@ def _positive_finite_number(value: object) -> float | None:
     return number if number > 0 and math.isfinite(number) else None
 
 
+def _flash_timeout_seconds(arguments: Mapping[str, object], *, raw: bool) -> float:
+    """Budget addressed work without changing admission or existing input refusals."""
+
+    from pyocd_debug_mcp.flash_image import derive_flash_image
+    from pyocd_debug_mcp.target_errors import UnsupportedArtifactError
+
+    artifact = arguments.get("artifact")
+    if not isinstance(artifact, str):
+        return FLASH_OPERATION_TIMEOUT_SECONDS
+    try:
+        path = Path(artifact).expanduser().resolve(strict=True)
+        if not path.is_file() or (raw and path.stat().st_size > MAX_RAW_FLASH_ARTIFACT_BYTES):
+            return FLASH_OPERATION_TIMEOUT_SECONDS
+        base = arguments.get("base_address")
+        if isinstance(base, str):
+            base = int(base, 0)
+        image = derive_flash_image(path, base_address=cast(int | None, base))
+    except (OSError, ValueError, UnsupportedArtifactError):
+        # The handler owns refusals and their existing status/code/cause.
+        return FLASH_OPERATION_TIMEOUT_SECONDS
+    return max(
+        FLASH_OPERATION_TIMEOUT_SECONDS,
+        DEFAULT_OPERATION_TIMEOUT_SECONDS + 2 * image.byte_count / FLASH_TRANSFER_BYTES_PER_SECOND,
+    )
+
+
 def operation_timeout_seconds(
     tool_name: str,
     arguments: Mapping[str, object] | None = None,
@@ -544,6 +581,11 @@ def operation_timeout_seconds(
     """Return the finite A-11 timeout budget for a tool invocation."""
 
     values = arguments or {}
+    if tool_name == "wait":
+        # Admission and the handler enforce MAX_WAIT_DURATION_MS independently.
+        # Keep enough grace for the maximum without allowing requested ms or
+        # timeout/finalizer extras to expand this budget.
+        return DEFAULT_OPERATION_TIMEOUT_SECONDS + ARGUMENT_TIMEOUT_GRACE_SECONDS
     if tool_name in {
         "find_code_definition",
         "find_code_references",
@@ -634,6 +676,10 @@ def operation_timeout_seconds(
         planned_timeout = None
     if tool_name in _FLASH_TOOLS:
         resolved_timeout = FLASH_OPERATION_TIMEOUT_SECONDS
+        # The removed legacy flash_firmware surface retains its old bound.
+        # All three current flash callers budget the same addressed work.
+        if tool_name != "flash_firmware":
+            resolved_timeout = _flash_timeout_seconds(values, raw=tool_name == "flash_raw")
     elif tool_name in _VALIDATION_TOOLS:
         resolved_timeout = VALIDATION_OPERATION_TIMEOUT_SECONDS
     elif tool_name in _RECOVERY_TOOLS:
@@ -701,15 +747,6 @@ def operation_timeout_seconds(
                 )
                 + _vendor_uart_budget()
                 + _hook_budget("uart")
-            )
-    if tool_name == "wait":
-        requested_ms = _positive_finite_number(values.get("ms"))
-        if requested_ms is not None:
-            return include_finalizer(
-                max(
-                    DEFAULT_OPERATION_TIMEOUT_SECONDS,
-                    requested_ms / 1000.0 + ARGUMENT_TIMEOUT_GRACE_SECONDS,
-                )
             )
     return include_finalizer(resolved_timeout)
 

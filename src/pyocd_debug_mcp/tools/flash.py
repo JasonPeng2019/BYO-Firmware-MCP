@@ -8,12 +8,18 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from pyocd_debug_mcp.flash_image import FlashResult
 from pyocd_debug_mcp.kernel.operations import current_operation, wrap_layer2_response
 from pyocd_debug_mcp.services.session_runtime import (
     ActionContext,
     PolicyRefusal,
     SessionRecord,
     ToolOutcome,
+)
+from pyocd_debug_mcp.target_errors import (
+    FlashArtifactChangedError,
+    FlashTargetSupportError,
+    FlashVerificationError,
 )
 
 
@@ -28,8 +34,11 @@ class FlashToolServices:
     maybe_handle_for: Callable[[str], Any | None]
     handle_for: Callable[[str], Any]
     resolve_request: Callable[[Any | None, str, ActionContext], Any]
-    flash_target: Callable[[Any, Path], tuple[Path, str]]
+    # Both receive the approved artifact sha256; the backend programs exactly the
+    # bytes it checked and refuses, before any effect, bytes with another digest.
+    flash_target: Callable[[Any, Path, str], tuple[Path, FlashResult]]
     error_code: Callable[[Exception], str]
+    check_flash_support: Callable[[Any, Path, str], object] | None = None
     validate_flash: Callable[[str, str, Path], None] | None = None
     prepare_symbol_artifact: Callable[[str, str, Path], object] | None = None
     bind_symbol_artifact: Callable[[str, object], None] | None = None
@@ -42,6 +51,13 @@ def build_flash_handlers(
     services: FlashToolServices,
 ) -> dict[str, Callable[..., str]]:
     """Build separate application and bootloader flash handlers."""
+
+    def _artifact_changed(exc: FlashArtifactChangedError, board_id: str) -> PolicyRefusal:
+        return PolicyRefusal(
+            "flash/artifact-changed",
+            str(exc),
+            session_id=services.active_session_id(board_id),
+        )
 
     def execute(
         tool_name: str,
@@ -72,6 +88,20 @@ def build_flash_handlers(
                     tool_name, board_id, request.artifact_path
                 )
             handle = services.handle_for(board_id)
+            artifact_sha256 = request.identity.sha256
+            if services.check_flash_support is not None:
+                # A target without a flash algorithm for every addressed byte is
+                # refused before any ownership commit, reset or programming.
+                try:
+                    services.check_flash_support(handle, request.artifact_path, artifact_sha256)
+                except FlashArtifactChangedError as exc:
+                    raise _artifact_changed(exc, board_id) from exc
+                except FlashTargetSupportError as exc:
+                    raise PolicyRefusal(
+                        "flash/unsupported-target",
+                        str(exc),
+                        session_id=services.active_session_id(board_id),
+                    ) from exc
             if generic_allocation is not None and services.commit_generic_allocation is not None:
                 # Persist the one-way ownership boundary before hardware
                 # mutation. If programming then fails, keeping that narrow
@@ -81,7 +111,17 @@ def build_flash_handlers(
             operation = current_operation()
             if operation is not None:
                 operation.begin_non_interruptible()
-            flashed, target_state = services.flash_target(handle, request.artifact_path)
+            try:
+                flashed, result = services.flash_target(
+                    handle, request.artifact_path, artifact_sha256
+                )
+            except FlashArtifactChangedError as exc:
+                # Refused by the backend before reset or programming.
+                raise _artifact_changed(exc, board_id) from exc
+            if not isinstance(result, FlashResult):
+                raise FlashVerificationError(
+                    "The flash backend returned no readback proof; programming is not verified"
+                )
             if symbol_binding is not None and services.bind_symbol_artifact is not None:
                 services.bind_symbol_artifact(board_id, symbol_binding)
         except PolicyRefusal as refusal:
@@ -123,22 +163,33 @@ def build_flash_handlers(
             outcome_kind=ToolOutcome.SUCCESS,
             error_code=None,
             duration_ms=services.duration_ms(started),
-            details={"target_state": target_state, "safety_map_checked": True},
+            details={
+                "programming": result.programming_summary(),
+                "target_state": result.target_state,
+                "safety_map_checked": True,
+            },
             board_id=board_id,
             session=runtime,
         )
         suffix = (
-            f"target left {target_state}."
-            if target_state != "reset_state_unconfirmed"
+            f"target left {result.target_state}."
+            if result.target_state != "reset_state_unconfirmed"
             else "final reset state is unconfirmed; reconnect and check target state before use."
         )
-        return wrap_layer2_response(f"Flashed {flashed} as {tool_name} within its mapped partition; {suffix}")
+        return wrap_layer2_response(
+            f"Flashed and read back {result.verified_bytes} matching addressed bytes of "
+            f"{flashed} as {tool_name} within its mapped partition; {suffix}"
+        )
 
     def flash_application(
         board_id: str,
         artifact: str,
     ) -> str:
-        """Flash artifact-defined addresses contained by the mapped application partition."""
+        """Flash artifact-defined addresses contained by the mapped application partition.
+
+        Succeeds only after every addressed artifact byte reads back unchanged;
+        the final reset state is reported separately.
+        """
 
         return execute("flash_application", board_id, artifact)
 
@@ -146,7 +197,11 @@ def build_flash_handlers(
         board_id: str,
         artifact: str,
     ) -> str:
-        """Flash artifact-defined bootloader addresses after a permission-carrying fixed plan."""
+        """Flash artifact-defined bootloader addresses after a permission-carrying fixed plan.
+
+        Succeeds only after every addressed artifact byte reads back unchanged;
+        the final reset state is reported separately.
+        """
 
         return execute("flash_bootloader", board_id, artifact)
 

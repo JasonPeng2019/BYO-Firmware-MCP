@@ -7,6 +7,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
+from pyocd_debug_mcp.flash_image import FlashResult
 from pyocd_debug_mcp.services.session_runtime import (
     ActionContext,
     PolicyRefusal,
@@ -61,7 +62,7 @@ class ConvergenceLockoutRemovalTests(unittest.TestCase):
             maybe_handle_for=lambda _board: None,
             handle_for=lambda _board: object(),
             resolve_request=refuse_resolve,
-            flash_target=lambda *_args: (Path("unused"), "running"),
+            flash_target=lambda *_args: (Path("unused"), FlashResult(((0, 1),), "running")),
             error_code=lambda _exc: "flash/backend",
         )
         refusal_handler = build_flash_handlers(refusal_services)["flash_application"]
@@ -78,10 +79,12 @@ class ConvergenceLockoutRemovalTests(unittest.TestCase):
         runtime = self._runtime()
         request = SimpleNamespace(
             artifact_path=Path("same.elf"),
-            identity=SimpleNamespace(as_log_fields=lambda: {"artifact_sha256": "same"}),
+            identity=SimpleNamespace(
+                sha256="same", as_log_fields=lambda: {"artifact_sha256": "same"}
+            ),
         )
 
-        def fail_backend(*_args: object) -> tuple[Path, str]:
+        def fail_backend(*_args: object) -> tuple[Path, FlashResult]:
             nonlocal backend_calls
             backend_calls += 1
             raise RuntimeError("programmer backend failed")

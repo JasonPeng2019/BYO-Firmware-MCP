@@ -6,6 +6,9 @@ from types import SimpleNamespace
 from typing import Any, cast
 from unittest.mock import patch
 
+from pyocd.core.memory_map import FlashRegion, MemoryMap, RamRegion
+from pyocd.core.target import Target
+
 from pyocd_debug_mcp.adapters import swd_pyocd
 from pyocd_debug_mcp.adapters.swd_interface import TargetSessionHandle
 from pyocd_debug_mcp.adapters.swd_pyocd import PyOCDSWDInterface
@@ -72,6 +75,9 @@ class FakeTarget:
         raw_instruction: object = 0xBE00,
         comparator_value: object = 1,
         raw_read_errors: tuple[Exception | None, ...] = (),
+        memory_map: MemoryMap | None = None,
+        hw_supported: bool = True,
+        hw_available: int = 2,
     ) -> None:
         self.accepted = accepted
         self.realized = initially_realized
@@ -91,12 +97,21 @@ class FakeTarget:
         self.raw_read_widths: list[tuple[int, bool]] = []
         self.pending_mutation: str | None = None
         self.calls: list[tuple[str, int | None]] = []
+        self.requested_types: list[Target.BreakpointType] = []
         self.selected_core_or_raise = SimpleNamespace(
             bp_manager=FakeBreakpointManager(self),
             ap=FakeAccessPort(self),
+            memory_map=memory_map if memory_map is not None else MemoryMap(
+                RamRegion(start=0, length=0x10000)
+            ),
+            fpb=SimpleNamespace(
+                can_support_address=lambda _address: hw_supported,
+                available_breakpoints=hw_available,
+            ),
         )
 
-    def set_breakpoint(self, address: int) -> bool:
+    def set_breakpoint(self, address: int, type: Target.BreakpointType) -> bool:
+        self.requested_types.append(type)
         self.calls.append(("set_breakpoint", address))
         if self.accepted:
             self.pending_mutation = "install"
@@ -205,6 +220,84 @@ class BreakpointInstallationTests(unittest.TestCase):
             ],
         )
 
+    def test_writable_flash_requests_hardware_explicitly(self) -> None:
+        target = FakeTarget(
+            memory_map=MemoryMap(FlashRegion(start=0x1000, length=0x1000, blocksize=0x100, access="rwx")),
+            realized_after_flush=hardware_breakpoint(),
+        )
+        PyOCDSWDInterface().set_breakpoint(handle_for(target), 0x1235)
+        self.assertEqual(target.requested_types, [Target.BreakpointType.HW])
+
+    def test_unknown_geometry_requests_hardware_explicitly(self) -> None:
+        target = FakeTarget(realized_after_flush=hardware_breakpoint())
+        target.selected_core_or_raise.memory_map = None
+        PyOCDSWDInterface().set_breakpoint(handle_for(target), 0x1234)
+        self.assertEqual(target.requested_types, [Target.BreakpointType.HW])
+
+    def test_flash_without_hardware_capacity_or_address_support_is_not_queued(self) -> None:
+        for supported, available in ((True, 0), (False, 2)):
+            with self.subTest(supported=supported, available=available):
+                target = FakeTarget(
+                    memory_map=MemoryMap(FlashRegion(start=0x1000, length=0x1000, blocksize=0x100, access="rwx")),
+                    hw_supported=supported,
+                    hw_available=available,
+                )
+                with self.assertRaisesRegex(TargetControlError, "Hardware breakpoint.*No code-memory write"):
+                    PyOCDSWDInterface().set_breakpoint(handle_for(target), 0x1234)
+                self.assertEqual(target.calls, [("find_breakpoint", 0x1234)])
+                self.assertEqual(target.requested_types, [])
+
+    def test_missing_fpb_does_not_allow_writable_flash_software_fallback(self) -> None:
+        target = FakeTarget(
+            memory_map=MemoryMap(FlashRegion(start=0x1000, length=0x1000, blocksize=0x100, access="rwx")),
+        )
+        target.selected_core_or_raise.fpb = None
+        with self.assertRaisesRegex(TargetControlError, "Hardware breakpoints are unavailable"):
+            PyOCDSWDInterface().set_breakpoint(handle_for(target), 0x1234)
+        self.assertEqual(target.requested_types, [])
+
+    def test_writable_ram_retains_auto_without_hardware_support(self) -> None:
+        target = FakeTarget(
+            realized_after_flush=software_breakpoint(), hw_supported=False, hw_available=0,
+        )
+        PyOCDSWDInterface().set_breakpoint(handle_for(target), 0x1234)
+        self.assertEqual(target.requested_types, [Target.BreakpointType.AUTO])
+        self.assertEqual(target.raw_read_widths, [(16, True)])
+
+    def test_foreign_queued_auto_flash_request_is_neither_flushed_nor_removed(self) -> None:
+        existing = SimpleNamespace(enabled=False, type=Target.BreakpointType.AUTO)
+        target = FakeTarget(
+            initially_realized=existing,
+            memory_map=MemoryMap(FlashRegion(start=0x1000, length=0x1000, blocksize=0x100, access="rwx")),
+        )
+        with self.assertRaisesRegex(TargetStateError, "not explicitly hardware.*does not own"):
+            PyOCDSWDInterface().set_breakpoint(handle_for(target), 0x1234)
+        self.assertIs(target.realized, existing)
+        self.assertEqual(target.calls, [("find_breakpoint", 0x1234)])
+
+    def test_foreign_queued_hw_flash_request_outside_fpb_range_is_not_flushed(self) -> None:
+        existing = SimpleNamespace(enabled=False, type=Target.BreakpointType.HW)
+        target = FakeTarget(
+            initially_realized=existing,
+            memory_map=MemoryMap(FlashRegion(
+                start=0x1000, length=0x1000, blocksize=0x100, access="rwx"
+            )),
+            hw_supported=False,
+        )
+        with self.assertRaisesRegex(TargetControlError, "Hardware breakpoints are unavailable"):
+            PyOCDSWDInterface().set_breakpoint(handle_for(target), 0x1234)
+        self.assertIs(target.realized, existing)
+        self.assertEqual(target.calls, [("find_breakpoint", 0x1234)])
+
+    def test_flash_flush_failure_retains_comparator_uncertainty_without_reflash(self) -> None:
+        target = FakeTarget(
+            memory_map=MemoryMap(FlashRegion(start=0x1000, length=0x1000, blocksize=0x100, access="rwx")),
+            manager_flush_errors=(RuntimeError("provider failed"), None),
+        )
+        with self.assertRaisesRegex(TargetStateError, "uncertain.*physical.*power-cycle") as caught:
+            PyOCDSWDInterface().set_breakpoint(handle_for(target), 0x1234)
+        self.assertNotIn("reflash", str(caught.exception))
+
     def test_preexisting_breakpoint_is_idempotent_and_never_owned(self) -> None:
         existing = hardware_breakpoint()
         target = FakeTarget(initially_realized=existing)
@@ -215,7 +308,7 @@ class BreakpointInstallationTests(unittest.TestCase):
         self.assertEqual(target.calls, [("find_breakpoint", 0x5678)])
 
     def test_preexisting_unrealized_request_is_flushed_but_never_owned(self) -> None:
-        queued = SimpleNamespace(enabled=False)
+        queued = SimpleNamespace(enabled=False, type=Target.BreakpointType.HW)
         realized = hardware_breakpoint()
         target = FakeTarget(initially_realized=queued, realized_after_flush=realized)
         target.pending_mutation = "install"
@@ -299,7 +392,7 @@ class BreakpointInstallationTests(unittest.TestCase):
         self.assertIn(("ap.read_memory", 0x1234), target.calls)
         self.assertEqual(target.raw_read_widths, [(16, True)])
 
-    def test_software_install_raw_mismatch_requires_recovery_even_after_rollback(self) -> None:
+    def test_software_install_raw_mismatch_reports_verified_rollback(self) -> None:
         target = FakeTarget(
             realized_after_flush=software_breakpoint(),
             raw_instruction=0x1234,
@@ -307,11 +400,13 @@ class BreakpointInstallationTests(unittest.TestCase):
 
         with self.assertRaisesRegex(
             TargetStateError,
-            "could not be proven in physical code memory.*reflash",
-        ):
+            "could not be proven in physical code memory.*Rollback verified.*does not require reflashing",
+        ) as caught:
             PyOCDSWDInterface().set_breakpoint(handle_for(target), 0x1234)
 
         self.assertEqual(target.calls.count(("ap.read_memory", 0x1234)), 2)
+        self.assertNotIn("Disconnect", str(caught.exception))
+        self.assertEqual(target.raw_instruction, 0x1234)
 
     def test_target_flush_failure_with_silent_sw_restore_failure_is_uncertain(self) -> None:
         primary = RuntimeError("target transfer flush failed")
@@ -335,7 +430,7 @@ class BreakpointInstallationTests(unittest.TestCase):
 
         with self.assertRaisesRegex(
             TargetStateError,
-            "did not return a realized breakpoint.*suppressed software-provider.*reflash",
+            "uncertain.*did not return a realized breakpoint.*no realized provider object.*reflash",
         ):
             PyOCDSWDInterface().set_breakpoint(handle_for(target), 0x9ABC)
 

@@ -280,7 +280,12 @@ def build_memory_handlers(
         width: int = 32,
         elf_artifact: str | None = None,
     ) -> str:
-        """Read a mapped symbol; pass its project ELF after restart or before same-run flash."""
+        """Read a mapped scalar after FULL setup and live validation; no plan is needed.
+
+        Pass elf_artifact with the current project ELF/AXF after restart or before
+        same-run flash. Width is 8, 16, or 32 bits and must fit the data object.
+        Missing symbols, changed artifacts, and unmapped ranges are refused.
+        """
 
         started = time.monotonic()
         runtime = services.runtime_for(board_id)
