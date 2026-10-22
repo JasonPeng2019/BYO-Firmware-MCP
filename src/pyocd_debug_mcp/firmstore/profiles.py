@@ -5,7 +5,6 @@ from __future__ import annotations
 import copy
 import re
 import threading
-import unicodedata
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -154,14 +153,20 @@ def _validate_absolute_timestamp(value: object, field_name: str) -> str:
 
 
 def _require_board_id(value: object) -> str:
+    from pyocd_debug_mcp.identities import is_reserved_board_id
+
     board_id = str(value).strip()
     if not re.fullmatch(r"[a-z0-9_]{1,64}", board_id):
         raise ProfileError("board_id must be 1-64 lowercase letters, numbers, or underscores")
+    if is_reserved_board_id(board_id):
+        raise ProfileError("board_id is a reserved device name; append _board")
     return board_id
 
 
 def _display_identity(display_name: str) -> str:
-    return unicodedata.normalize("NFC", display_name).casefold()
+    from pyocd_debug_mcp.identities import display_name_identity
+
+    return display_name_identity(display_name)
 
 
 def _make_profile_board(raw: dict[str, object], source_path: Path | None) -> BoardConfig:

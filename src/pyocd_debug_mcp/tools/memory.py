@@ -14,6 +14,7 @@ from elftools.common.exceptions import ELFError
 from pyocd_debug_mcp.kernel.operations import wrap_layer2_response
 from pyocd_debug_mcp.services.session_runtime import PolicyRefusal, SessionRecord, ToolOutcome
 from pyocd_debug_mcp.services.symbols import ResolvedSymbol, is_elf_artifact
+from pyocd_debug_mcp.project_paths import resolve_project_path
 from pyocd_debug_mcp.target_errors import ReferenceArtifactError, SymbolLookupError
 
 
@@ -127,9 +128,9 @@ def _select_symbol_artifact(
         else:
             if not elf_artifact.strip():
                 raise ValueError("elf_artifact must be a non-empty path when supplied")
-            path = Path(elf_artifact).expanduser().resolve(strict=True)
+            path = resolve_project_path(elf_artifact, strict=True)
             explicit = True
-        path = path.expanduser().resolve(strict=True)
+        path = resolve_project_path(path, strict=True)
         if not path.is_file():
             raise ValueError(f"The selected symbol artifact is not a regular file: {path}")
         if not is_elf_artifact(path):

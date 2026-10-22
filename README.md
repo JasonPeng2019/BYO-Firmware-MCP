@@ -54,6 +54,19 @@ If the client does not start the server from the firmware project, set
 `BYO_MCP_ARTIFACT_ROOT` to that project's absolute path. Do not point it at this
 repository.
 
+Relative artifact, symbol, datasheet and researched-pack inputs to server tools
+resolve against the selected firmware project, including managed installations.
+Absolute paths remain absolute. Artifact collection writes to the project and
+refuses destinations inside the managed runtime. The standalone artifact CLI
+continues to resolve relative paths from its working directory.
+
+Debug sessions use server-owned pyOCD configuration: project `pyocd.yaml`,
+`pyocd_user.py` and `PYOCD_PROJECT_DIR` do not implicitly configure or execute
+code in BYO sessions. Select board connection settings and verified packs through
+the documented setup flow. Connections also disable pyOCD's automatic unlock:
+connecting never grants permission to mass erase or persist protection changes.
+Destructive recovery continues to require its separate one-time authorization.
+
 To isolate passive monitor records for one launch, set
 `BYO_MCP_MONITOR_ROOT` to an absolute directory before starting the server:
 

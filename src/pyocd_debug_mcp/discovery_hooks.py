@@ -41,6 +41,7 @@ from pyocd_debug_mcp.kernel.processes import (
 from pyocd_debug_mcp.timeouts import (
     MAX_HOOK_TIMEOUT_SECONDS as _MAX_HOOK_TIMEOUT_SECONDS,
 )
+from pyocd_debug_mcp.runtime_commands import is_compiled, sidecar_command
 
 HOOK_SCHEMA_VERSION = 1
 SUPPORTED_RUNNERS = frozenset({"server-python", "executable"})
@@ -160,8 +161,8 @@ class DiscoveryHookSpec:
 
     def command(self) -> tuple[str, ...]:
         if self.runner == "server-python":
-            # Matches how configured_probe_cli_commands routes pyOCD through
-            # sys.executable, so a hook runs inside the same locked environment.
+            if is_compiled():
+                return (*sidecar_command("run-hook"), str(self.entrypoint), *self.argv)
             return (sys.executable, str(self.entrypoint), *self.argv)
         return (str(self.entrypoint), *self.argv)
 

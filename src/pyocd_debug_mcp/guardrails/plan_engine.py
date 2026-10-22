@@ -24,6 +24,7 @@ from pyocd_debug_mcp.guardrails.plan_defs import (
     definition_for_plan_tool,
 )
 from pyocd_debug_mcp.kernel.run_state import ServerRun
+from pyocd_debug_mcp.project_paths import resolve_project_path
 from pyocd_debug_mcp.services.session_runtime import PolicyRefusal
 
 _BOARD_ID = re.compile(r"[a-z0-9_]{1,64}")
@@ -965,9 +966,8 @@ class PlanEngine:
                 f"{field_name} must name a non-empty local artifact path.",
                 session_id=session_id,
             )
-        candidate = Path(supplied).expanduser()
         try:
-            resolved = candidate.resolve(strict=True)
+            resolved = resolve_project_path(supplied, strict=True)
         except (OSError, RuntimeError) as exc:
             raise _refuse(
                 "plan/artifact-unreadable",

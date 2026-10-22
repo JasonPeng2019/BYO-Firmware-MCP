@@ -6,6 +6,7 @@ import unittest
 
 from pyocd_debug_mcp.safety.map_build import (
     GenericSafetyMapDocument,
+    GenericSourceDigests,
     require_reconciled_authority,
 )
 from pyocd_debug_mcp.setup_flow.device_support import resolve_builtin_target_support
@@ -41,7 +42,12 @@ class BuiltInTargetMapReplay(unittest.TestCase):
                 "device_support": "d" * 64,
                 "datasheet_evidence": "e" * 64,
                 "deployment_policy": "f" * 64,
-                "map_generator_schema": "0" * 64,
+                "map_generator_schema": GenericSourceDigests.build(
+                    profile={},
+                    device_support={},
+                    datasheet_evidence={},
+                    deployment_policy={},
+                ).map_generator_schema,
             },
             "geometry": {
                 "physical_flash": [{"start": 0, "end": 4096}],

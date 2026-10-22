@@ -99,8 +99,11 @@ def _normalize_sources(
 
 
 def _validate_destination(destination: Path, sources: Mapping[ArtifactRole, Path]) -> Path:
+    from pyocd_debug_mcp.project_paths import refuse_runtime_destination
+
     requested = destination.expanduser()
     resolved = requested.resolve()
+    refuse_runtime_destination(resolved)
     if resolved == Path(resolved.anchor).resolve() or resolved == Path.home().resolve():
         raise ValueError("Output directory must not be a filesystem root or the user's home.")
     if any(part.casefold() == FIRMSTORE_DIRNAME for part in resolved.parts):

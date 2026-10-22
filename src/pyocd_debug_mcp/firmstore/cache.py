@@ -4,12 +4,12 @@ from __future__ import annotations
 
 import json
 import re
-import threading
 from dataclasses import asdict, dataclass, replace
 from datetime import datetime, timezone
 from typing import Any, Literal
 
 from pyocd_debug_mcp.firmstore.store import FirmStore, ensure_no_persisted_authority
+from pyocd_debug_mcp.kernel.file_transactions import file_transaction
 
 CACHE_SCHEMA_VERSION = 1
 
@@ -189,7 +189,6 @@ class AttachmentCache:
     def __init__(self, store: FirmStore) -> None:
         self.store = store
         self.path = store.layout.cache_artifact("attachments.json")
-        self._lock = threading.RLock()
 
     def load_records(self) -> list[AttachmentRecord]:
         if not self.path.exists():
@@ -254,7 +253,7 @@ class AttachmentCache:
             confirmed=True,
             confirmed_at=timestamp,
         )
-        with self._lock:
+        with file_transaction(self.path):
             records = self.load_records()
             matching = [
                 record
@@ -289,7 +288,7 @@ class AttachmentCache:
         identity, probe_key, uart_key = self._validated_identity(board_id, probe, uart)
         timestamp = _absolute_timestamp(revoked_at or _timestamp(), "revoked_at")
         changed = False
-        with self._lock:
+        with file_transaction(self.path):
             records = self.load_records()
             updated: list[AttachmentRecord] = []
             for record in records:

@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Iterable
 
 from pyocd_debug_mcp.probe_families import probe_family_hints, probe_family_label
+from pyocd_debug_mcp.identities import is_reserved_board_id
 
 BOARD_CONFIG_SUFFIXES = frozenset({".json", ".yaml", ".yml"})  # PROJECT-DEFINED (supported formats)
 
@@ -173,6 +174,8 @@ def make_board_config(raw: dict[str, object], source_path: Path | None) -> Board
     board_id = str(raw["board_id"]).strip()
     if not re.fullmatch(r"[a-z0-9_]{1,64}", board_id):
         raise ConfigError("board_id must be 1-64 lowercase letters, numbers, or underscores")
+    if is_reserved_board_id(board_id):
+        raise ConfigError("board_id is a reserved device name; append _board")
 
     display_name = str(raw["display_name"]).strip()
     if not display_name:

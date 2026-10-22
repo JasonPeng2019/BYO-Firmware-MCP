@@ -94,6 +94,7 @@ class SidecarRuntimeTests(unittest.TestCase):
 
             self.assertEqual(exit_code, 0)
             self.assertEqual(json.loads(output.getvalue())["status"], "passed")
+            self.assertTrue(json.loads(output.getvalue())["probe_discovery_verified"])
 
     def test_compiled_worker_uses_the_sidecar_with_explicit_runtime_context(self) -> None:
         project = Path(tempfile.mkdtemp()).resolve()

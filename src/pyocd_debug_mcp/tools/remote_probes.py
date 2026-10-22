@@ -108,7 +108,7 @@ def build_remote_probe_handlers(
         # write lock across it would serialize two unrelated registrations behind
         # each other's network timeout. `register_entry` does its own fresh load
         # under the lock, so this ordering cannot lose a concurrent write -- see
-        # `remote_probes._registry_lock`.
+        # `remote_probes.register_entry` and its file transaction lock.
         reachable = services.check_endpoint(normalized_host, normalized_port)
         remote_probes.register_entry(
             registry_path, normalized_host, normalized_port, description or ""

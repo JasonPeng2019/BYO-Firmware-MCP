@@ -2,11 +2,18 @@
 
 from __future__ import annotations
 
+import os
+
 from pyocd_debug_mcp.adapters.uart_interface import UARTInterface, UARTPortHandle
 
 
 class PySerialUARTInterface(UARTInterface):
-    """Low-level UART adapter using pyserial."""
+    """Low-level UART adapter using pyserial.
+
+    Native POSIX opens request pyserial's advisory exclusive flock. Other
+    programs must cooperate for it to exclude them; it is not a hardware lease.
+    Windows COM opens retain the backend's native exclusive-open behavior.
+    """
 
     def open(self, device: str, *, baudrate: int, timeout_seconds: float) -> UARTPortHandle:
         try:
@@ -14,11 +21,15 @@ class PySerialUARTInterface(UARTInterface):
         except ImportError as exc:
             raise RuntimeError("pyserial is not installed") from exc
 
+        options = {}
+        if os.name == "posix" and serial.Serial.__module__ == "serial.serialposix":
+            options["exclusive"] = True
         serial_handle = serial.Serial(
             device,
             baudrate=baudrate,
             timeout=timeout_seconds,
             write_timeout=timeout_seconds,
+            **options,
         )
         return UARTPortHandle(
             handle=serial_handle,

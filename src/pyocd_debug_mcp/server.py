@@ -24,7 +24,7 @@ import subprocess
 import threading
 import time
 import unicodedata
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, contextmanager
 from collections.abc import Callable, Mapping
 from dataclasses import asdict, replace
 from pathlib import Path
@@ -64,6 +64,8 @@ from pyocd_debug_mcp.firmstore.cache import (
     SerialEndpoint,
 )
 from pyocd_debug_mcp.firmstore.profiles import BoardProfile, ProfileError, ProfileRepository
+from pyocd_debug_mcp.identities import display_name_identity, is_reserved_board_id
+from pyocd_debug_mcp.project_paths import resolve_project_path
 from pyocd_debug_mcp.firmstore.reports import ReportWriter
 from pyocd_debug_mcp.firmstore.store import FirmStore
 from pyocd_debug_mcp.local_env import load_local_env
@@ -156,8 +158,10 @@ from pyocd_debug_mcp.capabilities.lite import (
     normalize_lite_confirmation,
 )
 from pyocd_debug_mcp.capabilities.policy import (
+    CapabilityPolicyConflict,
     CapabilityPolicyError,
     CapabilityPolicyRepository,
+    CapabilityState,
     Tier,
 )
 from pyocd_debug_mcp.capabilities.matrix import route_names
@@ -235,7 +239,6 @@ from pyocd_debug_mcp.setup_flow.setup import (
     SetupWorkflowError,
 )
 from pyocd_debug_mcp.setup_flow.targets import (
-    ProfileCommitCoordinator,
     TargetResolutionError,
     TargetResolver,
 )
@@ -774,8 +777,10 @@ def _active_snapshot_aggregate(board_id: str) -> str:
         ) from exc
 
 
-def _active_full_document(board_id: str) -> SafetyMapDocument | GenericSafetyMapDocument:
-    state = _tier_router.state_for(board_id)
+def _active_full_document(
+    board_id: str, *, state: CapabilityState | None = None
+) -> SafetyMapDocument | GenericSafetyMapDocument:
+    state = state or _tier_router.state_for(board_id)
     if state.tier is not Tier.SETUP_FULL or not isinstance(state.map_snapshot, Mapping):
         raise SafetyPolicyError(
             "safety/map-refresh-required",
@@ -798,8 +803,10 @@ def _active_full_document(board_id: str) -> SafetyMapDocument | GenericSafetyMap
         ) from exc
 
 
-def _active_policy_profile(board_id: str) -> BoardProfile:
-    state = _tier_router.state_for(board_id)
+def _active_policy_profile(
+    board_id: str, *, state: CapabilityState | None = None
+) -> BoardProfile:
+    state = state or _tier_router.state_for(board_id)
     if state.tier is not Tier.SETUP_FULL or state.profile_snapshot is None:
         raise ProfileError("the active policy has no full immutable profile snapshot")
     return _profile_repository.from_snapshot(board_id, state.profile_snapshot)
@@ -1182,7 +1189,7 @@ def _enforce_action_containment(
                 if supplied_elf is None:
                     elf_path = _symbol_artifact_for_handle(_handle(board_id))
                 elif isinstance(supplied_elf, str) and supplied_elf.strip():
-                    elf_path = Path(supplied_elf).expanduser().resolve(strict=True)
+                    elf_path = resolve_project_path(supplied_elf, strict=True)
                 else:
                     raise ValueError("elf_artifact must be NULL or a non-empty local ELF path")
                 resolved = resolve_symbol(elf_path, target)
@@ -1204,7 +1211,7 @@ def _enforce_action_containment(
             _check_memory_safety(board_id, address, width)
         elif tool_name == "set_breakpoint":
             target = parameters["symbol_or_address"]
-            elf_path = Path(cast(str, parameters["elf_artifact"])).expanduser().resolve()
+            elf_path = resolve_project_path(cast(str, parameters["elf_artifact"]))
             try:
                 address = _parse_action_integer(target, "symbol_or_address")
             except (TypeError, ValueError):
@@ -2475,14 +2482,18 @@ def downgrade(board_id: str, permission: str) -> str:
     """Consume one manual downgrade token and atomically return the board to no-setup."""
 
     try:
-        with connection_manager.lock_for(board_id):
+        with connection_manager.lock_for(board_id), _capability_policies.lock_for(board_id):
             state = _tier_router.state_for(board_id)
             if state.tier is Tier.NO_SETUP or state.policy_digest is None:
                 raise TierRouteRefusal(
                     "tier/wrong-route", "This board is already no-setup; no downgrade is available."
                 )
             _manual_permissions.consume_downgrade(board_id, permission, state.policy_digest)
-            committed = _capability_policies.downgrade_to_no_setup(board_id)
+            # Keep digest-bound consumption and publication in one policy
+            # transaction. Neither step performs hardware/network work.
+            committed = _capability_policies.downgrade_to_no_setup(
+                board_id, expected_state=state
+            )
             gate_manager.clear(board_id, "manual downgrade committed")
             plan_engine.invalidate_board(board_id, "manual downgrade committed")
             _unlock_coordinator.invalidate_board(board_id)
@@ -2611,6 +2622,28 @@ def _resolve_serial_port_for_session(
     return resolution.port
 
 
+def _saved_uart_unavailable(
+    board_id: str,
+    identity: str,
+    snapshot: InventorySnapshot,
+    reason: str,
+) -> RuntimeError:
+    visible = ", ".join(
+        f"{row.port_path} ({row.description})" for row in snapshot.uarts
+    ) or "none"
+    return RuntimeError(
+        f"uart/saved-adapter-unavailable: Board {board_id}'s saved serial adapter "
+        f"({identity}) is unavailable: {reason}. Ports visible now: {visible}. "
+        "If unplugged, reconnect it and retry; a stable USB identity is found even "
+        "when its port path changes. To use a different listed port, submit a new "
+        "read_serial-plan, write_serial-plan, or serial_exchange-plan for the intended "
+        "operation with port set explicitly, then call the paired action with the same "
+        "port. Ask the user which adapter to use when more than one port is listed. "
+        "To change the saved adapter permanently or restore a revoked selection, "
+        "rerun board_setup."
+    )
+
+
 def _resolve_recorded_uart(
     board_id: str,
     probe: ProbeIdentity,
@@ -2618,9 +2651,8 @@ def _resolve_recorded_uart(
 ) -> SerialPortInfo | None:
     """Re-derive this board's recorded endpoint against a fresh snapshot.
 
-    Returns None to mean "nothing recorded; fall through to scoring". Raises only when a
-    recorded selection has become genuinely ambiguous, which is a routing decision the
-    caller must not paper over by picking one.
+    Returns None only for a genuinely unrecorded board. Missing, revoked, or
+    ambiguous saved selections must never become permission to score another port.
     """
 
     if not board_id:
@@ -2633,23 +2665,38 @@ def _resolve_recorded_uart(
         for row in snapshot.uarts
         if row.identity_scope == "stable"
     ]
-    if endpoints and probe.is_stable:
+    records = [record for record in _attachment_cache.load_records() if record.board_id == board_id]
+    if probe.is_stable:
         cached = _attachment_cache.resolve(board_id, probe, endpoints)
         if cached.reused and cached.port_path:
             row = rows_by_path.get(normalize_port_name(cached.port_path))
             if row is not None:
                 return _uart_row_as_port(row)
-        elif cached.reason == "multiple_matches":
-            # Already modelled by CacheResolution; reuse the reason rather than guessing.
-            raise RuntimeError(
-                "uart/multiple-matches: more than one serial endpoint satisfies this "
-                "board's confirmed attachment; rerun setup_overview to reselect it"
+        if cached.reason != "no_record":
+            identity = ", ".join(sorted({record.uart_usb_serial for record in records}))
+            raise _saved_uart_unavailable(
+                board_id, identity or "recorded USB identity", snapshot, cached.reason
             )
+    elif records:
+        raise _saved_uart_unavailable(
+            board_id,
+            ", ".join(sorted({record.uart_usb_serial for record in records})),
+            snapshot,
+            "the current probe has no stable identity to match the saved attachment",
+        )
     # Session-local endpoints must never reach AttachmentCache -- `_validated_identity`
     # raises for them, and that refusal is the boundary. They use the run-scoped map.
+    selection = _session_uart_selections.recorded(board_id)
     session_row = _session_uart_selections.resolve(board_id, snapshot)
     if session_row is not None:
         return _uart_row_as_port(session_row)
+    if selection is not None:
+        raise _saved_uart_unavailable(
+            board_id,
+            f"{selection.port_path}: {selection.description}",
+            snapshot,
+            "the session-selected endpoint disappeared or became ambiguous",
+        )
     return None
 
 
@@ -2914,7 +2961,7 @@ def read_symbol_u32(board_id: str, elf_path: str, symbol_name: str) -> str:
                 raise RuntimeError(
                     f"Resolved symbol '{symbol_name}' did not produce a 32-bit value."
                 )
-            resolved_path = Path(elf_path).expanduser().resolve()
+            resolved_path = resolve_project_path(elf_path)
             return (
                 f"Symbol {resolved.name} from {resolved_path} "
                 f"@0x{resolved.address:08X} size={resolved.size} type={resolved.type} "
@@ -3407,7 +3454,7 @@ def _commit_generic_allocation(board_id: str, pending: object) -> None:
     if not isinstance(pending, _PendingGenericAllocation):
         raise TypeError("invalid generic deployment allocation")
     state = _capability_policies.resolve(board_id)
-    active = _active_full_document(board_id)
+    active = _active_full_document(board_id, state=state)
     if (
         state.tier is not Tier.SETUP_FULL
         or state.profile_snapshot is None
@@ -3453,24 +3500,31 @@ def _commit_generic_allocation(board_id: str, pending: object) -> None:
     # publish the one-way allocation there before updating its compatibility
     # projection or touching hardware. A projection-first failure would leave
     # later recovery validating against the old active snapshot.
-    _capability_policies.commit(
-        board_id,
-        Tier.SETUP_FULL,
-        setup_incomplete=state.setup_incomplete,
-        profile_snapshot=state.profile_snapshot,
-        map_snapshot=selected.to_document(),
-        evidence=state.evidence,
-        retained_generations=state.retained_generations,
-    )
-    if projection_commit_required:
-        _safety_repository.commit_if_current(
-            board_id, pending.expected_map_digest, pending.document
-        )
-    connection = connection_manager.maybe_connection(board_id)
-    if connection is not None:
-        gate_manager.refresh_map_stamp(
-            board_id, connection.connection_id, selected.canonical_digest
-        )
+    try:
+        with _capability_policies.lock_for(board_id):
+            _capability_policies.commit(
+                board_id,
+                Tier.SETUP_FULL,
+                setup_incomplete=state.setup_incomplete,
+                profile_snapshot=state.profile_snapshot,
+                map_snapshot=selected.to_document(),
+                evidence=state.evidence,
+                retained_generations=state.retained_generations,
+                expected_state=state,
+            )
+            if projection_commit_required:
+                _safety_repository.commit_if_current(
+                    board_id, pending.expected_map_digest, pending.document
+                )
+            connection = connection_manager.maybe_connection(board_id)
+            if connection is not None:
+                gate_manager.refresh_map_stamp(
+                    board_id, connection.connection_id, selected.canonical_digest
+                )
+    except CapabilityPolicyConflict as exc:
+        raise SafetyPolicyError(
+            "safety/allocation-proof-stale", str(exc), remedy=("replace_flash_plan",)
+        ) from exc
 
 
 def _clear_generic_allocation(board_id: str) -> None:
@@ -4410,7 +4464,9 @@ def _derive_generic_safety_map(
             SafetyRegion(
                 f"pack SVD peripheral: {item.name}",
                 (
-                    RegionKind.PERIPHERAL
+                    RegionKind.PROHIBITED
+                    if item.prohibited
+                    else RegionKind.PERIPHERAL
                     if item.readable and item.writable
                     else RegionKind.PERIPHERAL_READ_ONLY
                     if item.readable
@@ -4420,7 +4476,17 @@ def _derive_generic_safety_map(
                 provenance,
             )
             for item in geometry.peripheral_regions
-            if item.readable or item.writable
+            if item.readable or item.writable or item.prohibited
+        ),
+        *(
+            SafetyRegion(
+                f"pack SVD write-only access: {item.name}",
+                RegionKind.PERIPHERAL_WRITE_ONLY,
+                AddressRange(item.start, item.end),
+                provenance,
+            )
+            for item in geometry.peripheral_regions
+            if item.prohibited and item.writable and not item.readable
         ),
         *(
             SafetyRegion(
@@ -4567,8 +4633,8 @@ def _run_board_safety_refresh(board_id: str) -> Mapping[str, object]:
         ).to_payload()
     request = SafetyRefreshRequest(board_id, _safety_continuation("safety-refresh"))
     try:
-        profile = _active_policy_profile(board_id)
-        previous = _active_full_document(board_id)
+        profile = _active_policy_profile(board_id, state=tier_state)
+        previous = _active_full_document(board_id, state=tier_state)
         candidate = _derive_safety_map(
             board_id,
             profile=profile,
@@ -4576,21 +4642,24 @@ def _run_board_safety_refresh(board_id: str) -> Mapping[str, object]:
         )
         if candidate.board_id != board_id:
             raise SafetyMapError("derived memory map belongs to a different board")
-        _capability_policies.commit(
-            board_id,
-            Tier.SETUP_FULL,
-            profile_snapshot=profile.to_document(),
-            map_snapshot=candidate.to_document(),
-            evidence=tier_state.evidence,
-            retained_generations=tier_state.retained_generations,
-        )
-        # This compatibility projection is deliberately after the policy
-        # pointer. A crash/failure can never make it the authority for a
-        # protected route; rerunning refresh repairs only this projection.
-        _safety_repository.commit(board_id, candidate)
-        identity_changed = previous.identity != candidate.identity
-        _restamp_after_refresh(board_id, candidate.canonical_digest, identity_changed)
-    except (ProfileError, SafetyMapError, SafetyPolicyError, ValueError, OSError) as exc:
+        # Derivation stays outside the disk lock. Conditional publication and
+        # its compatibility projection/stamp share one short transaction, so
+        # stale work cannot resurrect a completed downgrade or restamp it.
+        with _capability_policies.lock_for(board_id):
+            _capability_policies.commit(
+                board_id,
+                Tier.SETUP_FULL,
+                profile_snapshot=profile.to_document(),
+                map_snapshot=candidate.to_document(),
+                evidence=tier_state.evidence,
+                expected_state=tier_state,
+            )
+            _safety_repository.commit(board_id, candidate)
+            identity_changed = previous.identity != candidate.identity
+            _restamp_after_refresh(board_id, candidate.canonical_digest, identity_changed)
+    except (
+        CapabilityPolicyError, ProfileError, SafetyMapError, SafetyPolicyError, ValueError, OSError
+    ) as exc:
         return _safety_refresher.blocked(request, str(exc)).to_payload()
     connection = connection_manager.maybe_connection(board_id)
     stamp = gate_manager.snapshot(board_id)
@@ -4961,10 +5030,44 @@ _setup_builtin_candidates: dict[str, BuiltInTargetSupportCandidate] = {}
 _setup_selections_by_board: dict[str, PreflightSelections] = {}
 _setup_lite_confirmations: dict[str, LiteConfirmation] = {}
 _setup_tiers: dict[str, Tier] = {}
+_setup_policy_bases: dict[tuple[str, str], CapabilityState] = {}
 _setup_pack_pipelines: dict[
     tuple[str, str, tuple[str | None, str, int | None] | None],
     tuple[PackCandidatePipeline, list[tuple[str | None, str, int | None]]],
 ] = {}
+
+
+def _setup_policy_base(context: SetupPhaseContext) -> CapabilityState:
+    """Pin one setup continuation to the policy that preceded its live work."""
+    key = (context.user_input.board_id, context.continuation_id)
+    if key not in _setup_policy_bases:
+        _setup_policy_bases[key] = _capability_policies.resolve(context.user_input.board_id)
+    return _setup_policy_bases[key]
+
+
+@contextmanager
+def _setup_policy_transaction(context: SetupPhaseContext):
+    expected = _setup_policy_base(context)
+    with _capability_policies.lock_for(context.user_input.board_id):
+        _capability_policies.require_current(context.user_input.board_id, expected)
+        yield
+
+
+def _commit_setup_core(
+    context: SetupPhaseContext,
+    fields: Mapping[str, object],
+    connect: Callable[[str, str | None], None],
+) -> BoardProfile:
+    staged = _profile_repository.stage_core(fields)
+    try:
+        connect(staged.profile.board.pyocd_target, None)
+    except Exception as exc:
+        raise TargetResolutionError(
+            "target/live-connect-failed", f"Live target connection failed before profile commit: {exc}"
+        ) from exc
+    cancellation_checkpoint()
+    with _setup_policy_transaction(context):
+        return _profile_repository.commit_core(staged)
 
 
 class _ResolvedGenericSetupSupport:
@@ -5219,6 +5322,7 @@ def _setup_lite_connection_phase(context: SetupPhaseContext) -> SetupPhaseOutcom
     datasheet bytes before a compatibility profile is staged.
     """
 
+    _setup_policy_base(context)
     user_input = context.user_input
     target = context.preflight.selected_target
     probe = context.preflight.selected_probe
@@ -5275,9 +5379,8 @@ def _setup_lite_connection_phase(context: SetupPhaseContext) -> SetupPhaseOutcom
         existing = None
     try:
         if existing is None:
-            committed = ProfileCommitCoordinator(
-                _profile_repository, live_connect=connect, before_commit=cancellation_checkpoint
-            ).commit_core(
+            committed = _commit_setup_core(
+                context,
                 {
                     "board_id": user_input.board_id,
                     "display_name": user_input.display_name,
@@ -5290,7 +5393,8 @@ def _setup_lite_connection_phase(context: SetupPhaseContext) -> SetupPhaseOutcom
                         if user_input.requires_uart
                         else {}
                     ),
-                }
+                },
+                connect,
             )
         else:
             if (
@@ -5305,15 +5409,16 @@ def _setup_lite_connection_phase(context: SetupPhaseContext) -> SetupPhaseOutcom
             connect(target, None)
             committed = existing
         cancellation_checkpoint()
-        committed = _profile_repository.commit_optional(
-            _profile_repository.stage_optional(
-                user_input.board_id,
-                {
-                    "datasheet_sha256": evidence.sha256,
-                    "datasheet_ref": evidence.reference,
-                },
+        with _setup_policy_transaction(context):
+            committed = _profile_repository.commit_optional(
+                _profile_repository.stage_optional(
+                    user_input.board_id,
+                    {
+                        "datasheet_sha256": evidence.sha256,
+                        "datasheet_ref": evidence.reference,
+                    },
+                )
             )
-        )
     except Exception as exc:  # setup must not activate staged facts before policy commit
         return SetupPhaseOutcome.stop(
             "setup_connection_failed",
@@ -5329,6 +5434,7 @@ def _setup_lite_connection_phase(context: SetupPhaseContext) -> SetupPhaseOutcom
 
 
 def _setup_connection_phase(context: SetupPhaseContext) -> SetupPhaseOutcome:
+    _setup_policy_base(context)
     is_lite = _setup_target_tier(context.user_input.board_id) is Tier.SETUP_LITE
     if is_lite:
         return _setup_lite_connection_phase(context)
@@ -5656,14 +5762,10 @@ def _setup_connection_phase(context: SetupPhaseContext) -> SetupPhaseOutcome:
             else {}
         ),
     }
-    coordinator = ProfileCommitCoordinator(
-        _profile_repository,
-        live_connect=connect,
-        before_commit=cancellation_checkpoint,
-    )
     try:
         if existing is None:
-            committed = coordinator.commit_core(
+            committed = _commit_setup_core(
+                context,
                 {
                     "board_id": context.user_input.board_id,
                     "display_name": context.user_input.display_name,
@@ -5676,7 +5778,8 @@ def _setup_connection_phase(context: SetupPhaseContext) -> SetupPhaseOutcome:
                         if context.user_input.requires_uart
                         else {}
                     ),
-                }
+                },
+                connect,
             )
         else:
             # A repair never trusts the old partial commit as current hardware proof.
@@ -5691,12 +5794,13 @@ def _setup_connection_phase(context: SetupPhaseContext) -> SetupPhaseOutcome:
             if frequency is not None:
                 optional_fields["debug_clock_hz"] = frequency
         cancellation_checkpoint()
-        committed = _profile_repository.commit_optional(
-            _profile_repository.stage_optional(
-                context.user_input.board_id,
-                optional_fields,
+        with _setup_policy_transaction(context):
+            committed = _profile_repository.commit_optional(
+                _profile_repository.stage_optional(
+                    context.user_input.board_id,
+                    optional_fields,
+                )
             )
-        )
         if captured_datasheet_ref != committed.to_document().get("datasheet_ref"):
             raise BoardCatalogError("captured datasheet evidence was not committed canonically")
     except Exception as exc:  # noqa: BLE001 - workflow records the typed terminal result
@@ -5778,6 +5882,7 @@ def _setup_validation_phase(context: SetupPhaseContext) -> SetupPhaseOutcome:
 def _build_automatic_catalog_safety(context: SetupPhaseContext):
     """Build the first v2 map only after pinned independent authorities agree."""
 
+    _setup_policy_base(context)
     profile = _profile_repository.load(context.user_input.board_id)
     if getattr(profile, "device_support", None) is not None:
         _datasheet_path, current_digest = hash_local_datasheet(
@@ -5790,7 +5895,8 @@ def _build_automatic_catalog_safety(context: SetupPhaseContext):
             )
         candidate = _derive_generic_safety_map(context.user_input.board_id)
         cancellation_checkpoint()
-        _safety_repository.commit(context.user_input.board_id, candidate)
+        with _setup_policy_transaction(context):
+            _safety_repository.commit(context.user_input.board_id, candidate)
         return candidate
     profile_document = profile.to_document()
     datasheet_digest = profile_document.get("datasheet_sha256")
@@ -5811,7 +5917,8 @@ def _build_automatic_catalog_safety(context: SetupPhaseContext):
     load_pinned_reviewed_evidence(catalog, datasheet_digest)
     candidate = _derive_reviewed_safety_map(context.user_input.board_id)
     cancellation_checkpoint()
-    _safety_repository.commit(context.user_input.board_id, candidate)
+    with _setup_policy_transaction(context):
+        _safety_repository.commit(context.user_input.board_id, candidate)
     return candidate
 
 
@@ -5819,7 +5926,7 @@ def _setup_safety_research_phase(context: SetupPhaseContext) -> SetupPhaseOutcom
     if _setup_target_tier(context.user_input.board_id) is Tier.SETUP_LITE:
         confirmation = _setup_lite_confirmations.get(context.user_input.board_id)
         if confirmation is None:
-            proposal = conservative_lite_proposal(Path(context.user_input.datasheet_path))
+            proposal = conservative_lite_proposal(resolve_project_path(context.user_input.datasheet_path))
             return SetupPhaseOutcome.stop(
                 "setup_research_required",
                 "setup/lite-confirmation-required",
@@ -5914,6 +6021,7 @@ def _setup_safety_map_phase(context: SetupPhaseContext) -> SetupPhaseOutcome:
 
 def _setup_commit_phase(context: SetupPhaseContext) -> SetupPhaseOutcome:
     board_id = context.user_input.board_id
+    expected_policy = _setup_policy_base(context)
     target_tier = _setup_target_tier(board_id)
     if target_tier is Tier.SETUP_LITE:
         confirmation = _setup_lite_confirmations.get(board_id)
@@ -5936,17 +6044,17 @@ def _setup_commit_phase(context: SetupPhaseContext) -> SetupPhaseOutcome:
             }
             if confirmation.evidence.get("recovery") is not None:
                 policy_map["recovery"] = confirmation.evidence["recovery"]
-            _capability_policies.commit(
-                board_id,
-                target_tier,
-                profile_snapshot=profile.to_document(),
-                # Persist the exact confirmed rows as immutable policy
-                # evidence. Normalization is an in-memory containment aid;
-                # rewriting source spellings or address text at commit would
-                # make a crash/restart report facts the operator never wrote.
-                map_snapshot=policy_map,
-                evidence=confirmation.evidence,
-            )
+            with _setup_policy_transaction(context):
+                _capability_policies.commit(
+                    board_id,
+                    target_tier,
+                    profile_snapshot=profile.to_document(),
+                    # Keep exact operator evidence; normalized geometry is an
+                    # in-memory containment aid, not a rewritten confirmation.
+                    map_snapshot=policy_map,
+                    evidence=confirmation.evidence,
+                    expected_state=expected_policy,
+                )
         except Exception as exc:  # noqa: BLE001 - setup records terminal policy failures
             return SetupPhaseOutcome.stop(
                 "setup_validation_failed",
@@ -5962,12 +6070,13 @@ def _setup_commit_phase(context: SetupPhaseContext) -> SetupPhaseOutcome:
         _firm_store.layout.safety_reference_prefix(board_id) / "memory_map.yaml"
     ).as_posix()
     try:
-        profile = _profile_repository.load(board_id)
-        if profile.safety_ref != expected_ref:
-            cancellation_checkpoint()
-            profile = _profile_repository.commit_safety_ref(
-                _profile_repository.stage_safety_ref(board_id, expected_ref)
-            )
+        with _setup_policy_transaction(context):
+            profile = _profile_repository.load(board_id)
+            if profile.safety_ref != expected_ref:
+                cancellation_checkpoint()
+                profile = _profile_repository.commit_safety_ref(
+                    _profile_repository.stage_safety_ref(board_id, expected_ref)
+                )
         # The profile and map have been staged for this setup attempt, but the
         # active capability pointer must not move until validation succeeds.
         # Give the validator these exact parsed candidates explicitly rather
@@ -6001,13 +6110,20 @@ def _setup_commit_phase(context: SetupPhaseContext) -> SetupPhaseOutcome:
             result.agent_prompt,
             details={"validation_status": result.status, "validation_code": result.code},
         )
-    _capability_policies.commit(
-        board_id,
-        target_tier,
-        profile_snapshot=profile.to_document(),
-        map_snapshot=artifacts.to_document(),
-        evidence={"source": "setup", "tier": target_tier.value},
-    )
+    try:
+        with _setup_policy_transaction(context):
+            _capability_policies.commit(
+                board_id,
+                target_tier,
+                profile_snapshot=profile.to_document(),
+                map_snapshot=artifacts.to_document(),
+                evidence={"source": "setup", "tier": target_tier.value},
+                expected_state=expected_policy,
+            )
+    except CapabilityPolicyConflict as exc:
+        return SetupPhaseOutcome.stop(
+            "setup_validation_failed", "setup/policy-changed", str(exc)
+        )
     return SetupPhaseOutcome.success(
         (
             "setup/safety-reference-committed-configuration-only"
@@ -6297,7 +6413,7 @@ def _get_setup_status(board_id: str) -> Mapping[str, object]:
 
 
 def _profile_name_key(value: str) -> str:
-    return unicodedata.normalize("NFKC", value).casefold().strip()
+    return display_name_identity(value)
 
 
 def _profile_needs_repair(profile: BoardProfile) -> bool:
@@ -6490,6 +6606,8 @@ def _proposed_board_id(display_name: str, existing: set[str]) -> str:
     stem = re.sub(r"[^a-z0-9]+", "_", ascii_name.casefold()).strip("_")[:48]
     if not stem:
         stem = f"board_{hashlib.sha256(display_name.encode('utf-8')).hexdigest()[:8]}"
+    if is_reserved_board_id(stem):
+        stem += "_board"
     candidate = stem
     counter = 2
     while candidate in existing:
@@ -6584,6 +6702,14 @@ def _setup_overview(
 
     try:
         profiles = _profile_repository.load_all()
+        seen_names: set[str] = set()
+        for profile in profiles:
+            key = _profile_name_key(profile.display_name)
+            if key in seen_names:
+                raise ProfileError(
+                    f"Duplicate display name {profile.display_name!r}; rename one board profile."
+                )
+            seen_names.add(key)
     except ProfileError as exc:
         return {
             "status": "setup_overview_blocked",
@@ -7508,7 +7634,7 @@ def _setup_continue(
             str(response["version"]),
             str(response["filename"]),
             str(response["url"]),
-            Path(str(response["source_path"])).expanduser().resolve(),
+            resolve_project_path(str(response["source_path"])),
             official_sha,
         )
         pipeline, selected_policies = _setup_pack_pipeline(
@@ -7586,6 +7712,9 @@ def _clear_setup_continuation(board_id: str, expected_allowance_id: str | None =
     _setup_selections_by_board.pop(board_id, None)
     _setup_lite_confirmations.pop(board_id, None)
     _setup_tiers.pop(board_id, None)
+    for key in tuple(_setup_policy_bases):
+        if key[0] == board_id:
+            _setup_policy_bases.pop(key, None)
     for key in tuple(_setup_pack_pipelines):
         if key[0] == board_id:
             _setup_pack_pipelines.pop(key, None)
@@ -7663,10 +7792,14 @@ def _tiered_setup_phase(
     """Persist an incomplete setup attempt without making staged bytes active."""
 
     def wrapped(context: SetupPhaseContext) -> SetupPhaseOutcome:
+        expected = _setup_policy_base(context)
         outcome = handler(context)
         if not outcome.verified:
             try:
-                _capability_policies.mark_setup_incomplete(context.user_input.board_id)
+                marked = _capability_policies.mark_setup_incomplete(
+                    context.user_input.board_id, expected_state=expected
+                )
+                _setup_policy_bases[(context.user_input.board_id, context.continuation_id)] = marked
             except CapabilityPolicyError:
                 # Existing corrupt state is already fail-closed and cannot be
                 # repaired by merely recording another attempt.

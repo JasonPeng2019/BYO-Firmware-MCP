@@ -7,6 +7,7 @@ import io
 import os
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 from collections.abc import Iterator
@@ -375,9 +376,14 @@ def _close_session(session: object) -> None:
     """Ask pyOCD to close; process death remains the native cleanup authority."""
 
     close = getattr(session, "close", None)
-    if callable(close):
-        with _backend_stdout_to_stderr():
-            close()
+    try:
+        if callable(close):
+            with _backend_stdout_to_stderr():
+                close()
+    finally:
+        directory = getattr(session, "_byo_project_directory", None)
+        if directory is not None:
+            directory.cleanup()
 
 
 class PyOCDSWDInterface(SWDInterface):
@@ -389,14 +395,37 @@ class PyOCDSWDInterface(SWDInterface):
         probe_uid: str | None,
         options: dict[str, object] | None,
     ) -> Any:
-        with _backend_stdout_to_stderr():
-            return ConnectHelper.session_with_chosen_probe(
-                blocking=False,
-                return_first=True,
-                unique_id=probe_uid,
-                auto_open=False,
-                options=options,
-            )
+        # pyOCD executes pyocd_user.py while constructing a Session, before open.
+        # Isolate lookup for every route, including retry and under-reset connect.
+        directory = tempfile.TemporaryDirectory(prefix="byo-pyocd-")
+        original_cwd = Path.cwd()
+        isolated_options = dict(options or {})
+        # pyOCD defaults to erasing locked targets and may persist protection
+        # changes during connect. Recovery requires its separate explicit grant.
+        isolated_options.update(
+            project_dir=directory.name, no_config=True, user_script=None, auto_unlock=False
+        )
+        try:
+            try:
+                with _backend_stdout_to_stderr():
+                    session = ConnectHelper.session_with_chosen_probe(
+                        blocking=False,
+                        return_first=True,
+                        unique_id=probe_uid,
+                        auto_open=False,
+                        options=isolated_options,
+                    )
+            finally:
+                # Windows cannot remove cwd, including on construction failure.
+                os.chdir(original_cwd)
+            if session is None:
+                directory.cleanup()
+            else:
+                session._byo_project_directory = directory
+            return session
+        except BaseException:
+            directory.cleanup()
+            raise
 
     def _open_and_verify_session(
         self,

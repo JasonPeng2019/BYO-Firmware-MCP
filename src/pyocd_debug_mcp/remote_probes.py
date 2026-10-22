@@ -18,25 +18,14 @@ import json
 import os
 import socket
 import tempfile
-import threading
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Sequence
 
-DEFAULT_CHECK_TIMEOUT_SECONDS = 3.0
+from pyocd_debug_mcp.kernel.file_transactions import file_transaction
 
-# Serializes the load -> modify -> save cycle below so two concurrent register/
-# unregister calls (an agent commonly issues several tool calls in one turn, and
-# nothing upstream serializes a sync tool call that carries no board_id -- see
-# kernel/operations.py's worker_lock(None)) can never interleave and silently lose one
-# call's write while its own tool response already reported success. One server
-# process owns this file; there is no cross-process writer to coordinate with, so a
-# plain in-process lock is the whole fix. It must never be held across a network call
-# -- `register_entry`/`unregister_entry` below only ever wrap the on-disk mutation,
-# never `check_endpoint`, or two unrelated registrations would serialize behind each
-# other's multi-second TCP timeout.
-_registry_lock = threading.Lock()
+DEFAULT_CHECK_TIMEOUT_SECONDS = 3.0
 
 
 class RemoteProbeError(RuntimeError):
@@ -137,6 +126,11 @@ def load_remote_probes(path: Path) -> tuple[RemoteProbeEntry, ...]:
 def save_remote_probes(path: Path, entries: Sequence[RemoteProbeEntry]) -> None:
     """Atomically replace the registry file with `entries`, creating parent dirs."""
 
+    with file_transaction(path):
+        _save_remote_probes(path, entries)
+
+
+def _save_remote_probes(path: Path, entries: Sequence[RemoteProbeEntry]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     document = {
         "schema_version": 1,
@@ -217,7 +211,7 @@ def remove_remote_probe(
 def register_entry(
     path: Path, host: str, port: int, description: str
 ) -> tuple[RemoteProbeEntry, ...]:
-    """Atomically load, upsert, and persist one endpoint under `_registry_lock`.
+    """Load, upsert, and persist one endpoint under a bounded process-safe lock.
 
     The whole read-modify-write cycle runs as one critical section, so a second
     concurrent `register_entry`/`unregister_entry` call against the same file always
@@ -226,7 +220,7 @@ def register_entry(
     `check_endpoint` *before* calling this: it does not touch the network itself.
     """
 
-    with _registry_lock:
+    with file_transaction(path):
         entries = load_remote_probes(path)
         updated = upsert_remote_probe(entries, host, port, description)
         save_remote_probes(path, updated)
@@ -236,12 +230,12 @@ def register_entry(
 def unregister_entry(
     path: Path, host: str, port: int
 ) -> tuple[tuple[RemoteProbeEntry, ...], bool]:
-    """Atomically load, remove, and (if found) persist under `_registry_lock`.
+    """Load, remove, and (if found) persist under the registry transaction lock.
 
     See `register_entry` for why the whole cycle must be one critical section.
     """
 
-    with _registry_lock:
+    with file_transaction(path):
         entries = load_remote_probes(path)
         remaining, removed = remove_remote_probe(entries, host, port)
         if removed:

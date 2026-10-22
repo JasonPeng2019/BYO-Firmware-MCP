@@ -391,9 +391,10 @@ class ResolvedReviewedSupport:
 def hash_local_datasheet(path: Path) -> tuple[Path, str]:
     """Resolve, validate, and hash a trusted local PDF from its exact bytes."""
 
-    expanded = path.expanduser()
+    from pyocd_debug_mcp.project_paths import resolve_project_path
+
     try:
-        resolved = expanded.resolve(strict=True)
+        resolved = resolve_project_path(path, strict=True)
     except OSError as exc:
         raise BoardCatalogError("datasheet_path must name an existing local PDF") from exc
     if resolved.suffix.casefold() != ".pdf" or not resolved.is_file():

@@ -11,6 +11,8 @@ from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Any, Callable
 
+from pyocd_debug_mcp.kernel.file_transactions import file_transaction
+
 FIRMSTORE_DIRNAME = ".firm"
 
 
@@ -275,7 +277,7 @@ class FirmStore:
             default_flow_style=False,
             sort_keys=False,
         )
-        with self._write_lock:
+        with file_transaction(self.layout.pack_manifest), self._write_lock:
             return self._atomic_write_bytes(
                 self.layout.pack_manifest.resolve(), text.encode("utf-8")
             )
@@ -283,9 +285,13 @@ class FirmStore:
     def update_pack_manifest(
         self, update: Callable[[Path], Mapping[str, Any]]
     ) -> Path:
-        """Serialize one manifest read/merge/write transaction in this server."""
+        """Serialize the complete local manifest read/merge/write across servers.
 
-        with self._write_lock:
+        The callback may read/validate local files; downloads and hardware work
+        must finish first. Lock order is manifest transaction, then writer lock.
+        """
+
+        with file_transaction(self.layout.pack_manifest), self._write_lock:
             document = update(self.layout.pack_manifest)
             return self.atomic_write_pack_manifest(document)
 

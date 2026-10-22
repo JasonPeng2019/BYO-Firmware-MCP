@@ -63,6 +63,7 @@ _GENERIC_GENERATOR_SCHEMA_DOCUMENT: Final[dict[str, object]] = {
     "nullable_partitions": True,
     "artifact_application_allocation": 1,
     "cmsis_svd_access_default": "read-write",
+    "svd_prohibited_register_policy": 1,
 }
 
 
@@ -1426,6 +1427,12 @@ def require_reconciled_authority(
     """Fail closed unless the map identity and partitions match reviewed policy."""
 
     if isinstance(document, GenericSafetyMapDocument):
+        expected_generator = _domain_digest("map-generator-schema", _GENERIC_GENERATOR_SCHEMA_DOCUMENT)
+        if document.source_digests.map_generator_schema != expected_generator:
+            raise SafetyMapError(
+                "generic memory map was produced by an unsupported generator; "
+                "run board_safety_refresh before protected operations"
+            )
         _validated_generic_deployment_policy(document.deployment_policy)
         try:
             from pyocd_debug_mcp.setup_flow.device_support import (

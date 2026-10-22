@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from pyocd_debug_mcp.adapters.swd_interface import TargetSessionHandle
+from pyocd_debug_mcp.project_paths import resolve_project_path
 from pyocd_debug_mcp.services.session_runtime import ActionContext, PolicyRefusal
 
 SUPPORTED_FLASH_SUFFIXES = frozenset({".axf", ".elf", ".hex"})
@@ -88,7 +89,7 @@ def resolve_flash_request(
             "flash/non-local-path", "Flash path must be a local filesystem path.", action_context
         )
 
-    artifact_path = Path(explicit_path).expanduser().resolve()
+    artifact_path = resolve_project_path(explicit_path)
     if not artifact_path.exists():
         raise _refuse(
             "flash/missing-file",

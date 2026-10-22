@@ -15,13 +15,16 @@ import os
 import re
 import secrets
 import tempfile
-import threading
 from collections.abc import Callable, Mapping
+from contextlib import AbstractContextManager
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
 
 from yaml.error import YAMLError
+
+from pyocd_debug_mcp.identities import is_reserved_board_id
+from pyocd_debug_mcp.kernel.file_transactions import file_transaction
 
 
 # Capability pointers predate the strict profile schema and also serve fresh/raw
@@ -43,6 +46,12 @@ class Tier(str, Enum):
 
 class CapabilityPolicyError(RuntimeError):
     """A capability policy is malformed, ambiguous, or unavailable."""
+
+
+class CapabilityPolicyConflict(CapabilityPolicyError):
+    """Derived work is stale and must be repeated against the current policy."""
+
+    code = "policy/stale-generation"
 
 
 @dataclass(frozen=True, slots=True)
@@ -94,8 +103,6 @@ class CapabilityPolicyRepository:
         self.project_root = Path(project_root).expanduser().resolve()
         self.root = self.project_root / ".firm" / "capabilities"
         self._fault_hook = fault_hook
-        self._guard = threading.RLock()
-        self._board_locks: dict[str, threading.RLock] = {}
 
     @staticmethod
     def _board_id(board_id: str) -> str:
@@ -103,18 +110,49 @@ class CapabilityPolicyRepository:
             raise CapabilityPolicyError(
                 "board_id must be 1-64 lowercase letters, numbers, underscores, or hyphens"
             )
+        if is_reserved_board_id(board_id):
+            raise CapabilityPolicyError("board_id is a reserved device name; append _board")
         return board_id
 
-    def lock_for(self, board_id: str) -> threading.RLock:
+    def lock_for(self, board_id: str) -> AbstractContextManager[None]:
+        """Serialize a board's short disk transaction across threads and servers.
+
+        Reentrant within a thread, including across repository instances. Keep
+        hardware/network work outside; connection-manager locks remain separate.
+        """
         identity = self._board_id(board_id)
-        with self._guard:
-            return self._board_locks.setdefault(identity, threading.RLock())
+        return file_transaction(self.pointer_path(identity))
 
     def board_root(self, board_id: str) -> Path:
         return self.root / self._board_id(board_id)
 
     def pointer_path(self, board_id: str) -> Path:
         return self.board_root(board_id) / "current.json"
+
+    def require_current(self, board_id: str, expected: CapabilityState) -> CapabilityState:
+        """Reject stale derived work under the same lock used for publication.
+
+        Callers keeping compatibility writes/stamps with a commit must hold
+        ``lock_for`` through that short sequence. Expensive work stays outside.
+        """
+        identity = self._board_id(board_id)
+        with self.lock_for(identity):
+            # A conditional check must not initialize/migrate a missing or
+            # damaged pointer before refusing a stale expected generation.
+            try:
+                current = self._load_pointer(identity)
+            except CapabilityPolicyError as exc:
+                current = self._corrupt(identity, str(exc))
+            if (
+                expected.board_id != identity
+                or current.generation_id != expected.generation_id
+                or current.policy_digest != expected.policy_digest
+            ):
+                raise CapabilityPolicyConflict(
+                    "The board policy changed in another operation; restart setup or "
+                    "repeat the requested maintenance against the current policy."
+                )
+            return current
 
     def resolve(self, board_id: str) -> CapabilityState:
         """Return the active explicit state, migrating only recognized legacy facts."""
@@ -139,8 +177,13 @@ class CapabilityPolicyRepository:
         map_snapshot: Mapping[str, object] | None = None,
         evidence: Mapping[str, object] | None = None,
         retained_generations: tuple[str, ...] | None = None,
+        expected_state: CapabilityState | None = None,
     ) -> CapabilityState:
-        """Publish a complete immutable policy generation at one pointer commit point."""
+        """Publish a complete generation, optionally conditional on an earlier read.
+
+        Derived callers must supply ``expected_state``. A stale condition raises
+        before creating any generation; ordinary explicit commits remain allowed.
+        """
 
         identity = self._board_id(board_id)
         selected = Tier(tier)
@@ -159,6 +202,8 @@ class CapabilityPolicyRepository:
                 "no-setup may retain prior evidence only through retained_generations"
             )
         with self.lock_for(identity):
+            if expected_state is not None:
+                self.require_current(identity, expected_state)
             if retained_generations is None:
                 current = self.resolve(identity)
                 retained_generations = current.retained_generations
@@ -173,11 +218,15 @@ class CapabilityPolicyRepository:
                 legacy_migrated=False,
             )
 
-    def downgrade_to_no_setup(self, board_id: str) -> CapabilityState:
+    def downgrade_to_no_setup(
+        self, board_id: str, *, expected_state: CapabilityState | None = None
+    ) -> CapabilityState:
         """Commit a raw policy while retaining the previous immutable evidence inactive."""
 
         identity = self._board_id(board_id)
         with self.lock_for(identity):
+            if expected_state is not None:
+                self.require_current(identity, expected_state)
             current = self.resolve(identity)
             retained = tuple(
                 dict.fromkeys(
@@ -198,7 +247,9 @@ class CapabilityPolicyRepository:
             )
             return self._with_status(committed, "setup-incomplete")
 
-    def mark_setup_incomplete(self, board_id: str) -> CapabilityState:
+    def mark_setup_incomplete(
+        self, board_id: str, *, expected_state: CapabilityState | None = None
+    ) -> CapabilityState:
         """Durably mark a failed/incomplete setup attempt without activating its writes.
 
         The active generation's tier, snapshots, and retained evidence remain
@@ -209,6 +260,8 @@ class CapabilityPolicyRepository:
 
         identity = self._board_id(board_id)
         with self.lock_for(identity):
+            if expected_state is not None:
+                self.require_current(identity, expected_state)
             current = self.resolve(identity)
             if current.tier is None:
                 raise CapabilityPolicyError("cannot mark a corrupt policy setup-incomplete")

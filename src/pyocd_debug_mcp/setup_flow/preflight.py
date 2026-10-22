@@ -8,6 +8,7 @@ from collections.abc import Mapping
 from typing import Any, Literal
 
 from pyocd_debug_mcp.firmstore.cache import CacheResolution
+from pyocd_debug_mcp.discovery_failures import probe_environment_diagnostic
 
 
 NO_INTERNALS_RELAY_INSTRUCTION = (
@@ -284,10 +285,9 @@ class PreflightEngine:
         if not current.probes:
             message = (
                 "No compatible debug probe is currently visible. Tell the user to attach "
-                "the intended board and retry. If it remains absent, from the BYO Server "
-                "checkout run `uv run --locked python -m pyocd list --probes`; this checks "
-                "whether the server's locked Python environment can enumerate the USB "
-                "debugger. Do not begin documentation research."
+                "the intended board and retry. If it remains absent, "
+                + probe_environment_diagnostic()
+                + " Do not begin documentation research."
             )
             if current.hook_contract_call is not None:
                 # Appended, never substituted: the locked-environment check is still the

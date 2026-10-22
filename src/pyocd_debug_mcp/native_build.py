@@ -647,10 +647,21 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def command_template() -> dict[str, object]:
+    from pyocd_debug_mcp.runtime_commands import is_compiled, running_sidecar
+
+    compiled = is_compiled()
+    launcher = "byo"
+    if compiled:
+        bundled_launcher = running_sidecar().parent.parent / ("byo.exe" if os.name == "nt" else "byo")
+        if bundled_launcher.is_file():
+            launcher = str(bundled_launcher)
+
     argv = [
-        sys.executable,
-        "-m",
-        "pyocd_debug_mcp.native_build",
+        *(
+            [launcher, "internal", "native-build"]
+            if compiled
+            else [sys.executable, "-m", "pyocd_debug_mcp.native_build"]
+        ),
         "--project-dir",
         "<project-dir>",
         "--build-dir",
@@ -665,6 +676,9 @@ def command_template() -> dict[str, object]:
     ]
     result: dict[str, object] = {
         "argv_template": argv,
+        # The managed launcher selects its project from its own cwd, before
+        # the build helper interprets the independent --cwd child setting.
+        "invocation_cwd_template": "<project-dir>",
         "powershell_template": _powershell_command(argv),
         "powershell_compatibility": (
             "Windows PowerShell 5 may omit empty native-command arguments. If exact argv contains "

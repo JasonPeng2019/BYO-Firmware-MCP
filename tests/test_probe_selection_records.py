@@ -500,15 +500,15 @@ class SessionUartSelectionTests(unittest.TestCase):
 
         self.assertIsNotNone(resolved)
 
-    def test_a_disappeared_endpoint_is_forgotten_not_substituted(self) -> None:
+    def test_a_disappeared_endpoint_is_retained_for_explicit_routing(self) -> None:
         self._record()
 
         resolved = self.store.resolve("board-1", _snapshot(uarts=(_uart_row("COM4"),)))
 
         self.assertIsNone(resolved)
-        self.assertIsNone(self.store.recorded("board-1"), "the stale choice was retained")
+        self.assertIsNotNone(self.store.recorded("board-1"), "loss must not permit a later guess")
 
-    def test_a_newly_ambiguous_endpoint_is_forgotten(self) -> None:
+    def test_a_newly_ambiguous_endpoint_is_retained_for_explicit_routing(self) -> None:
         """Two rows on the same normalized path is not a single unambiguous endpoint."""
 
         self._record()
@@ -517,7 +517,7 @@ class SessionUartSelectionTests(unittest.TestCase):
         resolved = self.store.resolve("board-1", _snapshot(uarts=rows))
 
         self.assertIsNone(resolved)
-        self.assertIsNone(self.store.recorded("board-1"))
+        self.assertIsNotNone(self.store.recorded("board-1"))
 
     def test_a_stable_row_does_not_satisfy_a_session_selection(self) -> None:
         self._record()

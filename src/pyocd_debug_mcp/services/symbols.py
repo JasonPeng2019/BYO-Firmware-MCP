@@ -9,6 +9,7 @@ from typing import Any
 from pyocd.debug.elf.elf import ELFBinaryFile  # type: ignore[import-untyped]
 
 from pyocd_debug_mcp.adapters.swd_interface import TargetSessionHandle
+from pyocd_debug_mcp.project_paths import resolve_project_path
 from pyocd_debug_mcp.services import target_control
 from pyocd_debug_mcp.target_errors import SymbolLookupError
 
@@ -33,7 +34,7 @@ def is_elf_artifact(path: Path) -> bool:
 
 
 def _normalize_elf_path(elf_path: Path | str) -> Path:
-    path = Path(elf_path).expanduser().resolve()
+    path = resolve_project_path(elf_path)
     if not path.exists():
         raise SymbolLookupError(f"ELF artifact does not exist: {path}")
     return path

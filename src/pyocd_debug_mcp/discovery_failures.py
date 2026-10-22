@@ -62,6 +62,32 @@ LOCKED_ENVIRONMENT_UART_DIAGNOSTIC = (
     "server's locked Python environment can enumerate serial ports at all."
 )
 
+
+def probe_environment_diagnostic() -> str:
+    """Offer remedies for the actual launch mode, without requiring source tools."""
+    from pyocd_debug_mcp.runtime_commands import is_compiled
+
+    if is_compiled():
+        return (
+            "Use the installed server's setup_overview to retry native probe inventory. "
+            "Check the intended debugger's USB driver and cable and close other debug sessions; "
+            "the installed sidecar also supports `probe-list list --probes`. "
+            "No source checkout, Python installation, or uv is required."
+        )
+    return LOCKED_ENVIRONMENT_PROBE_DIAGNOSTIC
+
+
+def uart_environment_diagnostic() -> str:
+    from pyocd_debug_mcp.runtime_commands import is_compiled
+
+    if is_compiled():
+        return (
+            "Use the installed server's setup_overview to inspect native serial inventory. "
+            "Reconnect the intended USB serial adapter, check its driver, and close other "
+            "serial monitors, then retry. No source checkout, Python installation, or uv is required."
+        )
+    return LOCKED_ENVIRONMENT_UART_DIAGNOSTIC
+
 PROBE_OPEN_FAILED_CHECKS = (
     "the debugger's driver is installed and the device is not in a fault state",
     "no other process holds the probe open (a vendor IDE, a GDB server, another session)",
@@ -141,7 +167,7 @@ def no_native_probe_failure(
     message = (
         "No debug probe is visible to the server. Tell the user to attach the intended "
         "board's debugger and retry; this is not a board-naming ambiguity. "
-        + LOCKED_ENVIRONMENT_PROBE_DIAGNOSTIC
+        + probe_environment_diagnostic()
         + " If that command also reports nothing and the user can still see the debugger "
         "in a vendor tool, call "
         f"{CONTRACT_TOOL}(kind=\"probe\") to get the contract for a discovery hook that "
@@ -154,7 +180,7 @@ def no_native_probe_failure(
         hook_contract_call=contract_call("probe", retry_id=retry_id),
         hook_diagnostics=tuple(hook_diagnostics),
         native_diagnostics=native_diagnostics,
-        remedies=(LOCKED_ENVIRONMENT_PROBE_DIAGNOSTIC,),
+        remedies=(probe_environment_diagnostic(),),
     )
 
 
@@ -171,7 +197,7 @@ def no_native_uart_failure(
     message = (
         "This board's workflow uses UART, but no serial port is visible to the server. "
         "Tell the user to attach and identify the board's UART connection. "
-        + LOCKED_ENVIRONMENT_UART_DIAGNOSTIC
+        + uart_environment_diagnostic()
         + " If that command also reports nothing, call "
         f"{CONTRACT_TOOL}(kind=\"uart\") to get the contract for a discovery hook that "
         "names the port. Do not expose this payload or internal IDs."
@@ -182,7 +208,7 @@ def no_native_uart_failure(
         kind="uart",
         hook_contract_call=contract_call("uart", retry_id=retry_id),
         hook_diagnostics=tuple(hook_diagnostics),
-        remedies=(LOCKED_ENVIRONMENT_UART_DIAGNOSTIC,),
+        remedies=(uart_environment_diagnostic(),),
     )
 
 

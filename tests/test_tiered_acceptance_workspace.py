@@ -1,10 +1,16 @@
-"""AT09: shipped manual-only skills and server use one project-root protocol."""
+"""AT09: shipped manual-only skills and server use one project-root protocol.
+
+Set BYO_MCP_TEST_WORKSPACE_ROOT to the paired workspace source checkout when
+testing another layout. Otherwise use sibling CodexClaudeWorkflow or the legacy
+sibling .agent-workspace source. Runtime grant state is never a source fixture.
+"""
 
 from __future__ import annotations
 
 import asyncio
 import importlib.util
 import json
+import os
 import sys
 import tempfile
 import unittest
@@ -17,7 +23,20 @@ from pyocd_debug_mcp.capabilities.manual_permissions import ManualPermissionRepo
 from tests.tiered_acceptance_support import fixture, isolated_project, manual_permission_root
 
 
-WORKSPACE = Path(__file__).resolve().parents[2] / ".agent-workspace"
+def _workspace_source() -> Path:
+    """Select explicit fixture input or the supported sibling source layout."""
+    configured = os.environ.get("BYO_MCP_TEST_WORKSPACE_ROOT")
+    if configured:
+        # A bad explicit input must stay visible rather than selecting other code.
+        return Path(configured).expanduser().resolve(strict=True)
+    siblings = Path(__file__).resolve().parents[2]
+    checkout = siblings / "CodexClaudeWorkflow"
+    if (checkout / "internal" / "manual_permissions.py").is_file():
+        return checkout
+    return siblings / ".agent-workspace"
+
+
+WORKSPACE = _workspace_source()
 WORKSPACE_HELPER = WORKSPACE / "internal" / "manual_permissions.py"
 ATTACH_PROJECT = WORKSPACE / "bin" / "attach-project"
 HARDWARE_RUNNER = Path(__file__).with_name("manual") / "manual_tiered_hardware_check.py"

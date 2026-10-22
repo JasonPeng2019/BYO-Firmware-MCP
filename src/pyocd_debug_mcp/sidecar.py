@@ -14,16 +14,18 @@ from pathlib import Path
 from typing import Callable, NoReturn, Sequence
 
 from pyocd_debug_mcp import __version__
+from pyocd_debug_mcp.runtime_commands import (
+    ConfigurationError,
+    is_compiled as _is_compiled,
+    running_sidecar as _running_sidecar,
+    sidecar_command,
+)
 
 SIDECAR_PROTOCOL = 1
 WORKER_PROTOCOL = 1
 WORKFLOW_PROTOCOL = 1
 CAPSULE_SCHEMA = 1
 PROJECT_STATE_SCHEMA = 1
-
-
-class ConfigurationError(ValueError):
-    """A sidecar path or protocol argument failed closed validation."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -66,28 +68,6 @@ def validate_project_root(raw: str) -> Path:
     if project == Path(project.anchor).resolve() or project == Path.home().resolve():
         raise ConfigurationError("project root must not be a filesystem root or home directory")
     return project
-
-
-def _is_compiled() -> bool:
-    return bool(
-        getattr(sys, "frozen", False)
-        or "__compiled__" in globals()
-        or os.environ.get("BYO_SIDECAR_COMPILED") == "1"
-    )
-
-
-def _running_sidecar() -> Path:
-    for raw in (sys.argv[0], sys.executable):
-        candidate = Path(raw)
-        if not candidate.is_absolute():
-            candidate = Path.cwd() / candidate
-        try:
-            resolved = candidate.resolve(strict=True)
-        except OSError:
-            continue
-        if resolved.is_file():
-            return resolved
-    raise ConfigurationError("sidecar executable did not resolve to a file")
 
 
 def _source_worker_base_argv() -> tuple[str, ...]:
@@ -221,6 +201,7 @@ def _install_runtime_context(args: argparse.Namespace, *, require_capsule: bool)
     ):
         os.environ.pop(name, None)
     os.environ["BYO_MCP_ARTIFACT_ROOT"] = str(project_root)
+    os.environ["BYO_RUNTIME_ROOT"] = str(runtime_root)
     os.environ["PYOCD_MCP_RUNS_ROOT"] = str(project_root / ".firm" / "runs")
     # `server.py` still has development `.env` discovery at import time. Its
     # cwd must be a validated runtime directory, never the operator's project.
@@ -334,6 +315,62 @@ def _manual_permission(args: argparse.Namespace) -> int:
     return 0 if result["status"] == "manual_grant_unlocked" else 1
 
 
+def _probe_list(args: argparse.Namespace) -> int:
+    """Run the bundled pyOCD listing CLI inside this isolated child."""
+
+    arguments = tuple(args.arguments)
+    if arguments not in (("list", "--probes"), ("list",)):
+        raise ConfigurationError("probe-list accepts only 'list --probes' or 'list'")
+    # pyOCD emits Unicode status glyphs. This is a child CLI, so use the same
+    # UTF-8 contract as the server's inventory subprocess reader.
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure is not None:
+            reconfigure(encoding="utf-8")
+    from pyocd.__main__ import PyOCDTool  # type: ignore[import-untyped]
+
+    return PyOCDTool().run(list(arguments))
+
+
+def _run_hook(args: argparse.Namespace) -> int:
+    """Keep the server-python hook contract without requiring a Python executable."""
+
+    import runpy
+
+    script = Path(args.script).resolve(strict=True)
+    if not script.is_file():
+        raise ConfigurationError("hook script must be an existing file")
+    prior_argv, prior_path = sys.argv, sys.path[:]
+    try:
+        sys.argv = [str(script), *args.arguments]
+        sys.path.insert(0, str(script.parent))
+        runpy.run_path(str(script), run_name="__main__")
+    finally:
+        sys.argv = prior_argv
+        sys.path[:] = prior_path
+    return 0
+
+
+def _check_probe_discovery() -> None:
+    from pyocd_debug_mcp.kernel.processes import ProcessMarkerStore, run_owned
+    from pyocd_debug_mcp.timeouts import DEFAULT_EXTERNAL_COMMAND_TIMEOUT_SECONDS
+
+    with tempfile.TemporaryDirectory(prefix="byo-probe-self-test-") as temporary:
+        completed = run_owned(
+            (*sidecar_command("probe-list"), "list", "--probes"),
+            timeout=DEFAULT_EXTERNAL_COMMAND_TIMEOUT_SECONDS,
+            capture_output=True,
+            text=False,
+            env={**os.environ, "PYTHONIOENCODING": "utf-8"},
+            marker_store=ProcessMarkerStore(Path(temporary)),
+        )
+    if completed.returncode != 0:
+        raise RuntimeError(
+            f"native probe discovery self-test failed ({completed.returncode}): "
+            f"{completed.stderr[-1000:].decode('utf-8', errors='replace').strip()}"
+        )
+
+
 def _self_test(args: argparse.Namespace) -> int:
     contract: RuntimeContract | None = None
     runtime_root: Path | None = None
@@ -381,6 +418,7 @@ def _self_test(args: argparse.Namespace) -> int:
     process: subprocess.Popen[str] | None = None
     diagnostics = ""
     try:
+        _check_probe_discovery()
         process = subprocess.Popen(
             worker_argv,
             stdin=subprocess.PIPE,
@@ -426,6 +464,7 @@ def _self_test(args: argparse.Namespace) -> int:
                 "project_state_schema": PROJECT_STATE_SCHEMA,
                 "compiled": _is_compiled(),
                 "runtime_manifest_verified": contract is not None,
+                "probe_discovery_verified": True,
             },
             sort_keys=True,
         )
@@ -452,6 +491,15 @@ def build_parser() -> argparse.ArgumentParser:
     worker = commands.add_parser("provider-worker", help=argparse.SUPPRESS)
     _add_runtime_context_arguments(worker, required=False)
     worker.set_defaults(handler=_provider_worker)
+
+    probe_list = commands.add_parser("probe-list", help=argparse.SUPPRESS)
+    probe_list.add_argument("arguments", nargs=argparse.REMAINDER)
+    probe_list.set_defaults(handler=_probe_list)
+
+    hook = commands.add_parser("run-hook", help=argparse.SUPPRESS)
+    hook.add_argument("script")
+    hook.add_argument("arguments", nargs=argparse.REMAINDER)
+    hook.set_defaults(handler=_run_hook)
 
     for name in ("collect-artifacts", "native-build", "pack-repair"):
         helper = commands.add_parser(name, help=argparse.SUPPRESS)

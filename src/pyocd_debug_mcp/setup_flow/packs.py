@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import re
+import secrets
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 from pyocd_debug_mcp.firmstore.store import FirmStore
+from pyocd_debug_mcp.kernel.file_transactions import file_transaction
 from pyocd_debug_mcp.pack_provision import (
     DeviceBinding,
     PackProvisionError,
@@ -80,6 +82,7 @@ class PackCandidate:
 
 @dataclass(frozen=True, slots=True)
 class ValidatedPack:
+    """One attempt's private validated bytes, consumed by ``promote``."""
     candidate: PackCandidate
     staged_path: Path
     actual_sha256: str
@@ -192,16 +195,18 @@ class PackCandidatePipeline:
                 },
             )
 
-        destination = self._store.layout.pack_files / candidate.filename
-        existed = destination.exists()
-        if existed and sha256_file(destination) != actual:
+        published = self._store.layout.pack_files / candidate.filename
+        if published.exists() and sha256_file(published) != actual:
             raise self._reject(
                 "package/filename-collision",
                 candidate,
                 fingerprint,
                 "A different staged package already uses this filename",
-                {"staged_path": str(destination)},
+                {"staged_path": str(published)},
             )
+        # Every validator owns only its private quarantine file. Pending/live
+        # attempts never borrow another attempt's bytes or a published path.
+        destination = self._store.layout.packs / "quarantine" / f"{secrets.token_hex(16)}.pack"
         self._store.atomic_write_bytes(destination, payload)
         try:
             if device_binding is not None:
@@ -217,8 +222,6 @@ class PackCandidatePipeline:
                     destination, device_binding.part_number
                 )
                 if replayed_binding != device_binding:
-                    if not existed:
-                        self._store.remove_artifact(destination)
                     raise self._reject(
                         "package/device-binding-drift",
                         candidate,
@@ -245,8 +248,6 @@ class PackCandidatePipeline:
                 )
             )
             if required_target not in targets:
-                if not existed:
-                    self._store.remove_artifact(destination)
                 raise self._reject(
                     "package/target-absent",
                     candidate,
@@ -262,8 +263,6 @@ class PackCandidatePipeline:
                     device_binding.pdsc_device if device_binding is not None else None,
                 )
             except Exception as exc:
-                if not existed:
-                    self._store.remove_artifact(destination)
                 raise self._reject(
                     "package/live-connect-failed",
                     candidate,
@@ -272,10 +271,10 @@ class PackCandidatePipeline:
                     {"enumerated_targets": list(targets)},
                 ) from exc
         except PackCandidateError:
+            self._store.remove_artifact(destination)
             raise
         except Exception as exc:
-            if not existed:
-                self._store.remove_artifact(destination)
+            self._store.remove_artifact(destination)
             raise self._reject(
                 "package/enumeration-failed",
                 candidate,
@@ -283,6 +282,9 @@ class PackCandidatePipeline:
                 f"Staged package target enumeration failed: {exc}",
                 {},
             ) from exc
+        except BaseException:
+            self._store.remove_artifact(destination)
+            raise
 
         return ValidatedPack(
             candidate,
@@ -292,11 +294,17 @@ class PackCandidatePipeline:
             targets,
             required_target,
             device_binding,
-            not existed,
+            True,
         )
 
     def promote(self, validated: ValidatedPack, *, board_id: str) -> Path:
-        """Add metadata to the authoritative manifest only after all validation."""
+        """Consume quarantine and publish final bytes/metadata after validation.
+
+        Failure removes only this attempt's quarantine and any unreferenced
+        final file created by its own failed publication transaction.
+        """
+        destination = self._store.layout.pack_files / validated.candidate.filename
+        created_published = False
         try:
             if sha256_file(validated.staged_path) != validated.actual_sha256:
                 raise PackCandidateError(
@@ -330,22 +338,30 @@ class PackCandidatePipeline:
                     ),
                 )
             )
-            def merge(manifest_path: Path) -> Mapping[str, Any]:
-                # Rebind the final file to the exact bounded payload used by
-                # validation/live attach while the manifest merge is locked.
+            def publish(manifest: Mapping[str, Any]) -> Mapping[str, Any]:
+                nonlocal created_published
                 if sha256_file(validated.staged_path) != validated.actual_sha256:
                     raise PackCandidateError(
                         "package/staged-bytes-changed",
                         "The quarantined package changed before promotion",
                     )
-                self._store.atomic_write_bytes(
-                    validated.staged_path, validated.validated_payload
-                )
-                if sha256_file(validated.staged_path) != validated.actual_sha256:
+                if destination.exists():
+                    if sha256_file(destination) != validated.actual_sha256:
+                        raise PackCandidateError(
+                            "package/filename-collision",
+                            "A different published package already uses this filename",
+                        )
+                else:
+                    self._store.atomic_create_bytes(destination, validated.validated_payload)
+                    created_published = True
+                if sha256_file(destination) != validated.actual_sha256:
                     raise PackCandidateError(
                         "package/staged-bytes-changed",
                         "The promoted package bytes could not be rebound exactly",
                     )
+                return manifest
+
+            def merge(manifest_path: Path) -> Mapping[str, Any]:
                 try:
                     manifest = load_manifest_document(manifest_path)
                 except PackProvisionError as exc:
@@ -409,12 +425,27 @@ class PackCandidatePipeline:
                         tuple(bindings),
                     )
                     packs[index] = pack_spec_document(merged)
-                    return manifest
+                    return publish(manifest)
                 packs.append(entry)
-                return manifest
+                return publish(manifest)
 
-            return self._store.update_pack_manifest(merge)
-        except Exception:
+            # Only local publication/rollback uses the manifest transaction.
+            # Enumeration, binding replay and live attach are already complete.
+            with file_transaction(self._store.layout.pack_manifest):
+                try:
+                    return self._store.update_pack_manifest(merge)
+                except BaseException:
+                    if created_published:
+                        try:
+                            references = load_manifest(self._store.layout.pack_manifest)
+                        except (PackProvisionError, OSError):
+                            # Unknown manifest state is never permission to
+                            # remove bytes that may already be authoritative.
+                            pass
+                        else:
+                            if not any(spec.filename == destination.name for spec in references):
+                                self._store.remove_artifact(destination)
+                    raise
+        finally:
             if validated.created_staged_file:
                 self._store.remove_artifact(validated.staged_path)
-            raise

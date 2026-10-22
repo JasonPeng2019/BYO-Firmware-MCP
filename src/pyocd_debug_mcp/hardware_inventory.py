@@ -908,7 +908,7 @@ class SessionUartSelectionStore:
             self._selections.clear()
 
     def resolve(self, board_id: str, snapshot: InventorySnapshot) -> UartRow | None:
-        """Re-derive a session selection against a fresh snapshot, or forget it."""
+        """Re-derive a session selection; retain a failed choice for explicit routing."""
 
         recorded = self.recorded(board_id)
         if recorded is None:
@@ -920,9 +920,8 @@ class SessionUartSelectionStore:
             and normalize_port_name(row.port_path) == recorded.normalized_port
         ]
         if len(matches) != 1:
-            # Gone, or newly ambiguous. Either way this run's choice is no longer a
-            # single unambiguous endpoint, so drop it and route back through setup.
-            self.clear_board(board_id)
+            # Keep the failed choice until setup/reselection explicitly replaces
+            # it. Forgetting it would let the next UART call guess another port.
             return None
         return matches[0]
 

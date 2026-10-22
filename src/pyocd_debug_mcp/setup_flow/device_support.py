@@ -360,6 +360,7 @@ class PackAddressRegion:
     start: int
     end: int
     access: str = "r"
+    prohibited: bool = False
 
     def __post_init__(self) -> None:
         if not self.name.strip():
@@ -373,6 +374,7 @@ class PackAddressRegion:
             "start": self.start,
             "end": self.end,
             "access": self.access,
+            **({"prohibited": True} if self.prohibited else {}),
         }
 
     @property
@@ -942,9 +944,13 @@ def _intersect_access_regions(
             continue
         readable = all(row.readable for row in covering)
         writable = all(row.writable for row in covering)
-        if not readable and not writable:
+        prohibited = any(row.prohibited for row in covering)
+        if not readable and not writable and not prohibited:
             continue
-        access = "read-write" if readable and writable else "read-only" if readable else "write-only"
+        access = (
+            "read-write" if readable and writable else "read-only" if readable
+            else "write-only" if writable else "unspecified"
+        )
         names = sorted({row.name for row in covering}, key=str.casefold)
         name = names[0] if len(names) == 1 else f"{names[0]} (+{len(names) - 1} aliases)"
         if (
@@ -952,11 +958,12 @@ def _intersect_access_regions(
             and segmented[-1].end == start
             and segmented[-1].access == access
             and segmented[-1].name == name
+            and segmented[-1].prohibited == prohibited
         ):
             previous = segmented.pop()
-            segmented.append(PackAddressRegion(name, previous.start, end, access))
+            segmented.append(PackAddressRegion(name, previous.start, end, access, prohibited))
         else:
-            segmented.append(PackAddressRegion(name, start, end, access))
+            segmented.append(PackAddressRegion(name, start, end, access, prohibited))
     return tuple(segmented)
 
 
@@ -986,7 +993,7 @@ def _subtract_address_regions(
         }
     )
     return tuple(
-        PackAddressRegion(row.name, start, end, row.access)
+        PackAddressRegion(row.name, start, end, row.access, row.prohibited)
         for start, end in zip(boundaries, boundaries[1:])
         if not any(start < exclusion.end and exclusion.start < end for exclusion in clipped)
     )
@@ -997,6 +1004,8 @@ def _svd_peripheral_regions(
     memory_regions: tuple[PackAddressRegion, ...] = (),
 ) -> tuple[PackAddressRegion, ...]:
     """Return non-overlapping, access-aware register spans from an optional SVD."""
+
+    from pyocd_debug_mcp.safety.register_policy import prohibited_svd_register
 
     try:
         stream = getattr(device, "svd", None)
@@ -1032,6 +1041,7 @@ def _svd_peripheral_regions(
                             start,
                             end,
                             _resolved_svd_access(register.access, peripheral.access, parsed.access),
+                            prohibited_svd_register(str(peripheral.name), str(register.name)),
                         )
                     except (AttributeError, TypeError, ValueError, PackProvisionError):
                         continue
@@ -1054,6 +1064,7 @@ def _svd_peripheral_regions(
                     start,
                     end,
                     _resolved_svd_access(peripheral.access, parsed.access),
+                    prohibited_svd_register(str(peripheral.name)),
                 )
             except (AttributeError, TypeError, ValueError, PackProvisionError):
                 continue

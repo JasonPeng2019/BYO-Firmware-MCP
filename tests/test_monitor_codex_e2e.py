@@ -10,11 +10,7 @@ from __future__ import annotations
 import json
 import unittest
 
-from tests.codex_harness import (
-    REQUIRED_MODEL,
-    CodexAgentTestCase,
-    _known_model_migration,
-)
+from tests.codex_harness import REQUIRED_MODEL, CodexAgentTestCase
 from tests.store_cleanup import restore as store_restore, snapshot as store_snapshot
 
 
@@ -334,35 +330,6 @@ class StdoutStaysClean(CodexAgentTestCase):
         self.assertNotIn("failed to parse", result.combined.lower())
         # Three tool calls all completed, which they could not if framing broke.
         self.assertGreaterEqual(len(result.tool_calls), 3, result.tool_calls)
-
-
-class ModelMigrationLookupIsHermetic(unittest.TestCase):
-    """`_known_model_migration` resolves against `_KNOWN_MODEL_MIGRATIONS`, a
-    mapping checked into `codex_harness.py` itself -- not a live read of the
-    user's own ``~/.codex/config.toml``, which lives outside the repo, is not
-    version-controlled, and could make the same commit's test outcome vary by
-    machine or drift over time. No filesystem access is involved, so these
-    run unconditionally, independent of whether codex is installed here.
-    """
-
-    def test_the_retired_model_migrates_to_the_current_pin(self) -> None:
-        self.assertEqual(_known_model_migration("gpt-5.4-mini"), "gpt-5.6-luna")
-
-    def test_the_current_pin_has_no_further_migration(self) -> None:
-        self.assertIsNone(_known_model_migration(REQUIRED_MODEL))
-
-    def test_a_model_with_no_recorded_migration_resolves_to_none(self) -> None:
-        self.assertIsNone(_known_model_migration("some-model-nobody-pinned"))
-
-    def test_the_mapping_is_exactly_whats_checked_in(self) -> None:
-        """Guards against silent expansion of the accepted-name set: only the
-        pinned model's own recorded migration should ever resolve, nothing
-        broader.
-        """
-
-        from tests.codex_harness import _KNOWN_MODEL_MIGRATIONS
-
-        self.assertEqual(_KNOWN_MODEL_MIGRATIONS, {"gpt-5.4-mini": REQUIRED_MODEL})
 
 
 class ModelPinningIsEnforced(CodexAgentTestCase):

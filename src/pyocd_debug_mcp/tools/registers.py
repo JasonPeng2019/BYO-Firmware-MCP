@@ -7,6 +7,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 
 from pyocd_debug_mcp.kernel.operations import wrap_layer2_response
+from pyocd_debug_mcp.safety.register_policy import PROHIBITED_TERMS as _PROHIBITED_TERMS
 
 
 _ORDINARY_REGISTER = re.compile(r"(?:r(?:[0-9]|1[0-2])|[sdq][0-9]+)", re.IGNORECASE)
@@ -35,22 +36,6 @@ _EXECUTION_REGISTERS = frozenset(
         "fpscr",
     }
 )
-_PROHIBITED_TERMS = (
-    "secure",
-    "security",
-    "provision",
-    "lifecycle",
-    "option",
-    "otp",
-    "fuse",
-    "protect",
-    "lock",
-    "auth",
-    "key",
-    "sau",
-)
-
-
 @dataclass(frozen=True, slots=True)
 class RegisterToolServices:
     supported_registers: Callable[[str], tuple[str, ...]]

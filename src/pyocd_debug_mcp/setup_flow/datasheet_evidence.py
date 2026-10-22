@@ -49,7 +49,9 @@ def read_datasheet_pdf(path: Path) -> bytes:
 def capture_datasheet_evidence(store: FirmStore, source: Path) -> DatasheetEvidence:
     """Copy exact PDF bytes into immutable project evidence after server hashing."""
 
-    payload = read_datasheet_pdf(source.expanduser().resolve())
+    from pyocd_debug_mcp.project_paths import resolve_project_path
+
+    payload = read_datasheet_pdf(resolve_project_path(source))
     digest = hashlib.sha256(payload).hexdigest()
     destination = store.layout.datasheet_evidence(digest)
     if not destination.is_file():

@@ -19,16 +19,14 @@ and isolated `HardwareInventoryService` instances thoroughly. What it does not c
    `nullcontext()`); `register_remote_probe` and `unregister_remote_probe` take no
    `board_id`, so two calls to either tool run concurrently on independent threads in
    production. This was R1 in round 1 of this review and has since been fixed with
-   `remote_probes._registry_lock`, which wraps the whole load -> modify -> save cycle
+   a registry transaction lock, which wraps the whole load -> modify -> save cycle
    in `register_entry`/`unregister_entry`; `check_endpoint` deliberately runs *before*
    the lock is taken, so it can never serialize two unrelated registrations behind
    each other's multi-second TCP timeout. `ConcurrentRegistrationTests` now proves the
    lock holds with a `threading.Barrier`-synchronised hammer against the real
-   production path rather than an interleave test -- see that class's docstring for
-   why an interleave test cannot be built against the fixed code (round 1's version of
-   this test blocked on a hook that is no longer inside the critical section, which
-   made it pass regardless of whether the lock was present; see the note appended to
-   `reviews/remote-probe-review.md`).
+   production path. Deterministic process interleavings are covered separately in
+   `tests/test_design_flaws_2_b02.py` by pausing the registry read and observing OS
+   lock contention from the other writer.
 
 Every test here was written by breaking the guarded behavior, watching it fail, and
 reverting the break exactly -- see the review writeup in
@@ -179,18 +177,10 @@ class ConcurrentRegistrationTests(unittest.TestCase):
     """Fire many independent register/unregister calls at the real production path at
     once and assert every one of them survives.
 
-    This is deliberately NOT an interleave test (round 1's version was, and it was
-    proven vacuous -- see `reviews/remote-probe-review.md`). An interleave test needs a
-    hook to block one thread strictly *between* its own registry load and its own save,
-    so a second thread can run its full cycle in the gap. After the R1 fix that gap no
-    longer exists reachably from outside the module: `check_endpoint` -- the only hook
-    `RemoteProbeToolServices` exposes to a test double -- now runs entirely *before*
-    `register_entry` takes `_registry_lock`, by design (holding the lock across a
-    multi-second TCP connect would serialize unrelated registrations behind each
-    other's network timeout). The only point strictly inside the critical section is
-    inside `_registry_lock` itself, and blocking there from a test would require
-    acquiring the lock first -- which just deadlocks against the correct code. That
-    deadlock is real proof the lock is doing its job, but it is not a usable test.
+    These thread smoke tests exercise the complete tool handlers. Reachability
+    still runs before `register_entry` takes its file transaction lock; a bounded
+    TCP check must not delay other writers inside that transaction. The B02 tests
+    complement this coverage with controlled process-level read/write interleavings.
 
     The honest substitute is the invariant the lock actually guarantees: throw many
     concurrent callers at it and confirm none of their writes are lost. This is not
@@ -263,7 +253,7 @@ class ConcurrentRegistrationTests(unittest.TestCase):
     def test_concurrent_register_and_unregister_do_not_corrupt_the_registry(self) -> None:
         """Pre-seed 12 entries sequentially, then concurrently unregister the even-
         numbered half while registering 12 brand-new endpoints, all released together
-        by one barrier -- register and unregister sharing `_registry_lock` correctly is
+        by one barrier -- register and unregister sharing the transaction lock correctly is
         exactly what's under test.
 
         Every operation targets a distinct `(host, port)` key (no two threads ever race

@@ -4,10 +4,10 @@ from __future__ import annotations
 
 import json
 from collections.abc import Callable
-from pathlib import Path
 from typing import Literal
 
 from pyocd_debug_mcp.artifact_collector import ArtifactRole, collect_artifacts
+from pyocd_debug_mcp.project_paths import resolve_project_path
 
 ArtifactRoleName = Literal["elf", "hex", "bin", "map"]
 
@@ -42,12 +42,16 @@ def build_artifact_handlers() -> dict[str, Callable[..., str]]:
             ArtifactRole.BIN: bin_path,
             ArtifactRole.MAP: map_path,
         }
-        sources = {role: Path(path) for role, path in supplied.items() if path is not None}
         try:
+            sources = {
+                role: resolve_project_path(path)
+                for role, path in supplied.items()
+                if path is not None
+            }
             expected = tuple(ArtifactRole(value) for value in (expected_roles or ()))
             result = collect_artifacts(
                 sources,
-                output_dir,
+                resolve_project_path(output_dir),
                 producer="mcp-native-build",
                 expected_roles=expected,
             )

@@ -285,6 +285,22 @@ class SafetyMap:
         for requested in requested_ranges:
             classification = self.classify(requested)
             classifications.append(classification)
+            if (
+                classification is RegionKind.PROHIBITED
+                and action is ActionCategory.MEMORY_READ
+                and any(
+                    region.kind is RegionKind.PERIPHERAL_WRITE_ONLY
+                    and region.address_range.overlaps(requested)
+                    for region in self._regions
+                )
+            ):
+                # A prohibited-write overlay must not grant read access to an
+                # SVD register that was previously classified as write-only.
+                return Refusal(
+                    action, "safety/wrong-region-kind",
+                    "The complete request touches a write-only peripheral register.",
+                    requested, classification, "Choose a readable mapped region.",
+                )
             if classification is RegionKind.PROHIBITED and action is not ActionCategory.MEMORY_READ:
                 return Refusal(
                     action,
