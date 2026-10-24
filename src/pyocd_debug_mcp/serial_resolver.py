@@ -506,11 +506,10 @@ def _resolve_nordic_serial(
 
     matching = entries
     if probe and probe.uid:
-        probe_matches = [
+        # A known UID must not fall back to another probe's vendor rows.
+        matching = [
             entry for entry in entries if probe_uid_matches_serial(probe.uid, entry.probe_serial)
         ]
-        if probe_matches:
-            matching = probe_matches
 
     matching = sorted(
         matching,
@@ -551,11 +550,10 @@ def _resolve_stlink_serial(
 
     matching = entries
     if probe and probe.uid:
-        probe_matches = [
+        # A known UID must not fall back to another probe's vendor rows.
+        matching = [
             entry for entry in entries if probe_uid_matches_serial(probe.uid, entry.probe_serial)
         ]
-        if probe_matches:
-            matching = probe_matches
 
     resolved: list[SerialPortInfo] = []
     for entry in matching:

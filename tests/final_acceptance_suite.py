@@ -156,7 +156,7 @@ def built_native_inputs(bundle, installer):
     }
     if actual != {p for p in inventory if p.startswith("analysis/")}:
         raise RuntimeError("Actual analysis files differ from built inventory")
-    tools.validate_payload(manifest["files"], lambda p: (bundle / p).read_bytes(), sbom, lock)
+    tools.validate_analysis(manifest["files"], lambda p: (bundle / p).read_bytes(), sbom, lock)
     components = {c["bom-ref"]: c for c in sbom["components"]}
     provenance, payload = {}, []
     for name, program in lock["programs"].items():

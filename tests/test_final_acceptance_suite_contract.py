@@ -8,11 +8,14 @@ from __future__ import annotations
 
 import argparse
 import errno
+import hashlib
 import io
 import importlib.util
 import json
 import os
 from pathlib import Path
+import platform
+import shutil
 import tempfile
 import subprocess
 import sys
@@ -322,6 +325,182 @@ if pid is not None:
         # This control intentionally has no suite cleanup ledger; the observer
         # must expose that gap, rather than fabricate an empty cleanup success.
         self.assertTrue(exit_record["descendants"]["evidence_gaps"])
+
+
+class FinalAcceptanceNativeInputContracts(unittest.TestCase):
+    """Real Actions-built bundle admission; never fabricate native payloads."""
+
+    def setUp(self):
+        self.assertEqual(os.environ.get("GITHUB_ACTIONS"), "true", "Actions-only control")
+        source = os.environ.get("BYO_FINAL_INSTALLER_SOURCE")
+        if not source:
+            self.skipTest("Actual frozen installer source is required for native-input contracts")
+        self.installer = Path(source).resolve(strict=True)
+        system = {"Windows": "windows", "Darwin": "macos", "Linux": "linux"}[platform.system()]
+        arch = {"amd64": "x86_64", "x86_64": "x86_64", "arm64": "aarch64", "aarch64": "aarch64"}[
+            platform.machine().casefold()
+        ]
+        # Discover the real build independently of the selectors being tested:
+        # a broken admission must fail this control, rather than cause a skip.
+        manifests = [
+            path
+            for path in (self.installer / "release/dist").glob("*/release-manifest.json")
+            if (
+                (document := json.loads(path.read_bytes()))["platform"],
+                document["architecture"],
+            ) == (system, arch)
+        ]
+        if not manifests:
+            self.skipTest(
+                "Actual host-native built bundle is unavailable; native admission remains UNRUN"
+            )
+        self.assertEqual(len(manifests), 1, "Native-input control requires one exact host bundle")
+        self.bundle = manifests[0].parent.resolve(strict=True)
+        self.temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temporary.cleanup)
+        self.root = Path(self.temporary.name)
+        retained = Path(os.environ.get("BYO_FINAL_CASE_EVIDENCE", str(self.root)))
+        self.evidence = retained / "fr08-native-inputs" / self._testMethodName
+
+    def copied_bundle(self):
+        copied = self.root / "native bundle"
+        copied.mkdir()
+        shutil.copytree(self.bundle / "analysis", copied / "analysis")
+        for name in ("release-manifest.json", "sbom.cdx.json"):
+            shutil.copyfile(self.bundle / name, copied / name)
+        return copied
+
+    def rewrite_inventoried_json(self, bundle, relative, document):
+        path = bundle / relative
+        path.write_text(json.dumps(document) + "\n", encoding="utf-8")
+        manifest = json.loads((bundle / "release-manifest.json").read_bytes())
+        row = next(row for row in manifest["files"] if row["path"] == relative)
+        row.update(size=path.stat().st_size, sha256=hashlib.sha256(path.read_bytes()).hexdigest())
+        (bundle / "release-manifest.json").write_text(json.dumps(manifest) + "\n", encoding="utf-8")
+
+    def prepare_in_clean_interpreter(self, bundle):
+        script = r"""
+import argparse
+import importlib.util
+import json
+from pathlib import Path
+import sys
+
+source, bundle, installer, evidence = map(Path, sys.argv[1:])
+sys.path.insert(0, str(source.parent))
+spec = importlib.util.spec_from_file_location("fr08_actual_native_preparation", source)
+acceptance = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(acceptance)
+environment = {}
+args = argparse.Namespace(native_bundle=bundle, installer_source=installer,
+    arm_receipt=evidence / "missing-arm", official_pack_receipt=evidence / "missing-pack")
+facts = acceptance.prepare_native_inputs(args, evidence, environment)
+record = environment.get("BYO_MANAGED_TEST_INPUT_RECORD")
+acceptance.write(evidence / "control-result.json", {
+    "facts": facts, "selectors": environment,
+    "native_record": json.loads(Path(record).read_bytes()) if record else None,
+})
+"""
+        environment = dict(os.environ)
+        environment.pop("PYTHONPATH", None)
+        command = [
+            sys.executable, "-I", "-B", "-c", script, str(Path(acceptance.__file__).resolve()),
+            str(bundle), str(self.installer), str(self.evidence),
+        ]
+        completed = subprocess.run(
+            command, cwd=self.root, env=environment, capture_output=True, text=True, timeout=120
+        )
+        self.evidence.mkdir(parents=True, exist_ok=True)
+        (self.evidence / "stdout.log").write_text(completed.stdout, encoding="utf-8")
+        (self.evidence / "stderr.log").write_text(completed.stderr, encoding="utf-8")
+        OBSERVATIONS[self.id()] = {
+            "argv": command, "exit": completed.returncode,
+            "evidence": str(self.evidence), "pythonpath_removed": True,
+        }
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        result = json.loads((self.evidence / "control-result.json").read_bytes())
+        OBSERVATIONS[self.id()]["result"] = result
+        # These deliberately absent independent receipts must remain errors,
+        # even when the bundle itself admits and publishes its selectors.
+        self.assertIn("arm", result["facts"]["errors"])
+        self.assertIn("official_pack", result["facts"]["errors"])
+        self.assertEqual(result["facts"]["outcome"], "ERROR")
+        return result
+
+    def assert_bundle_refused(self, result):
+        self.assertEqual(result["facts"]["bundle"]["outcome"], "ERROR")
+        self.assertEqual(set(result["facts"]["errors"]), {"bundle", "arm", "official_pack"})
+        for name in (
+            "BYO_TEST_CLANGD", "BYO_MCP_TEST_CLANGD_EXECUTABLE",
+            "BYO_MANAGED_TEST_INPUT_RECORD", "BYO_MANAGED_TEST_INPUT_RECORD_SHA256",
+        ):
+            self.assertNotIn(name, result["selectors"])
+        self.assertIsNone(result["native_record"])
+
+    def test_real_built_bundle_publishes_exact_native_selectors(self):
+        result = self.prepare_in_clean_interpreter(self.bundle)
+        self.assertEqual(result["facts"]["bundle"]["outcome"], "PASS")
+        self.assertEqual(set(result["facts"]["errors"]), {"arm", "official_pack"})
+        clangd = result["facts"]["bundle"]["clangd"]
+        self.assertEqual(result["selectors"]["BYO_TEST_CLANGD"], clangd)
+        self.assertEqual(result["selectors"]["BYO_MCP_TEST_CLANGD_EXECUTABLE"], clangd)
+        self.assertEqual(result["facts"]["bundle"]["clangd_sha256"], acceptance.digest(clangd))
+        self.assertIn(
+            str(self.bundle / "analysis/runtime.json"), result["facts"]["protected_inputs"]
+        )
+        if os.name == "nt":
+            record = Path(result["selectors"]["BYO_MANAGED_TEST_INPUT_RECORD"])
+            self.assertEqual(
+                result["selectors"]["BYO_MANAGED_TEST_INPUT_RECORD_SHA256"],
+                acceptance.digest(record),
+            )
+            self.assertTrue(result["native_record"]["payload"])
+            self.assertEqual(set(result["native_record"]["provenance"]), {"clangd", "cppcheck"})
+            for row in result["native_record"]["payload"]:
+                self.assertEqual(row["sha256"], acceptance.digest(row["source"]))
+                self.assertTrue(row["upstream_path"])
+                self.assertTrue(row["upstream_path_origin"])
+        else:
+            self.assertNotIn("BYO_MANAGED_TEST_INPUT_RECORD", result["selectors"])
+
+    def test_missing_real_native_resource_publishes_no_selectors(self):
+        bundle = self.copied_bundle()
+        manifest = json.loads((bundle / "release-manifest.json").read_bytes())
+        resource = next(
+            row["path"]
+            for row in manifest["files"]
+            if row["path"].startswith("analysis/")
+            and not row["executable"]
+            and row["path"] != "analysis/runtime.json"
+        )
+        (bundle / resource).unlink()
+        result = self.prepare_in_clean_interpreter(bundle)
+        self.assert_bundle_refused(result)
+        self.assertIn("FileNotFoundError", result["facts"]["bundle"]["error"])
+
+    def test_hash_consistent_mapping_tamper_reaches_real_validator_and_is_refused(self):
+        bundle = self.copied_bundle()
+        mapping = json.loads((bundle / "analysis/runtime.json").read_bytes())
+        mapping["schema_version"] = -1
+        self.rewrite_inventoried_json(bundle, "analysis/runtime.json", mapping)
+        result = self.prepare_in_clean_interpreter(bundle)
+        self.assert_bundle_refused(result)
+        self.assertIn(
+            "Analysis runtime mapping differs from pinned selection", result["facts"]["bundle"]["error"]
+        )
+
+    def test_hash_consistent_sbom_provenance_tamper_is_refused(self):
+        bundle = self.copied_bundle()
+        sbom = json.loads((bundle / "sbom.cdx.json").read_bytes())
+        component = next(c for c in sbom["components"] if c["bom-ref"] == "byo-analysis:clangd")
+        upstream = next(p for p in component["properties"] if p["name"] == "byo:analysis:upstream")
+        upstream["value"] = "{}"
+        self.rewrite_inventoried_json(bundle, "sbom.cdx.json", sbom)
+        result = self.prepare_in_clean_interpreter(bundle)
+        self.assert_bundle_refused(result)
+        self.assertIn(
+            "Analysis SBOM source/license/recipe mismatch: clangd", result["facts"]["bundle"]["error"]
+        )
 
 
 if __name__ == "__main__":
