@@ -142,12 +142,18 @@ class Trail(unittest.TestCase):
         """A global trail would make two concurrent boards' reports untriageable."""
 
         self.trail.append(
-            tool="read_memory", board="alpha", connection="c1",
-            args_fp="fp", outcome="success",
+            tool="read_memory",
+            board="alpha",
+            connection="c1",
+            args_fp="fp",
+            outcome="success",
         )
         self.trail.append(
-            tool="flash", board="beta", connection="c2",
-            args_fp="fp", outcome="unexpected_error",
+            tool="flash",
+            board="beta",
+            connection="c2",
+            args_fp="fp",
+            outcome="unexpected_error",
         )
         alpha = self.trail.for_board("alpha")
         self.assertEqual(len(alpha), 1)
@@ -157,8 +163,11 @@ class Trail(unittest.TestCase):
     def test_buffer_is_bounded(self) -> None:
         for index in range(TRAIL_MAX_EVENTS + 50):
             self.trail.append(
-                tool=f"t{index}", board="b", connection=None,
-                args_fp="fp", outcome="success",
+                tool=f"t{index}",
+                board="b",
+                connection=None,
+                args_fp="fp",
+                outcome="success",
             )
         self.assertEqual(len(self.trail.for_board("b")), TRAIL_MAX_EVENTS)
 
@@ -192,22 +201,27 @@ class Trail(unittest.TestCase):
 
         original = counters_module.USAGE_SNAPSHOT_CADENCE
         counters_module.USAGE_SNAPSHOT_CADENCE = 5000
-        self.addCleanup(
-            setattr, counters_module, "USAGE_SNAPSHOT_CADENCE", original
-        )
+        self.addCleanup(setattr, counters_module, "USAGE_SNAPSHOT_CADENCE", original)
         trail = BoardTrail()
         for index in range(TRAIL_MAX_EVENTS + 10):
             trail.append(
-                tool=f"t{index}", board="b", connection=None,
-                args_fp="fp", outcome="success",
+                tool=f"t{index}",
+                board="b",
+                connection=None,
+                args_fp="fp",
+                outcome="success",
             )
         self.assertEqual(len(trail.for_board("b")), TRAIL_MAX_EVENTS)
 
     def test_entries_record_the_named_remedy(self) -> None:
         self.trail.append(
-            tool="flash", board="b", connection="c",
-            args_fp="fp", outcome="policy_refusal",
-            error_class="plan/gate-closed", remedy="call board_validate",
+            tool="flash",
+            board="b",
+            connection="c",
+            args_fp="fp",
+            outcome="policy_refusal",
+            error_class="plan/gate-closed",
+            remedy="call board_validate",
         )
         entry = self.trail.for_board("b")[0]
         self.assertEqual(entry.remedy, "call board_validate")
@@ -215,8 +229,11 @@ class Trail(unittest.TestCase):
 
     def test_no_board_bucket_is_separate(self) -> None:
         self.trail.append(
-            tool="server_health_check", board=None, connection=None,
-            args_fp="fp", outcome="success",
+            tool="server_health_check",
+            board=None,
+            connection=None,
+            args_fp="fp",
+            outcome="success",
         )
         self.assertEqual(len(self.trail.for_board(None)), 1)
         self.assertEqual(len(self.trail.for_board("b")), 0)
@@ -224,9 +241,7 @@ class Trail(unittest.TestCase):
     def test_records_are_jsonable(self) -> None:
         import json
 
-        self.trail.append(
-            tool="a", board="b", connection="c", args_fp="fp", outcome="success"
-        )
+        self.trail.append(tool="a", board="b", connection="c", args_fp="fp", outcome="success")
         json.dumps(self.trail.records_for("b"))
 
 

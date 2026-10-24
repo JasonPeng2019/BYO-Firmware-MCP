@@ -282,9 +282,7 @@ class FirmStore:
                 self.layout.pack_manifest.resolve(), text.encode("utf-8")
             )
 
-    def update_pack_manifest(
-        self, update: Callable[[Path], Mapping[str, Any]]
-    ) -> Path:
+    def update_pack_manifest(self, update: Callable[[Path], Mapping[str, Any]]) -> Path:
         """Serialize the complete local manifest read/merge/write across servers.
 
         The callback may read/validate local files; downloads and hardware work
@@ -340,8 +338,7 @@ class FirmStore:
         ensure_no_persisted_authority(document)
         destination = self._owned_target(target)
         payload = (
-            json.dumps(document, sort_keys=True, ensure_ascii=False, separators=(",", ":"))
-            + "\n"
+            json.dumps(document, sort_keys=True, ensure_ascii=False, separators=(",", ":")) + "\n"
         ).encode("utf-8")
         with self._write_lock:
             destination.parent.mkdir(parents=True, exist_ok=True)

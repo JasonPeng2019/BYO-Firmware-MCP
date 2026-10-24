@@ -175,7 +175,9 @@ def configured_probe_cli_commands() -> tuple[tuple[str, ...], ...]:
         return tuple((override, *suffix) for suffix in spec.inventory_argv)
     if spec.executable == "pyocd":
         if is_compiled():
-            return tuple((*sidecar_command("probe-list"), *suffix) for suffix in spec.inventory_argv)
+            return tuple(
+                (*sidecar_command("probe-list"), *suffix) for suffix in spec.inventory_argv
+            )
         return tuple((sys.executable, "-m", "pyocd", *suffix) for suffix in spec.inventory_argv)
     executable = shutil.which(spec.executable) or spec.executable
     if not executable or "\x00" in executable:

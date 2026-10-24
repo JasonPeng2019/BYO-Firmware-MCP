@@ -132,7 +132,9 @@ def build_flash_handlers(
             if target_state != "reset_state_unconfirmed"
             else "final reset state is unconfirmed; reconnect and check target state before use."
         )
-        return wrap_layer2_response(f"Flashed {flashed} as {tool_name} within its mapped partition; {suffix}")
+        return wrap_layer2_response(
+            f"Flashed {flashed} as {tool_name} within its mapped partition; {suffix}"
+        )
 
     def flash_application(
         board_id: str,

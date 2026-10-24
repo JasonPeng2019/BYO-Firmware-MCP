@@ -41,10 +41,13 @@ class ProjectPathWorkflows(unittest.TestCase):
         original_cwd = Path.cwd()
         self.addCleanup(os.chdir, original_cwd)
         os.chdir(self.runtime)
-        environment = patch.dict(os.environ, {
-            "BYO_MCP_ARTIFACT_ROOT": str(self.project),
-            "BYO_RUNTIME_ROOT": str(self.runtime),
-        })
+        environment = patch.dict(
+            os.environ,
+            {
+                "BYO_MCP_ARTIFACT_ROOT": str(self.project),
+                "BYO_RUNTIME_ROOT": str(self.runtime),
+            },
+        )
         environment.start()
         self.addCleanup(environment.stop)
 
@@ -52,19 +55,25 @@ class ProjectPathWorkflows(unittest.TestCase):
         expected = self.project / "app.elf"
         self.assertEqual(_normalize_elf_path("app.elf"), expected)
         definition = definition_for_action("flash_application")
-        binding = PlanEngine._bind_artifact(None, definition, {"artifact": "app.elf"}, session_id=None)
+        binding = PlanEngine._bind_artifact(
+            None, definition, {"artifact": "app.elf"}, session_id=None
+        )
         self.assertEqual(binding.resolved_path, expected)
         request = resolve_flash_request(
-            object(), explicit_path="app.elf",
+            object(),
+            explicit_path="app.elf",
             action_context=ActionContext("test", "flash_application"),
         )
         self.assertEqual(request.artifact_path, expected)
         self.assertEqual(request.identity.sha256, binding.sha256)
 
     def test_mcp_collector_reads_and_writes_in_project(self):
-        result = json.loads(build_artifact_handlers()["collect_build_artifacts"](
-            output_dir="dist/bundle", elf_path="app.elf",
-        ))
+        result = json.loads(
+            build_artifact_handlers()["collect_build_artifacts"](
+                output_dir="dist/bundle",
+                elf_path="app.elf",
+            )
+        )
         self.assertEqual(Path(result["output_dir"]), self.project / "dist/bundle")
         self.assertFalse((self.runtime / "dist").exists())
         self.assertEqual(Path(result["canonical_paths"]["elf"]).read_bytes(), b"\x7fELF-project")
@@ -112,7 +121,9 @@ class SessionLookupIsolation(unittest.TestCase):
                 patch.dict(os.environ, {"PYOCD_PROJECT_DIR": str(root)}),
                 patch.object(swd_pyocd, "_choose_unique_probe", return_value=Probe()),
             ):
-                session = swd_pyocd.PyOCDSWDInterface._choose_session(probe_uid="fixture-probe", options={})
+                session = swd_pyocd.PyOCDSWDInterface._choose_session(
+                    probe_uid="fixture-probe", options={}
+                )
             self.assertFalse(marker.exists())
             self.assertNotEqual(session.options.get("frequency"), 123)
             isolated = Path(session.project_dir)

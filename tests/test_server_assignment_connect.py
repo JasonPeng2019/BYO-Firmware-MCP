@@ -16,6 +16,7 @@ from pyocd_debug_mcp.adapters.swd_interface import (
 )
 from pyocd_debug_mcp.board_config import BoardConfig
 from pyocd_debug_mcp.firmstore.profiles import ProfileError
+from pyocd_debug_mcp.probe_inventory import registered_provider_ids
 from pyocd_debug_mcp.services.connections import ConnectionManager, probe_connection_id
 from pyocd_debug_mcp.setup_flow.setup import RunAssignmentStore
 from pyocd_debug_mcp.setup_flow.validate import ValidationInventory, ValidationProbe
@@ -26,15 +27,22 @@ FIRST_PROBE = "683710208"
 SECOND_PROBE = "683854191"
 
 
+def setUpModule() -> None:
+    required = {"cmsisdap", "picoprobe"}
+    actual = set(registered_provider_ids())
+    if not required <= actual:
+        raise RuntimeError(f"Real pyOCD registry lacks fixture prerequisites: {required - actual}")
+
+
 def _board(board_id: str) -> BoardConfig:
     return BoardConfig(
         board_id=board_id,
         display_name="Test nRF52840 board",
         mcu_family="nrf52",
-        probe_family="jlink",
+        probe_family="picoprobe",
         pyocd_target="nrf52840",
-        probe_type="jlink",
-        probe_hint_terms=("j-link", "nrf52840"),
+        probe_type="picoprobe",
+        probe_hint_terms=("picoprobe", "nrf52840"),
         serial_hint_terms=(),
         test_addr=0x20000000,
     )
@@ -42,7 +50,9 @@ def _board(board_id: str) -> BoardConfig:
 
 def _inventory(*probe_uids: str) -> ValidationInventory:
     return ValidationInventory(
-        probes=tuple(ValidationProbe(uid, f"J-Link {uid}", "jlink", uid) for uid in probe_uids)
+        probes=tuple(
+            ValidationProbe(uid, f"Picoprobe {uid}", "picoprobe", uid) for uid in probe_uids
+        )
     )
 
 
@@ -120,14 +130,14 @@ class AssignmentAwareConnectTests(unittest.TestCase):
             side_effect=lambda **kwargs: TargetSessionHandle(
                 session=SimpleNamespace(board=SimpleNamespace(name="nRF52840")),
                 board=kwargs["board"],
-                probe_uid=kwargs["unique_id"].removeprefix("jlink:"),
+                probe_uid=kwargs["unique_id"].removeprefix("picoprobe:"),
                 route_used="test-route",
                 target_override=kwargs["target"],
             )
         )
         generic_resolution = Mock(
             return_value=SimpleNamespace(
-                probe=SimpleNamespace(uid=generic_uid, family="jlink"),
+                probe=SimpleNamespace(uid=generic_uid, family="picoprobe"),
                 note="generic discovery selected a probe",
             )
         )
@@ -162,7 +172,7 @@ class AssignmentAwareConnectTests(unittest.TestCase):
             inventory=_inventory(FIRST_PROBE, SECOND_PROBE),
         )
 
-        self.assertEqual(open_session.call_args.kwargs["unique_id"], f"jlink:{SECOND_PROBE}")
+        self.assertEqual(open_session.call_args.kwargs["unique_id"], f"picoprobe:{SECOND_PROBE}")
         self.assertIn(SECOND_PROBE, result)
         generic_resolution.assert_not_called()
 
@@ -271,7 +281,7 @@ class AssignmentAwareConnectTests(unittest.TestCase):
             generic_uid=FIRST_PROBE,
         )
 
-        self.assertEqual(open_session.call_args.kwargs["unique_id"], f"jlink:{FIRST_PROBE}")
+        self.assertEqual(open_session.call_args.kwargs["unique_id"], f"picoprobe:{FIRST_PROBE}")
         self.assertIn(FIRST_PROBE, result)
         generic_resolution.assert_called_once()
 
@@ -310,7 +320,7 @@ class AssignmentAwareConnectTests(unittest.TestCase):
         self,
     ) -> None:
         native = Mock(side_effect=AssertionError("parent invoked native discovery"))
-        cli_listing = f"0  J-Link Probe  jlink:{FIRST_PROBE}\n"
+        cli_listing = f"0  Picoprobe Probe  picoprobe:{FIRST_PROBE}\n"
         with (
             patch(
                 "pyocd.core.helpers.ConnectHelper.get_all_connected_probes",
@@ -327,8 +337,8 @@ class AssignmentAwareConnectTests(unittest.TestCase):
                 allow_environment_override=False,
             )
 
-        self.assertEqual(inventory.probes[0].usb_serial, f"jlink:{FIRST_PROBE}")
-        self.assertEqual(resolved, f"jlink:{FIRST_PROBE}")
+        self.assertEqual(inventory.probes[0].usb_serial, f"picoprobe:{FIRST_PROBE}")
+        self.assertEqual(resolved, f"picoprobe:{FIRST_PROBE}")
         native.assert_not_called()
         self.assertGreaterEqual(run_cmd.call_count, 2)
 
@@ -337,8 +347,8 @@ class AssignmentAwareConnectTests(unittest.TestCase):
         board = _board("uidless-board")
         metadata = TargetSessionMetadata(
             board_name=board.display_name,
-            probe_description="Frozen UID-less J-Link",
-            probe_family="jlink",
+            probe_description="Frozen UID-less Picoprobe",
+            probe_family="picoprobe",
             probe_uid=None,
             live_part_number="nRF52840",
             route_used="worker",
@@ -365,8 +375,8 @@ class AssignmentAwareConnectTests(unittest.TestCase):
         self.assertEqual(len(inventory.probes), 1)
         probe = inventory.probes[0]
         self.assertEqual(probe.probe_id, assignment.connection_id)
-        self.assertEqual(probe.description, "Frozen UID-less J-Link")
-        self.assertEqual(probe.probe_family, "jlink")
+        self.assertEqual(probe.description, "Frozen UID-less Picoprobe")
+        self.assertEqual(probe.probe_family, "picoprobe")
         self.assertIsNone(probe.usb_serial)
         choice = probe.choice()
         self.assertIn("session-local", choice.label)
@@ -384,7 +394,7 @@ class AssignmentAwareConnectTests(unittest.TestCase):
             metadata=TargetSessionMetadata(
                 board_name="Test board",
                 probe_description="UID-less probe",
-                probe_family="jlink",
+                probe_family="picoprobe",
                 probe_uid=None,
                 live_part_number="nRF52840",
                 route_used="worker",
@@ -403,7 +413,7 @@ class AssignmentAwareConnectTests(unittest.TestCase):
                     ValidationProbe(
                         assignment.connection_id,
                         "UID-less probe",
-                        "jlink",
+                        "picoprobe",
                         None,
                     ),
                     1.0,
@@ -412,7 +422,7 @@ class AssignmentAwareConnectTests(unittest.TestCase):
             with self.assertRaisesRegex(TargetConnectionError, "does not match"):
                 server._validation_connect(
                     profile,
-                    ValidationProbe("session:another-worker", "Other", "jlink", None),
+                    ValidationProbe("session:another-worker", "Other", "picoprobe", None),
                     1.0,
                 )
 
@@ -423,7 +433,7 @@ class AssignmentAwareConnectTests(unittest.TestCase):
         uidless = ValidationProbe(
             "session:runtime-uidless",
             "UID-less probe",
-            "jlink",
+            "picoprobe",
             None,
         )
         with (
@@ -457,7 +467,7 @@ class AssignmentAwareConnectTests(unittest.TestCase):
             metadata=TargetSessionMetadata(
                 board_name="Test board",
                 probe_description="UID-less probe",
-                probe_family="jlink",
+                probe_family="picoprobe",
                 probe_uid=None,
                 live_part_number="nRF52840",
                 route_used="worker",
@@ -524,8 +534,8 @@ class AssignmentAwareConnectTests(unittest.TestCase):
             target_override=None,
             metadata=TargetSessionMetadata(
                 board_name="Test board",
-                probe_description="J-Link probe",
-                probe_family="jlink",
+                probe_description="Picoprobe probe",
+                probe_family="picoprobe",
                 probe_uid=FIRST_PROBE,
                 live_part_number=None,
                 route_used="worker",
@@ -537,7 +547,7 @@ class AssignmentAwareConnectTests(unittest.TestCase):
         # The assignment store is seeded exactly the way `_setup_overview` would seed
         # it: a provider-qualified canonical key, which happens to be the same key
         # `ConnectionManager.assign` above derived for the live connection.
-        canonical_connection_id = probe_connection_id("jlink", FIRST_PROBE)
+        canonical_connection_id = probe_connection_id("picoprobe", FIRST_PROBE)
         self.assertEqual(connection.connection_id, canonical_connection_id)
         real_store = RunAssignmentStore({})
         real_store.assign(canonical_connection_id, "board-1")
@@ -578,7 +588,7 @@ class AssignmentAwareConnectTests(unittest.TestCase):
         changed" when the provider is, in fact, still knowable.
         """
 
-        canonical_connection_id = probe_connection_id("jlink", FIRST_PROBE)
+        canonical_connection_id = probe_connection_id("picoprobe", FIRST_PROBE)
         real_store = RunAssignmentStore({})
         real_store.assign(canonical_connection_id, "board-1")
         gate = SimpleNamespace(record_mismatch=Mock())
@@ -611,12 +621,12 @@ class AssignmentAwareConnectTests(unittest.TestCase):
         of its comparison come from the same `_board()` fixture. This constructs a
         genuine divergence: the assignment was minted for one provider ("cmsisdap" --
         what was actually connected/assigned), but the board's profile independently
-        declares a DIFFERENT provider ("jlink"), built from its own standalone
+        declares a DIFFERENT provider ("picoprobe"), built from its own standalone
         `BoardConfig`, not derived from the stored key at all.
 
         Answer, confirmed empirically by this test rather than assumed: it fails
         closed. `_known_provider_for_board`'s profile fallback mints
-        `probe_connection_id("jlink", ...)`, which is simply not the stored key
+        `probe_connection_id("picoprobe", ...)`, which is simply not the stored key
         (`probe_connection_id("cmsisdap", ...)`) for this board_id --
         `run_if_current`'s two-way exact-match dictionary lookup requires the minted
         key to equal the value stored for *this exact board_id*, so a wrong provider
@@ -629,7 +639,7 @@ class AssignmentAwareConnectTests(unittest.TestCase):
         """
 
         real_provider = "cmsisdap"
-        stale_profile_provider = "jlink"
+        stale_profile_provider = "picoprobe"
         canonical_connection_id = probe_connection_id(real_provider, FIRST_PROBE)
         real_store = RunAssignmentStore({})
         real_store.assign(canonical_connection_id, "board-1")

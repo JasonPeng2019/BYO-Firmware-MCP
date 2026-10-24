@@ -2,6 +2,7 @@
 
 No product changes, fabricated OS locks, hardware, or probabilistic write races.
 """
+
 from __future__ import annotations
 
 import errno
@@ -20,7 +21,9 @@ import yaml
 
 from pyocd_debug_mcp import remote_probes
 from pyocd_debug_mcp.capabilities.policy import (
-    CapabilityPolicyConflict, CapabilityPolicyRepository, Tier,
+    CapabilityPolicyConflict,
+    CapabilityPolicyRepository,
+    Tier,
 )
 from pyocd_debug_mcp.firmstore.cache import AttachmentCache, ProbeIdentity, SerialEndpoint
 from pyocd_debug_mcp.firmstore.store import FirmStore
@@ -40,12 +43,14 @@ def raw_holder(path, ready, release):
     try:
         if os.name == "nt":
             import msvcrt
+
             if not os.fstat(descriptor).st_size:
                 os.write(descriptor, b"\0")
             os.lseek(descriptor, 0, os.SEEK_SET)
             msvcrt.locking(descriptor, msvcrt.LK_NBLCK, 1)
         else:
             import fcntl
+
             fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
         ready.set()
         wait(release)
@@ -87,6 +92,7 @@ def mutation(root, kind, ready, release):
         with patch.object(cache, "load_records", read):
             cache.confirm("first", *identity("first"), confirmed_at="2026-01-01T00:00:00+00:00")
     elif kind == "manifest":
+
         def merge(path):
             result = yaml.safe_load(path.read_text())
             ready.set()
@@ -96,6 +102,7 @@ def mutation(root, kind, ready, release):
 
         firm.update_pack_manifest(merge)
     elif kind == "policy":
+
         def fault(stage):
             if stage == "before_pointer_replace":
                 ready.set()
@@ -110,6 +117,7 @@ def refresh_racer(root, ready, release, output):
     """Only expensive derivation/projection are isolated; policy IO remains real."""
     from tests.tiered_acceptance_support import known_good_full_policy, tiered_test_server
     from pyocd_debug_mcp.safety.map_build import SafetyMapDocument
+
     _, memory_map = known_good_full_policy()
     document = SafetyMapDocument.from_document(memory_map)
 
@@ -119,10 +127,12 @@ def refresh_racer(root, ready, release, output):
         return document
 
     with tiered_test_server(Path(root)) as server:
-        with (patch.object(server, "_active_full_document", return_value=document),
-              patch.object(server, "_derive_safety_map", derive),
-              patch.object(server._safety_repository, "commit"),
-              patch.object(server, "_restamp_after_refresh")):
+        with (
+            patch.object(server, "_active_full_document", return_value=document),
+            patch.object(server, "_derive_safety_map", derive),
+            patch.object(server._safety_repository, "commit"),
+            patch.object(server, "_restamp_after_refresh"),
+        ):
             result = server._run_board_safety_refresh("legacy_full")
         Path(output).write_text(json.dumps(result), encoding="utf-8")
 
@@ -162,8 +172,11 @@ class ProcessCase(unittest.TestCase):
         self.assertEqual(child.exitcode, 0)
 
     def snapshot(self):
-        return {p.relative_to(self.root).as_posix(): p.read_bytes()
-                for p in self.root.rglob("*") if p.is_file() and not p.name.endswith(".lock")}
+        return {
+            p.relative_to(self.root).as_posix(): p.read_bytes()
+            for p in self.root.rglob("*")
+            if p.is_file() and not p.name.endswith(".lock")
+        }
 
 
 class IndependentCore(ProcessCase):
@@ -176,9 +189,17 @@ class IndependentCore(ProcessCase):
         firm.atomic_write_pack_manifest({"packs": []})
         policy.resolve("board")
         cases = (
-            (firm.layout.remote_probes, lambda: remote_probes.register_entry(firm.layout.remote_probes, "other", 3333, "")),
+            (
+                firm.layout.remote_probes,
+                lambda: remote_probes.register_entry(firm.layout.remote_probes, "other", 3333, ""),
+            ),
             (cache.path, lambda: cache.revoke("seed", *identity("seed"))),
-            (firm.layout.pack_manifest, lambda: firm.update_pack_manifest(lambda _: self.fail("callback ran before acquiring lock"))),
+            (
+                firm.layout.pack_manifest,
+                lambda: firm.update_pack_manifest(
+                    lambda _: self.fail("callback ran before acquiring lock")
+                ),
+            ),
             (policy.pointer_path("board"), lambda: policy.mark_setup_incomplete("board")),
         )
         for path, operation in cases:
@@ -207,7 +228,9 @@ class IndependentCore(ProcessCase):
         self.assertEqual(path.read_bytes(), before)
         release.set()
         self.done(child)
-        self.assertEqual({p.host for p in remote_probes.load_remote_probes(path)}, {"seed", "first.example"})
+        self.assertEqual(
+            {p.host for p in remote_probes.load_remote_probes(path)}, {"seed", "first.example"}
+        )
 
     def test_manifest_direct_replacement_participates_and_callback_can_nest(self):
         firm = FirmStore(self.root)
@@ -230,7 +253,10 @@ class IndependentCore(ProcessCase):
             return doc
 
         firm.update_pack_manifest(merge)
-        self.assertEqual([p["id"] for p in yaml.safe_load(firm.layout.pack_manifest.read_text())["packs"]], ["first", "nested"])
+        self.assertEqual(
+            [p["id"] for p in yaml.safe_load(firm.layout.pack_manifest.read_text())["packs"]],
+            ["first", "nested"],
+        )
 
     def test_sidecar_inode_survives_atomic_data_replacements_and_process_kill(self):
         path = self.root / "registry.json"
@@ -302,7 +328,10 @@ class IndependentCore(ProcessCase):
             except transactions.FileTransactionTimeout:
                 results.append("busy")
 
-        with transactions.file_transaction(path), transactions.file_transaction(path, timeout_seconds=0):
+        with (
+            transactions.file_transaction(path),
+            transactions.file_transaction(path, timeout_seconds=0),
+        ):
             child = threading.Thread(target=thread)
             child.start()
             child.join(2)
@@ -331,21 +360,29 @@ class CallerTransactions(ProcessCase):
     def test_safety_refresh_cannot_overwrite_a_completed_other_process_downgrade(self):
         """An earlier refresh must not resurrect full policy after a downgrade."""
         from tests.tiered_acceptance_support import known_good_full_policy
+
         profile, memory_map = known_good_full_policy()
         repo = CapabilityPolicyRepository(self.root)
-        repo.commit("legacy_full", Tier.SETUP_FULL, profile_snapshot=profile, map_snapshot=memory_map)
+        repo.commit(
+            "legacy_full", Tier.SETUP_FULL, profile_snapshot=profile, map_snapshot=memory_map
+        )
         ready, release = self.events()
         output = self.root / "refresh-result.json"
         child = self.start(refresh_racer, str(self.root), ready, release, str(output))
-        self.assertTrue(ready.wait(20), "refresh never reached derivation after reading full policy")
+        self.assertTrue(
+            ready.wait(20), "refresh never reached derivation after reading full policy"
+        )
         downgraded = repo.downgrade_to_no_setup("legacy_full")
         self.assertEqual(repo.resolve("legacy_full"), downgraded)
         release.set()
         self.done(child)
         result = json.loads(output.read_text())
         final = repo.resolve("legacy_full")
-        self.assertEqual(final, downgraded,
-                         f"refresh changed completed downgrade; result={result}; final={final}")
+        self.assertEqual(
+            final,
+            downgraded,
+            f"refresh changed completed downgrade; result={result}; final={final}",
+        )
         self.assertEqual(result["status"], "safety_refresh_blocked")
 
 
@@ -359,9 +396,14 @@ class RepairAcceptance(ProcessCase):
 
     def test_frozen_and_base_exceptions_preserve_identity_and_release_for_other_process(self):
         from pyocd_debug_mcp.capabilities.routing import TierRouteRefusal
+
         path = self.root / "exceptions.json"
-        for error in (TierRouteRefusal("tier/wrong-route", "already raw"),
-                      OSError(errno.EIO, "body IO failure"), SystemExit(17), StopIteration("stop")):
+        for error in (
+            TierRouteRefusal("tier/wrong-route", "already raw"),
+            OSError(errno.EIO, "body IO failure"),
+            SystemExit(17),
+            StopIteration("stop"),
+        ):
             observed = original_traceback = None
             try:
                 with transactions.file_transaction(path), transactions.file_transaction(path):
@@ -400,22 +442,31 @@ class RepairAcceptance(ProcessCase):
 
     def test_pack_live_work_is_unlocked_and_tamper_and_rollback_preserve_other_attempt(self):
         from pyocd_debug_mcp.setup_flow.packs import (
-            PackCandidate, PackCandidateError, PackCandidatePipeline,
+            PackCandidate,
+            PackCandidateError,
+            PackCandidatePipeline,
         )
         from pyocd_debug_mcp.pack_provision import load_manifest
+
         firm = FirmStore(self.root)
         source = self.root / "source.pack"
         source.write_bytes(b"independent exact pack fixture")
-        candidate = PackCandidate("independent", "1", "independent.pack",
-                                  "https://example.invalid/independent.pack", source)
+        candidate = PackCandidate(
+            "independent",
+            "1",
+            "independent.pack",
+            "https://example.invalid/independent.pack",
+            source,
+        )
 
         def live(*args):
             # A native external holder can acquire the manifest while live work runs.
             self.assert_native_reacquisition(firm.layout.pack_manifest)
 
         def pipeline():
-            return PackCandidatePipeline(firm, enumerate_targets=lambda *_: ("fixturetarget",),
-                                         live_connect=live)
+            return PackCandidatePipeline(
+                firm, enumerate_targets=lambda *_: ("fixturetarget",), live_connect=live
+            )
 
         first, pending = pipeline(), pipeline()
         one = first.validate(candidate, required_target="fixturetarget")
@@ -432,7 +483,9 @@ class RepairAcceptance(ProcessCase):
         with patch.object(firm, "atomic_write_pack_manifest", side_effect=OSError("write failed")):
             with self.assertRaisesRegex(OSError, "write failed"):
                 pending.promote(two, board_id="second")
-        self.assertFalse(destination.exists(), "failed publisher left owned unreferenced final bytes")
+        self.assertFalse(
+            destination.exists(), "failed publisher left owned unreferenced final bytes"
+        )
         self.assertFalse(two.staged_path.exists())
         good = pipeline()
         three = good.validate(candidate, required_target="fixturetarget")
@@ -450,14 +503,22 @@ class RepairAcceptance(ProcessCase):
 
     def test_setup_live_connect_is_unlocked_then_stale_profile_commit_is_refused(self):
         from tests.tiered_acceptance_support import tiered_test_server
+
         with tiered_test_server(self.root) as server:
             board = "independent_setup"
-            context = SimpleNamespace(user_input=SimpleNamespace(board_id=board),
-                                      continuation_id="independent-continuation")
+            context = SimpleNamespace(
+                user_input=SimpleNamespace(board_id=board),
+                continuation_id="independent-continuation",
+            )
             expected = server._setup_policy_base(context)
-            fields = {"board_id": board, "display_name": "Independent fixture",
-                      "mcu_part_number": "STM32L476RGT6", "pyocd_target": "stm32l476rg",
-                      "mcu_family": "stm32", "probe_family": "stlink"}
+            fields = {
+                "board_id": board,
+                "display_name": "Independent fixture",
+                "mcu_part_number": "STM32L476RGT6",
+                "pyocd_target": "stm32l476rg",
+                "mcu_family": "stm32",
+                "probe_family": "stlink",
+            }
             newer = []
 
             def live(*args):

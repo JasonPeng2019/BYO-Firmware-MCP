@@ -76,8 +76,7 @@ class IssueForm(unittest.TestCase):
             validate_issue_form(
                 issue_form(
                     recent_actions=[
-                        {"action": "a", "result": "b", "code_context": "c"}
-                        for _ in range(6)
+                        {"action": "a", "result": "b", "code_context": "c"} for _ in range(6)
                     ]
                 )
             )
@@ -160,9 +159,7 @@ class MonitorToolSurface(MonitorTestCase):
         self.tools = build_monitor_tools(self.monitor)
 
     def test_exactly_three_actions_in_a_personal_build(self) -> None:
-        self.assertEqual(
-            set(self.tools), {REPORT_TOOL_NAME, HEALTH_TOOL_NAME, CHECKIN_TOOL_NAME}
-        )
+        self.assertEqual(set(self.tools), {REPORT_TOOL_NAME, HEALTH_TOOL_NAME, CHECKIN_TOOL_NAME})
 
     def test_none_of_them_take_a_board_id(self) -> None:
         """No board_id is what keeps them off per-board serialization."""

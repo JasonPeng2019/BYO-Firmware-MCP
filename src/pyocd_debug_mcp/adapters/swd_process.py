@@ -28,7 +28,11 @@ from pyocd_debug_mcp.kernel.operations import (
     CANCELLATION_CLEANUP_GRACE_SECONDS,
     current_operation,
 )
-from pyocd_debug_mcp.kernel.processes import ProcessMarkerStore, popen_owned, terminate_process_group
+from pyocd_debug_mcp.kernel.processes import (
+    ProcessMarkerStore,
+    popen_owned,
+    terminate_process_group,
+)
 from pyocd_debug_mcp.target_errors import (
     LockedTargetError,
     ProbeNotFoundError,
@@ -64,7 +68,11 @@ def _strict_int(value: object, name: str) -> int:
 
 def _memory_arguments(arguments: dict[str, Any], *, write: bool) -> tuple[int, int]:
     width_bits = arguments.get("width_bits")
-    if not isinstance(width_bits, int) or isinstance(width_bits, bool) or width_bits not in {8, 16, 32}:
+    if (
+        not isinstance(width_bits, int)
+        or isinstance(width_bits, bool)
+        or width_bits not in {8, 16, 32}
+    ):
         raise ValueError("worker memory width was invalid")
     address = arguments.get("address")
     if not isinstance(address, int) or isinstance(address, bool) or address < 0:
@@ -189,11 +197,7 @@ def _operation_deadline(operation_timeout_seconds: float | None = None) -> float
     operation = current_operation()
     if operation is None:
         return now + DEFAULT_EXTERNAL_COMMAND_TIMEOUT_SECONDS
-    deadline = (
-        operation.started_at
-        + operation.timeout_seconds
-        - CANCELLATION_CLEANUP_GRACE_SECONDS
-    )
+    deadline = operation.started_at + operation.timeout_seconds - CANCELLATION_CLEANUP_GRACE_SECONDS
     if not math.isfinite(deadline) or deadline <= now:
         raise TargetConnectionError(
             "The managed operation has no provider time remaining after reserving cleanup time."
@@ -228,7 +232,9 @@ class _WorkerClient:
         self._cleanup_confirmed = False
         self._responses: queue.Queue[object] = queue.Queue()
         startup_deadline = deadline if deadline is not None else _operation_deadline()
-        argv = tuple(worker_argv or (sys.executable, "-m", "pyocd_debug_mcp.adapters.provider_worker"))
+        argv = tuple(
+            worker_argv or (sys.executable, "-m", "pyocd_debug_mcp.adapters.provider_worker")
+        )
         self._process, self._marker = popen_owned(
             argv,
             stdin=subprocess.PIPE,
@@ -363,15 +369,13 @@ class _WorkerClient:
     ) -> Any:
         if deadline is not None and timeout is not None:
             raise ValueError("pass either deadline or timeout, not both")
-        call_deadline = (
-            deadline
-            if deadline is not None
-            else time.monotonic() + _timeout(timeout)
-        )
+        call_deadline = deadline if deadline is not None else time.monotonic() + _timeout(timeout)
         _remaining(call_deadline)
         with self._guard:
             if self._closed:
-                raise TargetConnectionError("The worker session is no longer live; reconnect and validate.")
+                raise TargetConnectionError(
+                    "The worker session is no longer live; reconnect and validate."
+                )
             self._request_id += 1
             request_id = self._request_id
             payload = {
@@ -384,7 +388,9 @@ class _WorkerClient:
                 _memory_arguments(arguments, write=False)
             elif operation == "write_memory":
                 _memory_arguments(arguments, write=True)
-            raw = (json.dumps(payload, separators=(",", ":"), allow_nan=False) + "\n").encode("utf-8")
+            raw = (json.dumps(payload, separators=(",", ":"), allow_nan=False) + "\n").encode(
+                "utf-8"
+            )
             try:
                 self._write(raw, call_deadline)
                 reply = self._read(call_deadline)
@@ -401,7 +407,12 @@ class _WorkerClient:
                     return _validate_result(operation, reply.get("result"), arguments)
                 except ValueError as exc:
                     self._invalidate(f"Worker returned an invalid {operation} result: {exc}.")
-            if reply.get("ok") is not False or set(reply) != {"version", "request_id", "ok", "error"}:
+            if reply.get("ok") is not False or set(reply) != {
+                "version",
+                "request_id",
+                "ok",
+                "error",
+            }:
                 self._invalidate("Worker returned an invalid error envelope.")
             error = reply.get("error")
             if not isinstance(error, dict) or set(error) != {"kind", "message"}:
@@ -615,7 +626,9 @@ class ProcessIsolatedSWDInterface(SWDInterface):
             ),
         )
 
-    def read_memory_block(self, handle: TargetSessionHandle, address: int, length: int) -> list[int]:
+    def read_memory_block(
+        self, handle: TargetSessionHandle, address: int, length: int
+    ) -> list[int]:
         return cast(
             list[int],
             self._call(handle, "read_memory_block", {"address": address, "length": length}),
@@ -664,11 +677,14 @@ class ProcessIsolatedSWDInterface(SWDInterface):
         *,
         halt_after_reset: bool,
     ) -> str:
-        return cast(str, self._call(
-            handle,
-            "flash",
-            {"path": str(firmware), "halt_after_reset": halt_after_reset},
-        ))
+        return cast(
+            str,
+            self._call(
+                handle,
+                "flash",
+                {"path": str(firmware), "halt_after_reset": halt_after_reset},
+            ),
+        )
 
     def recover(self, handle: TargetSessionHandle) -> None:
         self._call(handle, "recover")

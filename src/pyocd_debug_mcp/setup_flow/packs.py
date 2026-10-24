@@ -56,16 +56,16 @@ class PackCandidate:
             raise PackCandidateError(
                 "package/invalid-candidate", "Package id, version, and source URL are required"
             )
-        if (
-            Path(self.filename).name != self.filename
-            or not self.filename.casefold().endswith(".pack")
+        if Path(self.filename).name != self.filename or not self.filename.casefold().endswith(
+            ".pack"
         ):
             raise PackCandidateError(
                 "package/invalid-filename", "Package filename must be a plain .pack filename"
             )
-        if self.official_sha256 is not None and _SHA256_PATTERN.fullmatch(
-            self.official_sha256
-        ) is None:
+        if (
+            self.official_sha256 is not None
+            and _SHA256_PATTERN.fullmatch(self.official_sha256) is None
+        ):
             raise PackCandidateError(
                 "package/invalid-checksum", "Official checksum must be 64 hexadecimal digits"
             )
@@ -83,6 +83,7 @@ class PackCandidate:
 @dataclass(frozen=True, slots=True)
 class ValidatedPack:
     """One attempt's private validated bytes, consumed by ``promote``."""
+
     candidate: PackCandidate
     staged_path: Path
     actual_sha256: str
@@ -218,9 +219,7 @@ class PackCandidatePipeline:
                     derive_candidate_binding,
                 )
 
-                replayed_binding = derive_candidate_binding(
-                    destination, device_binding.part_number
-                )
+                replayed_binding = derive_candidate_binding(destination, device_binding.part_number)
                 if replayed_binding != device_binding:
                     raise self._reject(
                         "package/device-binding-drift",
@@ -338,6 +337,7 @@ class PackCandidatePipeline:
                     ),
                 )
             )
+
             def publish(manifest: Mapping[str, Any]) -> Mapping[str, Any]:
                 nonlocal created_published
                 if sha256_file(validated.staged_path) != validated.actual_sha256:
@@ -375,7 +375,10 @@ class PackCandidatePipeline:
                 for index, existing in enumerate(packs):
                     if not isinstance(existing, Mapping):
                         continue
-                    if existing.get("id") != entry["id"] and existing.get("filename") != entry["filename"]:
+                    if (
+                        existing.get("id") != entry["id"]
+                        and existing.get("filename") != entry["filename"]
+                    ):
                         continue
                     prior = next(
                         (

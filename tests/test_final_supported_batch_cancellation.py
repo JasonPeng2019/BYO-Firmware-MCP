@@ -43,12 +43,31 @@ class FinalSupportedBatchCancellation(unittest.TestCase):
         committed = threading.Event()
         observations = []
         published_validation_runs = []
-        entered_children = []
+        wrapper_invocations = []
+        entered_handlers = []
+        managed_operations = {}
         real_commit = server.run_if_not_cancelled
         real_dispatch = server.mcp._call_tool_inner
+        validation_tool = server.mcp._tool_manager.get_tool("board_validate")
+        read_tool = server.mcp._tool_manager.get_tool("read_memory_symbol")
+        self.assertIsNotNone(validation_tool)
+        self.assertIsNotNone(read_tool)
+
+        def observe_handler(name, handler):
+            def run(*args, **kwargs):
+                entered_handlers.append(name)
+                managed = current_operation()
+                self.assertIsNotNone(managed)
+                self.assertIsNotNone(managed.handler_started_at)
+                managed_operations[name] = managed
+                return handler(*args, **kwargs)
+
+            return run
 
         async def observed_dispatch(name, arguments, board_id):
-            entered_children.append(name)
+            wrapper_invocations.append(name)
+            if name == "board_validate":
+                managed_operations["action_batch"] = current_operation()
             return await real_dispatch(name, arguments, board_id)
 
         def commit(action):
@@ -61,7 +80,7 @@ class FinalSupportedBatchCancellation(unittest.TestCase):
             published_validation_runs.append(published.validation_run)
             committed.set()
             if interruption:
-                self.assertTrue(managed.cancellation_requested.wait(15), "parent never interrupted")
+                self.assertTrue(managed.cancellation_requested.wait(10), "parent never interrupted")
             return result
 
         actual_backend = server._board_validator._backend
@@ -92,9 +111,27 @@ class FinalSupportedBatchCancellation(unittest.TestCase):
                         "publication_observations": observations,
                         "batch_outcomes": outcomes,
                         "published_validation_runs": published_validation_runs,
-                        "entered_registered_tools": entered_children,
+                        "pre_dispatch_wrapper_invocations": wrapper_invocations,
+                        "entered_registered_handlers": entered_handlers,
+                        "managed_operations": {
+                            name: {
+                                "operation_id": operation.operation_id,
+                                "handler_started_at": operation.handler_started_at,
+                                "completion_committed": operation.completion_committed,
+                                "cancellation_requested": operation.cancellation_requested.is_set(),
+                                "cancellation_reason": operation.cancellation_reason,
+                                "done": operation.done.is_set(),
+                                "cleanup_errors": operation.resources.cleanup_errors,
+                                "fatal_cleanup_errors": operation.resources.fatal_cleanup_errors,
+                            }
+                            for name, operation in managed_operations.items()
+                            if operation is not None
+                        },
                         "backend_calls": backend.calls,
                         "gate": gate,
+                        "connection_present": (
+                            server.connection_manager.maybe_connection(board) is not None
+                        ),
                         "operations": operation_manager.snapshots(),
                     },
                     indent=2,
@@ -116,51 +153,55 @@ class FinalSupportedBatchCancellation(unittest.TestCase):
                 },
             },
         ]
-        real_timeout = server.mcp._timeout_resolver
 
         async def exercise():
             async def run():
-                with anyio.CancelScope() as scope:
-                    outcomes["scope"] = scope
-                    try:
+                try:
+                    # Keep a finite bound from entry. After actual publication,
+                    # shorten this real parent deadline in the deadline case.
+                    with anyio.fail_after(30) as scope:
+                        outcomes["scope"] = scope
                         outcomes["reply"] = await server.mcp.call_tool(
                             "action_batch", {"board_id": board, "actions": actions}
                         )
-                    except BaseException as exc:
-                        outcomes["error"] = type(exc).__name__
-                    finally:
-                        outcomes["done"] = True
+                except BaseException as exc:
+                    outcomes["error"] = type(exc).__name__
+                    outcomes["error_message"] = str(exc)
+                finally:
+                    outcomes["parent_cancel_called"] = scope.cancel_called
+                    outcomes["parent_cancelled_caught"] = scope.cancelled_caught
+                    outcomes["parent_deadline_expired"] = anyio.current_time() >= scope.deadline
+                    outcomes["done"] = True
 
-            with anyio.fail_after(25):
+            with anyio.fail_after(40):
                 async with anyio.create_task_group() as group:
                     group.start_soon(run)
-                    while not committed.is_set() and not outcomes.get("done"):
-                        await anyio.sleep(0.01)
-                    self.assertTrue(committed.is_set(), outcomes)
+                    published = await anyio.to_thread.run_sync(committed.wait, 20)
+                    self.assertTrue(published, outcomes)
                     if interruption == "cancel":
                         outcomes["scope"].cancel()
+                    elif interruption == "deadline":
+                        # Expiry is driven by AnyIO's real clock, after the
+                        # committed worker is waiting for genuine cancellation.
+                        outcomes["scope"].deadline = anyio.current_time() + 0.05
 
         backend.calls.clear()
         with (
             patch.object(server, "run_if_not_cancelled", side_effect=commit),
             patch.object(server.mcp, "_call_tool_inner", side_effect=observed_dispatch),
             patch.object(
+                validation_tool, "fn", observe_handler("board_validate", validation_tool.fn)
+            ),
+            patch.object(read_tool, "fn", observe_handler("read_memory_symbol", read_tool.fn)),
+            patch.object(
                 server._board_validator,
                 "_backend",
                 replace(actual_backend, inventory=lambda: inventory),
             ),
-            patch.object(
-                server.mcp,
-                "_timeout_resolver",
-                side_effect=lambda name, args: (
-                    0.6
-                    if interruption == "deadline" and name == "action_batch"
-                    else real_timeout(name, args)
-                ),
-            ),
         ):
             anyio.run(exercise)
         self.assertIn(("board_validate", True), observations)
+        self.assertEqual(entered_handlers.count("board_validate"), 1)
         # Assert actual publication/report output even if the batch itself
         # returns an interruption; truthful committed completion is preserved.
         gate = server.gate_manager.snapshot(board)
@@ -170,15 +211,39 @@ class FinalSupportedBatchCancellation(unittest.TestCase):
         ).report
         report = json.loads(report_path.read_text(encoding="utf-8"))
         self.assertEqual(report["terminal_status"], "validation_passed")
+        validation = managed_operations["board_validate"]
+        self.assertTrue(validation.completion_committed)
+        self.assertTrue(validation.done.is_set())
+        for managed in managed_operations.values():
+            self.assertTrue(managed.done.is_set())
+            self.assertEqual(managed.resources.cleanup_errors, [])
+            self.assertEqual(managed.resources.fatal_cleanup_errors, [])
         later_reads = [c for c in backend.calls if c[0] == "read_memory" and c[2] == 0x20000024]
         if interruption:
             # Genuine cancellation can legitimately invalidate a transport that
             # validation used. A committed report is not permanent readiness.
             if server.connection_manager.maybe_connection(board) is None:
                 self.assertIsNone(gate)
-            self.assertNotIn("read_memory_symbol", entered_children, outcomes)
+            else:
+                self.assertIsNotNone(gate)
+                self.assertEqual(gate.validation_run, published_validation_runs[-1])
+                self.assertEqual(
+                    gate.connection_id,
+                    server.connection_manager.maybe_connection(board).connection_id,
+                )
+            self.assertTrue(outcomes["parent_cancel_called"], outcomes)
+            self.assertTrue(validation.cancellation_requested.is_set(), outcomes)
+            self.assertTrue(
+                managed_operations["action_batch"].cancellation_requested.is_set(), outcomes
+            )
+            if interruption == "deadline":
+                self.assertTrue(outcomes["parent_deadline_expired"], outcomes)
+                self.assertEqual(outcomes.get("error"), "TimeoutError", outcomes)
+            self.assertNotIn("read_memory_symbol", entered_handlers, outcomes)
             self.assertEqual(later_reads, [], (outcomes, backend.calls))
         else:
+            self.assertFalse(outcomes["parent_cancel_called"], outcomes)
+            self.assertEqual(entered_handlers, ["board_validate", "read_memory_symbol"])
             self.assertIsNotNone(gate)
             self.assertEqual(gate.validation_run, published_validation_runs[-1])
             self.assertEqual(len(later_reads), 1)

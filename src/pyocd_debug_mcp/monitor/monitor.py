@@ -276,9 +276,7 @@ class IssueMonitor:
 
         try:
             self._counters.set_advertised(self._ctx.advertised_tools())
-            self._verification = verify_prior_runs(
-                self._store, self._workspace, self._ctx.run_id
-            )
+            self._verification = verify_prior_runs(self._store, self._workspace, self._ctx.run_id)
             self._append(
                 "boot",
                 detail={
@@ -499,9 +497,7 @@ class IssueMonitor:
         duration_ms: int,
         exc: BaseException | None,
     ) -> None:
-        connection = self._safe(
-            lambda: self._ctx.connection_id(board) if board else None, None
-        )
+        connection = self._safe(lambda: self._ctx.connection_id(board) if board else None, None)
         self._trail.append(
             tool=tool,
             board=board,
@@ -561,11 +557,7 @@ class IssueMonitor:
         # fifth usage snapshot coincides with a check-in prompt.
         if self._usage_snapshot_every > 0 and total % self._usage_snapshot_every == 0:
             self._usage_snapshot_tick()
-        if (
-            NARRATIVE_LOGGING
-            and self._checkin_every > 0
-            and total % self._checkin_every == 0
-        ):
+        if NARRATIVE_LOGGING and self._checkin_every > 0 and total % self._checkin_every == 0:
             with self._guard:
                 self._checkin_due = True
 
@@ -582,9 +574,7 @@ class IssueMonitor:
             # Refresh-then-snapshot via the shared helper: see its docstring for
             # why the order is load-bearing here.
             snapshot = self._refreshed_snapshot()
-            summary = self._build_summary(
-                trigger=str(snapshot.total), snapshot=snapshot
-            )
+            summary = self._build_summary(trigger=str(snapshot.total), snapshot=snapshot)
             self._append(
                 "usage_snapshot",
                 detail={"summary_id": summary["summary_id"], **self._usage(snapshot)},
@@ -776,9 +766,7 @@ class IssueMonitor:
     # -- summaries and health --------------------------------------------
 
     def _uptime(self) -> float:
-        return max(
-            0.0, (datetime.now(timezone.utc) - self._ctx.run_started_at).total_seconds()
-        )
+        return max(0.0, (datetime.now(timezone.utc) - self._ctx.run_started_at).total_seconds())
 
     def _build_summary(
         self,
@@ -840,9 +828,7 @@ class IssueMonitor:
             segments = self._ledger.sealed_segments()
             return {
                 "run_id": self._ctx.run_id,
-                "run_started_at": self._ctx.run_started_at.isoformat().replace(
-                    "+00:00", "Z"
-                ),
+                "run_started_at": self._ctx.run_started_at.isoformat().replace("+00:00", "Z"),
                 "uptime_seconds": round(self._uptime(), 3),
                 "narrative_logging": profile_name(),
                 "counters": {

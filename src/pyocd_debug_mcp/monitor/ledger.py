@@ -411,9 +411,7 @@ def verify_file(path: Path) -> VerificationOutcome:
     return VerificationOutcome.IMPOSSIBLE
 
 
-def verify_prior_runs(
-    store: StoreRoot, workspace: str, current_run_id: str
-) -> dict[str, str]:
+def verify_prior_runs(store: StoreRoot, workspace: str, current_run_id: str) -> dict[str, str]:
     """Verify every resident file from a previous run of this workspace."""
 
     server_data = store.server_data

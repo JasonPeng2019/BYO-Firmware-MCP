@@ -36,8 +36,11 @@ class Thrashing(unittest.TestCase):
 
     def observe(self, **kwargs):
         base = dict(
-            board="b1", tool="read_memory", args_fp="fp-1",
-            outcome="policy_refusal", error_class="plan/gate-closed",
+            board="b1",
+            tool="read_memory",
+            args_fp="fp-1",
+            outcome="policy_refusal",
+            error_class="plan/gate-closed",
             guard_fp="guard-1",
         )
         base.update(kwargs)
@@ -68,8 +71,12 @@ class Thrashing(unittest.TestCase):
                 detector = ThrashDetector()
                 results = [
                     detector.observe(
-                        board="b", tool=tool, args_fp="fp", outcome="success",
-                        error_class=None, guard_fp="g",
+                        board="b",
+                        tool=tool,
+                        args_fp="fp",
+                        outcome="success",
+                        error_class=None,
+                        guard_fp="g",
                     )
                     for _ in range(12)
                 ]
@@ -88,8 +95,12 @@ class Thrashing(unittest.TestCase):
                 detector = ThrashDetector()
                 results = [
                     detector.observe(
-                        board="b", tool=tool, args_fp="retry_id=None",
-                        outcome="success", error_class=None, guard_fp="g",
+                        board="b",
+                        tool=tool,
+                        args_fp="retry_id=None",
+                        outcome="success",
+                        error_class=None,
+                        guard_fp="g",
                     )
                     for _ in range(12)
                 ]
@@ -104,8 +115,11 @@ class Thrashing(unittest.TestCase):
         detector = ThrashDetector()
         results = [
             detector.observe(
-                board="b", tool="connect", args_fp="fp-1",
-                outcome="policy_refusal", error_class="plan/gate-closed",
+                board="b",
+                tool="connect",
+                args_fp="fp-1",
+                outcome="policy_refusal",
+                error_class="plan/gate-closed",
                 guard_fp="guard-1",
             )
             for _ in range(8)
@@ -116,8 +130,12 @@ class Thrashing(unittest.TestCase):
         detector = ThrashDetector()
         results = [
             detector.observe(
-                board="b", tool="flash_application-plan", args_fp=f"fp{i}",
-                outcome="success", error_class=None, guard_fp="g",
+                board="b",
+                tool="flash_application-plan",
+                args_fp=f"fp{i}",
+                outcome="success",
+                error_class=None,
+                guard_fp="g",
             )
             for i in range(10)
         ]
@@ -127,8 +145,11 @@ class Thrashing(unittest.TestCase):
         detector = ThrashDetector()
         results = [
             detector.observe(
-                board="b", tool="read_memory", args_fp="fp",
-                outcome="policy_refusal", error_class="runtime/BoardBusyError",
+                board="b",
+                tool="read_memory",
+                args_fp="fp",
+                outcome="policy_refusal",
+                error_class="runtime/BoardBusyError",
                 guard_fp="g",
             )
             for _ in range(10)
@@ -140,8 +161,12 @@ class Thrashing(unittest.TestCase):
         detector.note_accepted_response("b", "fp-accepted")
         results = [
             detector.observe(
-                board="b", tool="board_validate", args_fp="fp-accepted",
-                outcome="policy_refusal", error_class="setup/pending", guard_fp="g",
+                board="b",
+                tool="board_validate",
+                args_fp="fp-accepted",
+                outcome="policy_refusal",
+                error_class="setup/pending",
+                guard_fp="g",
             )
             for _ in range(10)
         ]
@@ -152,12 +177,20 @@ class Thrashing(unittest.TestCase):
         fired = False
         for _ in range(8):
             detector.observe(
-                board="b", tool="board_safety_refresh", args_fp="fp",
-                outcome="success", error_class=None, guard_fp="g",
+                board="b",
+                tool="board_safety_refresh",
+                args_fp="fp",
+                outcome="success",
+                error_class=None,
+                guard_fp="g",
             )
             fired = fired or detector.observe(
-                board="b", tool="board_validate", args_fp="fp",
-                outcome="policy_refusal", error_class="x", guard_fp="g",
+                board="b",
+                tool="board_validate",
+                args_fp="fp",
+                outcome="policy_refusal",
+                error_class="x",
+                guard_fp="g",
             )
         self.assertFalse(fired)
 
@@ -165,8 +198,12 @@ class Thrashing(unittest.TestCase):
         detector = ThrashDetector()
         results = [
             detector.observe(
-                board="b", tool="read_memory_block", args_fp=f"fp-{addr}",
-                outcome="success", error_class=None, guard_fp="g",
+                board="b",
+                tool="read_memory_block",
+                args_fp=f"fp-{addr}",
+                outcome="success",
+                error_class=None,
+                guard_fp="g",
             )
             for addr in range(12)
         ]
@@ -285,10 +322,15 @@ class BlockDiagnostics(MonitorTestCase):
                 self.assertEqual(caught.exception.code, "monitor/logging-stale")
                 message = str(caught.exception)
                 for expected in (
-                    "30 days old", "limit: 14 days", "2026-09-01T00:00:00Z",
-                    f"transport: {transport}", f"origin: {origin}",
-                    "server_health_check", "local/simulated acknowledgement",
-                    "unconfigured transport cannot refresh", "Reporting, check-in",
+                    "30 days old",
+                    "limit: 14 days",
+                    "2026-09-01T00:00:00Z",
+                    f"transport: {transport}",
+                    f"origin: {origin}",
+                    "server_health_check",
+                    "local/simulated acknowledgement",
+                    "unconfigured transport cannot refresh",
+                    "Reporting, check-in",
                 ):
                     self.assertIn(expected, message)
                 self.assertNotIn("Restore network", message)
@@ -320,10 +362,16 @@ class BlockDiagnostics(MonitorTestCase):
         monitor = self.make_monitor(transport=NullTransport())
         cases = (
             (None, self.now, BlockState.DORMANT),
-            (Anchor(self.now + timedelta(days=1), "test", "test"),
-             self.now, BlockState.CLOCK_UNUSABLE),
-            (Anchor(self.now - timedelta(days=30), "test", "test"),
-             None, BlockState.CLOCK_UNUSABLE),
+            (
+                Anchor(self.now + timedelta(days=1), "test", "test"),
+                self.now,
+                BlockState.CLOCK_UNUSABLE,
+            ),
+            (
+                Anchor(self.now - timedelta(days=30), "test", "test"),
+                None,
+                BlockState.CLOCK_UNUSABLE,
+            ),
         )
         for anchor, now, state in cases:
             with self.subTest(state=state, now=now):

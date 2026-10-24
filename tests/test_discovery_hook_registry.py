@@ -68,7 +68,7 @@ class NoManifestTests(_TempRoot):
         """Trap 6: serial_resolver reads its registry at import; hooks must not."""
 
         source = Path(discovery_hooks.__file__).read_text(encoding="utf-8")
-        marker = f'os.environ.get({DISCOVERY_HOOK_REGISTRY_ENV!r}'
+        marker = f"os.environ.get({DISCOVERY_HOOK_REGISTRY_ENV!r}"
         self.assertNotIn(marker, source)
         # The name appears only as a constant and inside the load function.
         module_level_env_reads = [
@@ -245,8 +245,12 @@ class ContainmentTests(_TempRoot):
         self._expect_refusal(hook_entry("root", "probe", entrypoint="."), "must stay below")
 
     def test_symlink_escaping_the_root_is_refused(self) -> None:
-        outside = self.root.parent / "symlink_target_hook.py"
-        outside.write_text("print()", encoding="utf-8")
+        outside = self.root.parent / f"{self.root.name}-symlink_target_hook.py"
+        executed = self.root / "escaped-hook-ran"
+        outside.write_text(
+            f"from pathlib import Path\nPath({str(executed)!r}).write_text('executed')\n",
+            encoding="utf-8",
+        )
         self.addCleanup(lambda: outside.unlink(missing_ok=True))
         link = self.root / "linked.py"
         try:
@@ -254,10 +258,15 @@ class ContainmentTests(_TempRoot):
         except (OSError, NotImplementedError, AttributeError) as exc:
             self.skipTest(f"symlinks unavailable: {exc}")
 
-        self._expect_refusal(
-            hook_entry("symlink", "probe", entrypoint="linked.py"),
-            "outside the hook directory",
+        self.assertFalse(link.resolve().is_relative_to(self.root.resolve()))
+        write_manifest(self.root, [hook_entry("symlink", "probe", entrypoint="linked.py")])
+        with self.assertRaises(DiscoveryHookError) as caught:
+            load_hook_snapshot(self.root, environ={})
+        self.assertRegex(
+            str(caught.exception),
+            r"entrypoint (must stay below|resolves outside the hook directory)",
         )
+        self.assertFalse(executed.exists(), "an escaping hook must never execute")
 
     def test_symlink_inside_the_root_is_accepted(self) -> None:
         inner = self.root / "inner"
@@ -459,9 +468,7 @@ class DocumentValidationTests(_TempRoot):
             hook_entry(f"hook-{index}", "probe")
             for index in range(discovery_hooks.MAX_HOOKS_PER_MANIFEST + 1)
         ]
-        self._expect_document_refusal(
-            {"schema_version": 1, "hooks": entries}, "more than"
-        )
+        self._expect_document_refusal({"schema_version": 1, "hooks": entries}, "more than")
 
     def test_too_many_argv_entries_is_refused(self) -> None:
         argv = [f"a{index}" for index in range(discovery_hooks.MAX_ARGV_ITEMS + 1)]
@@ -541,7 +548,8 @@ class OperatorRegistryTests(_TempRoot):
 
     def test_operator_entrypoint_is_resolved_against_the_registry_directory(self) -> None:
         write_manifest(
-            self.operator, [hook_entry("operator-hook", "probe", argv=["probe"])],
+            self.operator,
+            [hook_entry("operator-hook", "probe", argv=["probe"])],
             filename="registry.json",
         )
 
@@ -560,9 +568,7 @@ class OperatorRegistryTests(_TempRoot):
     def test_blank_environment_variable_is_ignored(self) -> None:
         write_manifest(self.project, [hook_entry("project-hook", "probe", argv=["probe"])])
 
-        snapshot = load_hook_snapshot(
-            self.project, environ={DISCOVERY_HOOK_REGISTRY_ENV: "   "}
-        )
+        snapshot = load_hook_snapshot(self.project, environ={DISCOVERY_HOOK_REGISTRY_ENV: "   "})
 
         self.assertEqual([hook.hook_id for hook in snapshot.hooks], ["project-hook"])
 
@@ -584,11 +590,7 @@ class OperatorRegistryTests(_TempRoot):
         elsewhere.write_text("print()", encoding="utf-8")
         write_manifest(
             self.operator,
-            [
-                hook_entry(
-                    "vendor-exe", "probe", runner="executable", entrypoint=str(elsewhere)
-                )
-            ],
+            [hook_entry("vendor-exe", "probe", runner="executable", entrypoint=str(elsewhere))],
             filename="registry.json",
         )
 
@@ -775,7 +777,10 @@ class OrderingTests(_TempRoot):
 
         snapshot = snapshot_for(
             self.root,
-            [hook_entry("a-uart", "uart", argv=["uart"]), hook_entry("z-probe", "probe", argv=["probe"])],
+            [
+                hook_entry("a-uart", "uart", argv=["uart"]),
+                hook_entry("z-probe", "probe", argv=["probe"]),
+            ],
         )
 
         self.assertEqual([hook.kind for hook in snapshot.hooks], ["probe", "uart"])
@@ -833,7 +838,7 @@ class HashDriftTests(_TempRoot):
         first = load_hook_snapshot(self.root, environ={})
         original = first.hooks[0].file_sha256
         (self.root / "hook.py").write_text(
-            '\n'.join(
+            "\n".join(
                 [
                     "import json, sys",
                     'json.dump({"schema_version": 1, "kind": "probe", "probes": []}, sys.stdout)',

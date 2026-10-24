@@ -62,16 +62,46 @@ def _exact(arguments: dict[str, Any], expected: set[str]) -> None:
 
 
 def _validate_arguments(operation: str, arguments: dict[str, Any]) -> None:
-    no_arguments = {"close", "get_state", "supported_core_registers", "halt", "resume", "step", "reset", "reset_and_halt", "recover", "release_reset"}
+    no_arguments = {
+        "close",
+        "get_state",
+        "supported_core_registers",
+        "halt",
+        "resume",
+        "step",
+        "reset",
+        "reset_and_halt",
+        "recover",
+        "release_reset",
+    }
     if operation in no_arguments:
         _exact(arguments, set())
         return
     if operation in {"open", "connect_under_reset"}:
-        expected = {"board", "unique_id", "target", "server_timeouts", "protocol", "connect_mode", "pack_path", "pack_sha256", "pdsc_device", "frequency_hz"}
+        expected = {
+            "board",
+            "unique_id",
+            "target",
+            "server_timeouts",
+            "protocol",
+            "connect_mode",
+            "pack_path",
+            "pack_sha256",
+            "pdsc_device",
+            "frequency_hz",
+        }
         _exact(arguments, expected)
         if arguments["board"] is not None and not isinstance(arguments["board"], dict):
             raise ValueError("board must be an object or null")
-        for name in ("unique_id", "target", "protocol", "connect_mode", "pack_path", "pack_sha256", "pdsc_device"):
+        for name in (
+            "unique_id",
+            "target",
+            "protocol",
+            "connect_mode",
+            "pack_path",
+            "pack_sha256",
+            "pdsc_device",
+        ):
             _text(arguments[name], name, nullable=True)
         if arguments["frequency_hz"] is not None:
             _integer(arguments["frequency_hz"], "frequency_hz", minimum=1)
@@ -144,15 +174,32 @@ def _board(raw: object) -> BoardConfig | None:
     if set(record) != _BOARD_FIELDS:
         raise ValueError("board record has missing or unknown fields")
     required_text = {
-        "board_id", "display_name", "mcu_family", "probe_family", "pyocd_target", "probe_type",
-        "silicon_id_label", "uart_note",
+        "board_id",
+        "display_name",
+        "mcu_family",
+        "probe_family",
+        "pyocd_target",
+        "probe_type",
+        "silicon_id_label",
+        "uart_note",
     }
-    nullable_text = {"recover_mode", "debug_protocol", "debug_connect_mode", "expected_uart_substring"}
+    nullable_text = {
+        "recover_mode",
+        "debug_protocol",
+        "debug_connect_mode",
+        "expected_uart_substring",
+    }
     for key in required_text:
         _text(record[key], key)
     for key in nullable_text:
         _text(record[key], key, nullable=True)
-    for key in {"test_addr", "silicon_id_addr", "silicon_id_expected", "silicon_id_mask", "debug_clock_hz"}:
+    for key in {
+        "test_addr",
+        "silicon_id_addr",
+        "silicon_id_expected",
+        "silicon_id_mask",
+        "debug_clock_hz",
+    }:
         if record[key] is not None:
             _integer(record[key], key)
     for key in {"silicon_id_width_bits", "default_baudrate"}:
@@ -212,8 +259,12 @@ def _metadata(handle: TargetSessionHandle) -> dict[str, Any]:
     }
 
 
-def _dispatch(adapter: PyOCDSWDInterface, handle: TargetSessionHandle | None, operation: str,
-              arguments: dict[str, Any]) -> tuple[TargetSessionHandle | None, Any, bool]:
+def _dispatch(
+    adapter: PyOCDSWDInterface,
+    handle: TargetSessionHandle | None,
+    operation: str,
+    arguments: dict[str, Any],
+) -> tuple[TargetSessionHandle | None, Any, bool]:
     if operation in {"open", "connect_under_reset"}:
         if handle is not None:
             raise RuntimeError("worker already has a live session")
@@ -245,9 +296,15 @@ def _dispatch(adapter: PyOCDSWDInterface, handle: TargetSessionHandle | None, op
     if operation == "get_state":
         result = adapter.get_state(handle)
     elif operation == "read_memory":
-        result = adapter.read_memory(handle, int(arguments["address"]), int(arguments["width_bits"]))
+        result = adapter.read_memory(
+            handle, int(arguments["address"]), int(arguments["width_bits"])
+        )
         width_bits = int(arguments["width_bits"])
-        if not isinstance(result, int) or isinstance(result, bool) or not 0 <= result <= (1 << width_bits) - 1:
+        if (
+            not isinstance(result, int)
+            or isinstance(result, bool)
+            or not 0 <= result <= (1 << width_bits) - 1
+        ):
             raise RuntimeError("memory read result exceeded requested width")
     elif operation == "read_memory_block":
         requested_length = int(arguments["length"])
@@ -267,7 +324,9 @@ def _dispatch(adapter: PyOCDSWDInterface, handle: TargetSessionHandle | None, op
     elif operation == "read_core_register":
         result = adapter.read_core_register(handle, str(arguments["name"]))
     elif operation == "write_core_register":
-        result = adapter.write_core_register(handle, str(arguments["name"]), int(arguments["value"]))
+        result = adapter.write_core_register(
+            handle, str(arguments["name"]), int(arguments["value"])
+        )
     elif operation == "supported_core_registers":
         result = list(adapter.supported_core_registers(handle))
     elif operation == "halt":
@@ -282,7 +341,9 @@ def _dispatch(adapter: PyOCDSWDInterface, handle: TargetSessionHandle | None, op
         result = adapter.reset_and_halt(handle)
     elif operation == "flash":
         result = adapter.flash(
-            handle, Path(str(arguments["path"])), halt_after_reset=bool(arguments["halt_after_reset"])
+            handle,
+            Path(str(arguments["path"])),
+            halt_after_reset=bool(arguments["halt_after_reset"]),
         )
     elif operation == "recover":
         result = adapter.recover(handle)
@@ -325,7 +386,11 @@ def main(protocol: BinaryIO) -> None:
                 request_id = request.get("request_id")
                 operation = request.get("operation")
                 arguments = request.get("arguments")
-                if not isinstance(request_id, int) or isinstance(request_id, bool) or request_id < 1:
+                if (
+                    not isinstance(request_id, int)
+                    or isinstance(request_id, bool)
+                    or request_id < 1
+                ):
                     raise ValueError("invalid worker request id")
                 if request_id != last_request_id + 1:
                     raise ValueError("worker request id was not the next monotonic id")
@@ -354,5 +419,5 @@ def main(protocol: BinaryIO) -> None:
                         "request_id": request_id,
                         "ok": False,
                         "error": {"kind": kind, "message": str(exc)},
-                    }
+                    },
                 )

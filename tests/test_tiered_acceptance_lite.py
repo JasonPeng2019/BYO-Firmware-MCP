@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from dataclasses import replace
 import json
 import unittest
 from pathlib import Path
@@ -15,6 +16,7 @@ from pyocd_debug_mcp.capabilities.policy import (
     Tier,
 )
 from pyocd_debug_mcp.hardware_inventory import snapshot_from_validation_inventory
+from pyocd_debug_mcp.probe_inventory import registered_provider_ids
 from pyocd_debug_mcp.safety.regions import AddressRange
 from pyocd_debug_mcp.setup_flow.preflight import PreflightInventory, ProbeCandidate
 from pyocd_debug_mcp.setup_flow.validate import ValidationInventory, ValidationProbe
@@ -33,6 +35,7 @@ from tests.tiered_acceptance_support import (
 
 BOARD = "lite_board"
 _PROBE_UID = "LITE-ACCEPTANCE-PROBE"
+_PROBE_PROVIDER = "cmsisdap"
 
 
 def _batch_payload(text: str) -> dict[str, object]:
@@ -96,8 +99,8 @@ def _setup_inventory() -> SimpleNamespace:
         probes=(
             ValidationProbe(
                 _PROBE_UID,
-                "Tiered acceptance J-Link",
-                "jlink",
+                "Tiered acceptance CMSIS-DAP",
+                _PROBE_PROVIDER,
                 _PROBE_UID,
             ),
         )
@@ -121,8 +124,8 @@ def _ready_setup_preflight() -> PreflightInventory:
         probes=(
             ProbeCandidate(
                 _PROBE_UID,
-                "Tiered acceptance J-Link",
-                "jlink",
+                "Tiered acceptance CMSIS-DAP",
+                _PROBE_PROVIDER,
                 _PROBE_UID,
             ),
         ),
@@ -613,6 +616,7 @@ class TieredLiteEvidenceAcceptanceTests(unittest.TestCase):
         and commit only the operator-confirmed partial map.
         """
 
+        self.assertIn(_PROBE_PROVIDER, registered_provider_ids())
         with isolated_project() as root, tiered_test_server(root) as server:
             backend = DeterministicTargetBackend()
             server.configure_tiered_test_seams(backend=backend)
@@ -640,6 +644,15 @@ class TieredLiteEvidenceAcceptanceTests(unittest.TestCase):
                 self.assertEqual(setup_batch["status"], "batch_completed", setup_batch)
                 pending = _child_setup_response(setup_batch)
                 self.assertEqual(pending["status"], "setup_research_required", pending)
+                self.assertTrue(
+                    any(
+                        call[0] == "open"
+                        and call[1]["unique_id"] == f"{_PROBE_PROVIDER}:{_PROBE_UID}"
+                        for call in backend.calls
+                    ),
+                    backend.calls,
+                )
+                self.assertIn(("close", _PROBE_UID), backend.calls)
                 self.assertIn("setup/lite-confirmation-required", _phase_codes(pending))
                 self.assertEqual(initial.tier, Tier.NO_SETUP)
                 waiting = CapabilityPolicyRepository(root).resolve(lite_board)
@@ -713,6 +726,72 @@ class TieredLiteEvidenceAcceptanceTests(unittest.TestCase):
                 full_state = CapabilityPolicyRepository(root).resolve(full_board)
                 self.assertEqual(full_state.tier, Tier.NO_SETUP)
                 self.assertTrue(full_state.setup_incomplete)
+
+    def test_public_lite_escalation_refuses_changed_uid_before_profile_commit(self) -> None:
+        """The registered-provider positive never grants a changed probe identity."""
+
+        class ChangedProbeBackend(DeterministicTargetBackend):
+            def open(self, **kwargs):
+                handle = super().open(**kwargs)
+                return replace(handle, probe_uid="FR04-CHANGED-PROBE")
+
+        self.assertIn(_PROBE_PROVIDER, registered_provider_ids())
+        with isolated_project() as root, tiered_test_server(root) as server:
+            backend = ChangedProbeBackend()
+            server.configure_tiered_test_seams(backend=backend)
+            with (
+                patch.object(server, "_hardware_inventory", _setup_inventory()),
+                patch.object(
+                    server._setup_workflow,
+                    "inventory_provider",
+                    side_effect=lambda _input: _ready_setup_preflight(),
+                ),
+            ):
+                board_id, _action, accepted = _accepted_setup_plan(
+                    self,
+                    server,
+                    display_name="Changed probe lite board",
+                    target_tier="setup-lite",
+                    datasheet=_minimal_local_pdf(root, "changed-probe-local.pdf"),
+                )
+                initial = CapabilityPolicyRepository(root).resolve(board_id)
+                profiles = root / ".firm" / "boards"
+                before = {
+                    path.relative_to(profiles): path.read_bytes()
+                    for path in profiles.rglob("*")
+                    if path.is_file()
+                }
+                fallback = accepted["stable_client_fallback"]
+                failed_batch = _batch_payload(
+                    public_text(server, str(fallback["tool_name"]), fallback["arguments"])
+                )
+                self.assertEqual(failed_batch["status"], "batch_completed", failed_batch)
+                failed = _child_setup_response(failed_batch)
+                self.assertEqual(failed["status"], "setup_connection_failed", failed)
+                self.assertIn("setup/live-connect-failed", _phase_codes(failed))
+                self.assertIn("probe identity changed", failed["agent_prompt"])
+                self.assertEqual(
+                    {
+                        path.relative_to(profiles): path.read_bytes()
+                        for path in profiles.rglob("*")
+                        if path.is_file()
+                    },
+                    before,
+                )
+                state = CapabilityPolicyRepository(root).resolve(board_id)
+                self.assertEqual(state.tier, Tier.NO_SETUP)
+                self.assertTrue(state.setup_incomplete)
+                self.assertEqual(state.map_snapshot, initial.map_snapshot)
+                self.assertEqual(state.profile_snapshot, initial.profile_snapshot)
+                self.assertTrue(any(call[0] == "open" for call in backend.calls), backend.calls)
+                self.assertIn(("close", "FR04-CHANGED-PROBE"), backend.calls)
+                self.assertFalse(
+                    any(
+                        call[0] in {"read_memory", "write_memory", "flash"}
+                        for call in backend.calls
+                    ),
+                    backend.calls,
+                )
 
     def test_public_failed_lite_escalation_marks_incomplete_without_replacing_prior_policy(
         self,

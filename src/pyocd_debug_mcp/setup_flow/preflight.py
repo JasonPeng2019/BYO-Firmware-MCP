@@ -52,9 +52,7 @@ class SetupUserInput:
 
     def __post_init__(self) -> None:
         if not _BOARD_ID.fullmatch(self.board_id):
-            raise PreflightError(
-                "board_id must be 1-64 lowercase letters, numbers, or underscores"
-            )
+            raise PreflightError("board_id must be 1-64 lowercase letters, numbers, or underscores")
         _nonempty(self.connection_id, "connection_id")
         _nonempty(self.display_name, "display_name")
         # Deliberately validate without normalizing or replacing the exact value.
@@ -198,9 +196,7 @@ class PreflightInventory:
             "built_in_targets": list(normalized.built_in_targets),
             "manifest_targets": list(normalized.manifest_targets),
             "exact_detected_targets": list(normalized.exact_detected_targets),
-            "build_configurations": [
-                asdict(item) for item in normalized.build_configurations
-            ],
+            "build_configurations": [asdict(item) for item in normalized.build_configurations],
         }
 
 
@@ -302,15 +298,12 @@ class PreflightEngine:
                 "setup_blocked",
                 "setup/no-probe",
                 self._prompt(message),
-                observed=observed
-                | {"hook_contract_call": dict(current.hook_contract_call)}
+                observed=observed | {"hook_contract_call": dict(current.hook_contract_call)}
                 if current.hook_contract_call is not None
                 else observed,
             )
 
-        selected_probe = self._select_by_id(
-            current.probes, selections.probe_id, "probe_id"
-        )
+        selected_probe = self._select_by_id(current.probes, selections.probe_id, "probe_id")
         if len(current.probes) > 1 and selected_probe is None:
             choices = tuple(
                 FriendlyChoice(item.probe_id, item.friendly_label(), "Connected debug probe")

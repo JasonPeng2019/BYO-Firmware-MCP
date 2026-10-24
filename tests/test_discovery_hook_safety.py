@@ -76,9 +76,7 @@ class HookOutputCannotInjectConfigurationTests(unittest.TestCase):
                 document = {
                     "schema_version": 1,
                     "kind": "probe",
-                    "probes": [
-                        {"provider": "cmsisdap", "unique_id": "U1", "description": "P"}
-                    ],
+                    "probes": [{"provider": "cmsisdap", "unique_id": "U1", "description": "P"}],
                     field: "injected",
                 }
                 with self.assertRaises(DiscoveryHookError) as caught:
@@ -120,9 +118,7 @@ class HookOutputCannotInjectConfigurationTests(unittest.TestCase):
                 document = {
                     "schema_version": 1,
                     "kind": "probe",
-                    "probes": [
-                        {"provider": "cmsisdap", "unique_id": "U1", "description": "P"}
-                    ],
+                    "probes": [{"provider": "cmsisdap", "unique_id": "U1", "description": "P"}],
                     key: {"forged": True},
                 }
                 with self.assertRaises(DiscoveryHookError):
@@ -133,14 +129,10 @@ class HookOutputCannotInjectConfigurationTests(unittest.TestCase):
             discovery_hooks.PROBE_OUTPUT_SCHEMA_EXAMPLE, expected_kind="probe"
         )
 
-        self.assertEqual(
-            set(output.probes[0].__slots__), {"provider", "unique_id", "description"}
-        )
+        self.assertEqual(set(output.probes[0].__slots__), {"provider", "unique_id", "description"})
 
     def test_the_parsed_uart_model_exposes_only_endpoint_naming_fields(self) -> None:
-        output = parse_hook_output(
-            discovery_hooks.UART_OUTPUT_SCHEMA_EXAMPLE, expected_kind="uart"
-        )
+        output = parse_hook_output(discovery_hooks.UART_OUTPUT_SCHEMA_EXAMPLE, expected_kind="uart")
 
         self.assertEqual(
             set(output.uarts[0].__slots__),
@@ -354,9 +346,7 @@ class GateAndAuthorityTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             spec = single_spec(root, "probe", ["probe"])
-            store.replace(
-                discovery_hooks.DiscoveryHookSnapshot("m" * 64, (spec,), "now")
-            )
+            store.replace(discovery_hooks.DiscoveryHookSnapshot("m" * 64, (spec,), "now"))
 
             server.server_run.clear_authority()
 
@@ -388,7 +378,7 @@ class NoHookConfigurationTests(unittest.TestCase):
                 native_probes=lambda: EMPTY_NATIVE_PROBE_LISTING,
                 native_uarts=lambda: cast("Any", []),
                 hook_snapshot=lambda: hooks,
-                run_hooks=lambda snapshot, kind: (launched.append(kind) or ()),
+                run_hooks=lambda snapshot, kind: launched.append(kind) or (),
             )
 
             snapshot = service.snapshot()

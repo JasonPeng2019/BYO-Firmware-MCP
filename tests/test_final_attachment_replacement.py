@@ -7,6 +7,7 @@ ordinary setup inputs; the cache, callback, transaction, and atomic writer are r
 from __future__ import annotations
 
 import errno
+import functools
 import json
 import multiprocessing
 import os
@@ -34,6 +35,7 @@ from pyocd_debug_mcp.setup_flow.preflight import (
 )
 from tests.test_probe_selection_records import _snapshot, _uart_row
 from tests.tiered_acceptance_support import tiered_test_server
+from tests.process_cleanup_observations import CleanupTrace, process_facts, read_receipt
 
 OBSERVATIONS = {}
 SOURCE_ROOT = Path(__file__).resolve().parents[1] / "src" / "pyocd_debug_mcp"
@@ -84,6 +86,25 @@ def legacy_record(board, probe=P1, cable=C1, *, revoked=False):
     }
 
 
+def observe_writer(function):
+    @functools.wraps(function)
+    def observed(*args, **kwargs):
+        trace = CleanupTrace("vi05-writer-" + args[1])
+        trace.role(os.getpid(), "vi05-confirmation-writer", "executing process_confirm target")
+        try:
+            return trace.invoke("process_confirm", function, *args, **kwargs)
+        finally:
+            trace.record(
+                "writer-function-finally",
+                identity=process_facts(os.getpid()),
+                evidence_gaps=trace.gaps,
+                boundary="target function exit; parent join records actual process exit",
+            )
+
+    return observed
+
+
+@observe_writer
 def process_confirm(root, label, board, probe, cable, paused, release, contended, fail_publish):
     """Use real OS locking; hooks observe contention and stop inside the transaction."""
     root = Path(root)
@@ -424,25 +445,91 @@ class TwoProcessConfirmation(_StoreFixture):
         self.context = multiprocessing.get_context("spawn")
         self.children = []
         self.releases = []
+        self.cleanup_trace = CleanupTrace(self.id())
+        self.child_identities = {}
+        self.helper_identity = None
+        # LIFO: preserve the final observations after finish_children, even if
+        # a writer assertion or one of its existing cleanup operations raises.
+        self.addCleanup(self.retain_cleanup_observations)
         self.addCleanup(self.finish_children)
+
+    def retain_cleanup_observations(self):
+        self.observe_interpreter_helper("after writer cleanup")
+        retained = OBSERVATIONS.setdefault(self.id(), {})
+        retained["writer_cleanup"] = self.cleanup_trace.summary()
+        retained["writer_receipts_even_on_failure"] = [
+            read_receipt(self.root / (label + "-process.json")) for label in ("first", "second")
+        ]
+
+    def observe_interpreter_helper(self, boundary):
+        # This exact CPython object slot is evidence of a role. A Python argv
+        # or an arbitrary descendant PID is never enough to assign that role.
+        from multiprocessing import resource_tracker
+
+        tracker = getattr(resource_tracker, "_resource_tracker", None)
+        pid = getattr(tracker, "_pid", None)
+        self.cleanup_trace.record(
+            "interpreter-helper-slot",
+            boundary=boundary,
+            pid_observed=pid,
+            source="multiprocessing.resource_tracker._resource_tracker._pid",
+        )
+        if pid is not None:
+            expected = (
+                self.helper_identity.get("creation_time")
+                if self.helper_identity is not None and self.helper_identity["pid"] == pid
+                else None
+            )
+            facts = self.cleanup_trace.role(
+                pid,
+                "multiprocessing-resource-tracker",
+                "actual resource_tracker._resource_tracker._pid at " + boundary,
+                expected_birth=expected,
+            )
+            if self.helper_identity is None and facts.get("creation_time") is not None:
+                self.helper_identity = {"pid": pid, "creation_time": facts["creation_time"]}
+
+    def child_boundary(self, child, boundary):
+        known = self.child_identities.get(id(child), {})
+        popen = child.__dict__.get("_popen")
+        self.cleanup_trace.record(
+            "writer-parent-boundary",
+            boundary=boundary,
+            known_identity=known,
+            cached_returncode=None if popen is None else popen.returncode,
+            process_object_closed=child.__dict__.get("_closed"),
+            identity=(
+                process_facts(known["pid"], known["creation_time"])
+                if known.get("creation_time") is not None
+                else {"gap": "Writer birth unavailable; no PID-only attribution"}
+            ),
+        )
+
+    def child_call(self, child, name, *args):
+        self.child_boundary(child, name + ":enter")
+        try:
+            return self.cleanup_trace.invoke("writer." + name, getattr(child, name), *args)
+        finally:
+            self.child_boundary(child, name + ":finally")
 
     def finish_children(self):
         for event in self.releases:
-            event.set()
+            self.cleanup_trace.invoke("teardown.release.set", event.set)
         for child in self.children:
-            child.join(5)
-            if child.is_alive():
-                child.terminate()
-                child.join(5)
-            if child.is_alive():
-                child.kill()
-                child.join(5)
-            child.close()
+            self.child_call(child, "join", 5)
+            if self.child_call(child, "is_alive"):
+                self.child_call(child, "terminate")
+                self.child_call(child, "join", 5)
+            if self.child_call(child, "is_alive"):
+                self.child_call(child, "kill")
+                self.child_call(child, "join", 5)
+            self.child_call(child, "close")
 
     def run_pair(self, first, second, *, failure=False):
         paused = self.context.Event()
         release = self.context.Event()
         contended = self.context.Event()
+        self.observe_interpreter_helper("after actual Event construction")
         self.releases.append(release)
         before = self.cache.path.read_bytes()
         for label, choice, pause, contention, fail in (
@@ -453,15 +540,25 @@ class TwoProcessConfirmation(_StoreFixture):
                 target=process_confirm,
                 args=(str(self.root), label, *choice, pause, release, contention, fail),
             )
-            child.start()
+            self.cleanup_trace.invoke("writer.start", child.start)
             self.children.append(child)
+            identity = self.cleanup_trace.role(
+                child.pid, "vi05-confirmation-writer", "actual spawned Process.pid; label=" + label
+            )
+            self.child_identities[id(child)] = {
+                "pid": child.pid,
+                "creation_time": identity.get("creation_time"),
+                "label": label,
+                "target": "process_confirm",
+            }
+            self.child_boundary(child, "after start")
             if label == "first":
                 self.assertTrue(paused.wait(20), "first process did not read inside transaction")
         self.assertTrue(contended.wait(20), "second process did not hit the held native lock")
         self.assertEqual(self.cache.path.read_bytes(), before)
-        release.set()
+        self.cleanup_trace.invoke("transaction.release.set", release.set)
         for child in self.children:
-            child.join(25)
+            self.child_call(child, "join", 25)
             self.assertEqual(child.exitcode, 0, f"writer {child.pid} did not finish cleanly")
         proof = [
             json.loads((self.root / (label + "-process.json")).read_text(encoding="utf-8"))

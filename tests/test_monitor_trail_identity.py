@@ -77,7 +77,9 @@ class CompleteTrailRecords(MonitorTestCase):
 
     def store_records(self):
         return {
-            str(path.relative_to(self.store_dir)): path.read_text(encoding="utf-8", errors="replace")
+            str(path.relative_to(self.store_dir)): path.read_text(
+                encoding="utf-8", errors="replace"
+            )
             for path in self.store_dir.rglob("*")
             if path.is_file() and path.suffix in (".json", ".jsonl", ".txt")
         }
@@ -106,14 +108,18 @@ class CompleteTrailRecords(MonitorTestCase):
         # Exercise real boot recovery of the persisted ID through local simulated
         # delivery, including ACK/unlink and the actual Sentry envelope writer.
         monitor.closeout("retained-phase")
-        delivered_monitor = self.make_monitor(context=self.context({"alpha": CONNECTION}, "run-recovery"))
+        delivered_monitor = self.make_monitor(
+            context=self.context({"alpha": CONNECTION}, "run-recovery")
+        )
         delivered_monitor.bind_workspace(self.store_dir / PROJECT)
         delivered = self.simulated_remote / monitor._workspace / "reports" / paths[0].name
         deadline = time.monotonic() + 5
         while time.monotonic() < deadline and (paths[0].exists() or not delivered.exists()):
             time.sleep(0.01)
         self.assertFalse(paths[0].exists(), "ACK must remove the original spool body")
-        self.assertTrue(delivered.is_file(), "the same report ID must exist in the local delivery sink")
+        self.assertTrue(
+            delivered.is_file(), "the same report ID must exist in the local delivery sink"
+        )
         delivered_monitor._delivery.stop(timeout=2)
         self.assertEqual(json.loads(delivered.read_text(encoding="utf-8")), report)
         actual = self.store_records()
@@ -121,8 +127,10 @@ class CompleteTrailRecords(MonitorTestCase):
         self.assert_private(actual)
         self.assertEqual(delivered_monitor._delivery.describe()["state"], "filler_simulated")
         self.assertFalse(delivered_monitor._delivery.describe()["durable_off_box"])
-        report_ids = [json.loads(path.read_text(encoding="utf-8"))["report_id"]
-                      for path in self.simulated_remote.rglob("rpt-*.json")]
+        report_ids = [
+            json.loads(path.read_text(encoding="utf-8"))["report_id"]
+            for path in self.simulated_remote.rglob("rpt-*.json")
+        ]
         self.assertEqual(report_ids, [report["report_id"]])
 
     def test_board_scoping_reconnect_and_missing_connection_in_complete_reports(self):
@@ -136,7 +144,9 @@ class CompleteTrailRecords(MonitorTestCase):
         connections["alpha"] = None
         self.observe(monitor, "alpha", error=RuntimeError(f"alpha failure {UNC}"))
         self.observe(monitor, "beta", error=ValueError(f"beta failure {UNC}"))
-        reports = [json.loads(path.read_text(encoding="utf-8")) for path in self.report_paths(monitor)]
+        reports = [
+            json.loads(path.read_text(encoding="utf-8")) for path in self.report_paths(monitor)
+        ]
         self.assertEqual(len(reports), 2)
         self.export("complete-board-records", {"reports": reports, "store": self.store_records()})
         self.assert_private(reports)
@@ -145,7 +155,9 @@ class CompleteTrailRecords(MonitorTestCase):
         self.assertTrue(all(entry["board"] == "alpha" for entry in alpha["trail"]))
         self.assertTrue(all(entry["board"] == "beta" for entry in beta["trail"]))
         tokens = [entry["connection"] for entry in alpha["trail"]]
-        self.assertEqual(tokens, [digest_id(CONNECTION), digest_id(CONNECTION), digest_id(RECONNECTED), None])
+        self.assertEqual(
+            tokens, [digest_id(CONNECTION), digest_id(CONNECTION), digest_id(RECONNECTED), None]
+        )
         self.assertNotEqual(tokens[0], tokens[2])
         self.assertIsNone(alpha["board_scope"]["connection_id"])
 
@@ -155,13 +167,19 @@ class CompleteTrailRecords(MonitorTestCase):
             monitor = self.retained_monitor({board: connection}, f"run-group-{index}")
             for _ in range(50):
                 self.observe(monitor, board, error=RuntimeError(f"same failure {UNC}"))
-            current = [json.loads(path.read_text(encoding="utf-8")) for path in self.report_paths(monitor)]
-            this_run = [report for report in current if report["session_id"] == f"run-group-{index}"]
+            current = [
+                json.loads(path.read_text(encoding="utf-8")) for path in self.report_paths(monitor)
+            ]
+            this_run = [
+                report for report in current if report["session_id"] == f"run-group-{index}"
+            ]
             self.assertEqual(len(this_run), 1)
             self.assertEqual(monitor._counters.snapshot().total, 50)
             reports.extend(this_run)
             monitor.closeout("grouping-phase")
-        self.export("complete-grouping-records", {"reports": reports, "store": self.store_records()})
+        self.export(
+            "complete-grouping-records", {"reports": reports, "store": self.store_records()}
+        )
         self.assertEqual(reports[0]["grouping_key"], reports[1]["grouping_key"])
         self.assertEqual(reports[0]["error_signature"], reports[1]["error_signature"])
         self.assertNotEqual(reports[0]["report_id"], reports[1]["report_id"])
@@ -186,8 +204,10 @@ class SuccessfulDeliveryInvalidatesSpoolPaths(MonitorTestCase):
             send(report)
             finished.set()
 
-        with patch.object(monitor._delivery, "enqueue_report", side_effect=capture), \
-             patch.object(monitor._delivery, "_send_report", side_effect=sent):
+        with (
+            patch.object(monitor._delivery, "enqueue_report", side_effect=capture),
+            patch.object(monitor._delivery, "_send_report", side_effect=sent),
+        ):
             call = monitor.begin("read_memory", {}, "alpha")
             assert call is not None
             call.failed(RuntimeError("report-reader-race-control"))

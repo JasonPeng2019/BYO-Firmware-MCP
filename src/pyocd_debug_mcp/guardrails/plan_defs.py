@@ -492,10 +492,12 @@ _DEFINITIONS = (
             ),
             _field("baudrate", FieldType.INTEGER, "Positive baud rate.", nullable=True, minimum=1),
             _field(
-                "port", FieldType.TEXT,
+                "port",
+                FieldType.TEXT,
                 "Leave null to use the saved adapter or first-resolution routing. "
                 "If it is missing, choose a listed port explicitly in a new plan; "
-                "ask the user when several ports are listed.", nullable=True,
+                "ask the user when several ports are listed.",
+                nullable=True,
             ),
             _field("reset_on_open", FieldType.BOOLEAN, "Reset after opening the port."),
             _field(
@@ -531,10 +533,12 @@ _DEFINITIONS = (
             ),
             _field("baudrate", FieldType.INTEGER, "Positive baud rate.", nullable=True, minimum=1),
             _field(
-                "port", FieldType.TEXT,
+                "port",
+                FieldType.TEXT,
                 "Leave null to use the saved adapter or first-resolution routing. "
                 "If it is missing, choose a listed port explicitly in a new plan; "
-                "ask the user when several ports are listed.", nullable=True,
+                "ask the user when several ports are listed.",
+                nullable=True,
             ),
             _field(
                 "ready_text",
@@ -591,10 +595,12 @@ _DEFINITIONS = (
             _field("text", FieldType.TEXT, "Exact text to send."),
             _field("baudrate", FieldType.INTEGER, "Positive baud rate.", nullable=True, minimum=1),
             _field(
-                "port", FieldType.TEXT,
+                "port",
+                FieldType.TEXT,
                 "Leave null to use the saved adapter or first-resolution routing. "
                 "If it is missing, choose a listed port explicitly in a new plan; "
-                "ask the user when several ports are listed.", nullable=True,
+                "ask the user when several ports are listed.",
+                nullable=True,
             ),
             _field("append_newline", FieldType.BOOLEAN, "Append one newline when true."),
             _field(

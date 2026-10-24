@@ -10,11 +10,12 @@ from __future__ import annotations
 
 import unittest
 
+from hashlib import blake2b
 from pathlib import Path
 
 from mcp.types import TextContent
 
-from pyocd_debug_mcp.monitor.paths import workspace_id
+from pyocd_debug_mcp.monitor.paths import deployment_salt, workspace_id
 from pyocd_debug_mcp.monitor.redaction import (
     NarrativeContentError,
     check_narrative,
@@ -48,9 +49,7 @@ class Fingerprints(MonitorTestCase):
         from pyocd_debug_mcp.guardrails.plan_engine import canonical_json
 
         value = {"address": 536883712}
-        unsalted = blake2b(
-            canonical_json(value).encode("utf-8"), digest_size=8
-        ).hexdigest()
+        unsalted = blake2b(canonical_json(value).encode("utf-8"), digest_size=8).hexdigest()
         self.assertNotEqual(fingerprint(value), unsalted)
 
     def test_salt_differs_across_deployments(self) -> None:
@@ -120,11 +119,147 @@ class SaltPersistence(MonitorTestCase):
         self.assertEqual(first, second)
 
 
+class PortablePathBasenames(MonitorTestCase):
+    _PATH_CASES = (
+        (r"C:\Users\operator\project-private\app.elf", "app.elf"),
+        ("C:/Users/operator/project-private/app.elf", "app.elf"),
+        (r"c:\Work Area\MixedCase.ELF", "MixedCase.ELF"),
+        ("D:\\build\\固件 café.elf", "固件 café.elf"),
+        (r"C:project-private\app.elf", "app.elf"),
+        ("C:app.elf", "app.elf"),
+        (r"project-private\build\app.elf", "app.elf"),
+        (r".\build\app.elf", "app.elf"),
+        (r"..\project-private\app.elf", "app.elf"),
+        (r"\\server-private\share-private\project-private\app.elf", "app.elf"),
+        ("//server-private/share-private/project-private/app.elf", "app.elf"),
+        (r"\\?\C:\project-private\app.elf", "app.elf"),
+        (r"\\?\UNC\server-private\share-private\project-private\app.elf", "app.elf"),
+        ("C:\\project-private\\build\\", "build"),
+        ("/home/operator/project-private/app.elf", "app.elf"),
+        ("/tmp/project-private/build/", "build"),
+        ("/opt/Work Area/MixedCase.ELF", "MixedCase.ELF"),
+        ("/home/operator/固件 café.elf", "固件 café.elf"),
+        ("project-private/build/app.elf", "app.elf"),
+        ("./build/app.elf", "app.elf"),
+        ("../project-private/app.elf", "app.elf"),
+        ("app.elf", "app.elf"),
+        ("固件 café.ELF", "固件 café.ELF"),
+        ("README", "README"),
+    )
+    _FALLBACK_INPUTS = (
+        "",
+        ".",
+        "./",
+        ".\\",
+        "/",
+        "\\",
+        "//",
+        "///",
+        "C:",
+        "C:\\",
+        "C:/",
+        r"\\server-private\share-private",
+        "\\\\server-private\\share-private\\",
+        "//server-private/share-private/",
+        "\\\\?\\C:\\",
+        "\\\\?\\UNC\\server-private\\share-private\\",
+    )
+
+    def test_windows_and_posix_spellings_keep_only_the_basename(self) -> None:
+        for value, basename in self._PATH_CASES:
+            with self.subTest(value=value):
+                digest = blake2b(
+                    deployment_salt() + value.encode("utf-8", "replace"), digest_size=4
+                ).hexdigest()
+                self.assertEqual(safe_path(value), f"{basename}#{digest}")
+
+    def test_empty_and_root_spellings_keep_the_path_fallback(self) -> None:
+        for value in self._FALLBACK_INPUTS:
+            with self.subTest(value=value):
+                digest = blake2b(
+                    deployment_salt() + value.encode("utf-8", "replace"), digest_size=4
+                ).hexdigest()
+                self.assertEqual(safe_path(value), f"path#{digest}")
+
+    def test_nested_paths_follow_the_same_contract(self) -> None:
+        cases = self._PATH_CASES + tuple((value, "path") for value in self._FALLBACK_INPUTS)
+        for value, basename in cases:
+            with self.subTest(value=value):
+                nested = {"elf_path": value, "detail": {"artifact_path": value}}
+                expected_path = f"{basename}#{digest_id(value)}"
+                expected = {
+                    "elf_path": expected_path,
+                    "detail": {"artifact_path": expected_path},
+                }
+                if "/" in value or "\\" in value:
+                    nested["inferred"] = value
+                    expected["inferred"] = expected_path
+                self.assertEqual(scrub_mechanical({"outer": nested}), {"outer": expected})
+
+    def test_same_basename_keeps_distinct_full_path_fingerprints(self) -> None:
+        values = (
+            "/alpha/app.elf",
+            "/beta/app.elf",
+            r"C:\alpha\app.elf",
+            r"D:\alpha\app.elf",
+            "C:/alpha/app.elf",
+            r"\\server-a\share-a\app.elf",
+            r"\\server-b\share-a\app.elf",
+            r"\\server-a\share-b\app.elf",
+        )
+        first = [safe_path(value) for value in values]
+        self.assertEqual(first, [safe_path(value) for value in values])
+        self.assertEqual(len(set(first)), len(values))
+        for value, reduced in zip(values, first):
+            with self.subTest(value=value):
+                self.assertEqual(reduced, f"app.elf#{digest_id(value)}")
+
+    def test_nested_payload_identifier_and_scalar_rules_remain_intact(self) -> None:
+        artifact = r"C:\project-private\app.elf"
+        probe = r"USB\probe-private"
+        self.assertEqual(
+            scrub_mechanical(
+                {
+                    "outer": {
+                        "artifact_path": artifact,
+                        "data": "secret contents",
+                        "value": 42,
+                        "blob": b"secret bytes",
+                        "probe_uid": probe,
+                        "note": "app.elf",
+                        "board_id": "b1",
+                        "word_size": 32,
+                        "enabled": True,
+                        "missing": None,
+                        "items": ["private", "payload"],
+                        "long_note": "x" * 513,
+                        "hex_dump": "AA BB CC DD " * 40,
+                    }
+                }
+            ),
+            {
+                "outer": {
+                    "artifact_path": f"app.elf#{digest_id(artifact)}",
+                    "data": "<omitted>",
+                    "value": "<omitted>",
+                    "blob": "<omitted>",
+                    "probe_uid": digest_id(probe),
+                    "note": "app.elf",
+                    "board_id": "b1",
+                    "word_size": 32,
+                    "enabled": True,
+                    "missing": None,
+                    "items": "<2 items>",
+                    "long_note": "<omitted>",
+                    "hex_dump": "<omitted>",
+                }
+            },
+        )
+
+
 class MechanicalBar(MonitorTestCase):
     def test_payload_keys_are_dropped(self) -> None:
-        scrubbed = scrub_mechanical(
-            {"data": "DEADBEEF" * 100, "value": 42, "contents": "secret"}
-        )
+        scrubbed = scrub_mechanical({"data": "DEADBEEF" * 100, "value": 42, "contents": "secret"})
         self.assertEqual(scrubbed["data"], "<omitted>")
         self.assertEqual(scrubbed["contents"], "<omitted>")
 
@@ -171,6 +306,16 @@ class NarrativeBar(MonitorTestCase):
     def test_file_paths_in_prose_are_allowed(self) -> None:
         check_narrative("Updated drivers/spi/spi_master.c and rebuilt.")
 
+    def test_windows_and_posix_paths_remain_allowed_in_prose(self) -> None:
+        for value in (
+            r"C:\project-private\app.elf",
+            r"\\server-private\share-private\app.elf",
+            "/home/operator/project-private/app.elf",
+            "drivers/固件 café.c",
+        ):
+            with self.subTest(value=value):
+                check_narrative(f"Updated {value} and rebuilt.")
+
     def test_memory_dump_is_rejected(self) -> None:
         with self.assertRaises(NarrativeContentError):
             check_narrative("Read back: " + "DE AD BE EF " * 40)
@@ -181,9 +326,7 @@ class NarrativeBar(MonitorTestCase):
 
     def test_full_command_line_is_rejected(self) -> None:
         with self.assertRaises(NarrativeContentError):
-            check_narrative(
-                r"ran C:\tools\arm-none-eabi-gcc.exe -O2 -mcpu=cortex-m4 -o app.elf"
-            )
+            check_narrative(r"ran C:\tools\arm-none-eabi-gcc.exe -O2 -mcpu=cortex-m4 -o app.elf")
 
     def test_self_rating_is_rejected(self) -> None:
         with self.assertRaises(NarrativeContentError):

@@ -88,6 +88,7 @@ def uart_environment_diagnostic() -> str:
         )
     return LOCKED_ENVIRONMENT_UART_DIAGNOSTIC
 
+
 PROBE_OPEN_FAILED_CHECKS = (
     "the debugger's driver is installed and the device is not in a fault state",
     "no other process holds the probe open (a vendor IDE, a GDB server, another session)",
@@ -170,7 +171,7 @@ def no_native_probe_failure(
         + probe_environment_diagnostic()
         + " If that command also reports nothing and the user can still see the debugger "
         "in a vendor tool, call "
-        f"{CONTRACT_TOOL}(kind=\"probe\") to get the contract for a discovery hook that "
+        f'{CONTRACT_TOOL}(kind="probe") to get the contract for a discovery hook that '
         "names it. Do not expose this payload or internal IDs."
     )
     return DiscoveryFailure(
@@ -199,7 +200,7 @@ def no_native_uart_failure(
         "Tell the user to attach and identify the board's UART connection. "
         + uart_environment_diagnostic()
         + " If that command also reports nothing, call "
-        f"{CONTRACT_TOOL}(kind=\"uart\") to get the contract for a discovery hook that "
+        f'{CONTRACT_TOOL}(kind="uart") to get the contract for a discovery hook that '
         "names the port. Do not expose this payload or internal IDs."
     )
     return DiscoveryFailure(

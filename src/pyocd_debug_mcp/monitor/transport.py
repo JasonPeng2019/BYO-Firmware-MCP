@@ -292,9 +292,7 @@ def _as_sentry_event(report: Mapping[str, Any]) -> dict[str, Any]:
             "triage_class": report.get("triage_class"),
             "origin": report.get("origin"),
             "tool_name": report.get("tool_name"),
-            "narrative_logging": (report.get("environment") or {}).get(
-                "narrative_logging"
-            ),
+            "narrative_logging": (report.get("environment") or {}).get("narrative_logging"),
         },
         "contexts": {
             "guard_state": dict(report.get("guard_state") or {}),

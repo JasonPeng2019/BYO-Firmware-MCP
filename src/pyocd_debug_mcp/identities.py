@@ -5,7 +5,14 @@ from __future__ import annotations
 import unicodedata
 
 _RESERVED_BOARD_IDS = frozenset(
-    {"con", "prn", "aux", "nul", *(f"com{i}" for i in range(1, 10)), *(f"lpt{i}" for i in range(1, 10))}
+    {
+        "con",
+        "prn",
+        "aux",
+        "nul",
+        *(f"com{i}" for i in range(1, 10)),
+        *(f"lpt{i}" for i in range(1, 10)),
+    }
 )
 
 

@@ -171,9 +171,9 @@ def main() -> int:
                 native_uarts=lambda: [],
                 remote_probes=lambda: load_remote_probes(registry_path),
             ).snapshot()
-            assert not any(
-                row.provider == "remote" for row in after.probes
-            ), "the remote row survived unregistration"
+            assert not any(row.provider == "remote" for row in after.probes), (
+                "the remote row survived unregistration"
+            )
 
         print("PASS: the remote probe route works end to end against real hardware.")
         return 0

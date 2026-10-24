@@ -191,9 +191,7 @@ class StalenessBlock:
         anchor = self.anchor
         days = STALENESS_THRESHOLD.days
         if anchor is not None:
-            days = max(
-                days, int((datetime.now(timezone.utc) - anchor.at).total_seconds() // 86400)
-            )
+            days = max(days, int((datetime.now(timezone.utc) - anchor.at).total_seconds() // 86400))
         return BLOCK_MESSAGE.format(
             days=days,
             threshold_days=STALENESS_THRESHOLD.days,

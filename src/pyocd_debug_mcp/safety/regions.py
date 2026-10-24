@@ -297,9 +297,12 @@ class SafetyMap:
                 # A prohibited-write overlay must not grant read access to an
                 # SVD register that was previously classified as write-only.
                 return Refusal(
-                    action, "safety/wrong-region-kind",
+                    action,
+                    "safety/wrong-region-kind",
                     "The complete request touches a write-only peripheral register.",
-                    requested, classification, "Choose a readable mapped region.",
+                    requested,
+                    classification,
+                    "Choose a readable mapped region.",
                 )
             if classification is RegionKind.PROHIBITED and action is not ActionCategory.MEMORY_READ:
                 return Refusal(
@@ -462,9 +465,7 @@ def build_recovery_erase_disclosure(
     """Derive recovery loss from the map; callers cannot inject allowed ranges."""
 
     mapped = tuple(regions)
-    physical_flash = tuple(
-        region for region in mapped if region.kind is RegionKind.PHYSICAL_FLASH
-    )
+    physical_flash = tuple(region for region in mapped if region.kind is RegionKind.PHYSICAL_FLASH)
     if not physical_flash:
         raise RegionError("the current safety map has no physical flash range to disclose")
     explicit = geometry.get("sectors")

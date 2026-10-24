@@ -197,8 +197,7 @@ def build_remote_probe_handlers(
                 "port": normalized_port,
                 "removed": removed,
                 "agent_prompt": (
-                    f"{selector} was removed; it will no longer appear in inventory "
-                    "snapshots."
+                    f"{selector} was removed; it will no longer appear in inventory snapshots."
                     if removed
                     else f"{selector} was not in the registry; nothing changed."
                 ),

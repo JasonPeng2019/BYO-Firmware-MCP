@@ -21,7 +21,7 @@ from __future__ import annotations
 import re
 from collections.abc import Mapping
 from hashlib import blake2b
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 from typing import Any
 
 from pyocd_debug_mcp.monitor.paths import deployment_salt
@@ -134,10 +134,11 @@ def digest_id(value: str, keep: int = 4) -> str:
 
 
 def safe_path(value: str) -> str:
-    """Return a path reduced to its basename plus a salted digest of the whole."""
+    """Return a Windows/POSIX lexical basename plus a salted full-input digest."""
 
     try:
-        name = Path(value).name or "path"
+        # Windows parsing accepts both separators, independently of the host.
+        name = PureWindowsPath(value).name or "path"
     except (OSError, ValueError):
         name = "path"
     return f"{name}#{_salted(value, size=4)}"

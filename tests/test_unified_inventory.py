@@ -53,8 +53,9 @@ def _listing(*probes: tuple[str, str]) -> NativeProbeListing:
     )
 
 
-def _port(device: str, serial: str | None = "SER1", vid: int | None = 0x1234,
-          pid: int | None = 0x5678) -> SimpleNamespace:
+def _port(
+    device: str, serial: str | None = "SER1", vid: int | None = 0x1234, pid: int | None = 0x5678
+) -> SimpleNamespace:
     return SimpleNamespace(
         device=device,
         description=f"UART {device}",
@@ -229,9 +230,7 @@ class ActiveConnectionTests(unittest.TestCase):
     def test_active_probes_remain_visible_to_validation(self) -> None:
         active = (ActiveConnectionRow("U9", "U9", "Open board", "jlink"),)
 
-        inventory = _service(
-            EMPTY_NATIVE_PROBE_LISTING, [], active=active
-        ).validation_inventory()
+        inventory = _service(EMPTY_NATIVE_PROBE_LISTING, [], active=active).validation_inventory()
 
         self.assertEqual([probe.probe_id for probe in inventory.probes], ["U9"])
         self.assertEqual(inventory.probes[0].usb_serial, "U9")
@@ -239,9 +238,7 @@ class ActiveConnectionTests(unittest.TestCase):
     def test_a_uid_less_active_probe_warns_the_agent_it_is_session_local(self) -> None:
         active = (ActiveConnectionRow("session:tok", None, "Open board", "jlink"),)
 
-        inventory = _service(
-            EMPTY_NATIVE_PROBE_LISTING, [], active=active
-        ).validation_inventory()
+        inventory = _service(EMPTY_NATIVE_PROBE_LISTING, [], active=active).validation_inventory()
 
         self.assertIsNone(inventory.probes[0].usb_serial)
         self.assertIn("session-local", inventory.probes[0].choice().label)
@@ -251,7 +248,9 @@ class ProbeMergeTests(unittest.TestCase):
     MERGE = staticmethod(HardwareInventoryService._merge_probe_rows)
 
     @staticmethod
-    def _row(provider: str, uid: str, provenance: tuple[str, ...], sha: str | None = None) -> ProbeRow:
+    def _row(
+        provider: str, uid: str, provenance: tuple[str, ...], sha: str | None = None
+    ) -> ProbeRow:
         return ProbeRow(
             provider=provider,
             probe_id=uid,
@@ -556,9 +555,7 @@ class VendorProvenanceTests(unittest.TestCase):
         snapshot = service.snapshot()
 
         self.assertEqual(len(snapshot.uarts), 1)
-        self.assertEqual(
-            snapshot.uarts[0].provenance, ("vendor:nrfjprog", "hook:uart-hook")
-        )
+        self.assertEqual(snapshot.uarts[0].provenance, ("vendor:nrfjprog", "hook:uart-hook"))
 
 
 class ProviderTruthTests(unittest.TestCase):
@@ -611,23 +608,17 @@ class AdapterTests(unittest.TestCase):
 
         inventory = _service(listing, []).validation_inventory()
 
-        self.assertEqual(
-            [probe.probe_id for probe in inventory.probes], ["aaa", "mmm", "zzz"]
-        )
+        self.assertEqual([probe.probe_id for probe in inventory.probes], ["aaa", "mmm", "zzz"])
 
     def test_validation_serial_id_falls_back_to_the_port_path(self) -> None:
         ports = [_port("COM3", "SER1"), _port("COM4", None)]
 
         inventory = _service(_listing(("U1", "cmsisdap")), ports).validation_inventory()
 
-        self.assertEqual(
-            [item.serial_id for item in inventory.serial_ports], ["SER1", "COM4"]
-        )
+        self.assertEqual([item.serial_id for item in inventory.serial_ports], ["SER1", "COM4"])
 
     def test_the_snapshot_adapter_round_trips_the_legacy_shape(self) -> None:
-        inventory = ValidationInventory(
-            probes=(ValidationProbe("U1", "Probe one", "jlink", "U1"),)
-        )
+        inventory = ValidationInventory(probes=(ValidationProbe("U1", "Probe one", "jlink", "U1"),))
 
         snapshot = snapshot_from_validation_inventory(inventory)
         again = validation_inventory_from(snapshot)

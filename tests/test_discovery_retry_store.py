@@ -188,9 +188,7 @@ class HandlerRefusalTests(unittest.TestCase):
         self.launches: list[str] = []
         self.replaced: list[DiscoveryHookSnapshot] = []
 
-        def run_hooks(
-            snapshot: DiscoveryHookSnapshot, kind: str
-        ) -> Sequence[HookExecution]:
+        def run_hooks(snapshot: DiscoveryHookSnapshot, kind: str) -> Sequence[HookExecution]:
             self.launches.append(kind)
             return execute_eligible_hooks(snapshot, kind)
 
@@ -199,9 +197,7 @@ class HandlerRefusalTests(unittest.TestCase):
                 hook_root=lambda: self.root,
                 load_snapshot=lambda: load_hook_snapshot(self.root, environ={}),
                 current_snapshot=lambda: discovery_hooks.EMPTY_SNAPSHOT,
-                replace_snapshot=lambda snapshot: (
-                    self.replaced.append(snapshot) or snapshot
-                ),
+                replace_snapshot=lambda snapshot: self.replaced.append(snapshot) or snapshot,
                 retry_store=self.store,
                 registered_providers=lambda: ("cmsisdap",),
                 run_hooks=run_hooks,
@@ -400,9 +396,7 @@ class RefreshUnhandledExceptionGuardTests(unittest.TestCase):
         write_manifest(self.root, [hook_entry("probe-hook", "probe", argv=["probe"])])
         self.store = DiscoveryRetryStore("run-1")
 
-    def _handlers(
-        self, run_hooks: Any
-    ) -> dict[str, Any]:
+    def _handlers(self, run_hooks: Any) -> dict[str, Any]:
         return build_discovery_handlers(
             DiscoveryToolServices(
                 hook_root=lambda: self.root,
@@ -416,9 +410,7 @@ class RefreshUnhandledExceptionGuardTests(unittest.TestCase):
         )
 
     def test_an_exception_from_run_hooks_becomes_a_typed_payload_not_a_raise(self) -> None:
-        def broken_run_hooks(
-            snapshot: DiscoveryHookSnapshot, kind: str
-        ) -> Sequence[HookExecution]:
+        def broken_run_hooks(snapshot: DiscoveryHookSnapshot, kind: str) -> Sequence[HookExecution]:
             raise RuntimeError("boom: simulated hook-runner failure")
 
         handlers = self._handlers(broken_run_hooks)
@@ -443,9 +435,7 @@ class RefreshUnhandledExceptionGuardTests(unittest.TestCase):
         step 8 requires every hook-failure response to carry.
         """
 
-        def broken_run_hooks(
-            snapshot: DiscoveryHookSnapshot, kind: str
-        ) -> Sequence[HookExecution]:
+        def broken_run_hooks(snapshot: DiscoveryHookSnapshot, kind: str) -> Sequence[HookExecution]:
             raise RuntimeError("boom: simulated hook-runner failure")
 
         handlers = self._handlers(broken_run_hooks)

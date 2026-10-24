@@ -25,11 +25,18 @@ from pyocd_debug_mcp.hardware_inventory import (
     derive_selection_from_token,
     find_selected_row,
 )
-from pyocd_debug_mcp.probe_inventory import EMPTY_NATIVE_PROBE_LISTING
+from pyocd_debug_mcp.probe_inventory import EMPTY_NATIVE_PROBE_LISTING, registered_provider_ids
 from pyocd_debug_mcp.services.connections import probe_connection_id
 
 SHA_A = "a" * 64
 SHA_B = "b" * 64
+
+
+def setUpModule() -> None:
+    required = {"cmsisdap", "picoprobe"}
+    actual = set(registered_provider_ids())
+    if not required <= actual:
+        raise RuntimeError(f"Real pyOCD registry lacks fixture prerequisites: {required - actual}")
 
 
 def _probe_row(
@@ -86,8 +93,8 @@ class ResolutionTests(unittest.TestCase):
         self.store = ProbeSelectionStore()
 
     def test_duplicate_native_uid_refuses_unrecorded_canonical_and_legacy_tokens(self) -> None:
-        rows = (_probe_row("jlink", "123"), _probe_row("jlink", "123"))
-        for token in (probe_connection_id("jlink", "123"), "probe:123", "123"):
+        rows = (_probe_row("picoprobe", "123"), _probe_row("picoprobe", "123"))
+        for token in (probe_connection_id("picoprobe", "123"), "probe:123", "123"):
             with self.subTest(token=token):
                 with self.assertRaises(SelectionDisappeared) as caught:
                     self.store.resolve(token, _snapshot(*rows))
@@ -97,22 +104,22 @@ class ResolutionTests(unittest.TestCase):
                 self.assertIsNone(self.store.recorded(token))
 
     def test_recorded_native_selection_refuses_new_same_provider_uid_ambiguity(self) -> None:
-        token = probe_connection_id("jlink", "123")
-        original = _probe_row("jlink", "123")
+        token = probe_connection_id("picoprobe", "123")
+        original = _probe_row("picoprobe", "123")
         self.store.record(ProbeSelection.from_row(token, original))
-        duplicate = _probe_row("jlink", "123")
+        duplicate = _probe_row("picoprobe", "123")
         with self.assertRaises(SelectionDisappeared) as caught:
             self.store.resolve(token, _snapshot(original, duplicate))
         self.assertIn("UID is ambiguous", caught.exception.reason)
 
     def test_connection_id_resolves_to_provider_and_unique_id(self) -> None:
-        row = _probe_row("jlink", "683710208")
-        token = probe_connection_id("jlink", "683710208")
+        row = _probe_row("picoprobe", "683710208")
+        token = probe_connection_id("picoprobe", "683710208")
         self.store.record(ProbeSelection.from_row(token, row))
 
         selection = self.store.resolve(token, _snapshot(row))
 
-        self.assertEqual(selection.provider, "jlink")
+        self.assertEqual(selection.provider, "picoprobe")
         self.assertEqual(selection.unique_id, "683710208")
         self.assertEqual(selection.identity_scope, "stable")
         self.assertTrue(selection.durable)
@@ -126,17 +133,17 @@ class ResolutionTests(unittest.TestCase):
         self.assertEqual(selection.unique_id, "AbCdEf")
 
     def test_a_decimal_uid_still_resolves_after_leading_zeros_change(self) -> None:
-        recorded_row = _probe_row("jlink", "683710208")
+        recorded_row = _probe_row("picoprobe", "683710208")
         self.store.record(ProbeSelection.from_row("probe:683710208", recorded_row))
-        fresh = _probe_row("jlink", "000683710208")
+        fresh = _probe_row("picoprobe", "000683710208")
 
         selection = self.store.resolve("probe:683710208", _snapshot(fresh))
 
         self.assertEqual(selection.unique_id, "000683710208")
 
     def test_a_missing_row_raises_instead_of_selecting_another_probe(self) -> None:
-        recorded = _probe_row("jlink", "111")
-        other = _probe_row("jlink", "222")
+        recorded = _probe_row("picoprobe", "111")
+        other = _probe_row("picoprobe", "222")
         self.store.record(ProbeSelection.from_row("probe:111", recorded))
 
         with self.assertRaises(SelectionDisappeared) as caught:
@@ -146,22 +153,22 @@ class ResolutionTests(unittest.TestCase):
         self.assertIn("no longer present", caught.exception.reason)
 
     def test_a_same_uid_row_under_a_different_provider_is_not_a_match(self) -> None:
-        recorded = _probe_row("jlink", "12345")
+        recorded = _probe_row("picoprobe", "12345")
         self.store.record(ProbeSelection.from_row("probe:12345", recorded))
 
         with self.assertRaises(SelectionDisappeared):
             self.store.resolve("probe:12345", _snapshot(_probe_row("cmsisdap", "12345")))
 
     def test_an_empty_snapshot_raises(self) -> None:
-        self.store.record(ProbeSelection.from_row("probe:111", _probe_row("jlink", "111")))
+        self.store.record(ProbeSelection.from_row("probe:111", _probe_row("picoprobe", "111")))
 
         with self.assertRaises(SelectionDisappeared):
             self.store.resolve("probe:111", _snapshot())
 
     def test_a_hook_source_change_raises_and_names_the_refresh(self) -> None:
-        recorded = _probe_row("jlink", "111", provenance=("hook:h",), sha=SHA_A)
+        recorded = _probe_row("picoprobe", "111", provenance=("hook:h",), sha=SHA_A)
         self.store.record(ProbeSelection.from_row("probe:111", recorded))
-        changed = _probe_row("jlink", "111", provenance=("hook:h",), sha=SHA_B)
+        changed = _probe_row("picoprobe", "111", provenance=("hook:h",), sha=SHA_B)
 
         with self.assertRaises(SelectionDisappeared) as caught:
             self.store.resolve("probe:111", _snapshot(changed))
@@ -169,7 +176,7 @@ class ResolutionTests(unittest.TestCase):
         self.assertIn("refresh_discovery_hooks", caught.exception.reason)
 
     def test_the_same_hook_source_still_resolves(self) -> None:
-        row = _probe_row("jlink", "111", provenance=("hook:h",), sha=SHA_A)
+        row = _probe_row("picoprobe", "111", provenance=("hook:h",), sha=SHA_A)
         self.store.record(ProbeSelection.from_row("probe:111", row))
 
         selection = self.store.resolve("probe:111", _snapshot(row))
@@ -179,9 +186,9 @@ class ResolutionTests(unittest.TestCase):
     def test_a_device_that_becomes_natively_visible_still_resolves(self) -> None:
         """A hook row on one refresh and a native row on the next is the same device."""
 
-        recorded = _probe_row("jlink", "111", provenance=("hook:h",), sha=SHA_A)
+        recorded = _probe_row("picoprobe", "111", provenance=("hook:h",), sha=SHA_A)
         self.store.record(ProbeSelection.from_row("probe:111", recorded))
-        native = _probe_row("jlink", "111", provenance=("native",), sha=None)
+        native = _probe_row("picoprobe", "111", provenance=("native",), sha=None)
 
         selection = self.store.resolve("probe:111", _snapshot(native))
 
@@ -189,9 +196,9 @@ class ResolutionTests(unittest.TestCase):
         self.assertIsNone(selection.hook_source_sha256)
 
     def test_a_device_that_becomes_hook_only_still_resolves(self) -> None:
-        recorded = _probe_row("jlink", "111", provenance=("native",))
+        recorded = _probe_row("picoprobe", "111", provenance=("native",))
         self.store.record(ProbeSelection.from_row("probe:111", recorded))
-        hooked = _probe_row("jlink", "111", provenance=("hook:h",), sha=SHA_A)
+        hooked = _probe_row("picoprobe", "111", provenance=("hook:h",), sha=SHA_A)
 
         selection = self.store.resolve("probe:111", _snapshot(hooked))
 
@@ -200,7 +207,7 @@ class ResolutionTests(unittest.TestCase):
     def test_an_unrecorded_token_is_derived_from_the_snapshot(self) -> None:
         """An assignment can predate the store; deriving is not trusting."""
 
-        row = _probe_row("jlink", "683710208")
+        row = _probe_row("picoprobe", "683710208")
 
         selection = self.store.resolve("probe:683710208", _snapshot(row))
 
@@ -209,14 +216,14 @@ class ResolutionTests(unittest.TestCase):
 
     def test_an_unrecorded_token_with_no_matching_row_is_refused(self) -> None:
         with self.assertRaises(SelectionNotRecorded) as caught:
-            self.store.resolve("probe:nope", _snapshot(_probe_row("jlink", "111")))
+            self.store.resolve("probe:nope", _snapshot(_probe_row("picoprobe", "111")))
 
         self.assertEqual(caught.exception.code, "discovery/selection-disappeared")
         self.assertIn("no longer present", caught.exception.reason)
 
     def test_forget_removes_only_the_named_selection(self) -> None:
-        self.store.record(ProbeSelection.from_row("probe:a", _probe_row("jlink", "a")))
-        self.store.record(ProbeSelection.from_row("probe:b", _probe_row("jlink", "b")))
+        self.store.record(ProbeSelection.from_row("probe:a", _probe_row("picoprobe", "a")))
+        self.store.record(ProbeSelection.from_row("probe:b", _probe_row("picoprobe", "b")))
 
         self.store.forget("probe:a")
 
@@ -224,7 +231,7 @@ class ResolutionTests(unittest.TestCase):
         self.assertIsNotNone(self.store.recorded("probe:b"))
 
     def test_clear_removes_everything(self) -> None:
-        self.store.record(ProbeSelection.from_row("probe:a", _probe_row("jlink", "a")))
+        self.store.record(ProbeSelection.from_row("probe:a", _probe_row("picoprobe", "a")))
 
         self.store.clear()
 
@@ -245,7 +252,7 @@ class BoundedStoreTests(unittest.TestCase):
 
     def test_the_cap_holds(self) -> None:
         for index in range(MAX_PROBE_SELECTIONS + 25):
-            row = _probe_row("jlink", str(index))
+            row = _probe_row("picoprobe", str(index))
             self.store.record(ProbeSelection.from_row(f"probe:{index}", row))
 
         self.assertEqual(self.store.count(), MAX_PROBE_SELECTIONS)
@@ -253,7 +260,7 @@ class BoundedStoreTests(unittest.TestCase):
     def test_eviction_is_oldest_first(self) -> None:
         overflow = 3
         for index in range(MAX_PROBE_SELECTIONS + overflow):
-            row = _probe_row("jlink", str(index))
+            row = _probe_row("picoprobe", str(index))
             self.store.record(ProbeSelection.from_row(f"probe:{index}", row))
 
         for index in range(overflow):
@@ -266,16 +273,16 @@ class BoundedStoreTests(unittest.TestCase):
             )
 
     def test_re_recording_refreshes_position_instead_of_duplicating(self) -> None:
-        self.store.record(ProbeSelection.from_row("probe:same", _probe_row("jlink", "same")))
+        self.store.record(ProbeSelection.from_row("probe:same", _probe_row("picoprobe", "same")))
         for index in range(MAX_PROBE_SELECTIONS - 1):
             self.store.record(
-                ProbeSelection.from_row(f"probe:{index}", _probe_row("jlink", str(index)))
+                ProbeSelection.from_row(f"probe:{index}", _probe_row("picoprobe", str(index)))
             )
         # The store is exactly at its cap. "probe:same" is the oldest entry; refresh it.
-        self.store.record(ProbeSelection.from_row("probe:same", _probe_row("jlink", "same-2")))
+        self.store.record(ProbeSelection.from_row("probe:same", _probe_row("picoprobe", "same-2")))
         # One more insert would evict the oldest entry -- "probe:same" must not be it,
         # since re-recording just moved it to the back of the eviction order.
-        self.store.record(ProbeSelection.from_row("probe:new", _probe_row("jlink", "new")))
+        self.store.record(ProbeSelection.from_row("probe:new", _probe_row("picoprobe", "new")))
 
         self.assertEqual(self.store.count(), MAX_PROBE_SELECTIONS)
         recorded = self.store.recorded("probe:same")
@@ -285,12 +292,12 @@ class BoundedStoreTests(unittest.TestCase):
         self.assertIsNone(self.store.recorded("probe:0"), "the actual oldest entry should evict")
 
     def test_a_stable_selection_still_resolves_normally_once_bounded(self) -> None:
-        row = _probe_row("jlink", "683710208")
-        token = probe_connection_id("jlink", "683710208")
+        row = _probe_row("picoprobe", "683710208")
+        token = probe_connection_id("picoprobe", "683710208")
         self.store.record(ProbeSelection.from_row(token, row))
         for index in range(10):
             self.store.record(
-                ProbeSelection.from_row(f"probe:{index}", _probe_row("jlink", str(index)))
+                ProbeSelection.from_row(f"probe:{index}", _probe_row("picoprobe", str(index)))
             )
 
         selection = self.store.resolve(token, _snapshot(row))
@@ -309,12 +316,12 @@ class BoundedStoreTests(unittest.TestCase):
         vacuous test) an entry that was never re-touched must actually be evicted.
         """
 
-        kept_row = _probe_row("jlink", "kept-uid")
+        kept_row = _probe_row("picoprobe", "kept-uid")
         kept_token = "probe:kept"
         self.store.record(ProbeSelection.from_row(kept_token, kept_row))
         snapshot = _snapshot(kept_row)
 
-        untouched_row = _probe_row("jlink", "untouched-uid")
+        untouched_row = _probe_row("picoprobe", "untouched-uid")
         untouched_token = "probe:untouched-first"
         self.store.record(ProbeSelection.from_row(untouched_token, untouched_row))
 
@@ -324,7 +331,7 @@ class BoundedStoreTests(unittest.TestCase):
                 self.store.record(
                     ProbeSelection.from_row(
                         f"probe:churn-{batch}-{index}",
-                        _probe_row("jlink", f"churn-{batch}-{index}"),
+                        _probe_row("picoprobe", f"churn-{batch}-{index}"),
                     )
                 )
             # Simulates the common case -- connect / board_validate / status checks for
@@ -348,7 +355,7 @@ class SessionScopeTests(unittest.TestCase):
         self.store = ProbeSelectionStore()
 
     def test_a_session_selection_is_not_durable(self) -> None:
-        row = _probe_row("jlink", None, probe_id="session:tok", scope="session")
+        row = _probe_row("picoprobe", None, probe_id="session:tok", scope="session")
 
         selection = ProbeSelection.from_row("session:tok", row)
 
@@ -357,7 +364,7 @@ class SessionScopeTests(unittest.TestCase):
         self.assertEqual(selection.identity_scope, "session")
 
     def test_a_session_selection_resolves_only_by_its_exact_token(self) -> None:
-        row = _probe_row("jlink", None, probe_id="session:tok", scope="session")
+        row = _probe_row("picoprobe", None, probe_id="session:tok", scope="session")
         self.store.record(ProbeSelection.from_row("session:tok", row))
 
         selection = self.store.resolve("session:tok", _snapshot(row))
@@ -366,22 +373,22 @@ class SessionScopeTests(unittest.TestCase):
         self.assertEqual(selection.connection_id, "session:tok")
 
     def test_a_session_token_does_not_match_a_different_live_session(self) -> None:
-        recorded = _probe_row("jlink", None, probe_id="session:old", scope="session")
+        recorded = _probe_row("picoprobe", None, probe_id="session:old", scope="session")
         self.store.record(ProbeSelection.from_row("session:old", recorded))
-        reconnected = _probe_row("jlink", None, probe_id="session:new", scope="session")
+        reconnected = _probe_row("picoprobe", None, probe_id="session:new", scope="session")
 
         with self.assertRaises(SelectionDisappeared):
             self.store.resolve("session:old", _snapshot(reconnected))
 
     def test_a_session_selection_never_matches_a_stable_row(self) -> None:
-        recorded = _probe_row("jlink", None, probe_id="session:tok", scope="session")
+        recorded = _probe_row("picoprobe", None, probe_id="session:tok", scope="session")
         selection = ProbeSelection.from_row("session:tok", recorded)
 
-        self.assertIsNone(find_selected_row(selection, _snapshot(_probe_row("jlink", "111"))))
+        self.assertIsNone(find_selected_row(selection, _snapshot(_probe_row("picoprobe", "111"))))
 
     def test_a_stable_selection_never_matches_a_session_row(self) -> None:
-        selection = ProbeSelection.from_row("probe:111", _probe_row("jlink", "111"))
-        session_row = _probe_row("jlink", None, probe_id="session:tok", scope="session")
+        selection = ProbeSelection.from_row("probe:111", _probe_row("picoprobe", "111"))
+        session_row = _probe_row("picoprobe", None, probe_id="session:tok", scope="session")
 
         self.assertIsNone(find_selected_row(selection, _snapshot(session_row)))
 
@@ -391,7 +398,7 @@ class TokenDerivationTests(unittest.TestCase):
 
     def test_a_prefixed_token_matches_a_stable_identity(self) -> None:
         selection = derive_selection_from_token(
-            "probe:683710208", _snapshot(_probe_row("jlink", "683710208"))
+            "probe:683710208", _snapshot(_probe_row("picoprobe", "683710208"))
         )
 
         self.assertIsNotNone(selection)
@@ -400,13 +407,13 @@ class TokenDerivationTests(unittest.TestCase):
 
     def test_a_bare_token_matches_a_stable_identity(self) -> None:
         selection = derive_selection_from_token(
-            "683710208", _snapshot(_probe_row("jlink", "683710208"))
+            "683710208", _snapshot(_probe_row("picoprobe", "683710208"))
         )
 
         self.assertIsNotNone(selection)
 
     def test_a_session_token_matches_the_whole_probe_id(self) -> None:
-        row = _probe_row("jlink", None, probe_id="session:tok", scope="session")
+        row = _probe_row("picoprobe", None, probe_id="session:tok", scope="session")
 
         selection = derive_selection_from_token("session:tok", _snapshot(row))
 
@@ -417,13 +424,13 @@ class TokenDerivationTests(unittest.TestCase):
     def test_decimal_leading_zeros_are_accepted(self) -> None:
         self.assertIsNotNone(
             derive_selection_from_token(
-                "probe:000683710208", _snapshot(_probe_row("jlink", "683710208"))
+                "probe:000683710208", _snapshot(_probe_row("picoprobe", "683710208"))
             )
         )
 
     def test_no_match_returns_none_rather_than_guessing(self) -> None:
         self.assertIsNone(
-            derive_selection_from_token("probe:999", _snapshot(_probe_row("jlink", "111")))
+            derive_selection_from_token("probe:999", _snapshot(_probe_row("picoprobe", "111")))
         )
 
     def test_a_legacy_uid_containing_a_colon_still_resolves_to_its_own_probe(self) -> None:
@@ -455,27 +462,27 @@ class TokenDerivationTests(unittest.TestCase):
     ) -> None:
         """C12/D11 reproduction 2 (the severe one): must never select the WRONG hardware.
 
-        The legacy token's UID text (`"jlink:001"`) happens to look like
-        `provider="jlink", uid="001"` under the old colon-counting heuristic. A second,
-        unrelated, real jlink probe with unique_id `"001"` is present in the same
+        The legacy token's UID text (`"picoprobe:001"`) happens to look like
+        `provider="picoprobe", uid="001"` under the old colon-counting heuristic. A second,
+        unrelated, real picoprobe probe with unique_id `"001"` is present in the same
         snapshot. Before the structural prefix fix, `parse_probe_connection_id` would
-        confidently split `"probe:jlink:001"` into a fabricated `provider="jlink"`,
-        `uid="001"` and resolve this token to that unrelated jlink probe instead of the
+        confidently split `"probe:picoprobe:001"` into a fabricated `provider="picoprobe"`,
+        `uid="001"` and resolve this token to that unrelated picoprobe probe instead of the
         cmsisdap probe it actually names -- a silent selection of different, real
         hardware, which is exactly the class of defect FIX 8 exists to prevent, now
         reachable through the compatibility path FIX 8 itself added.
 
-        With the structural prefix fix, `"probe:jlink:001"` does not start with the
+        With the structural prefix fix, `"probe:picoprobe:001"` does not start with the
         canonical `probeid:` prefix at all, so `parse_probe_connection_id` never even
         attempts a split; the legacy path strips only the literal `probe:` prefix,
-        leaving the whole `"jlink:001"` as one UID candidate -- which matches exactly
+        leaving the whole `"picoprobe:001"` as one UID candidate -- which matches exactly
         one row (the intended one) and no others, so the resolution is unambiguous
         AND correct, not merely "not wrong."
         """
 
-        intended_uid = "jlink:001"
+        intended_uid = "picoprobe:001"
         intended_row = _probe_row("cmsisdap", intended_uid)
-        unrelated_row = _probe_row("jlink", "001")
+        unrelated_row = _probe_row("picoprobe", "001")
         snapshot = _snapshot(intended_row, unrelated_row)
         legacy_token = f"probe:{intended_uid}"
 
@@ -498,7 +505,9 @@ class SessionUartSelectionTests(unittest.TestCase):
     def _record(self, board: str = "board-1", path: str = "COM9") -> None:
         self.store.record(
             SessionUartSelection(
-                board_id=board, port_path=path, description="Session UART",
+                board_id=board,
+                port_path=path,
+                description="Session UART",
                 provenance=("hook:h",),
             )
         )
@@ -574,7 +583,7 @@ class HookRefreshInvalidationTests(unittest.TestCase):
         from pyocd_debug_mcp import server
 
         server._probe_selection_store.record(
-            ProbeSelection.from_row("probe:111", _probe_row("jlink", "111"))
+            ProbeSelection.from_row("probe:111", _probe_row("picoprobe", "111"))
         )
         server._session_uart_selections.record(
             SessionUartSelection("board-1", "COM9", "Session UART", ("hook:h",))
@@ -607,9 +616,7 @@ class ResolvedProbeUidDegradationTests(unittest.TestCase):
         def broken_snapshot() -> InventorySnapshot:
             raise RuntimeError("boom: simulated inventory failure")
 
-        with patch.object(
-            server, "_hardware_inventory", SimpleNamespace(snapshot=broken_snapshot)
-        ):
+        with patch.object(server, "_hardware_inventory", SimpleNamespace(snapshot=broken_snapshot)):
             with self.assertRaises(TargetControlError) as caught:
                 server._resolved_probe_uid_for_connection("probe:683710208")
 

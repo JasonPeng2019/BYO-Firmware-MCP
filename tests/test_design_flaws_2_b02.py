@@ -21,7 +21,9 @@ from pyocd_debug_mcp import remote_probes
 from pyocd_debug_mcp.adapters import uart_pyserial
 from pyocd_debug_mcp.capabilities import policy
 from pyocd_debug_mcp.capabilities.policy import (
-    CapabilityPolicyConflict, CapabilityPolicyRepository, Tier,
+    CapabilityPolicyConflict,
+    CapabilityPolicyRepository,
+    Tier,
 )
 from pyocd_debug_mcp.capabilities.routing import TierRouteRefusal
 from pyocd_debug_mcp.firmstore import cache, store
@@ -73,23 +75,26 @@ def _mutation(kind, root, label, *, paused=None, release=None, contended=None, r
         stack.enter_context(patch.object(file_transactions, "_try_lock", observe_contention))
         if kind.startswith("registry"):
             original = remote_probes.load_remote_probes
-            stack.enter_context(patch.object(
-                remote_probes, "load_remote_probes", lambda path: after_read(original(path))
-            ))
+            stack.enter_context(
+                patch.object(
+                    remote_probes, "load_remote_probes", lambda path: after_read(original(path))
+                )
+            )
             if kind == "registry-remove" and label == "second":
                 remote_probes.unregister_entry(firm.layout.remote_probes, "seed", 5555)
             else:
                 remote_probes.register_entry(firm.layout.remote_probes, label, 5555, label)
         elif kind.startswith("cache"):
             original = attachments.load_records
-            stack.enter_context(patch.object(
-                attachments, "load_records", lambda: after_read(original())
-            ))
+            stack.enter_context(
+                patch.object(attachments, "load_records", lambda: after_read(original()))
+            )
             if kind == "cache-revoke" and label == "second":
                 attachments.revoke("seed", *_identity("seed"))
             else:
                 attachments.confirm(label, *_identity(label))
         elif kind == "manifest":
+
             def merge(path):
                 document = yaml.safe_load(path.read_text()) if path.exists() else {"packs": []}
                 after_read(document)
@@ -99,9 +104,9 @@ def _mutation(kind, root, label, *, paused=None, release=None, contended=None, r
             firm.update_pack_manifest(merge)
         elif kind == "policy":
             original = repo.resolve
-            stack.enter_context(patch.object(
-                repo, "resolve", lambda board: after_read(original(board))
-            ))
+            stack.enter_context(
+                patch.object(repo, "resolve", lambda board: after_read(original(board)))
+            )
             result = repo.downgrade_to_no_setup("controller")
             if results is not None:
                 results.put((label, result.generation_id))
@@ -174,11 +179,15 @@ def _pack_attempt(root, source, ready, release, output, fail):
 
 def _pack_candidate(source):
     from pyocd_debug_mcp.setup_flow.packs import PackCandidate
-    return PackCandidate("shared", "1", "shared.pack", "https://example.invalid/shared.pack", source)
+
+    return PackCandidate(
+        "shared", "1", "shared.pack", "https://example.invalid/shared.pack", source
+    )
 
 
 def _seed_full(root):
     from tests.tiered_acceptance_support import known_good_full_policy
+
     profile, memory_map = known_good_full_policy()
     repo = CapabilityPolicyRepository(root)
     initial = repo.commit(
@@ -231,7 +240,13 @@ class CrossProcessStateTransactions(unittest.TestCase):
         results = self.context.Queue()
         self.addCleanup(results.close)
         first = self._start(
-            _mutation, kind, str(self.root), "first", paused=paused, release=release, results=results
+            _mutation,
+            kind,
+            str(self.root),
+            "first",
+            paused=paused,
+            release=release,
+            results=results,
         )
         self.assertTrue(paused.wait(15), "first process never completed its in-transaction read")
         second = self._start(
@@ -247,7 +262,12 @@ class CrossProcessStateTransactions(unittest.TestCase):
     def test_registry_registrations_preserve_both_updates(self):
         self._pair("registry")
         self.assertEqual(
-            {row.host for row in remote_probes.load_remote_probes(FirmStore(self.root).layout.remote_probes)},
+            {
+                row.host
+                for row in remote_probes.load_remote_probes(
+                    FirmStore(self.root).layout.remote_probes
+                )
+            },
             {"first", "second"},
         )
 
@@ -295,13 +315,24 @@ class CrossProcessStateTransactions(unittest.TestCase):
         firm.atomic_write_pack_manifest({"packs": []})
         repo.resolve("controller")
         cases = (
-            (remote_probes, firm.layout.remote_probes,
-             lambda: remote_probes.register_entry(firm.layout.remote_probes, "new", 5555, "")),
+            (
+                remote_probes,
+                firm.layout.remote_probes,
+                lambda: remote_probes.register_entry(firm.layout.remote_probes, "new", 5555, ""),
+            ),
             (cache, attachments.path, lambda: attachments.confirm("new", *_identity("new"))),
-            (store, firm.layout.pack_manifest, lambda: firm.update_pack_manifest(
-                lambda _path: self.fail("merge callback must not run before acquisition")
-            )),
-            (policy, repo.pointer_path("controller"), lambda: repo.downgrade_to_no_setup("controller")),
+            (
+                store,
+                firm.layout.pack_manifest,
+                lambda: firm.update_pack_manifest(
+                    lambda _path: self.fail("merge callback must not run before acquisition")
+                ),
+            ),
+            (
+                policy,
+                repo.pointer_path("controller"),
+                lambda: repo.downgrade_to_no_setup("controller"),
+            ),
         )
         for module, path, operation in cases:
             with self.subTest(module=module.__name__):
@@ -309,9 +340,11 @@ class CrossProcessStateTransactions(unittest.TestCase):
                 holder = self._start(_hold, str(path), ready, release)
                 self.assertTrue(ready.wait(15))
                 before = self._data_snapshot()
-                with patch.object(module, "file_transaction", lambda path: file_transaction(
-                    path, timeout_seconds=0.1
-                )):
+                with patch.object(
+                    module,
+                    "file_transaction",
+                    lambda path: file_transaction(path, timeout_seconds=0.1),
+                ):
                     with self.assertRaisesRegex(FileTransactionTimeout, "busy.*retry"):
                         operation()
                 self.assertEqual(self._data_snapshot(), before)
@@ -349,16 +382,24 @@ class CrossProcessStateTransactions(unittest.TestCase):
         child.join(10)
         self.assertEqual(child.exitcode, 79)
         self.assertEqual(repo.resolve("controller"), initial)
-        self.assertIn(initial.generation_id, repo.downgrade_to_no_setup("controller").retained_generations)
+        self.assertIn(
+            initial.generation_id, repo.downgrade_to_no_setup("controller").retained_generations
+        )
 
     def test_other_files_and_board_policies_remain_independent(self):
         firm = FirmStore(self.root)
         repo = CapabilityPolicyRepository(self.root)
         cases = (
-            (firm.layout.remote_probes, lambda: remote_probes.register_entry(
-                self.root / "other-registry.json", "other", 5555, ""
-            )),
-            (AttachmentCache(firm).path, lambda: firm.update_pack_manifest(lambda _p: {"packs": []})),
+            (
+                firm.layout.remote_probes,
+                lambda: remote_probes.register_entry(
+                    self.root / "other-registry.json", "other", 5555, ""
+                ),
+            ),
+            (
+                AttachmentCache(firm).path,
+                lambda: firm.update_pack_manifest(lambda _p: {"packs": []}),
+            ),
             (repo.pointer_path("controller"), lambda: repo.commit("other_board", Tier.NO_SETUP)),
         )
         for held, operation in cases:
@@ -390,7 +431,9 @@ class CrossProcessStateTransactions(unittest.TestCase):
         before = self._data_snapshot()
         with self.assertRaises(CapabilityPolicyConflict):
             repo.commit("controller", Tier.NO_SETUP, expected_state=changed)
-        self.assertEqual(self._data_snapshot(), before, "conditional refusal must not initialize a pointer")
+        self.assertEqual(
+            self._data_snapshot(), before, "conditional refusal must not initialize a pointer"
+        )
 
     def test_pack_attempts_keep_private_bytes_while_another_server_publishes(self):
         from pyocd_debug_mcp.pack_provision import load_manifest
@@ -416,7 +459,9 @@ class CrossProcessStateTransactions(unittest.TestCase):
                 validated = second.validate(_pack_candidate(source), required_target="testtarget")
                 self.assertNotEqual(first_path, validated.staged_path)
                 second.promote(validated, board_id="second")
-                self.assertTrue(first_path.exists(), "publishing must not consume another pending attempt")
+                self.assertTrue(
+                    first_path.exists(), "publishing must not consume another pending attempt"
+                )
                 release.set()
                 child.join(15)
                 self.assertEqual(child.exitcode, 0)
@@ -424,7 +469,9 @@ class CrossProcessStateTransactions(unittest.TestCase):
                 self.assertEqual(final.read_bytes(), source.read_bytes())
                 specs = load_manifest(firm.layout.pack_manifest)
                 self.assertEqual(len(specs), 1)
-                self.assertEqual(set(specs[0].needed_by_boards), {"second"} if fail else {"first", "second"})
+                self.assertEqual(
+                    set(specs[0].needed_by_boards), {"second"} if fail else {"first", "second"}
+                )
                 self.assertFalse(first_path.exists())
                 self.assertFalse(validated.staged_path.exists())
 
@@ -443,7 +490,9 @@ class CrossProcessStateTransactions(unittest.TestCase):
         first, pending = pipeline(), pipeline()
         one = first.validate(_pack_candidate(source), required_target="testtarget")
         two = pending.validate(_pack_candidate(source), required_target="testtarget")
-        with patch.object(firm, "atomic_write_pack_manifest", side_effect=OSError("manifest write failed")):
+        with patch.object(
+            firm, "atomic_write_pack_manifest", side_effect=OSError("manifest write failed")
+        ):
             with self.assertRaisesRegex(OSError, "manifest write failed"):
                 first.promote(one, board_id="first")
         final = firm.layout.pack_files / "shared.pack"
@@ -454,7 +503,9 @@ class CrossProcessStateTransactions(unittest.TestCase):
         third = pipeline()
         three = third.validate(_pack_candidate(source), required_target="testtarget")
         before = firm.layout.pack_manifest.read_bytes()
-        with patch.object(firm, "atomic_write_pack_manifest", side_effect=OSError("manifest write failed")):
+        with patch.object(
+            firm, "atomic_write_pack_manifest", side_effect=OSError("manifest write failed")
+        ):
             with self.assertRaises(OSError):
                 third.promote(three, board_id="third")
         self.assertEqual(final.read_bytes(), source.read_bytes())
@@ -501,9 +552,14 @@ class CrossProcessStateTransactions(unittest.TestCase):
             board = "legacy_full"
             server._setup_tiers[board] = Tier.SETUP_FULL
             context = SetupPhaseContext(
-                "continuation", "attempt", "repair",
-                SetupUserInput(board, "connection", "Fixture", "STM32L476RGT6", None, requires_uart=False),
-                PreflightDecision("preflight_ready", "setup/preflight-ready", "ready"), {},
+                "continuation",
+                "attempt",
+                "repair",
+                SetupUserInput(
+                    board, "connection", "Fixture", "STM32L476RGT6", None, requires_uart=False
+                ),
+                PreflightDecision("preflight_ready", "setup/preflight-ready", "ready"),
+                {},
             )
             downgraded = []
 
@@ -532,7 +588,9 @@ class CrossProcessStateTransactions(unittest.TestCase):
         with tiered_test_server(self.root) as server:
             permissions = server._manual_permissions
             permissions.write_unlocked_grant(
-                action="downgrade", grant_id="grant", board_id="legacy_full",
+                action="downgrade",
+                grant_id="grant",
+                board_id="legacy_full",
                 policy_digest=initial.policy_digest,
             )
             token = permissions.issue_downgrade_token("legacy_full", "grant", initial.policy_digest)
@@ -541,7 +599,9 @@ class CrossProcessStateTransactions(unittest.TestCase):
 
             def consumed(*args):
                 consume(*args)
-                child = self._start(_other_policy_change, str(self.root), "legacy_full", str(output))
+                child = self._start(
+                    _other_policy_change, str(self.root), "legacy_full", str(output)
+                )
                 child.join(15)
                 self.assertEqual(child.exitcode, 0)
 
@@ -656,11 +716,14 @@ class LocalTransactionsAndUART(unittest.TestCase):
                     calls.append((args, kwargs))
 
                 serial_class = type("Serial", (), {"__module__": backend, "__init__": initialize})
-                with patch.dict("sys.modules", {"serial": types.SimpleNamespace(Serial=serial_class)}):
+                with patch.dict(
+                    "sys.modules", {"serial": types.SimpleNamespace(Serial=serial_class)}
+                ):
                     with patch.object(uart_pyserial, "os", types.SimpleNamespace(name=platform)):
                         handle = uart_pyserial.PySerialUARTInterface().open(
                             "COM7" if platform == "nt" else "/dev/ttyUSB0",
-                            baudrate=115200, timeout_seconds=0.25,
+                            baudrate=115200,
+                            timeout_seconds=0.25,
                         )
                 args, options = calls.pop()
                 self.assertEqual(args, (handle.device,))

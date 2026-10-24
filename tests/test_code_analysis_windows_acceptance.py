@@ -62,14 +62,33 @@ def record(name: str, data: dict[str, Any]) -> None:
 
 
 @contextlib.contextmanager
-def scratch(prefix: str) -> Iterator[Path]:
-    """A short test-owned root (default C:/t) so source paths stay below MAX_PATH."""
-    parent = os.environ.get(SCRATCH_ENV) or ("C:\\t" if Path("C:\\t").is_dir() else None)
+def scratch(prefix: str, *, same_volume_as: Path | None = None) -> Iterator[Path]:
+    """Keep relative ARM paths on the real compiler's volume, without relocating it."""
+    parent = os.environ.get(SCRATCH_ENV)
+    if same_volume_as is not None:
+        anchor = same_volume_as.resolve(strict=True).anchor
+        if parent:
+            if Path(parent).resolve(strict=True).anchor.casefold() != anchor.casefold():
+                raise AssertionError(f"{SCRATCH_ENV} must be on the ARM compiler volume {anchor}")
+        else:
+            short = Path(anchor) / "t"
+            parent = str(short if short.is_dir() else Path(anchor))
+    elif not parent:
+        parent = "C:\\t" if Path("C:\\t").is_dir() else None
     directory = Path(tempfile.mkdtemp(prefix=prefix, dir=parent)).resolve()
     try:
         yield directory
     finally:
         shutil.rmtree(directory, ignore_errors=True)
+        record(
+            "scratch-" + directory.name + "-cleanup",
+            {
+                "owned_scratch": str(directory),
+                "survived_cleanup": directory.exists(),
+                "compiler_volume": str(same_volume_as) if same_volume_as else None,
+                "scope": "Test-owned directory only; acquired toolchain was not relocated or removed",
+            },
+        )
 
 
 def extended(path: Path) -> Path:
@@ -209,7 +228,7 @@ class QueryDriverParity(unittest.TestCase):
     def test_relative_spellings_reach_clangd_argv_identically_under_extended_root(self) -> None:
         arm = arm_gnu_root_or_skip(self)
         compiler = arm / "bin" / "arm-none-eabi-g++.exe"
-        with scratch("sa-qd-") as base:
+        with scratch("sa-qd-", same_volume_as=compiler) as base:
             project = AnalysisProject(base / "p \u00e9")
             project.write_text("src/main.cpp", "int value;\n")
             project.write_database(
@@ -396,7 +415,7 @@ class RealClangdExtendedRoot(unittest.TestCase):
     ) -> None:
         executable = real_clangd_or_skip(self)
         compiler = arm_gnu_root_or_skip(self) / "bin" / "arm-none-eabi-g++.exe"
-        with scratch("sa-rc-") as base:
+        with scratch("sa-rc-", same_volume_as=compiler) as base:
             project = AnalysisProject(base / "p")
             source = project.write_text("src/main.cpp", ARM_SOURCE)
             project.write_text("src/other.cpp", "int other() { return 1; }\n")

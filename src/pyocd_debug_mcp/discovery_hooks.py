@@ -389,8 +389,7 @@ def _validated_platforms(raw: Mapping[str, Any], label: str) -> frozenset[str]:
         token = item.strip().casefold()
         if token not in SUPPORTED_PLATFORMS:
             raise DiscoveryHookError(
-                f"{label} platform '{item}' is not one of "
-                f"{', '.join(sorted(SUPPORTED_PLATFORMS))}"
+                f"{label} platform '{item}' is not one of {', '.join(sorted(SUPPORTED_PLATFORMS))}"
             )
         platforms.add(token)
     return frozenset(platforms)
@@ -461,7 +460,9 @@ def parse_manifest_document(
     if not isinstance(rows, list):
         raise DiscoveryHookError(f"{label} hooks must be a list")
     if len(rows) > MAX_HOOKS_PER_MANIFEST:
-        raise DiscoveryHookError(f"{label} must not declare more than {MAX_HOOKS_PER_MANIFEST} hooks")
+        raise DiscoveryHookError(
+            f"{label} must not declare more than {MAX_HOOKS_PER_MANIFEST} hooks"
+        )
     declarations: list[DiscoveryHookDeclaration] = []
     seen: set[str] = set()
     for index, row in enumerate(rows):
@@ -636,9 +637,7 @@ def load_hook_snapshot(
         operator_manifest = Path(configured).expanduser()
         operator_bytes = _read_manifest_bytes(operator_manifest, label="operator hook registry")
         if operator_bytes is None:
-            raise DiscoveryHookError(
-                f"operator hook registry does not exist: {operator_manifest}"
-            )
+            raise DiscoveryHookError(f"operator hook registry does not exist: {operator_manifest}")
         digest.update(b"operator\x00")
         digest.update(hashlib.sha256(operator_bytes).digest())
         operator_declarations = parse_manifest_document(
@@ -667,9 +666,7 @@ def load_hook_snapshot(
         specs.append(resolve_declaration(declaration, root=root, source="project"))
     if operator_root is not None:
         for declaration in operator_declarations:
-            specs.append(
-                resolve_declaration(declaration, root=operator_root, source="operator")
-            )
+            specs.append(resolve_declaration(declaration, root=operator_root, source="operator"))
 
     # Deterministic execution order across repeated snapshots. A project hook and an
     # operator hook may share a hook_id; source keeps them distinguishable.
@@ -890,14 +887,10 @@ def _execute(
     readers: list[tuple[_CappedReader, threading.Thread, IO[bytes]]] = []
     if stdout_stream is not None:
         reader = _CappedReader(stdout_stream, MAX_HOOK_STDOUT_BYTES, [])
-        readers.append(
-            (reader, threading.Thread(target=reader.run, daemon=True), stdout_stream)
-        )
+        readers.append((reader, threading.Thread(target=reader.run, daemon=True), stdout_stream))
     if stderr_stream is not None:
         reader = _CappedReader(stderr_stream, MAX_HOOK_STDERR_BYTES, [])
-        readers.append(
-            (reader, threading.Thread(target=reader.run, daemon=True), stderr_stream)
-        )
+        readers.append((reader, threading.Thread(target=reader.run, daemon=True), stderr_stream))
     remove_marker = False
     joined: list[IO[bytes]] = []
 
@@ -1090,8 +1083,7 @@ def execute_eligible_hooks(
 
     selected = platform or current_platform()
     return tuple(
-        execute_hook(spec, marker_store=marker_store)
-        for spec in snapshot.eligible(kind, selected)
+        execute_hook(spec, marker_store=marker_store) for spec in snapshot.eligible(kind, selected)
     )
 
 

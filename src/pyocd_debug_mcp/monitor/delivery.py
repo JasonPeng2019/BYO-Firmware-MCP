@@ -186,9 +186,7 @@ class DeliveryService:
         with self._guard:
             acked_snapshot = set(self._acked)
         prunable = {
-            identity
-            for identity in acked_snapshot
-            if not self._identity_file_exists(identity)
+            identity for identity in acked_snapshot if not self._identity_file_exists(identity)
         }
         if not prunable:
             return
@@ -234,11 +232,7 @@ class DeliveryService:
                 segment = int(segment_text)
             except ValueError:
                 return True
-            path = (
-                server_data
-                / workspace
-                / f"{run_id}.{segment:0{_SEGMENT_DIGITS}d}.jsonl"
-            )
+            path = server_data / workspace / f"{run_id}.{segment:0{_SEGMENT_DIGITS}d}.jsonl"
             try:
                 return path.exists()
             except OSError:
@@ -263,9 +257,7 @@ class DeliveryService:
         with self._guard:
             if self._thread is not None:
                 return
-            thread = threading.Thread(
-                target=self._run, name="byo-monitor-delivery", daemon=True
-            )
+            thread = threading.Thread(target=self._run, name="byo-monitor-delivery", daemon=True)
             self._thread = thread
         thread.start()
 
@@ -407,9 +399,7 @@ class DeliveryService:
             return ()
         with self._guard:
             acked = set(self._acked)
-        return tuple(
-            (path.stem, path) for path in candidates if path.stem not in acked
-        )
+        return tuple((path.stem, path) for path in candidates if path.stem not in acked)
 
     def _send_report(self, report: dict[str, Any]) -> None:
         """Send one report/summary body and, if acknowledged, remember and delete it.
@@ -501,9 +491,7 @@ class DeliveryService:
                 "origin": self._transport.origin,
                 "state": self._last_state.value,
                 "last_at": (
-                    self._last_at.isoformat().replace("+00:00", "Z")
-                    if self._last_at
-                    else None
+                    self._last_at.isoformat().replace("+00:00", "Z") if self._last_at else None
                 ),
                 "acked_files": len(self._acked),
                 "dropped_jobs": self._dropped,

@@ -271,7 +271,9 @@ class ConcurrentRegistrationTests(unittest.TestCase):
             for index in range(preseed_count):
                 handlers["register_remote_probe"](f"seed-{index}", 7000 + index, f"seed {index}")
 
-            to_unregister = [(f"seed-{index}", 7000 + index) for index in range(0, preseed_count, 2)]
+            to_unregister = [
+                (f"seed-{index}", 7000 + index) for index in range(0, preseed_count, 2)
+            ]
             to_keep = {f"seed-{index}" for index in range(1, preseed_count, 2)}
 
             barrier = threading.Barrier(len(to_unregister) + new_count)
@@ -287,9 +289,7 @@ class ConcurrentRegistrationTests(unittest.TestCase):
             def do_register(index: int) -> None:
                 try:
                     barrier.wait(timeout=10.0)
-                    handlers["register_remote_probe"](
-                        f"new-{index}", 8000 + index, f"new {index}"
-                    )
+                    handlers["register_remote_probe"](f"new-{index}", 8000 + index, f"new {index}")
                 except BaseException as exc:  # noqa: BLE001
                     errors.append(exc)
 

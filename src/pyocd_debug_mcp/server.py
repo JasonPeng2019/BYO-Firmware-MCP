@@ -808,9 +808,7 @@ def _active_full_document(
         ) from exc
 
 
-def _active_policy_profile(
-    board_id: str, *, state: CapabilityState | None = None
-) -> BoardProfile:
+def _active_policy_profile(board_id: str, *, state: CapabilityState | None = None) -> BoardProfile:
     state = state or _tier_router.state_for(board_id)
     if state.tier is not Tier.SETUP_FULL or state.profile_snapshot is None:
         raise ProfileError("the active policy has no full immutable profile snapshot")
@@ -1429,9 +1427,7 @@ def _enforce_symbol_read(
     except SafetyPolicyError as exc:
         raise PlanRefusal(exc.code, str(exc), session_id=_active_session_id(board_id)) from exc
     if isinstance(prepared, PolicyRefusal):
-        raise PlanRefusal(
-            prepared.code, prepared.message, session_id=_active_session_id(board_id)
-        )
+        raise PlanRefusal(prepared.code, prepared.message, session_id=_active_session_id(board_id))
     operation = current_operation()
     if operation is not None:
         operation.prepared["read_memory_symbol_artifact"] = prepared[0]
@@ -2546,9 +2542,7 @@ def downgrade(board_id: str, permission: str) -> str:
             _manual_permissions.consume_downgrade(board_id, permission, state.policy_digest)
             # Keep digest-bound consumption and publication in one policy
             # transaction. Neither step performs hardware/network work.
-            committed = _capability_policies.downgrade_to_no_setup(
-                board_id, expected_state=state
-            )
+            committed = _capability_policies.downgrade_to_no_setup(board_id, expected_state=state)
             gate_manager.clear(board_id, "manual downgrade committed")
             plan_engine.invalidate_board(board_id, "manual downgrade committed")
             _unlock_coordinator.invalidate_board(board_id)
@@ -2727,9 +2721,7 @@ def _automatic_uart_unavailable(
     snapshot: InventorySnapshot,
     reason: str,
 ) -> RuntimeError:
-    visible = ", ".join(
-        f"{row.port_path} ({row.description})" for row in snapshot.uarts
-    ) or "none"
+    visible = ", ".join(f"{row.port_path} ({row.description})" for row in snapshot.uarts) or "none"
     return RuntimeError(
         f"uart/automatic-selection-refused: Cannot associate a serial adapter with board "
         f"{board_id} automatically: {reason}. Ports visible now: {visible}. "
@@ -2746,9 +2738,7 @@ def _saved_uart_unavailable(
     snapshot: InventorySnapshot,
     reason: str,
 ) -> RuntimeError:
-    visible = ", ".join(
-        f"{row.port_path} ({row.description})" for row in snapshot.uarts
-    ) or "none"
+    visible = ", ".join(f"{row.port_path} ({row.description})" for row in snapshot.uarts) or "none"
     return RuntimeError(
         f"uart/saved-adapter-unavailable: Board {board_id}'s saved serial adapter "
         f"({identity}) is unavailable: {reason}. Ports visible now: {visible}. "
@@ -3438,7 +3428,9 @@ def _read_memory_with_symbol_tracking(handle: Any, address: int, width: int) -> 
         refusal = _reverify_symbol_artifact(memory_services, handle, selection)
         if refusal is not None:
             raise PlanRefusal(
-                refusal.code, refusal.message, session_id=_active_session_id(operation.board_id)
+                refusal.code,
+                refusal.message,
+                session_id=_active_session_id(cast(str, operation.board_id)),
             )
         operation.prepared["read_memory_symbol_io_started"] = True
     return target_control.read_memory(handle, address, width)
@@ -4817,7 +4809,12 @@ def _run_board_safety_refresh(board_id: str) -> Mapping[str, object]:
             identity_changed = previous.identity != candidate.identity
             _restamp_after_refresh(board_id, candidate.canonical_digest, identity_changed)
     except (
-        CapabilityPolicyError, ProfileError, SafetyMapError, SafetyPolicyError, ValueError, OSError
+        CapabilityPolicyError,
+        ProfileError,
+        SafetyMapError,
+        SafetyPolicyError,
+        ValueError,
+        OSError,
     ) as exc:
         return _safety_refresher.blocked(request, str(exc)).to_payload()
     connection = connection_manager.maybe_connection(board_id)
@@ -5222,7 +5219,8 @@ def _commit_setup_core(
         connect(staged.profile.board.pyocd_target, None)
     except Exception as exc:
         raise TargetResolutionError(
-            "target/live-connect-failed", f"Live target connection failed before profile commit: {exc}"
+            "target/live-connect-failed",
+            f"Live target connection failed before profile commit: {exc}",
         ) from exc
     cancellation_checkpoint()
     with _setup_policy_transaction(context):
@@ -6093,7 +6091,9 @@ def _setup_safety_research_phase(context: SetupPhaseContext) -> SetupPhaseOutcom
     if _setup_target_tier(context.user_input.board_id) is Tier.SETUP_LITE:
         confirmation = _setup_lite_confirmations.get(context.user_input.board_id)
         if confirmation is None:
-            proposal = conservative_lite_proposal(resolve_project_path(context.user_input.datasheet_path))
+            proposal = conservative_lite_proposal(
+                resolve_project_path(context.user_input.datasheet_path)
+            )
             return SetupPhaseOutcome.stop(
                 "setup_research_required",
                 "setup/lite-confirmation-required",
@@ -6288,9 +6288,7 @@ def _setup_commit_phase(context: SetupPhaseContext) -> SetupPhaseOutcome:
                 expected_state=expected_policy,
             )
     except CapabilityPolicyConflict as exc:
-        return SetupPhaseOutcome.stop(
-            "setup_validation_failed", "setup/policy-changed", str(exc)
-        )
+        return SetupPhaseOutcome.stop("setup_validation_failed", "setup/policy-changed", str(exc))
     return SetupPhaseOutcome.success(
         (
             "setup/safety-reference-committed-configuration-only"

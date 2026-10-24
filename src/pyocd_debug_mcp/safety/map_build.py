@@ -1427,7 +1427,9 @@ def require_reconciled_authority(
     """Fail closed unless the map identity and partitions match reviewed policy."""
 
     if isinstance(document, GenericSafetyMapDocument):
-        expected_generator = _domain_digest("map-generator-schema", _GENERIC_GENERATOR_SCHEMA_DOCUMENT)
+        expected_generator = _domain_digest(
+            "map-generator-schema", _GENERIC_GENERATOR_SCHEMA_DOCUMENT
+        )
         if document.source_digests.map_generator_schema != expected_generator:
             raise SafetyMapError(
                 "generic memory map was produced by an unsupported generator; "

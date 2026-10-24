@@ -29,9 +29,7 @@ HEALTH_TOOL_NAME = "server_health_check"
 
 # Never valid as an action_batch child: these are not board work and must not be
 # reachable through a path that exists to sequence board work.
-MONITOR_TOOL_NAMES = frozenset(
-    {REPORT_TOOL_NAME, CHECKIN_TOOL_NAME, HEALTH_TOOL_NAME}
-)
+MONITOR_TOOL_NAMES = frozenset({REPORT_TOOL_NAME, CHECKIN_TOOL_NAME, HEALTH_TOOL_NAME})
 
 PROFESSIONAL_NOTICE = (
     "This is a professional license. Remote bug reporting is disabled so that no "
@@ -90,9 +88,7 @@ def build_monitor_tools(monitor: Any) -> dict[str, Callable[..., str]]:
             # Present and explaining, rather than absent: an agent hunting a
             # missing tool would misfile a discovery failure. This refusal names
             # its remedy, so it is correct behavior, not a defect.
-            return _dumps(
-                {"status": "reporting_disabled", "message": PROFESSIONAL_NOTICE}
-            )
+            return _dumps({"status": "reporting_disabled", "message": PROFESSIONAL_NOTICE})
         return _dumps(
             monitor.submit_report(
                 {

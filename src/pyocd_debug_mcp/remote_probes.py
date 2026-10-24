@@ -227,9 +227,7 @@ def register_entry(
         return updated
 
 
-def unregister_entry(
-    path: Path, host: str, port: int
-) -> tuple[tuple[RemoteProbeEntry, ...], bool]:
+def unregister_entry(path: Path, host: str, port: int) -> tuple[tuple[RemoteProbeEntry, ...], bool]:
     """Load, remove, and (if found) persist under the registry transaction lock.
 
     See `register_entry` for why the whole cycle must be one critical section.

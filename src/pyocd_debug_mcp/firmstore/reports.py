@@ -96,12 +96,8 @@ class ReportWriter:
     def append_validation_event(self, attempt_id: str, event: Mapping[str, Any]) -> Path:
         return self.append_event("validation", attempt_id, event)
 
-    def create_target_unlock(
-        self, attempt_id: str, fields: Mapping[str, Any]
-    ) -> ReportPaths:
+    def create_target_unlock(self, attempt_id: str, fields: Mapping[str, Any]) -> ReportPaths:
         return self.create("target_unlock", attempt_id, fields)
 
-    def append_target_unlock_event(
-        self, attempt_id: str, event: Mapping[str, Any]
-    ) -> Path:
+    def append_target_unlock_event(self, attempt_id: str, event: Mapping[str, Any]) -> Path:
         return self.append_event("target_unlock", attempt_id, event)

@@ -55,7 +55,9 @@ class StaleAllowanceRegressionTests(unittest.TestCase):
 
         self.assertIsNone(engine.active_plan("board_setup", "board"))
 
-    def test_identity_aware_continuation_cleanup_preserves_replacement_then_clears_match(self) -> None:
+    def test_identity_aware_continuation_cleanup_preserves_replacement_then_clears_match(
+        self,
+    ) -> None:
         loader = SetupToolLoadState(ServerRun(run_id="regression-run"))
         loader.bind_allowance("board", "P2")
         target_overrides = {"board": "p2-target"}

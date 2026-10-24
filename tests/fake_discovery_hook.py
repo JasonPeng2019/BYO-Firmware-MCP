@@ -253,9 +253,7 @@ def main() -> int:
         return 0
 
     if mode == "record_env":
-        Path(argument).write_text(
-            os.environ.get("PYTHONIOENCODING", "<unset>"), encoding="utf-8"
-        )
+        Path(argument).write_text(os.environ.get("PYTHONIOENCODING", "<unset>"), encoding="utf-8")
         emit(probe_document([dict(PROBE_ROW)]))
         return 0
 
