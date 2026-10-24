@@ -8,6 +8,7 @@ exercised; mocking them would test nothing that matters.
 from __future__ import annotations
 
 import ast
+import json
 import os
 import subprocess
 import sys
@@ -29,6 +30,7 @@ from tests.discovery_hook_fixtures import (
     snapshot_for,
     write_manifest,
 )
+from tests.test_process_cleanup import _NativePosixCase
 
 
 def _module_ast() -> ast.Module:
@@ -717,6 +719,91 @@ class InterpreterTests(_HookProcessCase):
         spec = self.spec("probe")
 
         self.assertEqual(spec.command()[0], sys.executable)
+
+
+@unittest.skipUnless(os.name == "posix", "real POSIX normal hook descendant cleanup")
+class PosixNormalCompletionTests(_NativePosixCase):
+    def descendant_spec(self, status: int = 0) -> discovery_hooks.DiscoveryHookSpec:
+        document = json.dumps({"schema_version": 1, "kind": "probe", "probes": []})
+        (self.root / "normal.py").write_text(
+            self.descendant_program(exit_code=status, stdout=document), encoding="utf-8"
+        )
+        write_manifest(
+            self.root,
+            [hook_entry("normal-descendant", "probe", entrypoint="normal.py", timeout_seconds=15)],
+        )
+        return load_hook_snapshot(self.root, environ={}).hooks[0]
+
+    def test_normal_hook_clears_live_descendant_reaps_and_preserves_status_output(self) -> None:
+        from pyocd_debug_mcp.kernel._analysis_posix import _exit_status
+
+        for status in (0, 7):
+            with self.subTest(status=status):
+                spec = self.descendant_spec(status)
+                real_terminate = discovery_hooks.terminate_process_group
+                real_execute = discovery_hooks._execute
+                boundaries: list[tuple[int, float]] = []
+                raw_results: list[discovery_hooks._RawExecution] = []
+
+                def execute(*args, **kwargs):
+                    raw = real_execute(*args, **kwargs)
+                    raw_results.append(raw)
+                    return raw
+
+                def terminate(process: subprocess.Popen[bytes]) -> bool:
+                    self.assertEqual(process.returncode, status)
+                    self.assertEqual(_exit_status(process.pid), status)
+                    boundaries.append(self.assert_live_child(process))
+                    return real_terminate(process)
+
+                with (
+                    patch.object(discovery_hooks, "popen_owned", self.capture_spawn),
+                    patch.object(discovery_hooks, "terminate_process_group", terminate),
+                    patch.object(discovery_hooks, "_execute", execute),
+                ):
+                    execution = execute_hook(spec, marker_store=self.store)
+                self.assertEqual(execution.outcome, "exited")
+                self.assertEqual(execution.exit_code, status)
+                self.assertEqual(len(raw_results), 1)
+                expected = json.dumps({"schema_version": 1, "kind": "probe", "probes": []})
+                self.assertEqual(raw_results[0].stdout, (expected + "\n").encode("utf-8"))
+                self.assertIn("owned-error", execution.stderr_excerpt)
+                if status == 0:
+                    self.assertTrue(execution.ok, execution.failure_detail)
+                    assert execution.output is not None
+                    self.assertEqual(execution.output.probes, ())
+                    self.assertIsNone(execution.failure_code)
+                    self.assertEqual(execution.stdout_excerpt, "")
+                else:
+                    self.assertFalse(execution.ok)
+                    self.assertEqual(execution.failure_code, "discovery/hook-failed")
+                    self.assertIsNone(execution.output)
+                    self.assertIn('"kind": "probe"', execution.stdout_excerpt)
+                self.assertEqual(len(boundaries), 1)
+                self.assert_child_terminal(boundaries[0])
+                self.assert_reaped(self.created[-1][0], status)
+                self.assertEqual(list(self.store.root.glob("*.json")), [])
+
+    def test_unknown_normal_hook_retains_marker_and_preserves_live_child_and_peer(self) -> None:
+        from pyocd_debug_mcp.kernel import processes
+
+        spec = self.descendant_spec()
+        with (
+            patch.object(discovery_hooks, "popen_owned", self.capture_spawn),
+            patch.object(
+                processes, "_current_group_members", side_effect=OSError("snapshot unavailable")
+            ),
+            patch.object(processes.os, "killpg", wraps=os.killpg) as signal_group,
+        ):
+            execution = execute_hook(spec, marker_store=self.store)
+        self.assertEqual(execution.outcome, "cleanup_failed")
+        self.assertEqual(execution.exit_code, 0)
+        self.assertEqual(execution.failure_code, "discovery/hook-failed")
+        self.assertIsNone(execution.output)
+        self.assertIn("marker retained", execution.failure_detail)
+        self.assertEqual(len(list(self.store.root.glob("*.json"))), 1)
+        signal_group.assert_not_called()
+        self.assert_live_child(self.created[-1][0])
 
 
 if __name__ == "__main__":  # pragma: no cover

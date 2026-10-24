@@ -913,6 +913,8 @@ def _execute(
             thread.start()
         detail = ""
         try:
+            # Owned POSIX waits observe exit without releasing the leader's
+            # group-number anchor; confirmed group cleanup below actually reaps.
             process.wait(timeout=spec.timeout_seconds)
             outcome: Literal["exited", "timeout", "cleanup_failed"] = "exited"
         except subprocess.TimeoutExpired:

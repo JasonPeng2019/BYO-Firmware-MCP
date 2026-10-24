@@ -27,6 +27,7 @@ from tests.process_cleanup_observations import (
     process_facts,
     read_receipt,
 )
+from tests.test_process_cleanup import _NativePosixCase
 
 OBSERVATIONS = {}
 
@@ -1157,6 +1158,104 @@ print(json.dumps(payload, separators=(",", ":")))
                 self.assertEqual(result, expected)
                 self.assertFalse(exit_after)
         reset.assert_called_once_with(False)
+
+
+@unittest.skipUnless(os.name == "posix", "real POSIX worker terminal groups")
+class PosixWorkerGroupCleanupTests(_NativePosixCase):
+    def worker(self, mode: str):
+        from pyocd_debug_mcp.adapters import swd_process
+
+        def spawn(*args: Any, **kwargs: Any):
+            kwargs["marker_store"] = self.store
+            return self.capture_spawn(*args, **kwargs)
+
+        with patch.object(swd_process, "popen_owned", spawn):
+            return swd_process._WorkerClient(
+                worker_argv=(
+                    sys.executable,
+                    str(Path(__file__).with_name("fake_provider_worker.py")),
+                    mode,
+                ),
+                deadline=time.monotonic() + 10,
+            )
+
+    def test_actual_terminal_typed_and_locked_workers_close_without_signal_and_reap(self) -> None:
+        from pyocd_debug_mcp.kernel import processes
+        from pyocd_debug_mcp.kernel._analysis_posix import _exit_status
+        from pyocd_debug_mcp.target_errors import LockedTargetError, TargetControlError
+
+        for mode, error_type, message in (
+            ("typed_error", TargetControlError, "fake target error"),
+            ("locked_error", LockedTargetError, "fake locked target"),
+        ):
+            with self.subTest(mode=mode):
+                client = self.worker(mode)
+                process, marker = self.created[-1]
+                with self.assertRaisesRegex(error_type, message):
+                    client.call("get_state", {}, timeout=2)
+                self.assertEqual(client._request_id, 1)
+                self.assertEqual(process.wait(timeout=10), 0)
+                self.assertEqual(_exit_status(process.pid), 0)
+                assert marker is not None
+                self.assertTrue(marker.is_file())
+                with patch.object(processes.os, "killpg", wraps=os.killpg) as signal_group:
+                    client.close()
+                    client.close()
+                signal_group.assert_not_called()
+                self.assertTrue(client._cleanup_confirmed)
+                self.assertIsNone(client._marker)
+                self.assertFalse(marker.exists())
+                self.assert_reaped(process, 0)
+                self.assert_peer()
+
+    def test_actual_persistent_worker_preserves_errors_identity_and_idempotent_close(self) -> None:
+        import psutil
+        from pyocd_debug_mcp.target_errors import TargetControlError
+
+        client = self.worker("persistent_typed_error")
+        process, marker = self.created[-1]
+        birth = psutil.Process(process.pid).create_time()
+        for request_id in (1, 2):
+            with self.assertRaisesRegex(TargetControlError, "fake target error"):
+                client.call("get_state", {}, timeout=2)
+            self.assertEqual(client._request_id, request_id)
+            self.assertEqual(self.native_state(process.pid, birth), "live")
+            self.assertFalse(client._closed)
+            assert marker is not None
+            self.assertTrue(marker.is_file())
+            self.assert_peer()
+        client.close()
+        client.close()
+        self.assertTrue(client._cleanup_confirmed)
+        self.assertIsNone(client._marker)
+        self.assertFalse(marker.exists())
+        self.assert_reaped(process)
+        self.assert_peer()
+
+    def test_actual_live_worker_with_faulted_membership_retains_marker(self) -> None:
+        from pyocd_debug_mcp.kernel import processes
+        from pyocd_debug_mcp.target_errors import TargetConnectionError
+
+        client = self.worker("good")
+        process, marker = self.created[-1]
+        self.assertEqual(client.call("get_state", {}, timeout=2), "RUNNING")
+        self.assertIsNone(process.returncode)
+        with (
+            patch.object(
+                processes,
+                "_current_group_members",
+                side_effect=PermissionError("native group denied"),
+            ),
+            patch.object(processes.os, "killpg", wraps=os.killpg) as signal_group,
+        ):
+            with self.assertRaisesRegex(TargetConnectionError, "recovery marker retained"):
+                client.close(deadline=time.monotonic())
+        signal_group.assert_not_called()
+        self.assertFalse(client._cleanup_confirmed)
+        self.assertEqual(client._marker, marker)
+        assert marker is not None
+        self.assertTrue(marker.is_file())
+        self.assert_peer()
 
 
 if __name__ == "__main__":

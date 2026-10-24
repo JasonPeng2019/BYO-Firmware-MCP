@@ -9,10 +9,12 @@ import math
 import os
 import signal
 import subprocess
+import sys
 import threading
 import time
 import tempfile
 import uuid
+from _thread import LockType
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -33,11 +35,13 @@ def _default_runs_root() -> Path:
 DEFAULT_MARKER_ROOT = _default_runs_root() / "owned-processes"
 _WINDOWS_JOB_HANDLES: dict[int, int] = {}
 _WINDOWS_JOB_GUARD = threading.Lock()
+_POSIX_RETAINED: dict[int, _OwnedPosixPopen] = {}
+_POSIX_RETAINED_GUARD = threading.Lock()
 DEFAULT_PROCESS_GROUP_CLEANUP_GRACE_SECONDS = 0.5
 # Windows can consume one grace while waiting for Job active-zero and a second
 # after that kernel proof while reaping the Python Popen leader. POSIX can
 # consume one grace each while waiting after SIGTERM, waiting after SIGKILL,
-# and confirming PGID absence.
+# and confirming a terminal retained group (then its leader reap) or PGID absence.
 # This exported maximum is max(Windows two phases, POSIX three phases), the
 # implementation's real cross-platform worst-case cleanup budget for one
 # default ``run_owned`` child, not an independent timeout policy.
@@ -323,6 +327,64 @@ def _terminate_suspended_windows_leader(process: subprocess.Popen[Any]) -> bool:
     return process.returncode is not None
 
 
+class _OwnedPosixPopen(subprocess.Popen[Any]):
+    """Plain group ownership: wait/communicate observe; confirmed cleanup reaps.
+
+    A successful new-session spawn and WNOWAIT retain the exact direct child,
+    including after normal caller completion. This pins its group number until
+    every current member is proven terminal. No detached-child policy is added.
+    """
+
+    _waitpid_lock: LockType
+
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        if kwargs.get("start_new_session") is not True:
+            raise ValueError("Owned POSIX processes require start_new_session=True")
+        self._leader_reaped = False
+        self._cleanup_confirmed = False
+        self._wait_error: str | None = None
+        super().__init__(*args, **kwargs)
+        try:
+            self._leader_start_token = _posix_start_token(self.pid)
+        except ProcessIdentityUnavailable:
+            self._leader_start_token = None
+        # Keep an unconfirmed ownership anchor available even if a caller drops
+        # its reference. Failed cleanup retains both this object and its marker.
+        with _POSIX_RETAINED_GUARD:
+            _POSIX_RETAINED[self.pid] = self
+
+    def _internal_poll(self, _deadstate: Any = None, **kwargs: Any) -> int | None:
+        if self.returncode is not None or not hasattr(self, "pid"):
+            return self.returncode
+        if not self._waitpid_lock.acquire(False):
+            return None
+        try:
+            from pyocd_debug_mcp.kernel._analysis_posix import _exit_status
+
+            self.returncode = _exit_status(self.pid)
+        except InterruptedError:
+            pass
+        except (OSError, RuntimeError) as exc:
+            self._wait_error = str(exc)
+        finally:
+            self._waitpid_lock.release()
+        return self.returncode
+
+    def _wait(self, timeout: float | None) -> int:
+        deadline = None if timeout is None else time.monotonic() + timeout
+        while True:
+            result = self._internal_poll()
+            if result is not None:
+                return result
+            if self._wait_error is not None:
+                raise RuntimeError("Owned child exit observation unavailable: " + self._wait_error)
+            if deadline is not None and time.monotonic() >= deadline:
+                raise subprocess.TimeoutExpired(self.args, timeout)
+            time.sleep(
+                0.005 if deadline is None else min(0.005, max(0, deadline - time.monotonic()))
+            )
+
+
 def terminate_process_group(
     process: subprocess.Popen[Any],
     *,
@@ -356,48 +418,201 @@ def terminate_process_group(
     if isinstance(process, AnalysisPopen):
         return process.cleanup(grace_seconds)
 
+    return _terminate_retained_posix_group(process, grace_seconds)
+
+
+def _terminate_retained_posix_group(process: subprocess.Popen[Any], grace_seconds: float) -> bool:
+    """Signal only a PGID pinned by the exact unreaped leader; prove, then reap.
+
+    While the direct child is unreaped its PID, and so its group and session
+    number, cannot be reused, and every group member shares that session.
+    Signal success or denial, a zombie leader, leader exit or a numeric PGID
+    alone never confirms cleanup: success needs the retained exit, a stable
+    complete group whose members are all terminal, then the actual leader reap.
+    An unproven group keeps its anchor and reports unconfirmed cleanup.
+    """
+    from pyocd_debug_mcp.kernel import _analysis_posix
+
     process_group = process.pid
-    try:
-        os.killpg(process_group, signal.SIGTERM)
-    except ProcessLookupError:
-        return True
-    try:
-        process.wait(timeout=grace_seconds)
-    except (OSError, subprocess.TimeoutExpired):
-        pass
-
-    try:
-        os.killpg(process_group, 0)
-    except ProcessLookupError:
-        return True
-    except PermissionError:
+    if not isinstance(process, _OwnedPosixPopen):
+        # An arbitrary/already-reaped Popen carries no retained new-session
+        # proof. Only a reaped leader AND an absent group can confirm it.
+        return process.returncode is not None and _released_group_absent(
+            process_group, grace_seconds
+        )
+    if process._cleanup_confirmed:
+        return True  # Recorded terminal membership and actual reap; no new signal.
+    with _POSIX_RETAINED_GUARD:
+        if _POSIX_RETAINED.get(process_group) is not process:
+            return False
+    total_deadline = time.monotonic() + 3 * grace_seconds
+    # Hold CPython's reaping lock across native ownership, signals, proof and
+    # reap. No concurrent Popen wait/poll can release this number in between.
+    if not process._waitpid_lock.acquire(timeout=max(0.0, grace_seconds)):
         return False
 
-    try:
-        os.killpg(process_group, signal.SIGKILL)
-    except ProcessLookupError:
-        return True
-    try:
-        process.wait(timeout=grace_seconds)
-    except (OSError, subprocess.TimeoutExpired):
-        return False
+    def leader_exit() -> int | None:
+        # The lock protects cooperating Popen reapers; fresh birth identity
+        # additionally rejects a stale object or externally released/reused PID.
+        token = process._leader_start_token
+        if token is None or _posix_start_token(process_group) != token:
+            raise ProcessIdentityUnavailable("retained leader birth cannot be confirmed")
+        return _analysis_posix._exit_status(process_group)
 
-    deadline = time.monotonic() + grace_seconds
-    while time.monotonic() < deadline:
+    try:
+        if process._cleanup_confirmed:
+            return True
+        if process._leader_reaped:
+            return False
+        for selected in (signal.SIGTERM, signal.SIGKILL, None):
+            deadline = min(total_deadline, time.monotonic() + grace_seconds)
+            signalled = False
+            while time.monotonic() < deadline:
+                # WNOWAIT verifies the retained direct-child relationship on
+                # every iteration; cached returncode alone is never authority.
+                status = leader_exit()
+                state = _retained_group_state(process_group, status, deadline)
+                if state == "terminal" and status is not None:
+                    # Do not call wait(): this Popen's public waits deliberately
+                    # observe without reaping. Final waitpid must actually reap.
+                    if time.monotonic() >= deadline:
+                        break
+                    if leader_exit() != status:
+                        return False
+                    pid, native_status = os.waitpid(process_group, os.WNOHANG)
+                    if pid != process_group:
+                        return False
+                    process._leader_reaped = True
+                    process.returncode = os.waitstatus_to_exitcode(native_status)
+                    process._cleanup_confirmed = process.returncode == status
+                    with _POSIX_RETAINED_GUARD:
+                        _POSIX_RETAINED.pop(process_group, None)
+                    return process._cleanup_confirmed
+                if state == "unknown":
+                    return False  # Incomplete/faulted observation grants no signal.
+                if state == "changed":
+                    continue  # A newly observed exit needs a fresh stable proof.
+                if selected is not None and not signalled:
+                    leader_exit()
+                    if time.monotonic() >= deadline:
+                        break
+                    try:
+                        os.killpg(process_group, selected)
+                    except (ProcessLookupError, PermissionError):
+                        # Neither signal acceptance nor denial proves cleanup.
+                        # A fresh complete terminal proof and reap are required.
+                        pass
+                    signalled = True
+                remaining = deadline - time.monotonic()
+                if remaining > 0:
+                    time.sleep(min(0.02, remaining))
+        return False
+    except (psutil.Error, OSError, RuntimeError):
+        return False
+    finally:
+        process._waitpid_lock.release()
+
+
+def _released_group_absent(process_group: int, budget_seconds: float) -> bool:
+    """Confirm only proven absence once no unreaped leader pins this number.
+
+    A reaped leader no longer reserves its PID, so a non-empty group with this
+    number may belong to a later session. It never receives a signal; only
+    ESRCH, proving that no process at all still has this PGID, confirms it.
+    """
+    deadline = time.monotonic() + budget_seconds
+    while True:
         try:
             os.killpg(process_group, 0)
         except ProcessLookupError:
             return True
-        except PermissionError:
+        except OSError:
+            return False  # Present or unprobeable is never proven absence.
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
             return False
-        time.sleep(0.02)
+        time.sleep(min(0.02, remaining))
+
+
+def _current_group_members(process_group: int, deadline: float) -> set[int]:
+    """Complete current PGID membership including zombies; errors never mean empty."""
+    from pyocd_debug_mcp.kernel import _analysis_posix
+
+    if sys.platform == "darwin":
+        return _analysis_posix._darwin_group_members(process_group, deadline)
+    members: set[int] = set()
+    for pid in psutil.pids():
+        if time.monotonic() >= deadline:
+            raise _analysis_posix._ObservationDeadline("group snapshot exceeded bounded phase")
+        try:
+            if os.getpgid(pid) == process_group:
+                if os.getsid(pid) != process_group:
+                    raise RuntimeError("group member is outside the owned session")
+                members.add(pid)
+        except ProcessLookupError:
+            continue  # Released before its group could be read.
+    if process_group not in members:
+        raise RuntimeError("group snapshot lacks retained leader")
+    return members
+
+
+def _retained_group_state(process_group: int, leader_exit: int | None, deadline: float) -> str:
+    """Distinguish a completely observed owned live/terminal group from unknown.
+
+    Two equal complete snapshots bracket fresh same-birth zombie observations
+    of every non-leader member, and the leader's retained exit is unchanged. A
+    live member is never terminal proof. Unknown/reused/newly listed identities
+    cannot authorize a signal or confirm cleanup.
+    """
+    from pyocd_debug_mcp.kernel import _analysis_posix
+
     try:
-        os.killpg(process_group, 0)
-    except ProcessLookupError:
-        return True
-    except PermissionError:
-        return False
-    return False
+        members = _current_group_members(process_group, deadline)
+        if process_group not in members:
+            return "unknown"
+        births: dict[int, str | None] = {}
+        while time.monotonic() < deadline:
+            for pid in sorted(members - {process_group}):
+                if pid not in births:
+                    try:
+                        births[pid] = f"psutil:{psutil.Process(pid).create_time():.9f}"
+                    except psutil.ZombieProcess:
+                        return "unknown"  # Unreadable birth is never exit proof.
+                    except psutil.NoSuchProcess:
+                        births[pid] = None  # Released; it must leave the next snapshot.
+                        continue
+                birth = births[pid]
+                if birth is not None and _analysis_posix._process_state(pid, birth) not in {
+                    "gone",
+                    "zombie",
+                    "live",
+                }:
+                    return "unknown"
+            following = _current_group_members(process_group, deadline)
+            if process_group not in following or not following <= members:
+                return "unknown"
+            live = leader_exit is None
+            for pid in sorted(following - {process_group}):
+                birth = births[pid]
+                if birth is None:
+                    return "unknown"
+                state = _analysis_posix._process_state(pid, birth)
+                if state not in {"live", "zombie"}:
+                    return "unknown"
+                if state == "live" and (
+                    os.getpgid(pid) != process_group or os.getsid(pid) != process_group
+                ):
+                    return "unknown"
+                live = live or state == "live"
+            if following == members:
+                if _analysis_posix._exit_status(process_group) != leader_exit:
+                    return "changed"
+                return "live" if live else "terminal"
+            # A reaper released a terminal orphan; require a fresh stable pair.
+            members = following
+        return "unknown"
+    except (psutil.Error, OSError, RuntimeError):
+        return "unknown"
 
 
 def terminate_marked_group(pid: int, start_token: str) -> bool:
@@ -505,7 +720,11 @@ def popen_owned(
         process = AnalysisPopen(validated, **kwargs)
         begin_analysis_ownership = process.begin_ownership
     else:
-        process = subprocess.Popen(validated, **kwargs)
+        process = (
+            subprocess.Popen(validated, **kwargs)
+            if os.name == "nt"
+            else _OwnedPosixPopen(validated, **kwargs)
+        )
     store = marker_store or ProcessMarkerStore()
     job_handle: int | None = None
     marker: Path | None = None
@@ -608,6 +827,8 @@ def run_owned(
     remove_marker = False
     try:
         try:
+            # Plain POSIX Popen ownership retains the leader through this wait;
+            # descendant cleanup below proves terminal membership, then reaps.
             output, errors = process.communicate(timeout=timeout)
         except subprocess.TimeoutExpired as exc:
             remove_marker = terminate_process_group(process)
