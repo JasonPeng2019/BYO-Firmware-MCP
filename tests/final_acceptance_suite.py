@@ -30,20 +30,22 @@ import xml.etree.ElementTree as ET
 if __package__:
     from .process_cleanup_observations import (
         CleanupTrace,
+        descendant_facts,
         exception_facts,
         popen_facts,
         process_facts,
         read_receipt,
-        role_evidence,
+        terminal_identity,
     )
 else:
     from process_cleanup_observations import (
         CleanupTrace,
+        descendant_facts,
         exception_facts,
         popen_facts,
         process_facts,
         read_receipt,
-        role_evidence,
+        terminal_identity,
     )
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -551,69 +553,24 @@ def worker(module, evidence, select=None):
             observation_error = traceback.format_exc()
             cleanup_trace.record("observation-export-error", traceback=observation_error)
             error = error or observation_error
-    descendants, cleanup_errors = [], []
-    try:
-        import psutil
-
-    except ImportError:
-        cleanup_errors.append("Actual cleanup dependency unavailable: " + traceback.format_exc())
-        psutil = None
-    try:
-        if psutil is None:
-            raise RuntimeError("Actual cleanup dependency is unavailable")
-        for process in psutil.Process().children(recursive=True):
-            item = None
-            try:
-                birth = process.create_time()
-                if process.is_running() and process.status() != psutil.STATUS_ZOMBIE:
-                    item = {"pid": process.pid, "creation_time": birth, "survived_suite": True}
-                    descendants.append(item)
-                    item["before_emergency_cleanup"] = process_facts(process.pid, birth)
-                    item["role_evidence"] = role_evidence(
-                        process.pid, birth, cleanup_trace.directory
-                    )
-                    cleanup_trace.record(
-                        "survived-suite-before-emergency-cleanup", observation=item.copy()
-                    )
-                    if process.is_running() and process.create_time() == birth:
-                        cleanup_trace.invoke("suite-emergency.kill", process.kill)
-                        cleanup_trace.invoke("suite-emergency.wait", process.wait, timeout=15)
-                    item["cleanup"] = "gone"
-                    item["after_emergency_cleanup"] = process_facts(process.pid, birth)
-                    item["interpretation"] = (
-                        "Raw survived_suite remains a module failure; emergency cleanup is not original cleanup PASS"
-                    )
-                    cleanup_trace.record("after-suite-emergency-cleanup", observation=item.copy())
-            except psutil.NoSuchProcess as exc:
-                cleanup_trace.record(
-                    "snapshot-process-disappeared",
-                    pid_observed=process.pid,
-                    error=exception_facts(exc),
-                )
-                pass
-            except (psutil.AccessDenied, psutil.TimeoutExpired) as exc:
-                cleanup_trace.record(
-                    "snapshot-or-cleanup-error",
-                    pid_observed=process.pid,
-                    error=exception_facts(exc),
-                )
-                cleanup_errors.append(str(exc))
-            finally:
-                if item is not None:
-                    item["after_cleanup_attempt_even_on_error"] = process_facts(
-                        process.pid, item["creation_time"]
-                    )
-                    cleanup_trace.record("snapshot-finally", observation=item.copy())
-    except Exception as exc:
-        cleanup_trace.record("snapshot-error", error=exception_facts(exc))
-        cleanup_errors.append(str(exc))
+    # CPython still owns finalizers (including multiprocessing helpers) here.
+    # Preserve the live pre-exit facts; only the external owner can judge leaks.
+    identity = process_facts(os.getpid())
+    snapshot = descendant_facts(
+        os.getpid(),
+        identity.get("creation_time"),
+        "before ordinary interpreter exit",
+        cleanup_trace.directory,
+    )
+    cleanup_trace.record("pre-interpreter-exit-snapshot", observation=snapshot)
     write(
         evidence / "cleanup.json",
         {
-            "surviving_test_descendants": descendants,
-            "errors": cleanup_errors,
+            "pre_exit_descendants": snapshot["descendants"],
+            "errors": snapshot["evidence_gaps"],
             "observations": cleanup_trace.summary(),
-            "scope": "actual end-of-module descendant snapshot; not exhaustive OS isolation evidence",
+            "boundary": "before ordinary interpreter exit; no survivor judgment or intervention",
+            "scope": "actual pre-exit snapshot; authoritative survivor gate belongs to observing parent",
         },
     )
     raw_outcomes = {} if result is None else result.outcomes
@@ -640,60 +597,86 @@ def worker(module, evidence, select=None):
             "note": "Imported module identities are parent/test-process evidence; actual child identities require their own receipts",
         },
     )
-    return 0 if successful and not descendants and not cleanup_errors else 1
+    return 0 if successful and not snapshot["evidence_gaps"] else 1
 
 
-def module_exit_observations(directory):
-    """Reobserve only identities actually recorded, after the real module wait.
+def module_exit_observations(directory, captured=(), capture_gaps=()):
+    """Reobserve recorded identities without any wait, reap or signal authority.
 
-    The worker retains its existing kill policy. Absence after that intervention
-    cannot prove natural interpreter cleanup or erase the survived-suite failure.
+    Missing suite receipts remain diagnostic gaps (the caller enforces required
+    ledgers); unknown ownership/state can never pass the owned-survivor gate.
     """
-    seen, gaps = {}, []
-    path = directory / "cleanup.json"
-    try:
-        cleanup = json.loads(path.read_text(encoding="utf-8"))
-        for row in cleanup["surviving_test_descendants"]:
-            seen[(row["pid"], row["creation_time"])] = {"source": str(path), "prior": row}
-    except (OSError, ValueError, KeyError) as exc:
-        gaps.append({"path": str(path), "error": exception_facts(exc)})
-    roles = read_receipt(directory / "cleanup-observations/roles.jsonl")
-    if "gap" in roles:
-        gaps.append(roles)
-    for row in roles.get("records", []):
-        key = (row["pid"], row.get("creation_time"))
-        if key not in seen:
-            seen[key] = {"source": roles["path"], "prior": row}
+    seen = dict(captured)
+    gaps, identity_gaps = [], list(capture_gaps)
+    paths = [directory / "cleanup.json", *sorted((directory / "children").glob("*/cleanup.json"))]
+    for path in paths:
+        try:
+            cleanup = json.loads(path.read_text(encoding="utf-8"))
+            identity_gaps.extend(cleanup["errors"])
+            for row in cleanup["pre_exit_descendants"]:
+                key = (row["pid"], row.get("creation_time"))
+                entry = seen.setdefault(key, {"source": str(path), "prior": row})
+                tree_owned = (
+                    row.get("ownership") == "captured recursive descendant of exact observed root"
+                    and terminal_identity(row.get("identity", {})) in ("live", "terminal")
+                )
+                entry["owned_by_command"] = entry.get("owned_by_command", False) or tree_owned
+                entry["worker_pre_exit"] = row
+        except (OSError, ValueError, KeyError) as exc:
+            gaps.append({"path": str(path), "error": exception_facts(exc)})
+        role_path = path.parent / "cleanup-observations/roles.jsonl"
+        if role_path.is_file():
+            roles = read_receipt(role_path)
+            if "gap" in roles:
+                identity_gaps.append(roles)
+            for row in roles.get("records", []):
+                key = (row["pid"], row.get("creation_time"))
+                seen.setdefault(key, {
+                    "source": str(role_path), "prior": row, "owned_by_command": False,
+                })
     observations = []
-    for (pid, birth), prior in list(seen.items())[:512]:
-        if birth is None:
-            observations.append(
-                {
-                    "pid": pid,
-                    **prior,
-                    "gap": "No birth identity was recorded; no PID-only attribution",
-                }
-            )
-        else:
-            observations.append(
-                {
-                    "pid": pid,
-                    "creation_time": birth,
-                    **prior,
-                    "after_module_exit": process_facts(pid, birth),
-                }
-            )
-    if len(seen) > 512:
-        gaps.append("More than 512 seen identities; post-exit observation cap reached")
+    for (pid, birth), prior in seen.items():
+        facts = (
+            process_facts(pid, birth)
+            if birth is not None
+            else {"gap": "No birth identity was recorded; no PID-only attribution"}
+        )
+        state = terminal_identity(facts)
+        if state == "unknown":
+            identity_gaps.append({"pid": pid, "creation_time": birth, "identity": facts})
+        if not prior.get("owned_by_command"):
+            gaps.append({"pid": pid, "creation_time": birth,
+                         "gap": "Role receipt alone grants no command ownership or cleanup authority"})
+            if state == "live":
+                identity_gaps.append({"pid": pid, "creation_time": birth,
+                                      "gap": "Live role-only identity lacks exact command-tree ownership"})
+        observations.append(
+            {
+                "pid": pid,
+                "creation_time": birth,
+                **prior,
+                "after_module_exit": facts,
+                "state": state,
+            }
+        )
+    survivors = [row for row in observations if row["state"] == "live" and row.get("owned_by_command")]
     return {
+        "at_monotonic": time.monotonic(),
         "seen_identities": observations,
+        "survivors": survivors,
+        "identity_gaps": identity_gaps,
         "evidence_gaps": gaps,
-        "rule": "Post-exit state is separate from natural cleanup and earlier emergency intervention",
+        "gate": "FAIL" if survivors else ("ERROR" if identity_gaps else "PASS"),
+        "rule": "Exact post-exit judgment before intervention; unknown/reused facts never prove absence",
     }
 
 
 def run_module(command, environment, directory, timeout):
-    """Retain dispatch/streams even when no worker can produce a final ledger."""
+    """Own the bounded real wait; judge descendants before emergency cleanup.
+
+    Snapshot helpers have no reap/signal authority. This owner retains the
+    existing emergency authority, exercised only after timeout or a failed gate.
+    """
     write(
         directory / "command-start.json",
         {"argv": command, "cwd": str(ROOT), "at_monotonic": time.monotonic()},
@@ -707,35 +690,123 @@ def run_module(command, environment, directory, timeout):
         leader = process_facts(child.pid)
         trace.record("module-start", popen=popen_facts(child), identity=leader)
         started = time.monotonic()
-        outcome = "ERROR"
+        outcome, normal_wait_completed = "ERROR", False
+        wait_returned_at, finalization_started = None, None
+        raw_capture_gaps = []
+        captured, capture_gaps, interventions = {}, [], []
+        descendants, immediate_post_exit = None, None
+        finalization_gaps = set()
         try:
-            code = trace.invoke("module.wait", child.wait, timeout=timeout)
+            deadline = started + timeout
+            trace.record("module-normal-wait-start", timeout=timeout)
+            while True:
+                snapshot = descendant_facts(
+                    child.pid,
+                    leader.get("creation_time"),
+                    "during module command",
+                    directory / "cleanup-observations",
+                )
+                raw_capture_gaps.extend(snapshot["evidence_gaps"])
+                # Root disappearance can race the real wait. Retain that raw
+                # gap; lack of an initial birth cannot become ownership proof.
+                if leader.get("creation_time") is None:
+                    capture_gaps.extend(snapshot["evidence_gaps"])
+                elif snapshot["root_identity"].get("identity") != "missing":
+                    capture_gaps.extend(snapshot["evidence_gaps"])
+                for row in snapshot["descendants"]:
+                    key = (row["pid"], row["creation_time"])
+                    entry = captured.setdefault(key, {
+                        "source": "parent live tree", "prior": row,
+                        "owned_by_command": row["identity"].get("identity") == "same_birth",
+                    })
+                    entry["latest"] = row
+                remaining = deadline - time.monotonic()
+                try:
+                    code = child.wait(timeout=max(0, min(0.1, remaining)))
+                    normal_wait_completed = True
+                    wait_returned_at = time.monotonic()
+                    trace.record("module-normal-wait-return", exit=code)
+                    break
+                except subprocess.TimeoutExpired:
+                    if remaining <= 0:
+                        raise
             outcome = "PASS" if code == 0 else "FAIL"
-            return code, "PASS" if code == 0 else "FAIL"
         except subprocess.TimeoutExpired:
             outcome = "TIMEOUT"
-            # Preserve the existing identity-bound timeout cleanup and limits.
+            # Timeout is intervention, never a normal interpreter-exit claim.
             import psutil
 
-            process = psutil.Process(child.pid)
-            owned = [(p, p.create_time()) for p in process.children(recursive=True)]
-            for item, birth in reversed(owned):
-                try:
-                    trace.record(
-                        "timeout-before-emergency-cleanup", identity=process_facts(item.pid, birth)
-                    )
-                    if item.is_running() and item.create_time() == birth:
-                        trace.invoke("timeout-descendant.kill", item.kill)
-                except psutil.NoSuchProcess:
-                    pass
-            trace.invoke("timeout-module.kill", child.kill)
-            trace.invoke("timeout-module.wait", child.wait, timeout=15)
             write(
                 directory / "timeout-owned.json",
-                [{"pid": p.pid, "creation_time": birth} for p, birth in owned],
+                [{"pid": pid, "creation_time": birth} for pid, birth in captured],
             )
-            return child.returncode, "TIMEOUT"
+            for pid, birth in reversed(captured):
+                try:
+                    facts = process_facts(pid, birth)
+                    trace.record("timeout-before-emergency-cleanup", identity=facts)
+                    item = psutil.Process(pid)
+                    if (
+                        captured[(pid, birth)]["owned_by_command"]
+                        and terminal_identity(facts) == "live"
+                        and item.create_time() == birth
+                    ):
+                        interventions.append({"kind": "timeout-descendant.kill", "identity": facts})
+                        trace.invoke("timeout-descendant.kill", item.kill)
+                except (OSError, psutil.Error) as exc:
+                    capture_gaps.append(
+                        {"pid": pid, "boundary": "timeout cleanup", "error": exception_facts(exc)}
+                    )
+            interventions.append({"kind": "timeout-module.kill", "identity": leader})
+            trace.invoke("timeout-module.kill", child.kill)
+            trace.invoke("timeout-module.wait", child.wait, timeout=15)
         finally:
+            if child.returncode is not None:
+                # The interpreter has really exited. Let its helpers observe
+                # EOF/finalize naturally, bounded independently and without reap.
+                finalization_started = time.monotonic()
+                finalization_deadline = finalization_started + 5.0
+                while True:
+                    descendants = module_exit_observations(directory, captured.items(), capture_gaps)
+                    if immediate_post_exit is None:
+                        immediate_post_exit = descendants
+                        trace.record("immediate-post-interpreter-exit", observation=descendants)
+                    for row in descendants["seen_identities"]:
+                        key = (row["pid"], row["creation_time"])
+                        if row["state"] == "unknown" and key not in finalization_gaps:
+                            finalization_gaps.add(key)
+                            capture_gaps.append({"boundary": "passive post-exit observation",
+                                                 "identity": row["after_module_exit"]})
+                    if (
+                        not normal_wait_completed
+                        or descendants["gate"] == "PASS"
+                        or time.monotonic() >= finalization_deadline
+                    ):
+                        break
+                    time.sleep(0.05)
+                trace.record("post-interpreter-survivor-judgment", observation=descendants)
+                if outcome == "PASS" and descendants["gate"] != "PASS":
+                    outcome = descendants["gate"]
+                # Preserve the failed judgment and raw command exit even if this
+                # emergency intervention subsequently removes a real survivor.
+                for row in reversed(descendants["survivors"]):
+                    before = process_facts(row["pid"], row["creation_time"])
+                    emergency = {"kind": "post-exit-emergency", "before": before,
+                                 "at_monotonic": time.monotonic()}
+                    interventions.append(emergency)
+                    try:
+                        import psutil
+
+                        process = psutil.Process(row["pid"])
+                        if (
+                            terminal_identity(before) == "live"
+                            and process.create_time() == row["creation_time"]
+                        ):
+                            trace.invoke("post-exit-emergency.kill", process.kill)
+                            trace.invoke("post-exit-emergency.wait", process.wait, timeout=15)
+                    except (OSError, psutil.Error) as exc:
+                        emergency["error"] = exception_facts(exc)
+                    emergency["after"] = process_facts(row["pid"], row["creation_time"])
+                    row["emergency_cleanup"] = emergency
             write(
                 directory / "module-exit.json",
                 {
@@ -744,7 +815,21 @@ def run_module(command, environment, directory, timeout):
                     "module_identity_at_start": leader,
                     "popen": popen_facts(child),
                     "wait_completed": child.returncode is not None,
-                    "boundary": "parent after actual wait/timeout cleanup; cached returncode only",
+                    "normal_wait_completed": normal_wait_completed,
+                    "normal_wait_returned_monotonic": wait_returned_at,
+                    "finalization_started_monotonic": finalization_started,
+                    "finalization_allowance_seconds": 5.0,
+                    "tree_observation_gaps": raw_capture_gaps,
+                    "normal_wait_exit": code if normal_wait_completed else None,
+                    "natural_eof0": (
+                        normal_wait_completed
+                        and code == 0
+                        and not interventions
+                        and descendants is not None
+                        and descendants["gate"] == "PASS"
+                    ),
+                    "interventions": interventions,
+                    "boundary": "parent after actual interpreter wait, then bounded passive finalization; cached returncode only",
                     "module_identity_after": (
                         process_facts(child.pid, leader["creation_time"])
                         if leader.get("creation_time") is not None
@@ -752,10 +837,12 @@ def run_module(command, environment, directory, timeout):
                             "gap": "Original module birth unavailable; no PID-only post-exit attribution"
                         }
                     ),
-                    "descendants": module_exit_observations(directory),
+                    "descendants": descendants,
+                    "immediate_post_exit_descendants": immediate_post_exit,
                     "operations": trace.summary(),
                 },
             )
+        return child.returncode, outcome
 
 
 def python_child_evidence(directory):
@@ -932,6 +1019,7 @@ def parent(args):
                 )
             failed |= (
                 exit_code != 0
+                or outcome != "PASS"
                 or bool(record["required_evidence_gaps"])
                 or bool(record["children"]["evidence_gaps"])
             )

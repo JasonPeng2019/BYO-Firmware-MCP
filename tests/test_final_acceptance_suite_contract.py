@@ -26,10 +26,13 @@ import urllib.error
 from tests import final_acceptance_suite as acceptance
 from tests.process_cleanup_observations import (
     CleanupTrace,
+    descendant_facts,
+    execution_relationship,
     marker_facts,
     popen_facts,
     process_facts,
     role_evidence,
+    terminal_identity,
 )
 
 OBSERVATIONS = {}
@@ -277,6 +280,128 @@ class FinalAcceptanceLedgerContracts(unittest.TestCase):
         self.assertEqual(missing_birth["matches"], [])
         self.assertIn("unknown", changed["role"])
 
+    def test_execution_relationship_requires_stable_direct_identity_and_module_argv(self):
+        launcher = process_facts(os.getpid())
+        interpreter = process_facts(os.getpid(), launcher["creation_time"])
+        command = launcher["cmdline"]
+        direct = execution_relationship(launcher, interpreter, command, sys.argv, sys.argv)
+        OBSERVATIONS[self.id()] = {"direct": direct, "negative_controls": {}}
+        self.assertFalse(direct["evidence_gaps"], direct)
+        self.assertEqual(direct["relationship"], "direct")
+
+        # Only rejection inputs are altered; no invented facts establish a
+        # positive identity. Reuse is queried with a deliberately wrong birth.
+        invalid = {
+            "missing": {**interpreter, "identity": "missing"},
+            "unavailable": {**interpreter, "identity": "unavailable"},
+            "reused": process_facts(os.getpid(), launcher["creation_time"] + 1),
+            "unknown_birth": {k: v for k, v in interpreter.items() if k != "creation_time"},
+            "changed_during_observation": {**interpreter, "identity": "changed_during_observation"},
+            "gone_during_observation": {**interpreter, "identity": "gone_during_observation"},
+            "unknown_parent": {k: v for k, v in interpreter.items() if k != "ppid"},
+            "unknown_command": {k: v for k, v in interpreter.items() if k != "cmdline"},
+            "unknown_executable": {k: v for k, v in interpreter.items() if k != "exe"},
+        }
+        for label, facts in invalid.items():
+            with self.subTest(label=label):
+                refused = execution_relationship(launcher, facts, command, sys.argv, sys.argv)
+                OBSERVATIONS[self.id()]["negative_controls"][label] = refused
+                self.assertEqual(refused["relationship"], "unknown")
+                self.assertTrue(refused["evidence_gaps"])
+        for argv in (None, [*sys.argv, "not-the-executed-module"]):
+            with self.subTest(argv=argv):
+                refused = execution_relationship(launcher, interpreter, command, argv, sys.argv)
+                self.assertEqual(refused["relationship"], "unknown")
+                self.assertTrue(refused["evidence_gaps"])
+        refused = execution_relationship(
+            launcher, interpreter, [command[0], "not-the-dispatched-module"], sys.argv, sys.argv
+        )
+        self.assertEqual(refused["relationship"], "unknown")
+        self.assertTrue(refused["evidence_gaps"])
+
+    def test_execution_relationship_binds_a_real_portable_launcher_child(self):
+        # Run the same command through a real Python wrapper and its actual
+        # base interpreter on every OS. The wrapper's sole wait is its normal
+        # subprocess.run lifecycle; the identity observer never waits/signals.
+        script = r"""
+import json
+import os
+from pathlib import Path
+import subprocess
+import sys
+from tests.process_cleanup_observations import process_facts
+
+directory = Path(sys.argv[1])
+identity = process_facts(os.getpid())
+if os.environ.get("BYO_FR11_LAYER_CONTROL") == "child":
+    (directory / "executed.json").write_text(json.dumps({
+        "identity": identity, "parent": process_facts(os.getppid()),
+        "argv": sys.argv, "module_name": __name__,
+    }), encoding="utf-8")
+else:
+    command = [identity["exe"], *identity["cmdline"][1:]]
+    (directory / "launcher.json").write_text(json.dumps({
+        "identity": identity, "command": command,
+    }), encoding="utf-8")
+    environment = dict(os.environ)
+    environment["BYO_FR11_LAYER_CONTROL"] = "child"
+    raise SystemExit(subprocess.run(command, env=environment).returncode)
+"""
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary)
+            command = [sys.executable, "-c", script, str(directory)]
+            environment = dict(os.environ)
+            environment.pop("BYO_FR11_LAYER_CONTROL", None)
+            try:
+                code, outcome = acceptance.run_module(command, environment, directory, 15)
+            finally:
+                OBSERVATIONS[self.id()] = {
+                    name: marker_facts(directory / name)
+                    for name in (
+                        "launcher.json", "executed.json", "module-exit.json",
+                        "stdout.log", "stderr.log",
+                    )
+                }
+            launcher = json.loads((directory / "launcher.json").read_bytes())
+            executed = json.loads((directory / "executed.json").read_bytes())
+            exit_record = json.loads((directory / "module-exit.json").read_bytes())
+            relationship = execution_relationship(
+                launcher["identity"], executed["identity"], command,
+                executed["argv"], ["-c", str(directory)], parent=executed["parent"],
+            )
+            OBSERVATIONS[self.id()]["execution_relationship"] = relationship
+            self.assertEqual((code, outcome), (0, "PASS"))
+            self.assertTrue(exit_record["wait_completed"])
+            self.assertEqual(exit_record["popen"]["cached_returncode"], 0)
+            self.assertEqual(launcher["command"][1:], command[1:])
+            self.assertEqual(executed["module_name"], "__main__")
+            self.assertFalse(relationship["evidence_gaps"], relationship)
+            self.assertEqual(relationship["relationship"], "launcher-child")
+            # Missing/reused/unknown parent observations and a different real
+            # parent PID cannot become ownership merely by matching argv.
+            for parent in (
+                None,
+                {**executed["parent"], "identity": "reused"},
+                {k: v for k, v in executed["parent"].items() if k != "creation_time"},
+                executed["identity"],
+            ):
+                with self.subTest(parent=parent):
+                    refused = execution_relationship(
+                        launcher["identity"], executed["identity"], command,
+                        executed["argv"], ["-c", str(directory)], parent=parent,
+                    )
+                    self.assertEqual(refused["relationship"], "unknown")
+                    self.assertTrue(refused["evidence_gaps"])
+            unrelated = {
+                **executed["identity"], "ppid": launcher["identity"]["ppid"],
+            }
+            refused = execution_relationship(
+                launcher["identity"], unrelated, command, executed["argv"],
+                ["-c", str(directory)], parent=executed["parent"],
+            )
+            self.assertEqual(refused["relationship"], "unknown")
+            self.assertTrue(refused["evidence_gaps"])
+
     def test_real_interpreter_helper_and_module_exit_have_separate_boundaries(self):
         # Genuine spawn-context Event starts CPython's helper where that OS uses
         # one. This control measures its own lifecycle, never a historical Mac PID.
@@ -296,14 +421,18 @@ pid = getattr(resource_tracker._resource_tracker, "_pid", None)
 trace.record("actual-interpreter-helper-slot", helper_pid=pid, identity=process_facts(os.getpid()))
 if pid is not None:
     trace.role(pid, "multiprocessing-resource-tracker", "actual Event control resource_tracker._resource_tracker._pid")
+module_identity = process_facts(os.getpid())
 (directory / "control.json").write_text(json.dumps({"module_pid": os.getpid(), "helper_pid": pid,
+    "module_identity": module_identity, "parent_identity": process_facts(os.getppid()),
+    "module_argv": sys.argv, "module_name": __name__,
     "boundary": "before normal interpreter exit; no emergency cleanup"}), encoding="utf-8")
 """
         with tempfile.TemporaryDirectory() as temporary:
             directory = Path(temporary)
+            command = [sys.executable, "-c", script, str(directory)]
             try:
                 code, outcome = acceptance.run_module(
-                    [sys.executable, "-c", script, str(directory)], dict(os.environ), directory, 15
+                    command, dict(os.environ), directory, 15
                 )
             finally:
                 # Retain actual raw receipts before temp cleanup, even when the
@@ -314,17 +443,311 @@ if pid is not None:
                 }
             control = json.loads((directory / "control.json").read_text(encoding="utf-8"))
             exit_record = json.loads((directory / "module-exit.json").read_text(encoding="utf-8"))
+            relationship = execution_relationship(
+                exit_record["module_identity_at_start"], control["module_identity"], command,
+                control["module_argv"], ["-c", str(directory)], parent=control["parent_identity"],
+            )
+            OBSERVATIONS[self.id()]["module_execution_relationship"] = relationship
         self.assertEqual((code, outcome), (0, "PASS"))
         self.assertTrue(exit_record["wait_completed"])
         self.assertEqual(exit_record["popen"]["cached_returncode"], 0)
-        self.assertEqual(exit_record["module_identity_at_start"]["pid"], control["module_pid"])
+        self.assertEqual(control["module_name"], "__main__")
+        self.assertEqual(control["module_identity"]["pid"], control["module_pid"])
+        self.assertFalse(relationship["evidence_gaps"], relationship)
+        self.assertIn(relationship["relationship"], {"direct", "launcher-child"})
+        if os.name != "nt":
+            self.assertEqual(relationship["relationship"], "direct")
         if control["helper_pid"] is not None:
             observations = exit_record["descendants"]["seen_identities"]
-            self.assertEqual([r["pid"] for r in observations], [control["helper_pid"]])
-            self.assertIn("after_module_exit", observations[0])
+            helpers = [r for r in observations if r["pid"] == control["helper_pid"]]
+            self.assertEqual(len(helpers), 1)
+            self.assertIn("after_module_exit", helpers[0])
+            self.assertIn(helpers[0]["state"], ("gone", "terminal"))
+        self.assertTrue(exit_record["normal_wait_completed"])
+        self.assertTrue(exit_record["natural_eof0"])
+        self.assertFalse(exit_record["interventions"])
+        self.assertEqual(exit_record["descendants"]["gate"], "PASS")
         # This control intentionally has no suite cleanup ledger; the observer
         # must expose that gap, rather than fabricate an empty cleanup success.
         self.assertTrue(exit_record["descendants"]["evidence_gaps"])
+
+
+FINALIZATION_PROBE = r'''
+import atexit
+import json
+import multiprocessing
+from multiprocessing import resource_tracker
+import os
+from pathlib import Path
+import subprocess
+import sys
+import time
+import unittest
+from tests.process_cleanup_observations import CleanupTrace, process_facts
+
+root = Path(os.environ["BYO_FR12_PROBE_ROOT"])
+event = writer = leaked = None
+
+def record(name, data):
+    (root / name).write_text(json.dumps(data), encoding="utf-8")
+
+def finish_writer(release):
+    identity = process_facts(os.getpid())
+    record("writer-ready.json", identity)
+    released = release.wait(20)
+    record("writer-finished.json", {
+        "released": released, "identity": process_facts(os.getpid(), identity["creation_time"]),
+        "at_monotonic": time.monotonic(),
+    })
+
+class OrdinaryFinalization(unittest.TestCase):
+    def test_body(self):
+        global event, writer, leaked
+        trace = CleanupTrace("fr12-actual-body")
+        mode = os.environ["BYO_FR12_MODE"]
+        if mode == "leak":
+            script = (
+                "import json,os,sys,time; from pathlib import Path; "
+                "from tests.process_cleanup_observations import process_facts; "
+                "Path(sys.argv[1]).write_text(json.dumps(process_facts(os.getpid())), "
+                "encoding='utf-8'); time.sleep(60)"
+            )
+            leaked = subprocess.Popen(
+                [sys.executable, "-B", "-c", script, str(root / "leak-ready.json"),
+                 "multiprocessing.resource_tracker"],
+                stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            )
+            trace.role(leaked.pid, "resource-tracker-shaped-deliberate-leak",
+                       "actual subprocess fixture; deliberately survives interpreter exit")
+            ready = root / "leak-ready.json"
+        else:
+            context = multiprocessing.get_context("spawn")
+            event = context.Event()
+            writer = context.Process(target=finish_writer, args=(event,))
+            writer.start()
+            trace.role(writer.pid, "actual-spawn-writer",
+                       "actual Process.start; no body join or termination")
+            helper = getattr(resource_tracker._resource_tracker, "_pid", None)
+            if helper is not None:
+                trace.role(helper, "multiprocessing-resource-tracker", "actual Event helper slot")
+            def finalize():
+                record("ordinary-finalizer.json", {
+                    "at_monotonic": time.monotonic(), "identity": process_facts(os.getpid()),
+                })
+                event.set()
+            atexit.register(finalize)
+            ready = root / "writer-ready.json"
+        deadline = time.monotonic() + 10
+        while not ready.is_file() and time.monotonic() < deadline:
+            time.sleep(0.01)
+        self.assertTrue(ready.is_file(), "actual child must be ready before body completion")
+        record("body.json", {
+            "identity": process_facts(os.getpid()), "parent": process_facts(os.getppid()),
+            "argv": sys.argv, "at_monotonic": time.monotonic(), "mode": mode,
+            "writer_pid": None if writer is None else writer.pid,
+            "leak_pid": None if leaked is None else leaked.pid,
+        })
+        if mode == "error":
+            raise RuntimeError("deliberate body error survives natural finalization")
+        for value in (1, 2):
+            with self.subTest(value=value):
+                self.assertEqual(value, 1 if mode == "failure" else value)
+'''
+
+
+class OrdinaryInterpreterExitContracts(unittest.TestCase):
+    def setUp(self):
+        self.assertEqual(os.environ.get("GITHUB_ACTIONS"), "true", "Actions-only controls")
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.root = Path(temporary.name)
+        self.tests = self.root / "tests"
+        self.tests.mkdir()
+        (self.tests / "__init__.py").touch()
+        for name in ("final_acceptance_suite.py", "process_cleanup_observations.py"):
+            shutil.copyfile(Path(__file__).with_name(name), self.tests / name)
+        (self.tests / "fr12_finalization_probe.py").write_text(FINALIZATION_PROBE, encoding="utf-8")
+        OBSERVATIONS[self.id()] = {}
+        self.addCleanup(self.emergency_fixture_cleanup)
+
+    def emergency_fixture_cleanup(self):
+        # Explicit fixture-owner fallback only on failed controls. Never evidence
+        # of natural cleanup, and needing it must itself fail the control.
+        import psutil
+
+        actions = []
+        for name in ("leak-ready.json", "writer-ready.json", "body.json"):
+            for path in self.root.glob("*/" + name):
+                try:
+                    data = json.loads(path.read_bytes())
+                    facts = data["identity"] if isinstance(data.get("identity"), dict) else data
+                    pid, birth = facts["pid"], facts["creation_time"]
+                    current = process_facts(pid, birth)
+                    if terminal_identity(current) == "live":
+                        action = {"source": str(path), "before": current}
+                        actions.append(action)
+                        process = psutil.Process(pid)
+                        if process.create_time() == birth:
+                            process.kill()
+                            process.wait(timeout=15)
+                        action["after"] = process_facts(pid, birth)
+                except (OSError, ValueError, KeyError, psutil.Error) as exc:
+                    actions.append({"source": str(path), "error": repr(exc)})
+        OBSERVATIONS[self.id()]["fixture_emergency_cleanup"] = actions
+        self.assertFalse(actions, "fixture emergency intervention is a failed control: " + repr(actions))
+
+    def run_probe(self, mode, timeout=20):
+        directory = self.root / mode
+        directory.mkdir()
+        environment = dict(
+            os.environ, BYO_FR12_PROBE_ROOT=str(directory), BYO_FR12_MODE=mode,
+            PYTHONPATH=str(self.root),
+        )
+        command = [sys.executable, "-B", str(self.tests / "final_acceptance_suite.py"),
+                   "--worker", "fr12_finalization_probe", "--evidence", str(directory)]
+        try:
+            code, outcome = acceptance.run_module(command, environment, directory, timeout)
+        finally:
+            # Retain raw ledgers/streams on failed premises/assertions as well.
+            OBSERVATIONS[self.id()][mode] = {
+                path.name: path.read_text(encoding="utf-8", errors="replace")
+                for path in directory.glob("*") if path.is_file()
+            }
+        exit_record = json.loads((directory / "module-exit.json").read_bytes())
+        result = json.loads((directory / "result.json").read_bytes())
+        pre = json.loads((directory / "cleanup.json").read_bytes())
+        events = [json.loads(line) for line in (directory / "events.jsonl").read_bytes().splitlines()]
+        self.assertTrue(exit_record["normal_wait_completed"])
+        self.assertEqual(exit_record["normal_wait_exit"], code)
+        self.assertEqual(exit_record["popen"]["cached_returncode"], code)
+        self.assertLessEqual(exit_record["normal_wait_returned_monotonic"],
+                             exit_record["descendants"]["at_monotonic"])
+        self.assertFalse(pre["errors"], pre)
+        self.assertIn("before ordinary interpreter exit", pre["boundary"])
+        self.assertTrue(pre["pre_exit_descendants"], "must observe an actual pre-exit child")
+        self.assertFalse(any("emergency" in str(row.get("operation", ""))
+                             for row in pre["observations"]["events"]))
+        self.assertEqual(result["testsRun"], 1)
+        self.assertEqual([e["id"] for e in events if e["kind"] == "start"], result["loaded"])
+        self.assertEqual([e["id"] for e in events if e["kind"] == "stop"], result["loaded"])
+        return directory, code, outcome, exit_record, result, pre, events
+
+    def test_actual_event_writer_finalizes_after_body_before_authoritative_judgment(self):
+        directory, code, outcome, exit_record, result, pre, events = self.run_probe("pass")
+        self.assertEqual((code, outcome), (0, "PASS"))
+        self.assertTrue(result["successful"])
+        self.assertEqual(set(result["methods"].values()), {"PASS"})
+        self.assertEqual([e["outcome"] for e in events if e["kind"] == "subtest"], ["PASS", "PASS"])
+        self.assertTrue(exit_record["natural_eof0"])
+        self.assertFalse(exit_record["interventions"])
+        self.assertEqual(exit_record["descendants"]["gate"], "PASS")
+        self.assertFalse(exit_record["descendants"]["identity_gaps"])
+        self.assertFalse(exit_record["descendants"]["evidence_gaps"])
+        body = json.loads((directory / "body.json").read_bytes())
+        finished = json.loads((directory / "writer-finished.json").read_bytes())
+        finalizer = json.loads((directory / "ordinary-finalizer.json").read_bytes())
+        relationship = execution_relationship(
+            exit_record["module_identity_at_start"], body["identity"],
+            exit_record["popen"]["argv"], body["argv"],
+            [str(self.tests / "final_acceptance_suite.py"), "--worker", "fr12_finalization_probe",
+             "--evidence", str(directory)], parent=body["parent"],
+        )
+        self.assertFalse(relationship["evidence_gaps"], relationship)
+        self.assertIn(relationship["relationship"], {"direct", "launcher-child"})
+        if os.name != "nt":
+            self.assertEqual(relationship["relationship"], "direct")
+        self.assertTrue(finished["released"], finished)
+        writers = [row for row in pre["pre_exit_descendants"] if row["pid"] == body["writer_pid"]]
+        self.assertEqual(len(writers), 1)
+        self.assertEqual(terminal_identity(writers[0]["identity"]), "live")
+        self.assertLessEqual(writers[0]["at_monotonic"], finalizer["at_monotonic"])
+        self.assertLessEqual(finalizer["at_monotonic"], finished["at_monotonic"])
+        self.assertLessEqual(finished["at_monotonic"], exit_record["normal_wait_returned_monotonic"])
+        self.assertTrue(all(row["state"] in ("gone", "terminal")
+                            for row in exit_record["descendants"]["seen_identities"]))
+
+    def test_deliberate_helper_shaped_leak_fails_after_real_zero_exit_before_emergency(self):
+        directory, code, outcome, exit_record, result, pre, _ = self.run_probe("leak")
+        self.assertEqual(code, 0, "retain the actual successful test-body command exit")
+        self.assertEqual(outcome, "FAIL")
+        self.assertTrue(result["successful"])
+        self.assertEqual(set(result["methods"].values()), {"PASS"})
+        self.assertFalse(exit_record["natural_eof0"])
+        self.assertEqual(exit_record["descendants"]["gate"], "FAIL")
+        ready = json.loads((directory / "leak-ready.json").read_bytes())
+        survivors = exit_record["descendants"]["survivors"]
+        exact = [row for row in survivors if row["pid"] == ready["pid"]
+                 and row["creation_time"] == ready["creation_time"]]
+        self.assertEqual(len(exact), 1, survivors)
+        self.assertEqual(exact[0]["state"], "live")
+        self.assertIn("multiprocessing.resource_tracker", exact[0]["after_module_exit"]["cmdline"])
+        self.assertTrue(exit_record["interventions"])
+        emergency = exact[0]["emergency_cleanup"]
+        self.assertLessEqual(exit_record["descendants"]["at_monotonic"], emergency["at_monotonic"])
+        self.assertEqual(terminal_identity(emergency["before"]), "live")
+        self.assertIn(terminal_identity(emergency["after"]), ("gone", "terminal"))
+        self.assertTrue(any(row["pid"] == ready["pid"] for row in pre["pre_exit_descendants"]))
+
+    def test_real_body_failure_and_error_survive_unintervened_finalization(self):
+        for mode, expected in (("failure", "FAIL"), ("error", "ERROR")):
+            with self.subTest(mode=mode):
+                directory, code, outcome, exit_record, result, _, events = self.run_probe(mode)
+                self.assertEqual((code, outcome), (1, "FAIL"))
+                self.assertFalse(result["successful"])
+                self.assertEqual(set(result["methods"].values()), {expected})
+                self.assertEqual(exit_record["descendants"]["gate"], "PASS")
+                self.assertFalse(exit_record["natural_eof0"])
+                self.assertFalse(exit_record["interventions"])
+                self.assertTrue(json.loads((directory / "writer-finished.json").read_bytes())["released"])
+                if mode == "failure":
+                    self.assertEqual([e["outcome"] for e in events if e["kind"] == "subtest"],
+                                     ["PASS", "FAIL"])
+                else:
+                    self.assertTrue(any(e["kind"] == "error" for e in events))
+
+    def test_actual_interpreter_timeout_never_claims_normal_eof0(self):
+        directory = self.root / "timeout"
+        directory.mkdir()
+        command = [sys.executable, "-B", "-c", "import time; time.sleep(60)"]
+        code, outcome = acceptance.run_module(command, dict(os.environ), directory, 1)
+        exit_record = json.loads((directory / "module-exit.json").read_bytes())
+        OBSERVATIONS[self.id()]["timeout"] = exit_record
+        self.assertEqual(outcome, "TIMEOUT")
+        self.assertNotEqual(code, 0)
+        self.assertFalse(exit_record["normal_wait_completed"])
+        self.assertIsNone(exit_record["normal_wait_exit"])
+        self.assertFalse(exit_record["natural_eof0"])
+        self.assertTrue(exit_record["interventions"])
+        self.assertTrue(exit_record["wait_completed"])
+        self.assertEqual(exit_record["popen"]["cached_returncode"], code)
+        self.assertTrue(all(row["state"] in ("gone", "terminal")
+                            for row in exit_record["descendants"]["seen_identities"]))
+
+    def test_descendant_snapshot_cannot_poll_wait_or_signal(self):
+        identity = process_facts(os.getpid())
+        with (
+            mock.patch("psutil.Process.wait", side_effect=AssertionError("observer wait")),
+            mock.patch("psutil.Process.kill", side_effect=AssertionError("observer kill")),
+            mock.patch("psutil.Process.terminate", side_effect=AssertionError("observer terminate")),
+            mock.patch("os.waitpid", create=True, side_effect=AssertionError("observer reap")),
+        ):
+            snapshot = descendant_facts(os.getpid(), identity["creation_time"], "observer control")
+            reused = process_facts(os.getpid(), identity["creation_time"] + 1)
+            self.assertEqual(terminal_identity(reused), "unknown")
+            self.assertEqual(terminal_identity({"identity": "unavailable"}), "unknown")
+            self.assertEqual(terminal_identity({"identity": "missing"}), "unknown")
+            self.assertEqual(terminal_identity({"identity": "same_birth", "status": "running"}), "unknown")
+            directory = self.root / "role-only"
+            directory.mkdir()
+            trace = CleanupTrace("role-observation-is-not-ownership", directory / "cleanup-observations")
+            trace.role(os.getpid(), "actual observer", "actual self PID, outside the command tree")
+            observed = acceptance.module_exit_observations(directory)
+            self.assertEqual(observed["gate"], "ERROR")
+            self.assertFalse(observed["survivors"], "role labels must not authorize emergency signals")
+            self.assertTrue(observed["identity_gaps"])
+            self.assertFalse(observed["seen_identities"][0]["owned_by_command"])
+        OBSERVATIONS[self.id()] = {"snapshot": snapshot, "reused": reused}
+        self.assertFalse(snapshot["evidence_gaps"], snapshot)
 
 
 class FinalAcceptanceNativeInputContracts(unittest.TestCase):

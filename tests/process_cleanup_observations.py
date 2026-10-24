@@ -11,6 +11,7 @@ from __future__ import annotations
 import functools
 import hashlib
 import json
+import math
 import os
 from pathlib import Path
 import threading
@@ -97,6 +98,198 @@ def process_facts(pid, expected_birth=None):
     except Exception as exc:
         # Missing/denied identity is evidence of a gap, never of successful cleanup.
         result.update(identity="unavailable", error=exception_facts(exc))
+    return result
+
+
+def descendant_facts(pid, birth, boundary, directory=None):
+    """Snapshot an observed tree without polling, waiting, reaping or signaling.
+
+    Retain the child's actual argv/image and its contemporaneous parent identity.
+    A tree observation is ownership evidence, not a guessed functional role.
+    Short-lived processes between snapshots are outside this observation's scope.
+    """
+    rows, gaps = [], []
+    result = {
+        "descendants": rows,
+        "evidence_gaps": gaps,
+        "boundary": boundary,
+        "at_monotonic": time.monotonic(),
+        "observer_pid": os.getpid(),
+    }
+    leader = process_facts(pid, birth)
+    result["root_identity"] = leader
+    if birth is None or leader.get("identity") != "same_birth":
+        gaps.append({"gap": "Observed root identity unavailable or changed", "identity": leader})
+        return result
+    try:
+        import psutil
+    except ImportError as exc:
+        gaps.append({"error": exception_facts(exc)})
+        return result
+    try:
+        processes = psutil.Process(pid).children(recursive=True)
+        for process in processes:
+            try:
+                child_birth = process.create_time()
+                identity = process_facts(process.pid, child_birth)
+                parent_pid = identity.get("ppid")
+                parent = (
+                    process_facts(parent_pid)
+                    if type(parent_pid) is int
+                    else {"gap": "No contemporaneous parent PID"}
+                )
+                role = (
+                    role_evidence(process.pid, child_birth, directory)
+                    if directory is not None and (Path(directory) / "roles.jsonl").is_file()
+                    else {"role": "unknown; no exact role receipt", "matches": []}
+                )
+                row = {
+                    "pid": process.pid,
+                    "creation_time": child_birth,
+                    "identity": identity,
+                    "parent_identity": parent,
+                    "role_evidence": role,
+                    "boundary": boundary,
+                    "at_monotonic": time.monotonic(),
+                    "observer_pid": os.getpid(),
+                    "ownership": "captured recursive descendant of exact observed root",
+                    "root_pid": pid,
+                    "root_creation_time": birth,
+                }
+                rows.append(row)
+                if identity.get("identity") != "same_birth":
+                    gaps.append({"gap": "Child changed or unavailable during capture", "identity": identity})
+                if parent.get("identity") != "observed":
+                    gaps.append({"gap": "Parent identity unavailable during capture", "identity": parent})
+                for field in ("ppid", "cmdline", "exe", "status"):
+                    if not identity.get(field) or isinstance(identity[field], dict):
+                        gaps.append({"gap": "Child " + field + " unavailable during capture",
+                                     "identity": identity})
+            except (OSError, psutil.Error) as exc:
+                gaps.append({"pid": process.pid, "error": exception_facts(exc)})
+        after = process_facts(pid, birth)
+        result["root_after_capture"] = after
+        if after.get("identity") not in {"same_birth", "missing"}:
+            gaps.append({"gap": "Root changed during tree capture", "identity": after})
+    except (OSError, psutil.Error) as exc:
+        gaps.append({"error": exception_facts(exc)})
+    return result
+
+
+def terminal_identity(facts):
+    """Classify recorded facts only; unknown/reused identities are never gone."""
+    identity = facts.get("identity")
+    birth = facts.get("expected_creation_time")
+    if type(birth) not in (int, float) or not math.isfinite(birth) or birth <= 0:
+        return "unknown"
+    if identity == "missing":
+        return "gone"
+    if (
+        identity == "same_birth"
+        and facts.get("creation_time") == birth
+        and facts.get("birth_after_queries") == birth
+    ):
+        status = facts.get("status")
+        if status in ("zombie", "dead"):
+            return "terminal"
+        if isinstance(status, str) and status:
+            return "live"
+    return "unknown"
+
+
+def execution_relationship(launcher, interpreter, command, argv, expected_argv, parent=None):
+    """Join recorded execution facts, never a PID-only or descendant ownership claim.
+
+    A Windows venv launcher can delegate the unchanged command to base Python.
+    Require the specific interpreter's self-report and stable OS identities; a
+    child also needs a contemporaneous observation of that exact parent birth.
+    This pure join neither queries processes nor grants any cleanup authority.
+    """
+    gaps = []
+    result = {
+        "relationship": "unknown",
+        "evidence_gaps": gaps,
+        "launcher": launcher,
+        "interpreter": interpreter,
+        "parent": parent,
+        "command": command,
+        "argv": argv,
+        "expected_argv": expected_argv,
+    }
+
+    def stable(label, facts):
+        if not isinstance(facts, dict):
+            gaps.append(label + ": no identity observation")
+            return
+        pid, birth = facts.get("pid"), facts.get("creation_time")
+        if (
+            type(pid) is not int
+            or pid <= 0
+            or type(birth) not in (int, float)
+            or not math.isfinite(birth)
+            or birth <= 0
+            or facts.get("birth_after_queries") != birth
+            or facts.get("identity") not in {"observed", "same_birth"}
+            or (
+                facts.get("identity") == "same_birth"
+                and facts.get("expected_creation_time") != birth
+            )
+        ):
+            gaps.append(label + ": missing, reused or unstable birth identity")
+        if (
+            type(facts.get("ppid")) is not int
+            or facts["ppid"] <= 0
+            or not isinstance(facts.get("exe"), str)
+            or not facts["exe"]
+            or not isinstance(facts.get("status"), str)
+            or not facts["status"]
+            or facts["status"] in {"zombie", "dead"}
+        ):
+            gaps.append(label + ": unavailable parent, executable or live status")
+
+    def arguments(value):
+        return isinstance(value, (list, tuple)) and bool(value) and all(
+            isinstance(item, str) for item in value
+        )
+
+    stable("launcher", launcher)
+    stable("interpreter", interpreter)
+    if not arguments(command) or len(command) < 2:
+        gaps.append("No exact dispatched Python command")
+    else:
+        for label, facts in (("launcher", launcher), ("interpreter", interpreter)):
+            cmdline = facts.get("cmdline") if isinstance(facts, dict) else None
+            if not arguments(cmdline) or list(cmdline[1:]) != list(command[1:]):
+                gaps.append(label + ": command does not identify the dispatched module")
+    if (
+        not arguments(expected_argv)
+        or not arguments(argv)
+        or list(argv) != list(expected_argv)
+    ):
+        gaps.append("Missing or mismatched executing module argv self-report")
+    if gaps:
+        return result
+    if launcher["pid"] == interpreter["pid"]:
+        if any(
+            launcher[key] != interpreter[key]
+            for key in ("creation_time", "ppid", "exe", "cmdline")
+        ):
+            gaps.append("Direct execution does not have the same birth and command identity")
+        else:
+            result["relationship"] = "direct"
+    else:
+        stable("parent at execution", parent)
+        if not gaps and (
+            interpreter["ppid"] != launcher["pid"]
+            or interpreter["creation_time"] < launcher["creation_time"]
+            or any(
+                parent.get(key) != launcher[key]
+                for key in ("pid", "creation_time", "ppid", "exe", "cmdline")
+            )
+        ):
+            gaps.append("Interpreter is not the child of the recorded same-birth launcher")
+        if not gaps:
+            result["relationship"] = "launcher-child"
     return result
 
 

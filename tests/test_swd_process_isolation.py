@@ -21,6 +21,7 @@ from unittest.mock import Mock, patch
 from pyocd_debug_mcp.timeouts import DEFAULT_EXTERNAL_COMMAND_TIMEOUT_SECONDS
 from tests.process_cleanup_observations import (
     CleanupTrace,
+    execution_relationship,
     marker_facts,
     popen_facts,
     process_facts,
@@ -549,6 +550,20 @@ print(json.dumps(payload, separators=(",", ":")))
         marker = client._marker
         before = process_facts(process.pid)
         try:
+            helper = read_receipt(self.cleanup_trace.path.with_suffix(".worker.jsonl"))
+            self.assertNotIn("gap", helper)
+            starts = [r for r in helper["records"] if r["kind"] == "helper-start"]
+            self.assertEqual(len(starts), 1)
+            start = starts[0]
+            self.assertEqual(start["pid"], start["identity"]["pid"])
+            worker_argv = [str(Path(__file__).with_name("fake_provider_worker.py")), mode]
+            self.assertEqual(list(process.args), [sys.executable, *worker_argv])
+            relationship = execution_relationship(
+                before, start["identity"], process.args, start["argv"], worker_argv, parent=before
+            )
+            self.cleanup_trace.record("persistent-worker-start-identity", **relationship)
+            self.assertFalse(relationship["evidence_gaps"], relationship)
+            self.assertIn(relationship["relationship"], {"direct", "launcher-child"})
             for request_id in (1, 2):
                 with self.assertRaisesRegex(error_type, message):
                     client.call("get_state", {}, timeout=1)
@@ -561,6 +576,16 @@ print(json.dumps(payload, separators=(",", ":")))
                 self.assertEqual(current["birth_after_queries"], before["creation_time"])
                 self.assertIsInstance(current["status"], str)
                 self.assertNotEqual(current["status"], "zombie")
+                interpreter = process_facts(start["pid"], start["identity"]["creation_time"])
+                relationship = execution_relationship(
+                    current, interpreter, process.args, start["argv"], worker_argv, parent=current
+                )
+                self.cleanup_trace.record(
+                    "persistent-worker-error-identity", request_id=request_id, **relationship
+                )
+                self.assertEqual(interpreter["identity"], "same_birth")
+                self.assertFalse(relationship["evidence_gaps"], relationship)
+                self.assertIn(relationship["relationship"], {"direct", "launcher-child"})
                 self.assertIsNotNone(marker)
                 self.assertTrue(marker.is_file())
         finally:
@@ -576,8 +601,8 @@ print(json.dumps(payload, separators=(",", ":")))
         self.assertEqual(client._request_id, 3)
         later = self.cleanup_trace.events[close_operations:]
         self.assertFalse(any(e.get("operation") == "terminate_process_group" for e in later))
-        # Actual helper-side requests establish no retry, persistent PID and
-        # matching request identity, separately from parent declarations.
+        # Join protocol requests to the self-identified interpreter, which can
+        # be the owned launcher's specific child on Windows venv installations.
         helper = read_receipt(self.cleanup_trace.path.with_suffix(".worker.jsonl"))
         self.assertNotIn("gap", helper)
         requests = [r for r in helper["records"] if r["kind"] == "request"]
@@ -585,7 +610,7 @@ print(json.dumps(payload, separators=(",", ":")))
         self.assertEqual(
             [r["request"]["operation"] for r in requests], ["get_state", "get_state", "close"]
         )
-        self.assertEqual({r["pid"] for r in requests}, {process.pid})
+        self.assertEqual({r["pid"] for r in requests}, {start["pid"]})
 
     @observe_cleanup
     def test_normal_persistent_typed_error_closes_and_retires_owned_worker(self) -> None:

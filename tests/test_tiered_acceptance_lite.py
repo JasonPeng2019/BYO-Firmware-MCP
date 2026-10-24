@@ -10,6 +10,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
+from pyocd_debug_mcp.adapters.swd_interface import session_metadata
 from pyocd_debug_mcp.capabilities.policy import (
     CapabilityPolicyError,
     CapabilityPolicyRepository,
@@ -730,10 +731,43 @@ class TieredLiteEvidenceAcceptanceTests(unittest.TestCase):
     def test_public_lite_escalation_refuses_changed_uid_before_profile_commit(self) -> None:
         """The registered-provider positive never grants a changed probe identity."""
 
+        test_case = self
+        observed_handles = []
+        closed_handles = []
+
         class ChangedProbeBackend(DeterministicTargetBackend):
             def open(self, **kwargs):
                 handle = super().open(**kwargs)
-                return replace(handle, probe_uid="FR04-CHANGED-PROBE")
+                metadata = session_metadata(handle)
+                changed_uid = "FR04-CHANGED-PROBE"
+                changed_handle = replace(
+                    handle,
+                    probe_uid=changed_uid,
+                    metadata=replace(metadata, probe_uid=changed_uid),
+                )
+                observed_handles.append((handle, changed_handle))
+                # Prove the immutable identity premise before production consumes it.
+                test_case.assertEqual(handle.probe_uid, _PROBE_UID)
+                test_case.assertEqual(metadata.probe_uid, _PROBE_UID)
+                test_case.assertEqual(changed_handle.probe_uid, changed_uid)
+                test_case.assertEqual(session_metadata(changed_handle).probe_uid, changed_uid)
+                test_case.assertNotEqual(session_metadata(changed_handle).probe_uid, _PROBE_UID)
+                test_case.assertEqual(
+                    session_metadata(changed_handle).runtime_token, metadata.runtime_token
+                )
+                test_case.assertEqual(
+                    replace(session_metadata(changed_handle), probe_uid=metadata.probe_uid),
+                    metadata,
+                )
+                test_case.assertEqual(
+                    replace(changed_handle, probe_uid=handle.probe_uid, metadata=metadata),
+                    handle,
+                )
+                return changed_handle
+
+            def close(self, handle):
+                closed_handles.append(handle)
+                super().close(handle)
 
         self.assertIn(_PROBE_PROVIDER, registered_provider_ids())
         with isolated_project() as root, tiered_test_server(root) as server:
@@ -765,6 +799,14 @@ class TieredLiteEvidenceAcceptanceTests(unittest.TestCase):
                 failed_batch = _batch_payload(
                     public_text(server, str(fallback["tool_name"]), fallback["arguments"])
                 )
+                self.assertEqual(len(observed_handles), 1, observed_handles)
+                _original_handle, changed_handle = observed_handles[0]
+                self.assertEqual(changed_handle.probe_uid, "FR04-CHANGED-PROBE")
+                self.assertEqual(
+                    session_metadata(changed_handle).probe_uid, "FR04-CHANGED-PROBE"
+                )
+                self.assertEqual(len(closed_handles), 1, closed_handles)
+                self.assertIs(closed_handles[0], changed_handle)
                 self.assertEqual(failed_batch["status"], "batch_completed", failed_batch)
                 failed = _child_setup_response(failed_batch)
                 self.assertEqual(failed["status"], "setup_connection_failed", failed)
