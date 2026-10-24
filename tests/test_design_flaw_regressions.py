@@ -222,10 +222,26 @@ class PackagedCommands(unittest.TestCase):
                 patch.object(sys, "executable", str(executable)),
             ):
                 template = command_template()
+            argv = template["argv_template"]
+            self.assertTrue(Path(argv[0]).samefile(launcher), argv)
             self.assertEqual(
-                template["argv_template"][:3], [str(launcher), "internal", "native-build"]
+                argv[1:],
+                [
+                    "internal",
+                    "native-build",
+                    "--project-dir",
+                    "<project-dir>",
+                    "--build-dir",
+                    "<artifact-search-root>",
+                    "--cwd",
+                    "<build-working-directory>",
+                    "--artifact",
+                    "<role>=<output-path>",
+                    "--",
+                    "<build-executable>",
+                    "<build-argument>",
+                ],
             )
-            self.assertIn("--project-dir", template["argv_template"])
             self.assertEqual(template["invocation_cwd_template"], "<project-dir>")
 
     def test_probe_listing_command_forwards_pyocd_output_and_exit_status(self):

@@ -513,8 +513,8 @@ class ArmFirmware(RealClangdCase):
         self.assertEqual(envelope["data"]["diagnostics"], [], json.dumps(envelope, indent=2))
 
     def test_generic_host_driver_is_never_reported_as_clean_arm_analysis(self) -> None:
-        # Contract: generic host flags are not_configured.  The same sources
-        # under a plain host driver fail the ILP32 assertion in native clangd.
+        # A host driver may produce ABI errors or incomplete target parsing.
+        # Either must expose concrete errors against this exact saved input.
         project = materialize_arm_fixture(
             self.base / "arm-hostdriver", self.arm_root, query_drivers=False
         )
@@ -524,17 +524,27 @@ class ArmFirmware(RealClangdCase):
             entry["arguments"][0] = "clang"
         project.write_database(entries, "build/compile_commands.json")
         envelope = assert_envelope(
-            self, diagnostics(self.service(project), project, "src/main.c"), "diagnostics"
+            self,
+            diagnostics(self.service(project), project, "src/main.c"),
+            "diagnostics",
+            status={"ok", "incomplete"},
         )
-        if envelope["status"] == "ok":
-            messages = " ".join(item["message"] for item in envelope["data"]["diagnostics"])
-            self.assertRegex(
-                messages,
-                r"(?i)ARM ILP32|unsupported option",
-                "host ABI analysis must not look like clean ARM analysis",
-            )
-        else:
-            self.assertEqual(envelope["status"], "not_configured", envelope)
+        self.assertTrue(same_path(envelope["project_root"], project.root))
+        self.assertTrue(same_path(envelope["compilation_database"], database))
+        self.assertEqual(envelope["compilation_database_sha256"], sha256_file(database))
+        assert_source(self, envelope, project.path("src/main.c"))
+        self.assertTrue(same_path(envelope["data"]["executable"], self.executable))
+        errors = [item for item in envelope["data"]["diagnostics"] if item["severity"] == 1]
+        self.assertTrue(errors, envelope)
+        self.assertRegex(
+            " ".join(item["message"] for item in errors),
+            r"(?i)ARM ILP32|unsupported (?:option|argument).*"
+            r"(?:cortex-m4|-m(?:cpu|float-abi|fpu|thumb))",
+            "host ABI analysis must not look like clean ARM analysis",
+        )
+        if envelope["status"] == "incomplete":
+            self.assertEqual(envelope["code"], "analysis/compile-context-missing", envelope)
+            self.assertTrue(envelope["warnings"], envelope)
 
 
 SELECTED_SOURCE = (

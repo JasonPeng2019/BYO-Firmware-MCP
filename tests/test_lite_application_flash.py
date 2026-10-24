@@ -10,6 +10,7 @@ from pathlib import Path
 import shutil
 import subprocess
 import sys
+import time
 import unittest
 from unittest.mock import patch
 
@@ -258,31 +259,60 @@ def fresh_full_project(function):
                 BYO_MCP_ARTIFACT_ROOT=str(project),
                 BYO_MCP_MONITOR_ROOT=str(project / "monitor-import"),
             )
-            command = [sys.executable, "-B", "-m", "unittest", "-v", self.id()]
+            destination = os.environ.get("VI01A_OBSERVATIONS")
+            ledger_root = os.environ.get("BYO_FINAL_CHILD_EVIDENCE")
+            # The interpreter still starts with the project selected before any
+            # product import. The real loader/result now records the inner body.
+            child_evidence = Path(ledger_root or project / "child-evidence") / function.__name__
+            child_evidence.mkdir(parents=True, exist_ok=False)
+            command = [
+                sys.executable, "-B", str(Path(__file__).with_name("final_acceptance_suite.py")),
+                "--worker", type(self).__module__.removeprefix("tests."), "--select", self.id(),
+                "--evidence", str(child_evidence),
+            ] if ledger_root else [sys.executable, "-B", "-m", "unittest", "-v", self.id()]
+            receipt = {
+                "command": command, "cwd": str(project), "outer_forwarder": self.id(),
+                "inner_selected_id": self.id(), "accounting": "Forwarder and child are not independent coverage",
+                "artifact_root_before_import": environment["BYO_MCP_ARTIFACT_ROOT"],
+                "phase": "dispatch", "evidence": str(child_evidence),
+                "started_monotonic": time.monotonic(),
+            }
+            command_path = child_evidence / "command.json"
+            command_path.write_text(json.dumps(receipt, indent=2) + "\n", encoding="utf-8")
             result = subprocess.run(
                 command,
                 cwd=project,
                 env=environment,
                 stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
+                stderr=subprocess.PIPE,
             )
-            destination = os.environ.get("VI01A_OBSERVATIONS")
+            (child_evidence / "stdout.log").write_bytes(result.stdout)
+            (child_evidence / "stderr.log").write_bytes(result.stderr)
+            receipt.update(phase="completed", exit_code=result.returncode,
+                           completed_monotonic=time.monotonic(),
+                           stdout_sha256=hashlib.sha256(result.stdout).hexdigest(),
+                           stderr_sha256=hashlib.sha256(result.stderr).hexdigest())
+            command_path.write_text(json.dumps(receipt, indent=2) + "\n", encoding="utf-8")
             if destination:
                 output = Path(destination).parent / (function.__name__ + ".child.log")
-                output.write_bytes(result.stdout)
+                output.write_bytes(result.stdout + result.stderr)
                 output.with_suffix(".command.json").write_text(
                     json.dumps(
                         {
-                            "command": command,
-                            "cwd": str(project),
-                            "artifact_root_before_import": environment["BYO_MCP_ARTIFACT_ROOT"],
-                            "exit_code": result.returncode,
+                            **receipt,
                         },
                         indent=2,
                     )
                     + "\n"
                 )
-            self.assertEqual(result.returncode, 0, result.stdout.decode("utf-8", errors="replace"))
+            self.assertEqual(result.returncode, 0, (result.stdout + result.stderr).decode("utf-8", errors="replace"))
+            if ledger_root:
+                self.assertTrue((child_evidence / "result.json").is_file(), "Missing actual child ledger")
+                actual = json.loads((child_evidence / "result.json").read_text(encoding="utf-8"))
+                self.assertEqual(actual["loaded"], [self.id()])
+                if actual["methods"].get(self.id()) == "SKIP":
+                    self.skipTest("Actual selected child skipped; see " + str(child_evidence))
+                self.assertEqual(actual["methods"].get(self.id()), "PASS", actual)
 
     return execute
 

@@ -286,7 +286,8 @@ class RoundFourRegressionTests(unittest.TestCase):
         self,
     ) -> None:
         with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
+            # The private helper receives normalized sources in collect_artifacts.
+            root = Path(directory).resolve()
             source = root / "source.elf"
             source.write_bytes(b"ELF artifact bytes")
             target = root / "target"
@@ -309,6 +310,7 @@ class RoundFourRegressionTests(unittest.TestCase):
             producer = "evidence-" + "z" * 140
             result = collect_artifacts({ArtifactRole.ELF: source}, link, producer=producer)
             self.assertEqual(result.output_dir, target.resolve())
+            self.assertTrue(link.samefile(target))
             self.assertEqual((target / "firmware.elf").read_bytes(), source.read_bytes())
             self.assertTrue((target / MANIFEST_NAME).is_file())
             self.assertEqual(
@@ -318,20 +320,48 @@ class RoundFourRegressionTests(unittest.TestCase):
 
             empty = root / "empty"
             empty.mkdir()
-            for destination in (Path(Path.cwd().anchor), Path.home(), root / ".firm" / "bundle"):
-                with self.assertRaises(ValueError):
+            self.assertEqual(_validate_destination(empty, {ArtifactRole.ELF: source}), empty)
+            for destination, reason in (
+                (Path(Path.cwd().anchor), "filesystem root or the user's home"),
+                (Path.home(), "filesystem root or the user's home"),
+                (root / ".firm" / "bundle", "inside the FirmStore tree"),
+            ):
+                with self.assertRaisesRegex(ValueError, reason):
                     _validate_destination(destination, {ArtifactRole.ELF: source})
+            self.assertFalse((root / ".firm").exists())
             file_destination = root / "file"
             file_destination.write_text("x", encoding="utf-8")
-            with self.assertRaises(ValueError):
+            with self.assertRaisesRegex(ValueError, "not a directory"):
                 _validate_destination(file_destination, {ArtifactRole.ELF: source})
             nonempty = root / "nonempty"
             nonempty.mkdir()
             (nonempty / "x").write_text("x", encoding="utf-8")
-            with self.assertRaises(ValueError):
+            with self.assertRaisesRegex(ValueError, "must be absent or empty"):
                 _validate_destination(nonempty, {ArtifactRole.ELF: source})
-            with self.assertRaises(ValueError):
-                _validate_destination(empty, {ArtifactRole.ELF: empty / "inside.elf"})
+            inside = empty / "inside.elf"
+            inside.write_bytes(b"real source inside the requested output")
+            preserved = {
+                path: path.read_bytes()
+                for path in (
+                    source,
+                    inside,
+                    file_destination,
+                    nonempty / "x",
+                    target / "firmware.elf",
+                    target / MANIFEST_NAME,
+                )
+            }
+            # With a real inside source the destination is necessarily nonempty;
+            # public collection must refuse before replacing it or its source.
+            with self.assertRaisesRegex(ValueError, "must be absent or empty"):
+                collect_artifacts({ArtifactRole.ELF: inside}, empty)
+            self.assertEqual({path: path.read_bytes() for path in preserved}, preserved)
+            self.assertEqual(source.read_bytes(), b"ELF artifact bytes")
+            self.assertEqual(file_destination.read_text(encoding="utf-8"), "x")
+            self.assertEqual((nonempty / "x").read_text(encoding="utf-8"), "x")
+            self.assertEqual(sorted(path.name for path in empty.iterdir()), ["inside.elf"])
+            self.assertEqual(sorted(path.name for path in nonempty.iterdir()), ["x"])
+            self.assertFalse(list(root.glob(".*.artifact-stage-*")))
 
     def test_hygiene_inspects_every_marker_and_stays_fail_closed(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

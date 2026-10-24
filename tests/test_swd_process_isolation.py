@@ -1,10 +1,14 @@
 ﻿from __future__ import annotations
 
 import json
+import functools
+import os
 import subprocess
 import sys
+import tempfile
 import time
 import unittest
+from contextlib import ExitStack
 from dataclasses import FrozenInstanceError
 from io import BytesIO
 from pathlib import Path
@@ -15,6 +19,114 @@ from typing import Any, cast
 from unittest.mock import Mock, patch
 
 from pyocd_debug_mcp.timeouts import DEFAULT_EXTERNAL_COMMAND_TIMEOUT_SECONDS
+from tests.process_cleanup_observations import (
+    CleanupTrace, marker_facts, popen_facts, process_facts, read_receipt,
+)
+
+OBSERVATIONS = {}
+
+
+def observe_cleanup(method):
+    """Observe the real routes only for these cases; retain the original failure."""
+    @functools.wraps(method)
+    def observed(self):
+        from pyocd_debug_mcp.adapters import swd_process
+        from pyocd_debug_mcp.kernel import processes
+
+        with ExitStack() as stack:
+            directory = os.environ.get("BYO_FINAL_CLEANUP_EVIDENCE")
+            if directory is None:
+                directory = stack.enter_context(tempfile.TemporaryDirectory(prefix="swd-cleanup-"))
+            trace = CleanupTrace(self.id(), directory)
+            self.cleanup_trace = trace
+            worker_receipt = trace.path.with_suffix(".worker.jsonl")
+            stack.enter_context(patch.dict(os.environ, {"BYO_FAKE_PROVIDER_RECEIPT": str(worker_receipt)}))
+            created = []
+            known_births = {}
+
+            def known_identity(process):
+                birth = known_births.get(id(process))
+                return (process_facts(process.pid, birth) if birth is not None else
+                        {"pid": process.pid, "gap": "Spawn birth unavailable; no PID-only attribution"})
+
+            def snapshot(client, boundary):
+                process = getattr(client, "_process", None)
+                trace.record("client-boundary", boundary=boundary,
+                             closed=getattr(client, "_closed", None),
+                             cleanup_confirmed=getattr(client, "_cleanup_confirmed", None),
+                             request_id=getattr(client, "_request_id", None),
+                             marker=marker_facts(getattr(client, "_marker", None)),
+                             popen=None if process is None else popen_facts(process),
+                             identity=None if process is None else known_identity(process))
+
+            original_popen = swd_process.popen_owned
+
+            def popen(*args, **kwargs):
+                result = trace.invoke("popen_owned", original_popen, *args, **kwargs)
+                process, marker = result
+                identity = trace.role(process.pid, "test-provider-worker", "actual popen_owned return")
+                known_births[id(process)] = identity.get("creation_time")
+                created.append((process, marker))
+                trace.record("owned-start", popen=popen_facts(process), marker=marker_facts(marker))
+                for name in ("poll", "wait", "terminate", "kill", "send_signal"):
+                    original = getattr(process, name)
+                    stack.enter_context(patch.object(process, name, trace.delegate("Popen." + name, original)))
+                for stream_name, names in (("stdin", ("write", "flush", "close")),
+                                           ("stdout", ("read", "close"))):
+                    stream = getattr(process, stream_name)
+                    if stream is not None:
+                        for name in names:
+                            stack.enter_context(patch.object(
+                                stream, name, trace.delegate(stream_name + "." + name, getattr(stream, name))))
+                return result
+
+            stack.enter_context(patch.object(swd_process, "popen_owned", popen))
+            stack.enter_context(patch.object(swd_process, "terminate_process_group",
+                                            trace.delegate("terminate_process_group", swd_process.terminate_process_group)))
+            stack.enter_context(patch.object(swd_process.ProcessMarkerStore, "remove", staticmethod(
+                trace.delegate("ProcessMarkerStore.remove", swd_process.ProcessMarkerStore.remove))))
+            if hasattr(processes.os, "killpg"):
+                stack.enter_context(patch.object(processes.os, "killpg",
+                                                trace.delegate("os.killpg", processes.os.killpg)))
+            if hasattr(processes, "_close_windows_job"):
+                stack.enter_context(patch.object(processes, "_close_windows_job",
+                                                trace.delegate("_close_windows_job", processes._close_windows_job)))
+
+            def client_delegate(name, original):
+                @functools.wraps(original)
+                def call(client, *args, **kwargs):
+                    # Full identity/marker snapshots at causal boundaries; actual
+                    # _read/_write and pipe calls retain their own raw results.
+                    boundary = name in {"close", "_terminate", "_invalidate"}
+                    if boundary:
+                        snapshot(client, name + ":enter")
+                    try:
+                        return trace.invoke("WorkerClient." + name, original, client, *args, **kwargs)
+                    finally:
+                        if boundary:
+                            snapshot(client, name + ":finally")
+
+                return call
+
+            for name in ("call", "close", "_read", "_write", "_terminate", "_invalidate", "_close_pipes"):
+                stack.enter_context(patch.object(swd_process._WorkerClient, name,
+                                                client_delegate(name, getattr(swd_process._WorkerClient, name))))
+            try:
+                return method(self)
+            finally:
+                for process, marker in created:
+                    trace.record("test-finally", popen=popen_facts(process),
+                                 identity=known_identity(process), marker=marker_facts(marker))
+                helper = read_receipt(worker_receipt)
+                helper["lifecycle_gaps"] = [
+                    {"pid": process.pid, "gap": "No helper-finally receipt; signal/abrupt exit may prevent it"}
+                    for process, _ in created
+                    if not any(row.get("kind") == "helper-finally" and row.get("pid") == process.pid
+                               for row in helper.get("records", []))
+                ]
+                OBSERVATIONS[self.id()] = {"cleanup": trace.summary(), "helper": helper}
+
+    return observed
 
 
 class ProcessIsolationContractTests(unittest.TestCase):
@@ -321,6 +433,7 @@ print(json.dumps(payload, separators=(",", ":")))
             self._client("ready_hang", deadline=started + 0.05)
         self.assertLess(time.monotonic() - started, 0.3)
 
+    @observe_cleanup
     def test_typed_child_errors_are_preserved_without_retry(self) -> None:
         from pyocd_debug_mcp.target_errors import LockedTargetError, TargetControlError
 
@@ -334,6 +447,7 @@ print(json.dumps(payload, separators=(",", ":")))
             locked.call("get_state", {}, timeout=1)
         locked.close()
 
+    @observe_cleanup
     def test_confirmed_process_termination_makes_close_successful_and_idempotent(self) -> None:
         typed = self._client("typed_error")
         typed.close()
@@ -344,6 +458,71 @@ print(json.dumps(payload, separators=(",", ":")))
         hanging.close(deadline=time.monotonic() + 0.05)
         hanging.close()
         self.assertIsNotNone(hanging._process.returncode)
+
+    @observe_cleanup
+    def test_abrupt_locked_child_error_and_close_are_independent(self) -> None:
+        from pyocd_debug_mcp.target_errors import LockedTargetError
+
+        locked = self._client("locked_error")
+        with self.assertRaisesRegex(LockedTargetError, "fake locked target"):
+            locked.call("get_state", {}, timeout=1)
+        self.assertEqual(locked._request_id, 1)
+        # This may independently error. Never catch it to manufacture a PASS.
+        locked.close()
+
+    def _persistent_error_control(self, mode, error_type, message):
+        client = self._client(mode)
+        process = client._process
+        marker = client._marker
+        before = process_facts(process.pid)
+        try:
+            for request_id in (1, 2):
+                with self.assertRaisesRegex(error_type, message):
+                    client.call("get_state", {}, timeout=1)
+                self.assertEqual(client._request_id, request_id)
+                self.assertFalse(client._closed)
+                self.assertFalse(client._cleanup_confirmed)
+                self.assertIsNone(process.returncode)
+                current = process_facts(process.pid, before["creation_time"])
+                self.assertEqual(current["identity"], "same_birth")
+                self.assertEqual(current["birth_after_queries"], before["creation_time"])
+                self.assertIsInstance(current["status"], str)
+                self.assertNotEqual(current["status"], "zombie")
+                self.assertIsNotNone(marker)
+                self.assertTrue(marker.is_file())
+        finally:
+            # Genuine product close; the observer never supplies its authority.
+            client.close()
+        self.assertTrue(client._cleanup_confirmed)
+        self.assertIsNotNone(process.returncode)
+        self.assertIsNone(client._marker)
+        self.assertFalse(marker.exists())
+        self.assertEqual(client._request_id, 3)
+        close_operations = len(self.cleanup_trace.events)
+        client.close()
+        self.assertEqual(client._request_id, 3)
+        later = self.cleanup_trace.events[close_operations:]
+        self.assertFalse(any(e.get("operation") == "terminate_process_group" for e in later))
+        # Actual helper-side requests establish no retry, persistent PID and
+        # matching request identity, separately from parent declarations.
+        helper = read_receipt(self.cleanup_trace.path.with_suffix(".worker.jsonl"))
+        self.assertNotIn("gap", helper)
+        requests = [r for r in helper["records"] if r["kind"] == "request"]
+        self.assertEqual([r["request"]["request_id"] for r in requests], [1, 2, 3])
+        self.assertEqual([r["request"]["operation"] for r in requests], ["get_state", "get_state", "close"])
+        self.assertEqual({r["pid"] for r in requests}, {process.pid})
+
+    @observe_cleanup
+    def test_normal_persistent_typed_error_closes_and_retires_owned_worker(self) -> None:
+        from pyocd_debug_mcp.target_errors import TargetControlError
+
+        self._persistent_error_control("persistent_typed_error", TargetControlError, "fake target error")
+
+    @observe_cleanup
+    def test_normal_persistent_locked_error_closes_and_retires_owned_worker(self) -> None:
+        from pyocd_debug_mcp.target_errors import LockedTargetError
+
+        self._persistent_error_control("persistent_locked_error", LockedTargetError, "fake locked target")
 
     def test_actual_worker_dispatches_short_request_while_stdin_remains_open(self) -> None:
         from pyocd_debug_mcp.adapters.swd_process import _WorkerClient

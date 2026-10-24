@@ -1832,6 +1832,10 @@ os._exit(0)
 
     def test_marker_exact_start_mismatch_or_unknown_identity_never_signals_peer(self) -> None:
         peer, peer_token = self.peer()
+        ownership_before = dict(self.observed)
+        marker = self.store.create(peer, tuple(peer.args))
+        self.assertIsNotNone(marker)
+        marker_before = marker.read_bytes()
         for observation in (
             "mismatched-start",
             None,
@@ -1851,8 +1855,14 @@ os._exit(0)
                     self.assertFalse(
                         self.processes.terminate_marked_group(peer.pid, "recorded-owned-start")
                     )
-                group_signal.assert_not_called()
-                pid_signal.assert_not_called()
+                # Signal 0 only queries existence; no uncertain identity grants
+                # authority to send a mutating PID or process-group signal.
+                for signal_call in (*group_signal.call_args_list, *pid_signal.call_args_list):
+                    self.assertEqual(signal_call.args, (peer.pid, 0))
+                    self.assertEqual(signal_call.kwargs, {})
+                self.assertEqual(self.observed, ownership_before)
+                self.assertEqual(marker.read_bytes(), marker_before)
+                self.assertIsNone(peer.poll())
                 self.assertTrue(self.is_owned_live(peer.pid, peer_token))
 
     def test_owned_group_signal_permission_error_is_unconfirmed_and_marker_retained(self) -> None:

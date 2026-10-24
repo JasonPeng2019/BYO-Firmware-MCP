@@ -245,8 +245,12 @@ class ContainmentTests(_TempRoot):
         self._expect_refusal(hook_entry("root", "probe", entrypoint="."), "must stay below")
 
     def test_symlink_escaping_the_root_is_refused(self) -> None:
-        outside = self.root.parent / "symlink_target_hook.py"
-        outside.write_text("print()", encoding="utf-8")
+        outside = self.root.parent / f"{self.root.name}-symlink_target_hook.py"
+        executed = self.root / "escaped-hook-ran"
+        outside.write_text(
+            f"from pathlib import Path\nPath({str(executed)!r}).write_text('executed')\n",
+            encoding="utf-8",
+        )
         self.addCleanup(lambda: outside.unlink(missing_ok=True))
         link = self.root / "linked.py"
         try:
@@ -254,10 +258,15 @@ class ContainmentTests(_TempRoot):
         except (OSError, NotImplementedError, AttributeError) as exc:
             self.skipTest(f"symlinks unavailable: {exc}")
 
-        self._expect_refusal(
-            hook_entry("symlink", "probe", entrypoint="linked.py"),
-            "outside the hook directory",
+        self.assertFalse(link.resolve().is_relative_to(self.root.resolve()))
+        write_manifest(self.root, [hook_entry("symlink", "probe", entrypoint="linked.py")])
+        with self.assertRaises(DiscoveryHookError) as caught:
+            load_hook_snapshot(self.root, environ={})
+        self.assertRegex(
+            str(caught.exception),
+            r"entrypoint (must stay below|resolves outside the hook directory)",
         )
+        self.assertFalse(executed.exists(), "an escaping hook must never execute")
 
     def test_symlink_inside_the_root_is_accepted(self) -> None:
         inner = self.root / "inner"

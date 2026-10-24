@@ -10,7 +10,7 @@ from unittest.mock import Mock, patch
 from pyocd_debug_mcp import server
 from pyocd_debug_mcp.discovery_hooks import HookExecution
 from pyocd_debug_mcp.hardware_inventory import InventorySnapshot, snapshot_from_validation_inventory
-from pyocd_debug_mcp.probe_inventory import EMPTY_NATIVE_PROBE_LISTING
+from pyocd_debug_mcp.probe_inventory import EMPTY_NATIVE_PROBE_LISTING, registered_provider_ids
 from pyocd_debug_mcp.services.connections import (
     LEGACY_PROBE_CONNECTION_PREFIX,
     PROBE_CONNECTION_PREFIX,
@@ -19,12 +19,19 @@ from pyocd_debug_mcp.services.connections import (
 )
 
 
+def setUpModule() -> None:
+    required = {"cmsisdap", "picoprobe"}
+    actual = set(registered_provider_ids())
+    if not required <= actual:
+        raise RuntimeError(f"Real pyOCD registry lacks fixture prerequisites: {required - actual}")
+
+
 def _rows(overview: Mapping[str, object], key: str) -> list[dict[str, Any]]:
     return cast("list[dict[str, Any]]", overview[key])
 
 
 def _probe(
-    index: int, *, usb_serial: str | None = None, probe_family: str = "cmsis-dap"
+    index: int, *, usb_serial: str | None = None, probe_family: str = "cmsisdap"
 ) -> SimpleNamespace:
     serial = f"usb-{index}" if usb_serial is None else usb_serial
     return SimpleNamespace(
@@ -184,7 +191,7 @@ class SetupOverviewNoProbeTests(unittest.TestCase):
 
     def test_multiple_probe_route_still_asks_which_probe_belongs_to_the_board(self) -> None:
         harness = _OverviewHarness((_probe(1), _probe(2)), ())
-        assignments = {"Nucleo": probe_connection_id("cmsis-dap", "usb-1")}
+        assignments = {"Nucleo": probe_connection_id("cmsisdap", "usb-1")}
 
         overview = harness.run(["Nucleo"], assignments)
 
@@ -350,15 +357,15 @@ class ProbeConnectionIdTests(unittest.TestCase):
     )
 
     def test_mint_is_provider_qualified_stripped_and_casefolded(self) -> None:
-        self.assertEqual(probe_connection_id("JLink", "  AbC  "), "probeid:jlink:abc")
-        self.assertEqual(probe_connection_id("jlink", "ABC"), "probeid:jlink:abc")
+        self.assertEqual(probe_connection_id("PicoProbe", "  AbC  "), "probeid:picoprobe:abc")
+        self.assertEqual(probe_connection_id("picoprobe", "ABC"), "probeid:picoprobe:abc")
 
     def test_stable_connection_identity_routes_through_the_shared_mint(self) -> None:
         for uid in self.CASES:
             with self.subTest(uid=uid):
                 handle = object()
                 metadata = SimpleNamespace(
-                    probe_uid=uid, probe_family="jlink", runtime_token="token-1"
+                    probe_uid=uid, probe_family="picoprobe", runtime_token="token-1"
                 )
                 with patch(
                     "pyocd_debug_mcp.services.connections.session_metadata",
@@ -368,7 +375,7 @@ class ProbeConnectionIdTests(unittest.TestCase):
 
                     self.assertEqual(
                         stable_connection_identity(handle),  # type: ignore[arg-type]
-                        probe_connection_id("jlink", uid),
+                        probe_connection_id("picoprobe", uid),
                     )
 
     def test_uid_less_provider_still_yields_a_session_token(self) -> None:
@@ -392,17 +399,17 @@ class ProbeConnectionIdTests(unittest.TestCase):
 
         for uid in self.CASES:
             with self.subTest(uid=uid):
-                minted = probe_connection_id("jlink", uid)
+                minted = probe_connection_id("picoprobe", uid)
                 key = server._setup_connection_key
                 # The canonical key carries the provider -- it can no longer equal a
                 # provider-less legacy key (that collapse is exactly the C7/D8 bug).
                 self.assertNotEqual(key(minted), key(f"probe:{uid.casefold()}"))
-                self.assertIn("jlink", key(minted))
+                self.assertIn("picoprobe", key(minted))
                 # Two different providers, identical UID text, must key differently.
                 self.assertNotEqual(key(minted), key(probe_connection_id("cmsisdap", uid)))
                 # The same provider still normalizes decimal leading zeros as before.
                 self.assertEqual(
-                    key(probe_connection_id("jlink", "0" + uid)) if uid.isdecimal() else "skip",
+                    key(probe_connection_id("picoprobe", "0" + uid)) if uid.isdecimal() else "skip",
                     key(minted) if uid.isdecimal() else "skip",
                 )
 
@@ -411,7 +418,7 @@ class ProbeConnectionIdTests(unittest.TestCase):
 
         for uid in self.CASES:
             with self.subTest(uid=uid):
-                minted = probe_connection_id("jlink", uid)
+                minted = probe_connection_id("picoprobe", uid)
                 self.assertTrue(server._same_setup_connection(minted, f"probe:{uid}"))
                 self.assertTrue(server._same_setup_connection(f"probe:{uid}", minted))
                 self.assertTrue(
@@ -423,42 +430,42 @@ class ProbeConnectionIdTests(unittest.TestCase):
             with self.subTest(uid=uid):
                 self.assertTrue(
                     server._same_setup_connection(
-                        probe_connection_id("jlink", uid),
-                        probe_connection_id("JLink", uid.casefold()),
+                        probe_connection_id("picoprobe", uid),
+                        probe_connection_id("PicoProbe", uid.casefold()),
                     )
                 )
 
     def test_decimal_leading_zeros_still_compare_equal_after_the_mint(self) -> None:
         self.assertTrue(
             server._same_setup_connection(
-                probe_connection_id("jlink", "000683710208"),
-                probe_connection_id("jlink", "683710208"),
+                probe_connection_id("picoprobe", "000683710208"),
+                probe_connection_id("picoprobe", "683710208"),
             )
         )
         self.assertEqual(
-            server._setup_connection_key(probe_connection_id("jlink", "0000")),
-            server._setup_connection_key(probe_connection_id("jlink", "0")),
+            server._setup_connection_key(probe_connection_id("picoprobe", "0000")),
+            server._setup_connection_key(probe_connection_id("picoprobe", "0")),
         )
 
     def test_mixed_case_hex_uids_still_compare_equal_after_the_mint(self) -> None:
         self.assertTrue(
             server._same_setup_connection(
-                probe_connection_id("jlink", "AbCdEf123456"),
-                probe_connection_id("jlink", "abcdef123456"),
+                probe_connection_id("picoprobe", "AbCdEf123456"),
+                probe_connection_id("picoprobe", "abcdef123456"),
             )
         )
 
     def test_distinct_uids_do_not_collide_after_the_mint(self) -> None:
         self.assertFalse(
             server._same_setup_connection(
-                probe_connection_id("jlink", "683710208"),
-                probe_connection_id("jlink", "683854191"),
+                probe_connection_id("picoprobe", "683710208"),
+                probe_connection_id("picoprobe", "683854191"),
             )
         )
         # Leading-zero stripping applies to decimals only; hex text is not renumbered.
         self.assertNotEqual(
-            server._setup_connection_key(probe_connection_id("jlink", "0abc")),
-            server._setup_connection_key(probe_connection_id("jlink", "abc")),
+            server._setup_connection_key(probe_connection_id("picoprobe", "0abc")),
+            server._setup_connection_key(probe_connection_id("picoprobe", "abc")),
         )
 
     def test_distinct_providers_with_identical_uid_text_do_not_collide(self) -> None:
@@ -467,18 +474,18 @@ class ProbeConnectionIdTests(unittest.TestCase):
         self.assertFalse(
             server._same_setup_connection(
                 probe_connection_id("cmsisdap", "12345"),
-                probe_connection_id("jlink", "12345"),
+                probe_connection_id("picoprobe", "12345"),
             )
         )
         self.assertNotEqual(
             server._setup_connection_key(probe_connection_id("cmsisdap", "12345")),
-            server._setup_connection_key(probe_connection_id("jlink", "12345")),
+            server._setup_connection_key(probe_connection_id("picoprobe", "12345")),
         )
 
     def test_session_scoped_identity_is_not_treated_as_a_probe_mint(self) -> None:
         self.assertFalse(
             server._same_setup_connection(
-                "session:token-1", probe_connection_id("jlink", "token-1")
+                "session:token-1", probe_connection_id("picoprobe", "token-1")
             )
         )
 
@@ -504,7 +511,7 @@ class StructuralLegacyDiscriminationTests(unittest.TestCase):
     def test_a_legacy_token_with_a_colon_in_the_uid_is_never_parsed_as_canonical(
         self,
     ) -> None:
-        for uid_with_colon in ("3-1.4:1.0", "jlink:001", "a:b:c:d"):
+        for uid_with_colon in ("3-1.4:1.0", "picoprobe:001", "a:b:c:d"):
             with self.subTest(uid=uid_with_colon):
                 legacy_token = f"{LEGACY_PROBE_CONNECTION_PREFIX}{uid_with_colon}"
                 self.assertIsNone(parse_probe_connection_id(legacy_token))
@@ -512,7 +519,7 @@ class StructuralLegacyDiscriminationTests(unittest.TestCase):
     def test_a_canonical_token_still_parses_correctly_regardless_of_uid_content(
         self,
     ) -> None:
-        for uid_with_colon in ("3-1.4:1.0", "jlink:001", "a:b:c:d"):
+        for uid_with_colon in ("3-1.4:1.0", "picoprobe:001", "a:b:c:d"):
             with self.subTest(uid=uid_with_colon):
                 minted = probe_connection_id("cmsisdap", uid_with_colon)
                 self.assertTrue(minted.startswith(PROBE_CONNECTION_PREFIX))
@@ -542,7 +549,7 @@ class CrossProviderCollisionTests(unittest.TestCase):
     ) -> None:
         probes = (
             _probe(1, usb_serial="12345", probe_family="cmsisdap"),
-            _probe(2, usb_serial="12345", probe_family="jlink"),
+            _probe(2, usb_serial="12345", probe_family="picoprobe"),
         )
         harness = _OverviewHarness(probes, ())
 
@@ -553,29 +560,29 @@ class CrossProviderCollisionTests(unittest.TestCase):
             len(connection_ids), 2, "one of the two distinct probes was silently dropped"
         )
         self.assertIn(probe_connection_id("cmsisdap", "12345"), connection_ids)
-        self.assertIn(probe_connection_id("jlink", "12345"), connection_ids)
+        self.assertIn(probe_connection_id("picoprobe", "12345"), connection_ids)
 
     def test_each_colliding_uid_still_resolves_to_its_own_provider(self) -> None:
         cmsisdap_row = _probe(1, usb_serial="12345", probe_family="cmsisdap")
-        jlink_row = _probe(2, usb_serial="12345", probe_family="jlink")
-        harness = _OverviewHarness((cmsisdap_row, jlink_row), ())
+        picoprobe_row = _probe(2, usb_serial="12345", probe_family="picoprobe")
+        harness = _OverviewHarness((cmsisdap_row, picoprobe_row), ())
 
         harness.run(None)
 
         cmsisdap_selection = server._probe_selection_store.resolve(
             probe_connection_id("cmsisdap", "12345"), harness.snapshot
         )
-        jlink_selection = server._probe_selection_store.resolve(
-            probe_connection_id("jlink", "12345"), harness.snapshot
+        picoprobe_selection = server._probe_selection_store.resolve(
+            probe_connection_id("picoprobe", "12345"), harness.snapshot
         )
         self.assertEqual(cmsisdap_selection.provider, "cmsisdap")
-        self.assertEqual(jlink_selection.provider, "jlink")
+        self.assertEqual(picoprobe_selection.provider, "picoprobe")
 
     def test_decimal_normalized_collisions_across_providers_stay_distinct(self) -> None:
-        """A J-Link-style decimal UID and its zero-padded twin, under two providers."""
+        """A Picoprobe-style decimal UID and its zero-padded twin, under two providers."""
 
         probes = (
-            _probe(1, usb_serial="683710208", probe_family="jlink"),
+            _probe(1, usb_serial="683710208", probe_family="picoprobe"),
             _probe(2, usb_serial="000683710208", probe_family="cmsisdap"),
         )
         harness = _OverviewHarness(probes, ())
@@ -593,7 +600,7 @@ class CrossProviderCollisionTests(unittest.TestCase):
 
         probes = (
             _probe(1, usb_serial="12345", probe_family="cmsisdap"),
-            _probe(2, usb_serial="12345", probe_family="jlink"),
+            _probe(2, usb_serial="12345", probe_family="picoprobe"),
         )
         snapshot = snapshot_from_validation_inventory(
             cast(Any, SimpleNamespace(probes=probes, serial_ports=()))
@@ -606,7 +613,7 @@ class CrossProviderCollisionTests(unittest.TestCase):
     def test_a_legacy_unambiguous_token_still_works(self) -> None:
         from pyocd_debug_mcp.hardware_inventory import snapshot_from_validation_inventory
 
-        probes = (_probe(1, usb_serial="12345", probe_family="jlink"),)
+        probes = (_probe(1, usb_serial="12345", probe_family="picoprobe"),)
         snapshot = snapshot_from_validation_inventory(
             cast(Any, SimpleNamespace(probes=probes, serial_ports=()))
         )
@@ -614,7 +621,7 @@ class CrossProviderCollisionTests(unittest.TestCase):
 
         selection = store.resolve("probe:12345", snapshot)
 
-        self.assertEqual(selection.provider, "jlink")
+        self.assertEqual(selection.provider, "picoprobe")
         self.assertEqual(selection.unique_id, "12345")
 
 
