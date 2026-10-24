@@ -25,7 +25,11 @@ def _vendor_fixture(vendor: str):
     else:
         provider, uid = "stlink", "066EFF505057"
         spec = resolver.SerialFallbackSpec(
-            "stlink-fixture", (provider,), "STM32_Programmer_CLI", "", ("-l",),
+            "stlink-fixture",
+            (provider,),
+            "STM32_Programmer_CLI",
+            "",
+            ("-l",),
             "stm32_programmer_list",
         )
     return provider, uid, spec, f"{vendor}-fixture"
@@ -282,9 +286,13 @@ class SerialResolverIdentityTests(unittest.TestCase):
                             patch.object(resolver, "resolve_command_path", return_value=executable),
                         ):
                             resolution = resolver.resolve_serial_port(
-                                board=self.board(provider), ports=ports, probe=probe,
-                                override=None, allow_single_fallback=False,
-                                run_cmd=command, interactive=False,
+                                board=self.board(provider),
+                                ports=ports,
+                                probe=probe,
+                                override=None,
+                                allow_single_fallback=False,
+                                run_cmd=command,
+                                interactive=False,
                             )
                         self.assertIs(resolution.port, right)
                         self.assertIn("resolved via", resolution.note)
@@ -297,8 +305,9 @@ class SerialResolverIdentityTests(unittest.TestCase):
             output = _vendor_output(vendor, (("unrelated", "COM7", "VCOM0"),))
             right = self.port("COM7", "external-adapter")
             command = Mock(return_value=(0, output, ""))
-            with self.subTest(vendor=vendor), patch.object(
-                resolver, "resolve_command_path", return_value=executable
+            with (
+                self.subTest(vendor=vendor),
+                patch.object(resolver, "resolve_command_path", return_value=executable),
             ):
                 resolution = self.resolve(
                     uid, [right], board=self.board(provider), fallback=(spec,), run_cmd=command
@@ -317,9 +326,17 @@ class ManagedVendorIdentityTests(unittest.TestCase):
     """
 
     def attempt(
-        self, output: str, *, should_refuse: bool, reverse: bool,
-        vendor: str = "stlink", expected_port: str = "COM8", uid: str | None = None,
-        qualified: bool = False, override: str | None = None, foreign: bool = False,
+        self,
+        output: str,
+        *,
+        should_refuse: bool,
+        reverse: bool,
+        vendor: str = "stlink",
+        expected_port: str = "COM8",
+        uid: str | None = None,
+        qualified: bool = False,
+        override: str | None = None,
+        foreign: bool = False,
     ) -> None:
         from pyocd_debug_mcp.adapters.swd_interface import TargetSessionHandle, session_metadata
         from pyocd_debug_mcp.board_config import BoardConfig
@@ -388,7 +405,8 @@ class ManagedVendorIdentityTests(unittest.TestCase):
                 # Real on-disk confirmation must still exclude this cable before
                 # vendor scoring, even if that vendor names this probe's full UID.
                 cache.confirm(
-                    "other_board", ProbeIdentity(provider, "other_probe"),
+                    "other_board",
+                    ProbeIdentity(provider, "other_probe"),
                     SerialEndpoint("COM8", "adapter-b", 1, 2),
                 )
             before_records = cache.load_records()
@@ -447,11 +465,16 @@ class ManagedVendorIdentityTests(unittest.TestCase):
                 self.assertEqual(transport.open.call_args.args[0], expected_port)
                 transport.write.assert_called_once()
                 transport.close.assert_called_once()
-                self.assertEqual(transport.mock_calls, [
-                    call.open(expected_port, baudrate=board.default_baudrate, timeout_seconds=0.1),
-                    call.write(transport.open.return_value, b"hello"),
-                    call.close(transport.open.return_value),
-                ])
+                self.assertEqual(
+                    transport.mock_calls,
+                    [
+                        call.open(
+                            expected_port, baudrate=board.default_baudrate, timeout_seconds=0.1
+                        ),
+                        call.write(transport.open.return_value, b"hello"),
+                        call.close(transport.open.return_value),
+                    ],
+                )
                 self.assertIn(expected_port, returned)
                 self.assertIn("5 byte(s)", returned)
 
@@ -473,14 +496,21 @@ class ManagedVendorIdentityTests(unittest.TestCase):
             for reverse in (False, True):
                 with self.subTest(vendor=vendor, rows=ordered, reverse=reverse, **kwargs):
                     self.attempt(
-                        output, vendor=vendor, should_refuse=should_refuse, reverse=reverse,
+                        output,
+                        vendor=vendor,
+                        should_refuse=should_refuse,
+                        reverse=reverse,
                         **kwargs,
                     )
 
     def test_nordic_matching_vendor_identity_reaches_only_its_managed_port(self) -> None:
-        self.attempt_rows("nordic", (
-            ("208", "COM7", "VCOM0"), ("683710208", "COM8", "VCOM0"),
-        ))
+        self.attempt_rows(
+            "nordic",
+            (
+                ("208", "COM7", "VCOM0"),
+                ("683710208", "COM8", "VCOM0"),
+            ),
+        )
 
     def test_nordic_unrelated_vendor_identity_cannot_open_or_write_a_managed_port(self) -> None:
         self.attempt_rows("nordic", (("208", "COM7", "VCOM0"),), should_refuse=True)
@@ -494,60 +524,97 @@ class ManagedVendorIdentityTests(unittest.TestCase):
             ("stlink", "06:6e:ff:50:50:57", "5057"),
             ("nordic", "683710208", "208"),
         ):
-            self.attempt_rows(vendor, (
-                (suffix, "COM7", "VCOM0"), (serial, "COM8", "VCOM0"),
-            ), qualified=True)
+            self.attempt_rows(
+                vendor,
+                (
+                    (suffix, "COM7", "VCOM0"),
+                    (serial, "COM8", "VCOM0"),
+                ),
+                qualified=True,
+            )
 
     def test_duplicate_full_uid_rows_for_one_normalized_port_still_select(self) -> None:
         for vendor in ("stlink", "nordic"):
             _provider, uid, _spec, _executable = _vendor_fixture(vendor)
-            self.attempt_rows(vendor, (
-                (uid, "COM8", "VCOM0"), (uid, "\\\\.\\com8", "VCOM0"),
-            ))
+            self.attempt_rows(
+                vendor,
+                (
+                    (uid, "COM8", "VCOM0"),
+                    (uid, "\\\\.\\com8", "VCOM0"),
+                ),
+            )
 
     def test_duplicate_unrelated_vendor_rows_cannot_select_a_unique_foreign_port(self) -> None:
         for vendor in ("stlink", "nordic"):
-            self.attempt_rows(vendor, (
-                ("unrelated", "COM7", "VCOM0"), ("unrelated", "\\\\.\\com7", "VCOM0"),
-            ), should_refuse=True)
+            self.attempt_rows(
+                vendor,
+                (
+                    ("unrelated", "COM7", "VCOM0"),
+                    ("unrelated", "\\\\.\\com7", "VCOM0"),
+                ),
+                should_refuse=True,
+            )
 
     def test_stlink_full_uid_on_two_distinct_ports_remains_ambiguous(self) -> None:
-        self.attempt_rows("stlink", (
-            ("066EFF505057", "COM7", "VCOM0"), ("066EFF505057", "COM8", "VCOM0"),
-        ), should_refuse=True)
+        self.attempt_rows(
+            "stlink",
+            (
+                ("066EFF505057", "COM7", "VCOM0"),
+                ("066EFF505057", "COM8", "VCOM0"),
+            ),
+            should_refuse=True,
+        )
 
     def test_nordic_prefers_configured_label_for_multiple_full_uid_ports(self) -> None:
-        self.attempt_rows("nordic", (
-            ("683710208", "COM7", "VCOM1"), ("683710208", "COM8", "VCOM0"),
-        ))
+        self.attempt_rows(
+            "nordic",
+            (
+                ("683710208", "COM7", "VCOM1"),
+                ("683710208", "COM8", "VCOM0"),
+            ),
+        )
 
     def test_nordic_equal_labels_use_normalized_port_order(self) -> None:
-        self.attempt_rows("nordic", (
-            ("683710208", "COM8", "VCOM0"), ("683710208", "COM7", "VCOM0"),
-        ), expected_port="COM7")
+        self.attempt_rows(
+            "nordic",
+            (
+                ("683710208", "COM8", "VCOM0"),
+                ("683710208", "COM7", "VCOM0"),
+            ),
+            expected_port="COM7",
+        )
 
     def test_explicit_override_still_selects_without_vendor_identity(self) -> None:
         for vendor in ("stlink", "nordic"):
-            self.attempt_rows(vendor, (("unrelated", "COM8", "VCOM0"),),
-                              override="\\\\.\\com7", expected_port="COM7")
+            self.attempt_rows(
+                vendor,
+                (("unrelated", "COM8", "VCOM0"),),
+                override="\\\\.\\com7",
+                expected_port="COM7",
+            )
 
     def test_confirmed_foreign_cable_is_filtered_before_vendor_selection(self) -> None:
         for vendor in ("stlink", "nordic"):
             _provider, uid, _spec, _executable = _vendor_fixture(vendor)
-            self.attempt_rows(vendor, ((uid, "COM8", "VCOM0"),),
-                              foreign=True, should_refuse=True)
+            self.attempt_rows(vendor, ((uid, "COM8", "VCOM0"),), foreign=True, should_refuse=True)
 
     def test_explicit_override_does_not_change_confirmed_foreign_cable_ownership(self) -> None:
         for vendor in ("stlink", "nordic"):
-            self.attempt_rows(vendor, (("unrelated", "COM7", "VCOM0"),),
-                              foreign=True, override="COM8")
+            self.attempt_rows(
+                vendor, (("unrelated", "COM7", "VCOM0"),), foreign=True, override="COM8"
+            )
 
     def test_unlisted_full_uid_port_does_not_fall_back_to_an_unrelated_vendor_row(self) -> None:
         for vendor in ("stlink", "nordic"):
             _provider, uid, _spec, _executable = _vendor_fixture(vendor)
-            self.attempt_rows(vendor, (
-                ("unrelated", "COM7", "VCOM0"), (uid, "COM99", "VCOM0"),
-            ), should_refuse=True)
+            self.attempt_rows(
+                vendor,
+                (
+                    ("unrelated", "COM7", "VCOM0"),
+                    (uid, "COM99", "VCOM0"),
+                ),
+                should_refuse=True,
+            )
 
 
 if __name__ == "__main__":
