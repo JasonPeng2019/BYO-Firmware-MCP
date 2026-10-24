@@ -438,6 +438,15 @@ class AnalysisPopen(subprocess.Popen[Any]):
                 except _ObservationDeadline:
                     raise
                 except (psutil.AccessDenied, OSError):
+                    # Live metadata can disappear after the first state read.
+                    # Only our exact unreaped direct child has a native exit
+                    # oracle; this does not forgive any captured-child fault or
+                    # clear uncertainty already recorded by an earlier capture.
+                    if (pid, token) == (
+                        self.pid,
+                        self._leader_token,
+                    ) and self._leader_state() == "zombie":
+                        continue
                     self._uncertainties.add("descendant identities unavailable")
             if time.monotonic() >= deadline:
                 self._note_incomplete_observation(

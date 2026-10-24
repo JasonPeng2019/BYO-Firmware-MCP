@@ -802,9 +802,7 @@ class TieredLiteEvidenceAcceptanceTests(unittest.TestCase):
                 self.assertEqual(len(observed_handles), 1, observed_handles)
                 _original_handle, changed_handle = observed_handles[0]
                 self.assertEqual(changed_handle.probe_uid, "FR04-CHANGED-PROBE")
-                self.assertEqual(
-                    session_metadata(changed_handle).probe_uid, "FR04-CHANGED-PROBE"
-                )
+                self.assertEqual(session_metadata(changed_handle).probe_uid, "FR04-CHANGED-PROBE")
                 self.assertEqual(len(closed_handles), 1, closed_handles)
                 self.assertIs(closed_handles[0], changed_handle)
                 self.assertEqual(failed_batch["status"], "batch_completed", failed_batch)

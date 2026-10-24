@@ -157,6 +157,7 @@ class _NativePosixCase(unittest.TestCase):
         self.root = Path(self.directory.name)
         self.store = processes.ProcessMarkerStore(self.root / "markers")
         self.created: list[tuple[subprocess.Popen[Any], Path | None]] = []
+        self.created_births: dict[int, float] = {}
         self.descendants: list[tuple[int, float]] = []
         self.real_spawn = processes.popen_owned
         self.peer = subprocess.Popen(
@@ -185,6 +186,7 @@ class _NativePosixCase(unittest.TestCase):
     def capture_spawn(self, *args: Any, **kwargs: Any) -> tuple[subprocess.Popen[Any], Path | None]:
         result = self.real_spawn(*args, **kwargs)
         self.created.append(result)
+        self.created_births[result[0].pid] = psutil.Process(result[0].pid).create_time()
         return result
 
     def owned(self, code: str) -> subprocess.Popen[Any]:
@@ -279,14 +281,53 @@ class _NativePosixCase(unittest.TestCase):
                         child.kill()
             except psutil.NoSuchProcess:
                 pass
+        rescues = []
         for process, marker in reversed(self.created):
             try:
-                if processes.terminate_process_group(process):
+                confirmed = processes.terminate_process_group(process)
+                if confirmed:
                     self.store.remove(marker)
+                else:
+                    birth = self.created_births[process.pid]
+                    before = self.native_state(process.pid, birth)
+                    rescue: dict[str, Any] = {
+                        "pid": process.pid,
+                        "birth": birth,
+                        "before": before,
+                        "product_cleanup_confirmed": False,
+                        "marker_retained": marker is not None and marker.exists(),
+                        "action": "none",
+                        "scope": "fixture recovery after behavioral assertions",
+                    }
+                    if before == "live":
+                        child = psutil.Process(process.pid)
+                        if child.create_time() == birth:
+                            child.kill()
+                            rescue["action"] = "emergency exact PID/birth kill"
+                    deadline = time.monotonic() + 5
+                    while (
+                        self.native_state(process.pid, birth) == "live"
+                        and time.monotonic() < deadline
+                    ):
+                        time.sleep(0.01)
+                    if self.native_state(process.pid, birth) == "zombie":
+                        pid, status = os.waitpid(process.pid, 0)
+                        rescue["native_reap"] = {"pid": pid, "status": status}
+                        process.returncode = os.waitstatus_to_exitcode(status)
+                    rescue["after"] = self.native_state(process.pid, birth)
+                    rescues.append(rescue)
             finally:
                 for stream in (process.stdin, process.stdout, process.stderr):
                     if stream is not None:
                         stream.close()
+        evidence = os.environ.get("BYO_FINAL_CLEANUP_EVIDENCE")
+        if evidence:
+            destination = Path(evidence)
+            destination.mkdir(parents=True, exist_ok=True)
+            (destination / (self._testMethodName + ".fixture-recovery.json")).write_text(
+                json.dumps({"test": self.id(), "recoveries": rescues}, indent=2) + "\n",
+                encoding="utf-8",
+            )
         if self.native_state(self.peer.pid, self.peer_birth) == "live":
             self.peer.terminate()
         self.peer.wait(timeout=5)
@@ -346,7 +387,9 @@ class PosixProcessCleanupTests(_NativePosixCase):
                 self.assertEqual(result.stdout, "owned-output\n")
                 self.assertEqual(result.stderr, "owned-error\n")
                 self.assertEqual(len(boundaries), 1)
-                expected_signals = [signal.SIGTERM, signal.SIGKILL] if ignore_term else [signal.SIGTERM]
+                expected_signals = (
+                    [signal.SIGTERM, signal.SIGKILL] if ignore_term else [signal.SIGTERM]
+                )
                 self.assertEqual(signals, expected_signals)
                 self.assert_child_terminal(boundaries[0])
                 self.assert_reaped(self.created[-1][0], status)
@@ -483,6 +526,7 @@ class PosixProcessCleanupTests(_NativePosixCase):
         real_state = _analysis_posix._process_state
         for fault in ("incomplete", "membership_error", "unknown", "reused", "foreign"):
             with self.subTest(fault=fault):
+
                 def members(group: int, deadline: float) -> set[int]:
                     if fault == "incomplete":
                         return set()

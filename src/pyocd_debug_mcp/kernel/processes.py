@@ -378,7 +378,7 @@ class _OwnedPosixPopen(subprocess.Popen[Any]):
                 return result
             if self._wait_error is not None:
                 raise RuntimeError("Owned child exit observation unavailable: " + self._wait_error)
-            if deadline is not None and time.monotonic() >= deadline:
+            if timeout is not None and deadline is not None and time.monotonic() >= deadline:
                 raise subprocess.TimeoutExpired(self.args, timeout)
             time.sleep(
                 0.005 if deadline is None else min(0.005, max(0, deadline - time.monotonic()))
@@ -490,6 +490,8 @@ def _terminate_retained_posix_group(process: subprocess.Popen[Any], grace_second
                     return process._cleanup_confirmed
                 if state == "unknown":
                     return False  # Incomplete/faulted observation grants no signal.
+                if state == "expired":
+                    break  # The next bounded phase must acquire its own fresh proof.
                 if state == "changed":
                     continue  # A newly observed exit needs a fresh stable proof.
                 if selected is not None and not signalled:
@@ -572,6 +574,7 @@ def _retained_group_state(process_group: int, leader_exit: int | None, deadline:
             return "unknown"
         births: dict[int, str | None] = {}
         while time.monotonic() < deadline:
+            states: dict[int, str] = {}
             for pid in sorted(members - {process_group}):
                 if pid not in births:
                     try:
@@ -582,12 +585,18 @@ def _retained_group_state(process_group: int, leader_exit: int | None, deadline:
                         births[pid] = None  # Released; it must leave the next snapshot.
                         continue
                 birth = births[pid]
-                if birth is not None and _analysis_posix._process_state(pid, birth) not in {
-                    "gone",
-                    "zombie",
-                    "live",
-                }:
-                    return "unknown"
+                if birth is not None:
+                    state = _analysis_posix._process_state(pid, birth)
+                    if state not in {"gone", "zombie", "live"}:
+                        return "unknown"
+                    if state == "live" and (
+                        os.getpgid(pid) != process_group or os.getsid(pid) != process_group
+                    ):
+                        return "unknown"
+                    states[pid] = state
+            # Final membership must FOLLOW the liveness reads. Otherwise a live
+            # branch can fork after this snapshot, then look terminal while its
+            # new leaf is absent from the purported complete terminal proof.
             following = _current_group_members(process_group, deadline)
             if process_group not in following or not following <= members:
                 return "unknown"
@@ -596,12 +605,8 @@ def _retained_group_state(process_group: int, leader_exit: int | None, deadline:
                 birth = births[pid]
                 if birth is None:
                     return "unknown"
-                state = _analysis_posix._process_state(pid, birth)
+                state = states[pid]
                 if state not in {"live", "zombie"}:
-                    return "unknown"
-                if state == "live" and (
-                    os.getpgid(pid) != process_group or os.getsid(pid) != process_group
-                ):
                     return "unknown"
                 live = live or state == "live"
             if following == members:
@@ -610,7 +615,9 @@ def _retained_group_state(process_group: int, leader_exit: int | None, deadline:
                 return "live" if live else "terminal"
             # A reaper released a terminal orphan; require a fresh stable pair.
             members = following
-        return "unknown"
+        return "expired"
+    except _analysis_posix._ObservationDeadline:
+        return "expired"
     except (psutil.Error, OSError, RuntimeError):
         return "unknown"
 

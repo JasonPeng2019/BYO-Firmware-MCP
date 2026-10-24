@@ -396,6 +396,34 @@ class NativePosixOwnership(unittest.TestCase):
                         os.waitpid(process.pid, os.WNOHANG)
                     self.assertTrue(self.is_owned_live(peer.pid, peer_token))
 
+    def test_live_image_failure_after_actual_leader_exit_keeps_native_exit_authority(self) -> None:
+        process, marker, gate = self.gated_exit(23, "exit-during-live-image", release=False)
+        process._stop_observer.set()
+        process._observer.join(timeout=1)
+        self.assertFalse(process._observer.is_alive())
+        self.assertIsNone(native_retained_exit(process.pid))
+        actual_birth = psutil.Process.create_time
+        reached = []
+
+        def exit_then_deny(parent):
+            if parent.pid == process.pid:
+                gate.touch()
+                self.assertEqual(
+                    self.until(lambda: native_retained_exit(process.pid)), (process.pid, 1, 23)
+                )
+                reached.append(parent.pid)
+                raise psutil.AccessDenied(parent.pid)
+            return actual_birth(parent)
+
+        with mock.patch.object(psutil.Process, "create_time", exit_then_deny):
+            self.assertTrue(process._capture(time.monotonic() + 2))
+        self.assertEqual(reached, [process.pid])
+        self.assertFalse(process._uncertainties)
+        self.assertEqual(native_retained_exit(process.pid), (process.pid, 1, 23))
+        self.confirm_cleanup(process, marker, [process.pid])
+        with self.assertRaises(ChildProcessError):
+            os.waitpid(process.pid, os.WNOHANG)
+
     def test_unavailable_exact_retained_exit_never_confirms_or_removes_marker(self) -> None:
         peer, peer_token = self.peer()
         posix = production("kernel._analysis_posix")

@@ -616,10 +616,11 @@ def module_exit_observations(directory, captured=(), capture_gaps=()):
             for row in cleanup["pre_exit_descendants"]:
                 key = (row["pid"], row.get("creation_time"))
                 entry = seen.setdefault(key, {"source": str(path), "prior": row})
-                tree_owned = (
-                    row.get("ownership") == "captured recursive descendant of exact observed root"
-                    and terminal_identity(row.get("identity", {})) in ("live", "terminal")
-                )
+                tree_owned = row.get(
+                    "ownership"
+                ) == "captured recursive descendant of exact observed root" and terminal_identity(
+                    row.get("identity", {})
+                ) in ("live", "terminal")
                 entry["owned_by_command"] = entry.get("owned_by_command", False) or tree_owned
                 entry["worker_pre_exit"] = row
         except (OSError, ValueError, KeyError) as exc:
@@ -631,9 +632,14 @@ def module_exit_observations(directory, captured=(), capture_gaps=()):
                 identity_gaps.append(roles)
             for row in roles.get("records", []):
                 key = (row["pid"], row.get("creation_time"))
-                seen.setdefault(key, {
-                    "source": str(role_path), "prior": row, "owned_by_command": False,
-                })
+                seen.setdefault(
+                    key,
+                    {
+                        "source": str(role_path),
+                        "prior": row,
+                        "owned_by_command": False,
+                    },
+                )
     observations = []
     for (pid, birth), prior in seen.items():
         facts = (
@@ -645,11 +651,21 @@ def module_exit_observations(directory, captured=(), capture_gaps=()):
         if state == "unknown":
             identity_gaps.append({"pid": pid, "creation_time": birth, "identity": facts})
         if not prior.get("owned_by_command"):
-            gaps.append({"pid": pid, "creation_time": birth,
-                         "gap": "Role receipt alone grants no command ownership or cleanup authority"})
+            gaps.append(
+                {
+                    "pid": pid,
+                    "creation_time": birth,
+                    "gap": "Role receipt alone grants no command ownership or cleanup authority",
+                }
+            )
             if state == "live":
-                identity_gaps.append({"pid": pid, "creation_time": birth,
-                                      "gap": "Live role-only identity lacks exact command-tree ownership"})
+                identity_gaps.append(
+                    {
+                        "pid": pid,
+                        "creation_time": birth,
+                        "gap": "Live role-only identity lacks exact command-tree ownership",
+                    }
+                )
         observations.append(
             {
                 "pid": pid,
@@ -659,7 +675,9 @@ def module_exit_observations(directory, captured=(), capture_gaps=()):
                 "state": state,
             }
         )
-    survivors = [row for row in observations if row["state"] == "live" and row.get("owned_by_command")]
+    survivors = [
+        row for row in observations if row["state"] == "live" and row.get("owned_by_command")
+    ]
     return {
         "at_monotonic": time.monotonic(),
         "seen_identities": observations,
@@ -715,10 +733,14 @@ def run_module(command, environment, directory, timeout):
                     capture_gaps.extend(snapshot["evidence_gaps"])
                 for row in snapshot["descendants"]:
                     key = (row["pid"], row["creation_time"])
-                    entry = captured.setdefault(key, {
-                        "source": "parent live tree", "prior": row,
-                        "owned_by_command": row["identity"].get("identity") == "same_birth",
-                    })
+                    entry = captured.setdefault(
+                        key,
+                        {
+                            "source": "parent live tree",
+                            "prior": row,
+                            "owned_by_command": row["identity"].get("identity") == "same_birth",
+                        },
+                    )
                     entry["latest"] = row
                 remaining = deadline - time.monotonic()
                 try:
@@ -766,7 +788,9 @@ def run_module(command, environment, directory, timeout):
                 finalization_started = time.monotonic()
                 finalization_deadline = finalization_started + 5.0
                 while True:
-                    descendants = module_exit_observations(directory, captured.items(), capture_gaps)
+                    descendants = module_exit_observations(
+                        directory, captured.items(), capture_gaps
+                    )
                     if immediate_post_exit is None:
                         immediate_post_exit = descendants
                         trace.record("immediate-post-interpreter-exit", observation=descendants)
@@ -774,8 +798,12 @@ def run_module(command, environment, directory, timeout):
                         key = (row["pid"], row["creation_time"])
                         if row["state"] == "unknown" and key not in finalization_gaps:
                             finalization_gaps.add(key)
-                            capture_gaps.append({"boundary": "passive post-exit observation",
-                                                 "identity": row["after_module_exit"]})
+                            capture_gaps.append(
+                                {
+                                    "boundary": "passive post-exit observation",
+                                    "identity": row["after_module_exit"],
+                                }
+                            )
                     if (
                         not normal_wait_completed
                         or descendants["gate"] == "PASS"
@@ -790,8 +818,11 @@ def run_module(command, environment, directory, timeout):
                 # emergency intervention subsequently removes a real survivor.
                 for row in reversed(descendants["survivors"]):
                     before = process_facts(row["pid"], row["creation_time"])
-                    emergency = {"kind": "post-exit-emergency", "before": before,
-                                 "at_monotonic": time.monotonic()}
+                    emergency = {
+                        "kind": "post-exit-emergency",
+                        "before": before,
+                        "at_monotonic": time.monotonic(),
+                    }
                     interventions.append(emergency)
                     try:
                         import psutil

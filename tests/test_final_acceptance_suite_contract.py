@@ -358,16 +358,23 @@ else:
                 OBSERVATIONS[self.id()] = {
                     name: marker_facts(directory / name)
                     for name in (
-                        "launcher.json", "executed.json", "module-exit.json",
-                        "stdout.log", "stderr.log",
+                        "launcher.json",
+                        "executed.json",
+                        "module-exit.json",
+                        "stdout.log",
+                        "stderr.log",
                     )
                 }
             launcher = json.loads((directory / "launcher.json").read_bytes())
             executed = json.loads((directory / "executed.json").read_bytes())
             exit_record = json.loads((directory / "module-exit.json").read_bytes())
             relationship = execution_relationship(
-                launcher["identity"], executed["identity"], command,
-                executed["argv"], ["-c", str(directory)], parent=executed["parent"],
+                launcher["identity"],
+                executed["identity"],
+                command,
+                executed["argv"],
+                ["-c", str(directory)],
+                parent=executed["parent"],
             )
             OBSERVATIONS[self.id()]["execution_relationship"] = relationship
             self.assertEqual((code, outcome), (0, "PASS"))
@@ -387,17 +394,26 @@ else:
             ):
                 with self.subTest(parent=parent):
                     refused = execution_relationship(
-                        launcher["identity"], executed["identity"], command,
-                        executed["argv"], ["-c", str(directory)], parent=parent,
+                        launcher["identity"],
+                        executed["identity"],
+                        command,
+                        executed["argv"],
+                        ["-c", str(directory)],
+                        parent=parent,
                     )
                     self.assertEqual(refused["relationship"], "unknown")
                     self.assertTrue(refused["evidence_gaps"])
             unrelated = {
-                **executed["identity"], "ppid": launcher["identity"]["ppid"],
+                **executed["identity"],
+                "ppid": launcher["identity"]["ppid"],
             }
             refused = execution_relationship(
-                launcher["identity"], unrelated, command, executed["argv"],
-                ["-c", str(directory)], parent=executed["parent"],
+                launcher["identity"],
+                unrelated,
+                command,
+                executed["argv"],
+                ["-c", str(directory)],
+                parent=executed["parent"],
             )
             self.assertEqual(refused["relationship"], "unknown")
             self.assertTrue(refused["evidence_gaps"])
@@ -431,9 +447,7 @@ module_identity = process_facts(os.getpid())
             directory = Path(temporary)
             command = [sys.executable, "-c", script, str(directory)]
             try:
-                code, outcome = acceptance.run_module(
-                    command, dict(os.environ), directory, 15
-                )
+                code, outcome = acceptance.run_module(command, dict(os.environ), directory, 15)
             finally:
                 # Retain actual raw receipts before temp cleanup, even when the
                 # observed command or a subsequent contract assertion fails.
@@ -444,8 +458,12 @@ module_identity = process_facts(os.getpid())
             control = json.loads((directory / "control.json").read_text(encoding="utf-8"))
             exit_record = json.loads((directory / "module-exit.json").read_text(encoding="utf-8"))
             relationship = execution_relationship(
-                exit_record["module_identity_at_start"], control["module_identity"], command,
-                control["module_argv"], ["-c", str(directory)], parent=control["parent_identity"],
+                exit_record["module_identity_at_start"],
+                control["module_identity"],
+                command,
+                control["module_argv"],
+                ["-c", str(directory)],
+                parent=control["parent_identity"],
             )
             OBSERVATIONS[self.id()]["module_execution_relationship"] = relationship
         self.assertEqual((code, outcome), (0, "PASS"))
@@ -472,7 +490,7 @@ module_identity = process_facts(os.getpid())
         self.assertTrue(exit_record["descendants"]["evidence_gaps"])
 
 
-FINALIZATION_PROBE = r'''
+FINALIZATION_PROBE = r"""
 import atexit
 import json
 import multiprocessing
@@ -552,7 +570,7 @@ class OrdinaryFinalization(unittest.TestCase):
         for value in (1, 2):
             with self.subTest(value=value):
                 self.assertEqual(value, 1 if mode == "failure" else value)
-'''
+"""
 
 
 class OrdinaryInterpreterExitContracts(unittest.TestCase):
@@ -594,39 +612,59 @@ class OrdinaryInterpreterExitContracts(unittest.TestCase):
                 except (OSError, ValueError, KeyError, psutil.Error) as exc:
                     actions.append({"source": str(path), "error": repr(exc)})
         OBSERVATIONS[self.id()]["fixture_emergency_cleanup"] = actions
-        self.assertFalse(actions, "fixture emergency intervention is a failed control: " + repr(actions))
+        self.assertFalse(
+            actions, "fixture emergency intervention is a failed control: " + repr(actions)
+        )
 
     def run_probe(self, mode, timeout=20):
         directory = self.root / mode
         directory.mkdir()
         environment = dict(
-            os.environ, BYO_FR12_PROBE_ROOT=str(directory), BYO_FR12_MODE=mode,
+            os.environ,
+            BYO_FR12_PROBE_ROOT=str(directory),
+            BYO_FR12_MODE=mode,
             PYTHONPATH=str(self.root),
         )
-        command = [sys.executable, "-B", str(self.tests / "final_acceptance_suite.py"),
-                   "--worker", "fr12_finalization_probe", "--evidence", str(directory)]
+        command = [
+            sys.executable,
+            "-B",
+            str(self.tests / "final_acceptance_suite.py"),
+            "--worker",
+            "fr12_finalization_probe",
+            "--evidence",
+            str(directory),
+        ]
         try:
             code, outcome = acceptance.run_module(command, environment, directory, timeout)
         finally:
             # Retain raw ledgers/streams on failed premises/assertions as well.
             OBSERVATIONS[self.id()][mode] = {
                 path.name: path.read_text(encoding="utf-8", errors="replace")
-                for path in directory.glob("*") if path.is_file()
+                for path in directory.glob("*")
+                if path.is_file()
             }
         exit_record = json.loads((directory / "module-exit.json").read_bytes())
         result = json.loads((directory / "result.json").read_bytes())
         pre = json.loads((directory / "cleanup.json").read_bytes())
-        events = [json.loads(line) for line in (directory / "events.jsonl").read_bytes().splitlines()]
+        events = [
+            json.loads(line) for line in (directory / "events.jsonl").read_bytes().splitlines()
+        ]
         self.assertTrue(exit_record["normal_wait_completed"])
         self.assertEqual(exit_record["normal_wait_exit"], code)
         self.assertEqual(exit_record["popen"]["cached_returncode"], code)
-        self.assertLessEqual(exit_record["normal_wait_returned_monotonic"],
-                             exit_record["descendants"]["at_monotonic"])
+        self.assertLessEqual(
+            exit_record["normal_wait_returned_monotonic"],
+            exit_record["descendants"]["at_monotonic"],
+        )
         self.assertFalse(pre["errors"], pre)
         self.assertIn("before ordinary interpreter exit", pre["boundary"])
         self.assertTrue(pre["pre_exit_descendants"], "must observe an actual pre-exit child")
-        self.assertFalse(any("emergency" in str(row.get("operation", ""))
-                             for row in pre["observations"]["events"]))
+        self.assertFalse(
+            any(
+                "emergency" in str(row.get("operation", ""))
+                for row in pre["observations"]["events"]
+            )
+        )
         self.assertEqual(result["testsRun"], 1)
         self.assertEqual([e["id"] for e in events if e["kind"] == "start"], result["loaded"])
         self.assertEqual([e["id"] for e in events if e["kind"] == "stop"], result["loaded"])
@@ -647,10 +685,18 @@ class OrdinaryInterpreterExitContracts(unittest.TestCase):
         finished = json.loads((directory / "writer-finished.json").read_bytes())
         finalizer = json.loads((directory / "ordinary-finalizer.json").read_bytes())
         relationship = execution_relationship(
-            exit_record["module_identity_at_start"], body["identity"],
-            exit_record["popen"]["argv"], body["argv"],
-            [str(self.tests / "final_acceptance_suite.py"), "--worker", "fr12_finalization_probe",
-             "--evidence", str(directory)], parent=body["parent"],
+            exit_record["module_identity_at_start"],
+            body["identity"],
+            exit_record["popen"]["argv"],
+            body["argv"],
+            [
+                str(self.tests / "final_acceptance_suite.py"),
+                "--worker",
+                "fr12_finalization_probe",
+                "--evidence",
+                str(directory),
+            ],
+            parent=body["parent"],
         )
         self.assertFalse(relationship["evidence_gaps"], relationship)
         self.assertIn(relationship["relationship"], {"direct", "launcher-child"})
@@ -662,9 +708,15 @@ class OrdinaryInterpreterExitContracts(unittest.TestCase):
         self.assertEqual(terminal_identity(writers[0]["identity"]), "live")
         self.assertLessEqual(writers[0]["at_monotonic"], finalizer["at_monotonic"])
         self.assertLessEqual(finalizer["at_monotonic"], finished["at_monotonic"])
-        self.assertLessEqual(finished["at_monotonic"], exit_record["normal_wait_returned_monotonic"])
-        self.assertTrue(all(row["state"] in ("gone", "terminal")
-                            for row in exit_record["descendants"]["seen_identities"]))
+        self.assertLessEqual(
+            finished["at_monotonic"], exit_record["normal_wait_returned_monotonic"]
+        )
+        self.assertTrue(
+            all(
+                row["state"] in ("gone", "terminal")
+                for row in exit_record["descendants"]["seen_identities"]
+            )
+        )
 
     def test_deliberate_helper_shaped_leak_fails_after_real_zero_exit_before_emergency(self):
         directory, code, outcome, exit_record, result, pre, _ = self.run_probe("leak")
@@ -676,8 +728,11 @@ class OrdinaryInterpreterExitContracts(unittest.TestCase):
         self.assertEqual(exit_record["descendants"]["gate"], "FAIL")
         ready = json.loads((directory / "leak-ready.json").read_bytes())
         survivors = exit_record["descendants"]["survivors"]
-        exact = [row for row in survivors if row["pid"] == ready["pid"]
-                 and row["creation_time"] == ready["creation_time"]]
+        exact = [
+            row
+            for row in survivors
+            if row["pid"] == ready["pid"] and row["creation_time"] == ready["creation_time"]
+        ]
         self.assertEqual(len(exact), 1, survivors)
         self.assertEqual(exact[0]["state"], "live")
         self.assertIn("multiprocessing.resource_tracker", exact[0]["after_module_exit"]["cmdline"])
@@ -698,10 +753,13 @@ class OrdinaryInterpreterExitContracts(unittest.TestCase):
                 self.assertEqual(exit_record["descendants"]["gate"], "PASS")
                 self.assertFalse(exit_record["natural_eof0"])
                 self.assertFalse(exit_record["interventions"])
-                self.assertTrue(json.loads((directory / "writer-finished.json").read_bytes())["released"])
+                self.assertTrue(
+                    json.loads((directory / "writer-finished.json").read_bytes())["released"]
+                )
                 if mode == "failure":
-                    self.assertEqual([e["outcome"] for e in events if e["kind"] == "subtest"],
-                                     ["PASS", "FAIL"])
+                    self.assertEqual(
+                        [e["outcome"] for e in events if e["kind"] == "subtest"], ["PASS", "FAIL"]
+                    )
                 else:
                     self.assertTrue(any(e["kind"] == "error" for e in events))
 
@@ -720,15 +778,21 @@ class OrdinaryInterpreterExitContracts(unittest.TestCase):
         self.assertTrue(exit_record["interventions"])
         self.assertTrue(exit_record["wait_completed"])
         self.assertEqual(exit_record["popen"]["cached_returncode"], code)
-        self.assertTrue(all(row["state"] in ("gone", "terminal")
-                            for row in exit_record["descendants"]["seen_identities"]))
+        self.assertTrue(
+            all(
+                row["state"] in ("gone", "terminal")
+                for row in exit_record["descendants"]["seen_identities"]
+            )
+        )
 
     def test_descendant_snapshot_cannot_poll_wait_or_signal(self):
         identity = process_facts(os.getpid())
         with (
             mock.patch("psutil.Process.wait", side_effect=AssertionError("observer wait")),
             mock.patch("psutil.Process.kill", side_effect=AssertionError("observer kill")),
-            mock.patch("psutil.Process.terminate", side_effect=AssertionError("observer terminate")),
+            mock.patch(
+                "psutil.Process.terminate", side_effect=AssertionError("observer terminate")
+            ),
             mock.patch("os.waitpid", create=True, side_effect=AssertionError("observer reap")),
         ):
             snapshot = descendant_facts(os.getpid(), identity["creation_time"], "observer control")
@@ -736,14 +800,20 @@ class OrdinaryInterpreterExitContracts(unittest.TestCase):
             self.assertEqual(terminal_identity(reused), "unknown")
             self.assertEqual(terminal_identity({"identity": "unavailable"}), "unknown")
             self.assertEqual(terminal_identity({"identity": "missing"}), "unknown")
-            self.assertEqual(terminal_identity({"identity": "same_birth", "status": "running"}), "unknown")
+            self.assertEqual(
+                terminal_identity({"identity": "same_birth", "status": "running"}), "unknown"
+            )
             directory = self.root / "role-only"
             directory.mkdir()
-            trace = CleanupTrace("role-observation-is-not-ownership", directory / "cleanup-observations")
+            trace = CleanupTrace(
+                "role-observation-is-not-ownership", directory / "cleanup-observations"
+            )
             trace.role(os.getpid(), "actual observer", "actual self PID, outside the command tree")
             observed = acceptance.module_exit_observations(directory)
             self.assertEqual(observed["gate"], "ERROR")
-            self.assertFalse(observed["survivors"], "role labels must not authorize emergency signals")
+            self.assertFalse(
+                observed["survivors"], "role labels must not authorize emergency signals"
+            )
             self.assertTrue(observed["identity_gaps"])
             self.assertFalse(observed["seen_identities"][0]["owned_by_command"])
         OBSERVATIONS[self.id()] = {"snapshot": snapshot, "reused": reused}
@@ -771,7 +841,8 @@ class FinalAcceptanceNativeInputContracts(unittest.TestCase):
             if (
                 (document := json.loads(path.read_bytes()))["platform"],
                 document["architecture"],
-            ) == (system, arch)
+            )
+            == (system, arch)
         ]
         if not manifests:
             self.skipTest(
@@ -827,8 +898,15 @@ acceptance.write(evidence / "control-result.json", {
         environment = dict(os.environ)
         environment.pop("PYTHONPATH", None)
         command = [
-            sys.executable, "-I", "-B", "-c", script, str(Path(acceptance.__file__).resolve()),
-            str(bundle), str(self.installer), str(self.evidence),
+            sys.executable,
+            "-I",
+            "-B",
+            "-c",
+            script,
+            str(Path(acceptance.__file__).resolve()),
+            str(bundle),
+            str(self.installer),
+            str(self.evidence),
         ]
         completed = subprocess.run(
             command, cwd=self.root, env=environment, capture_output=True, text=True, timeout=120
@@ -837,8 +915,10 @@ acceptance.write(evidence / "control-result.json", {
         (self.evidence / "stdout.log").write_text(completed.stdout, encoding="utf-8")
         (self.evidence / "stderr.log").write_text(completed.stderr, encoding="utf-8")
         OBSERVATIONS[self.id()] = {
-            "argv": command, "exit": completed.returncode,
-            "evidence": str(self.evidence), "pythonpath_removed": True,
+            "argv": command,
+            "exit": completed.returncode,
+            "evidence": str(self.evidence),
+            "pythonpath_removed": True,
         }
         self.assertEqual(completed.returncode, 0, completed.stderr)
         result = json.loads((self.evidence / "control-result.json").read_bytes())
@@ -854,8 +934,10 @@ acceptance.write(evidence / "control-result.json", {
         self.assertEqual(result["facts"]["bundle"]["outcome"], "ERROR")
         self.assertEqual(set(result["facts"]["errors"]), {"bundle", "arm", "official_pack"})
         for name in (
-            "BYO_TEST_CLANGD", "BYO_MCP_TEST_CLANGD_EXECUTABLE",
-            "BYO_MANAGED_TEST_INPUT_RECORD", "BYO_MANAGED_TEST_INPUT_RECORD_SHA256",
+            "BYO_TEST_CLANGD",
+            "BYO_MCP_TEST_CLANGD_EXECUTABLE",
+            "BYO_MANAGED_TEST_INPUT_RECORD",
+            "BYO_MANAGED_TEST_INPUT_RECORD_SHA256",
         ):
             self.assertNotIn(name, result["selectors"])
         self.assertIsNone(result["native_record"])
@@ -909,7 +991,8 @@ acceptance.write(evidence / "control-result.json", {
         result = self.prepare_in_clean_interpreter(bundle)
         self.assert_bundle_refused(result)
         self.assertIn(
-            "Analysis runtime mapping differs from pinned selection", result["facts"]["bundle"]["error"]
+            "Analysis runtime mapping differs from pinned selection",
+            result["facts"]["bundle"]["error"],
         )
 
     def test_hash_consistent_sbom_provenance_tamper_is_refused(self):
@@ -922,7 +1005,8 @@ acceptance.write(evidence / "control-result.json", {
         result = self.prepare_in_clean_interpreter(bundle)
         self.assert_bundle_refused(result)
         self.assertIn(
-            "Analysis SBOM source/license/recipe mismatch: clangd", result["facts"]["bundle"]["error"]
+            "Analysis SBOM source/license/recipe mismatch: clangd",
+            result["facts"]["bundle"]["error"],
         )
 
 

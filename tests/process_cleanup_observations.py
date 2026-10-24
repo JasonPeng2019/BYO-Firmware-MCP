@@ -158,13 +158,21 @@ def descendant_facts(pid, birth, boundary, directory=None):
                 }
                 rows.append(row)
                 if identity.get("identity") != "same_birth":
-                    gaps.append({"gap": "Child changed or unavailable during capture", "identity": identity})
+                    gaps.append(
+                        {"gap": "Child changed or unavailable during capture", "identity": identity}
+                    )
                 if parent.get("identity") != "observed":
-                    gaps.append({"gap": "Parent identity unavailable during capture", "identity": parent})
+                    gaps.append(
+                        {"gap": "Parent identity unavailable during capture", "identity": parent}
+                    )
                 for field in ("ppid", "cmdline", "exe", "status"):
                     if not identity.get(field) or isinstance(identity[field], dict):
-                        gaps.append({"gap": "Child " + field + " unavailable during capture",
-                                     "identity": identity})
+                        gaps.append(
+                            {
+                                "gap": "Child " + field + " unavailable during capture",
+                                "identity": identity,
+                            }
+                        )
             except (OSError, psutil.Error) as exc:
                 gaps.append({"pid": process.pid, "error": exception_facts(exc)})
         after = process_facts(pid, birth)
@@ -248,8 +256,10 @@ def execution_relationship(launcher, interpreter, command, argv, expected_argv, 
             gaps.append(label + ": unavailable parent, executable or live status")
 
     def arguments(value):
-        return isinstance(value, (list, tuple)) and bool(value) and all(
-            isinstance(item, str) for item in value
+        return (
+            isinstance(value, (list, tuple))
+            and bool(value)
+            and all(isinstance(item, str) for item in value)
         )
 
     stable("launcher", launcher)
@@ -261,18 +271,13 @@ def execution_relationship(launcher, interpreter, command, argv, expected_argv, 
             cmdline = facts.get("cmdline") if isinstance(facts, dict) else None
             if not arguments(cmdline) or list(cmdline[1:]) != list(command[1:]):
                 gaps.append(label + ": command does not identify the dispatched module")
-    if (
-        not arguments(expected_argv)
-        or not arguments(argv)
-        or list(argv) != list(expected_argv)
-    ):
+    if not arguments(expected_argv) or not arguments(argv) or list(argv) != list(expected_argv):
         gaps.append("Missing or mismatched executing module argv self-report")
     if gaps:
         return result
     if launcher["pid"] == interpreter["pid"]:
         if any(
-            launcher[key] != interpreter[key]
-            for key in ("creation_time", "ppid", "exe", "cmdline")
+            launcher[key] != interpreter[key] for key in ("creation_time", "ppid", "exe", "cmdline")
         ):
             gaps.append("Direct execution does not have the same birth and command identity")
         else:
