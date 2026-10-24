@@ -4,9 +4,9 @@ from __future__ import annotations
 
 from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import Any
 
-from pyocd.debug.elf.elf import ELFBinaryFile  # type: ignore[import-untyped]
+from elftools.elf.elffile import ELFFile
+from elftools.elf.sections import SymbolTableSection
 
 from pyocd_debug_mcp.adapters.swd_interface import TargetSessionHandle
 from pyocd_debug_mcp.project_paths import resolve_project_path
@@ -40,23 +40,57 @@ def _normalize_elf_path(elf_path: Path | str) -> Path:
     return path
 
 
-def resolve_symbol(elf_path: Path | str, name: str) -> ResolvedSymbol:
-    path = _normalize_elf_path(elf_path)
-    elf = ELFBinaryFile(str(path))
-    try:
-        symbol: Any = elf.symbol_decoder.get_symbol_for_name(name)
-    finally:
-        elf.close()
-
-    if symbol is None:
-        raise SymbolLookupError(f"Symbol '{name}' was not found in {path}")
-
-    return ResolvedSymbol(
-        name=str(symbol.name),
-        address=int(symbol.address),
-        size=int(symbol.size),
-        type=str(symbol.type),
+def _defined_symbols(path: Path) -> tuple[ResolvedSymbol, ...]:
+    # pyOCD's name-keyed decoder has already discarded duplicate local names.
+    # Read the original tables; table membership is not definition identity.
+    definitions: dict[tuple[ResolvedSymbol, int | str, str], ResolvedSymbol] = {}
+    with path.open("rb") as stream:
+        elf = ELFFile(stream)
+        for table in elf.iter_sections():
+            if not isinstance(table, SymbolTableSection):
+                continue
+            for symbol in table.iter_symbols():
+                symbol_type = symbol["st_info"]["type"]
+                if symbol_type not in {"STT_FUNC", "STT_OBJECT"}:
+                    continue
+                section = symbol["st_shndx"]
+                # Imports have no definition; COMMON values are alignment, not addresses.
+                if section in {"SHN_UNDEF", "SHN_COMMON"}:
+                    continue
+                resolved = ResolvedSymbol(
+                    name=symbol.name,
+                    address=int(symbol["st_value"]),
+                    size=int(symbol["st_size"]),
+                    type=symbol_type,
+                )
+                # Keep aliases (different names) and distinct sections/bindings.
+                # Identical symtab/dynsym representations describe one definition.
+                definitions[(resolved, section, symbol["st_info"]["bind"])] = resolved
+    return tuple(
+        sorted(
+            definitions.values(),
+            key=lambda item: (item.name.casefold(), item.address, item.name, item.size, item.type),
+        )
     )
+
+
+def resolve_symbol(elf_path: Path | str, name: str) -> ResolvedSymbol:
+    """Resolve one exact name, refusing ambiguity before any target operation."""
+
+    path = _normalize_elf_path(elf_path)
+    matches = [symbol for symbol in _defined_symbols(path) if symbol.name == name]
+    if not matches:
+        raise SymbolLookupError(f"Symbol '{name}' was not found in {path}")
+    if len(matches) > 1:
+        candidates = ", ".join(
+            f"0x{symbol.address:08X} size={symbol.size} type={symbol.type}" for symbol in matches
+        )
+        raise SymbolLookupError(
+            f"Symbol '{name}' is ambiguous in {path}: {candidates}. "
+            "Use find_symbol to inspect the candidates, then use an explicit address with "
+            "the address-based memory or breakpoint operation and its required safety plan."
+        )
+    return matches[0]
 
 
 def find_symbols(
@@ -69,22 +103,9 @@ def find_symbols(
     if not normalized_query:
         raise SymbolLookupError("Symbol query must not be empty.")
     path = _normalize_elf_path(elf_path)
-    elf = ELFBinaryFile(str(path))
-    try:
-        matches = [
-            ResolvedSymbol(
-                name=str(symbol.name),
-                address=int(symbol.address),
-                size=int(symbol.size),
-                type=str(symbol.type),
-            )
-            for symbol in elf.symbol_decoder.symbol_dict.values()
-            if normalized_query in str(symbol.name).casefold()
-        ]
-    finally:
-        elf.close()
-    matches.sort(key=lambda item: (item.name.casefold(), item.address, item.name))
-    return tuple(matches)
+    return tuple(
+        symbol for symbol in _defined_symbols(path) if normalized_query in symbol.name.casefold()
+    )
 
 
 def read_symbol_u32(

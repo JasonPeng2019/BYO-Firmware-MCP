@@ -447,11 +447,12 @@ class HardwareInventoryService:
         counter: _RowIds,
     ) -> list[ProbeRow]:
         rows: list[ProbeRow] = []
-        seen: set[str] = set()
+        seen: set[tuple[str, str]] = set()
         for probe in listing.probes:
-            if probe.uid in seen:
-                continue
-            seen.add(probe.uid)
+            # The CLI carries no endpoint identity beyond the UID. Even identical
+            # labels may describe distinct probes, so preserve every observation;
+            # a repeated UID must remain ambiguous when a selector is resolved.
+            seen.add((probe.family.casefold(), probe.uid))
             rows.append(
                 ProbeRow(
                     provider=probe.family,
@@ -471,12 +472,20 @@ class HardwareInventoryService:
         # connection. A hardware UID remains the stable inventory key; a UID-less
         # provider is represented only by its exact live, session-local connection ID.
         for active in self.active_connections():
-            if active.probe_id in seen:
+            provider = active.probe_family or "unknown"
+            if any(
+                provider.casefold() == seen_provider
+                and (
+                    active.probe_id == uid
+                    or (active.probe_uid and stable_identity_equal(active.probe_uid, uid))
+                )
+                for seen_provider, uid in seen
+            ):
                 continue
-            seen.add(active.probe_id)
+            seen.add((provider.casefold(), active.probe_id))
             rows.append(
                 ProbeRow(
-                    provider=active.probe_family or "unknown",
+                    provider=provider,
                     probe_id=active.probe_id,
                     unique_id=active.probe_uid or None,
                     row_id=counter.next(),
@@ -823,8 +832,9 @@ class ProbeSelectionStore:
             if derived is None:
                 raise SelectionNotRecorded(
                     connection_id,
-                    "the assigned probe is no longer present; rerun setup routing to "
-                    "choose the current physical connection",
+                    "the assigned probe is no longer present or its UID is ambiguous; "
+                    "disconnect probes sharing that UID and rerun setup_overview to "
+                    "choose one distinguishable connection",
                 )
             self._require_registered_provider(derived)
             self.record(derived)
@@ -833,8 +843,9 @@ class ProbeSelectionStore:
         if row is None:
             raise SelectionDisappeared(
                 connection_id,
-                "the selected probe is no longer present; rerun setup routing to choose "
-                "the current physical connection",
+                "the selected probe is no longer present or its UID is ambiguous; "
+                "disconnect probes sharing that UID and rerun setup_overview to choose "
+                "one distinguishable connection",
             )
         if (
             recorded.hook_source_sha256 is not None
@@ -864,12 +875,18 @@ class ProbeSelectionStore:
 
 @dataclass(frozen=True, slots=True)
 class SessionUartSelection:
-    """A UART endpoint that has no stable identity, chosen for this run only."""
+    """A run-local UART observation or explicit choice, never a stable pairing.
+
+    An explicit choice binds only the normalized port path and session identity
+    scope in this process. Discovery provenance and descriptions do not identify
+    physical wiring. Inferred observations must be scored against fresh inventory.
+    """
 
     board_id: str
     port_path: str
     description: str
     provenance: tuple[str, ...]
+    explicit: bool = True
 
     @property
     def normalized_port(self) -> str:
@@ -881,8 +898,9 @@ class SessionUartSelectionStore:
 
     Session-local endpoints must never reach `AttachmentCache`: `_validated_identity`
     raises for them, and that refusal is a routing decision, not an error to swallow.
-    This store is the deliberate alternative -- cleared on disconnect, on hook refresh,
-    and whenever the endpoint stops appearing.
+    Inferred observations remain available as run-local hints, but only explicit
+    choices can be reused for routing. Missing explicit choices are retained so
+    disappearance cannot authorize a fresh guess. Hook refresh clears the map.
     """
 
     __slots__ = ("_guard", "_selections")
@@ -893,6 +911,9 @@ class SessionUartSelectionStore:
 
     def record(self, selection: SessionUartSelection) -> None:
         with self._guard:
+            previous = self._selections.get(selection.board_id)
+            if previous is not None and previous.explicit and not selection.explicit:
+                return
             self._selections[selection.board_id] = selection
 
     def recorded(self, board_id: str) -> SessionUartSelection | None:
@@ -911,7 +932,7 @@ class SessionUartSelectionStore:
         """Re-derive a session selection; retain a failed choice for explicit routing."""
 
         recorded = self.recorded(board_id)
-        if recorded is None:
+        if recorded is None or not recorded.explicit:
             return None
         matches = [
             row
@@ -933,13 +954,12 @@ def derive_selection_from_token(
     """Recover a selection from a bare connection token, matching the legacy rule.
 
     FIX 8 (C8): a canonical (provider-qualified) token resolves to exactly the named
-    provider's row -- no guessing, and no cross-provider collision, matching what
+    provider's sole row -- no guessing, and no cross-provider collision, matching what
     `find_selected_row` (the *recorded*-selection path) already enforced.
 
     A legacy `probe:{uid}` token (or a bare uid) has no provider to key on. If it
-    matches rows from more than one DISTINCT provider, that is genuine ambiguity --
-    the exact physical-collision case the provider-qualified format exists to prevent
-    -- and this returns `None` rather than silently picking the first match, so the
+    matches more than one row, within or across providers, the UID is ambiguous
+    and this returns `None` rather than silently picking the first match, so the
     caller (`ProbeSelectionStore.resolve`) raises the typed `SelectionDisappeared`
     refusal instead of possibly resolving to the wrong physical device. Needed at all
     because an assignment can predate any recorded selection, and refusing those
@@ -954,18 +974,19 @@ def derive_selection_from_token(
     parsed = parse_probe_connection_id(candidate)
     if parsed is not None:
         provider, uid = parsed
-        for row in snapshot.probes:
-            if row.provider.casefold() != provider.casefold():
-                continue
-            if stable_identity_equal(uid, row.probe_id) or stable_identity_equal(
-                uid, row.stable_identity
-            ):
-                return ProbeSelection.from_row(connection_id, row)
-        return None
+        matches = [
+            row
+            for row in snapshot.probes
+            if row.provider.casefold() == provider.casefold()
+            and (
+                stable_identity_equal(uid, row.probe_id)
+                or stable_identity_equal(uid, row.stable_identity)
+            )
+        ]
+        return ProbeSelection.from_row(connection_id, matches[0]) if len(matches) == 1 else None
 
     # Legacy / provider-less form: strip a bare "probe:" prefix if present, then match
-    # on UID text alone across ALL providers -- but refuse if more than one distinct
-    # provider's row matches, rather than silently returning the first.
+    # on UID text alone across ALL providers, refusing any non-unique match.
     uid_candidate = candidate
     if uid_candidate.casefold().startswith(LEGACY_PROBE_CONNECTION_PREFIX):
         uid_candidate = uid_candidate.split(":", 1)[1]
@@ -981,8 +1002,7 @@ def derive_selection_from_token(
         matches = [
             row for row in snapshot.probes if row.probe_id.casefold() == candidate.casefold()
         ]
-    distinct_providers = {row.provider.casefold() for row in matches}
-    if len(distinct_providers) != 1:
+    if len(matches) != 1:
         return None
     return ProbeSelection.from_row(connection_id, matches[0])
 
@@ -990,6 +1010,7 @@ def derive_selection_from_token(
 def find_selected_row(selection: ProbeSelection, snapshot: InventorySnapshot) -> ProbeRow | None:
     """Locate the row a recorded selection still refers to, within its provider."""
 
+    matches = []
     for row in snapshot.probes:
         if row.provider != selection.provider:
             continue
@@ -997,11 +1018,11 @@ def find_selected_row(selection: ProbeSelection, snapshot: InventorySnapshot) ->
             # A session token identifies only that live worker, so only an exact match
             # counts; it is deliberately not stable across reconnects.
             if row.identity_scope == "session" and row.probe_id == selection.connection_id:
-                return row
+                matches.append(row)
             continue
         if stable_identity_equal(row.stable_identity, selection.stable_identity):
-            return row
-    return None
+            matches.append(row)
+    return matches[0] if len(matches) == 1 else None
 
 
 def snapshot_from_validation_inventory(inventory: ValidationInventory) -> InventorySnapshot:

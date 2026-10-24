@@ -21,6 +21,27 @@ from tests.tiered_acceptance_support import (
 class TieredAcceptanceMonitorIsolationTests(unittest.TestCase):
     """The seven observed acceptance error-path reports must be disposable."""
 
+    def test_fixture_closes_active_ledger_and_delivery_before_removing_data(self) -> None:
+        """E01: a fixture must end the real server lifecycle before strict deletion."""
+
+        with isolated_project() as project_root:
+            monitor_root = project_root / MONITOR_RELATIVE
+            with tiered_test_server(project_root) as server:
+                monitor = server._monitor
+                monitor.boot()
+                monitor.bind_workspace(project_root)
+                handle = monitor._ledger._handle
+                self.assertIsNotNone(handle)
+                self.assertFalse(handle.closed)
+                self.assertTrue(Path(handle.name).is_file())
+                thread = monitor._delivery._thread
+                self.assertIsNotNone(thread)
+                self.assertTrue(thread.is_alive())
+            self.assertTrue(handle.closed)
+            self.assertIsNone(monitor._ledger._handle)
+            self.assertFalse(thread.is_alive())
+            self.assertFalse(monitor_root.exists())
+
     def test_tiered_server_reports_stay_project_local_and_teardown_removes_them(self) -> None:
         """An inherited monitor root cannot receive an in-process acceptance report."""
 

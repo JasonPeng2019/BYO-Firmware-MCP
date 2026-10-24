@@ -391,7 +391,11 @@ class TieredRecoveryAcceptanceTests(unittest.TestCase):
                         {"board_id": BOARD, "recovery_mechanism": "backend_mass_erase"},
                     )
                 )
-            self.assertEqual(manual.status("mass-erase").state, "consumed")
+            # VI03: the spent grant is retired to a clean lock, never back to unlocked.
+            grant = manual.status("mass-erase")
+            self.assertEqual(grant.state, "locked")
+            self.assertIsNone(grant.grant_id)
+            self.assertIsNone(grant.claim_id)
             self.assertTrue(any(call[0] == "recover" for call in backend.calls))
             self.assertIsNone(server.connection_manager.maybe_connection(BOARD))
             self.assertIsNone(server.gate_manager.snapshot(BOARD))

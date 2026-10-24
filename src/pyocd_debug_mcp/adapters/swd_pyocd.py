@@ -21,8 +21,11 @@ from pyocd.core.exceptions import (  # type: ignore[import-untyped]
     TransferError,
 )
 from pyocd.core.helpers import ConnectHelper  # type: ignore[import-untyped]
+from pyocd.core.session import Session  # type: ignore[import-untyped]
 from pyocd.flash.eraser import FlashEraser  # type: ignore[import-untyped]
 from pyocd.flash.file_programmer import FileProgrammer  # type: ignore[import-untyped]
+from pyocd.probe.aggregator import DebugProbeAggregator  # type: ignore[import-untyped]
+from pyocd.probe.tcp_client_probe import TCPClientProbe  # type: ignore[import-untyped]
 from pyocd.target.pack.cmsis_pack import CmsisPack  # type: ignore[import-untyped]
 from pyocd.target.pack.pack_target import (  # type: ignore[import-untyped]
     TARGET,
@@ -386,6 +389,44 @@ def _close_session(session: object) -> None:
             directory.cleanup()
 
 
+def _choose_unique_probe(probe_uid: str | None) -> Any:
+    """Resolve existing pyOCD selector syntax without its first-exact-match shortcut."""
+
+    probe_classes, uid, is_explicit = DebugProbeAggregator._get_probe_classes(probe_uid)
+    matches = []
+    exact_matches = []
+    for probe_class in probe_classes:
+        match_uid = uid
+        if uid is not None and is_explicit and issubclass(probe_class, TCPClientProbe):
+            # TCP selectors are endpoints, not USB partial IDs. Preserve the
+            # provider's existing default/zero-padded port interpretation.
+            hostname, port = probe_class._extract_address(uid)
+            match_uid = f"remote:{hostname}:{port}"
+        for probe in probe_class.get_all_connected_probes(uid, is_explicit):
+            observed_uid = (probe.unique_id or "").lower()
+            if match_uid is not None and match_uid.lower() not in observed_uid:
+                continue
+            # A repeated reference to the same provider-owned object is one
+            # endpoint. Equal UIDs/descriptions on distinct objects prove no such
+            # thing, and must never be collapsed into a falsely unique match.
+            if not any(probe is previous for previous in matches):
+                matches.append(probe)
+                if match_uid is not None and match_uid.lower() == observed_uid:
+                    exact_matches.append(probe)
+    # Retain full-ID precedence only after enumerating all eligible providers:
+    # get_probe_with_id would silently hide duplicate exact observations.
+    if exact_matches:
+        matches = exact_matches
+    if len(matches) > 1:
+        raise TargetConnectionError(
+            f"Probe selection is ambiguous: {len(matches)} native observations match "
+            f"{probe_uid!r}. Use a full provider-qualified UID for distinct identifiers; "
+            "if probes share that UID, disconnect extras and rerun setup_overview. "
+            "A shared UID alone cannot identify one endpoint."
+        )
+    return matches[0] if matches else None
+
+
 class PyOCDSWDInterface(SWDInterface):
     """Child-local native pyOCD route for one provider-owned session."""
 
@@ -408,12 +449,14 @@ class PyOCDSWDInterface(SWDInterface):
         try:
             try:
                 with _backend_stdout_to_stderr():
-                    session = ConnectHelper.session_with_chosen_probe(
-                        blocking=False,
-                        return_first=True,
-                        unique_id=probe_uid,
-                        auto_open=False,
-                        options=isolated_options,
+                    # Bind Session to the sole enumerated object. Asking
+                    # session_with_chosen_probe to enumerate again reintroduces
+                    # get_probe_with_id's first-match path even with return_first=False.
+                    probe = _choose_unique_probe(probe_uid)
+                    session = (
+                        Session(probe, auto_open=False, options=isolated_options)
+                        if probe is not None
+                        else None
                     )
             finally:
                 # Windows cannot remove cwd, including on construction failure.
@@ -539,8 +582,15 @@ class PyOCDSWDInterface(SWDInterface):
                 retry_session = self._choose_session(probe_uid=None, options=options)
             if retry_session is None:
                 raise ProbeNotFoundError("No matching debug probe found.") from exc
-            retry_uid = getattr(getattr(retry_session, "probe", None), "unique_id", None)
-            if not _same_probe_uid(probe_uid, retry_uid):
+            retry_probe = getattr(retry_session, "probe", None)
+            retry_uid = getattr(retry_probe, "unique_id", None)
+            probe_classes, selected_uid, is_explicit = DebugProbeAggregator._get_probe_classes(
+                probe_uid
+            )
+            same_provider = not is_explicit or any(
+                isinstance(retry_probe, probe_class) for probe_class in probe_classes
+            )
+            if not same_provider or not _same_probe_uid(selected_uid, retry_uid):
                 try:
                     _close_session(retry_session)
                 except Exception:

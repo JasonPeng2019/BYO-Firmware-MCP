@@ -128,7 +128,7 @@ from pyocd_debug_mcp.adapters import swd_pyocd
 from pyocd_debug_mcp.board_config import BoardConfig
 from pyocd_debug_mcp.target_errors import TargetConnectionError
 
-def noisy_selection(**_kwargs):
+def noisy_selection(*_args, **_kwargs):
     print("selection-python", flush=True)
     os.write(1, b"selection-fd\n")
     raise TargetConnectionError("typed selection failure")
@@ -151,7 +151,7 @@ board = BoardConfig(
 )
 payload = {}
 with (
-    patch.object(swd_pyocd.ConnectHelper, "session_with_chosen_probe", noisy_selection),
+    patch.object(swd_pyocd, "_choose_unique_probe", noisy_selection),
     patch.object(swd_pyocd.ConnectHelper, "get_all_connected_probes", noisy_discovery),
     patch.object(swd_pyocd, "list_connected_probes_cli", return_value=[]),
 ):

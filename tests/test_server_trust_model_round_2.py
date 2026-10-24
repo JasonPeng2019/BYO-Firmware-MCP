@@ -6,9 +6,7 @@ import json
 import os
 import tempfile
 import unittest
-from dataclasses import dataclass
 from pathlib import Path
-from unittest.mock import patch
 
 from elftools.common.exceptions import ELFError
 
@@ -27,23 +25,7 @@ from pyocd_debug_mcp.safety.linker import (
 from pyocd_debug_mcp.services.symbols import SymbolLookupError, find_symbols
 from pyocd_debug_mcp.setup_flow.targets import TargetResolutionError, TargetResolver
 
-
-@dataclass(frozen=True)
-class _Symbol:
-    name: str
-    address: int
-    size: int = 4
-    type: str = "STT_FUNC"
-
-
-class _FakeElf:
-    def __init__(self, symbols: list[_Symbol]) -> None:
-        self.symbol_decoder = type(
-            "Decoder", (), {"symbol_dict": {symbol.name: symbol for symbol in symbols}}
-        )()
-
-    def close(self) -> None:
-        pass
+from tests.elf_symbol_fixture import FUNC, TEXT, ElfSymbol, elf32_symbols
 
 
 class RoundTwoTrustedCallerTests(unittest.TestCase):
@@ -68,15 +50,14 @@ class RoundTwoTrustedCallerTests(unittest.TestCase):
         )
 
     def test_symbol_search_returns_every_sorted_match_without_a_hidden_limit(self) -> None:
-        symbols = [_Symbol(f"Match_{index:02d}", 0x2000 + (30 - index)) for index in range(25)]
+        symbols = [
+            ElfSymbol(f"Match_{index:02d}", 0x08000000 + (30 - index) * 4, type=FUNC, section=TEXT)
+            for index in range(25)
+        ]
         with tempfile.TemporaryDirectory() as directory:
             elf_path = Path(directory) / "symbols.elf"
-            elf_path.write_bytes(b"not parsed by the fake reader")
-            with patch(
-                "pyocd_debug_mcp.services.symbols.ELFBinaryFile",
-                return_value=_FakeElf(symbols),
-            ):
-                matches = find_symbols(elf_path, "match")
+            elf_path.write_bytes(elf32_symbols(symbols))
+            matches = find_symbols(elf_path, "match")
 
             self.assertEqual(len(matches), 25)
             self.assertEqual([item.name for item in matches], sorted(item.name for item in symbols))

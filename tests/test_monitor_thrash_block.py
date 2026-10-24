@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import unittest
 from datetime import datetime, timedelta, timezone
+from unittest.mock import patch
 
 from pyocd_debug_mcp.monitor.block import (
     STALENESS_THRESHOLD,
@@ -19,6 +20,13 @@ from pyocd_debug_mcp.monitor.block import (
     evaluate,
 )
 from pyocd_debug_mcp.monitor.thrash import ThrashDetector
+from pyocd_debug_mcp.monitor.transport import (
+    DeliveryState,
+    NullTransport,
+    SimulatedRemoteTransport,
+    TestTransport,
+)
+from pyocd_debug_mcp.services.session_runtime import PolicyRefusal
 from tests.monitor_support import MonitorTestCase
 
 
@@ -241,12 +249,147 @@ class BlockLifecycle(MonitorTestCase):
         block = StalenessBlock(self.server_data)
         block.inject(Anchor(datetime.now(timezone.utc) - timedelta(days=30), "f", "filler"))
         message = block.refusal_message()
-        self.assertIn("network", message.lower())
-        self.assertIn("deliver", message.lower())
+        self.assertIn("server_health_check", message)
+        self.assertIn("confirmed delivery clears", message)
+        self.assertNotIn("Restore network", message)
 
     def test_describe_is_side_effect_free(self) -> None:
         block = StalenessBlock(self.server_data)
         self.assertEqual(block.describe(), block.describe())
+
+
+class BlockDiagnostics(MonitorTestCase):
+    """The age policy is unchanged, even when no delivery was attempted."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.now = datetime(2026, 10, 1, tzinfo=timezone.utc)
+        self.clock = self.enterContext(
+            patch("pyocd_debug_mcp.monitor.block.datetime", wraps=datetime)
+        )
+        self.clock.now.return_value = self.now
+        transport_clock = self.enterContext(
+            patch("pyocd_debug_mcp.monitor.transport.datetime", wraps=datetime)
+        )
+        transport_clock.now.return_value = self.now
+
+    def test_idle_local_anchors_report_age_and_provenance_without_network_diagnosis(self) -> None:
+        # The currently configured null transport differs from the old anchor.
+        monitor = self.make_monitor(transport=NullTransport())
+        for transport, origin in (("simulated_remote", "filler"), ("test", "test")):
+            with self.subTest(anchor_transport=transport):
+                anchor = Anchor(self.now - timedelta(days=30), transport, origin)
+                monitor._block.inject(anchor)
+                with self.assertRaises(PolicyRefusal) as caught:
+                    monitor.check_block()
+                self.assertEqual(caught.exception.code, "monitor/logging-stale")
+                message = str(caught.exception)
+                for expected in (
+                    "30 days old", "limit: 14 days", "2026-09-01T00:00:00Z",
+                    f"transport: {transport}", f"origin: {origin}",
+                    "server_health_check", "local/simulated acknowledgement",
+                    "unconfigured transport cannot refresh", "Reporting, check-in",
+                ):
+                    self.assertIn(expected, message)
+                self.assertNotIn("Restore network", message)
+                self.assertNotIn("has not been able to", message)
+                self.assertNotIn("pending log", message)
+                self.assertIs(monitor._block.anchor, anchor)
+                self.assertEqual(monitor._delivery.describe()["state"], "not_configured")
+
+    def test_dispatch_preserves_the_exact_age_boundary(self) -> None:
+        monitor = self.make_monitor(transport=NullTransport())
+        for age, state in (
+            (timedelta(days=1), BlockState.ARMED),
+            (timedelta(days=14) - timedelta(microseconds=1), BlockState.ARMED),
+            (timedelta(days=14), BlockState.TRIPPED),
+            (timedelta(days=30), BlockState.TRIPPED),
+        ):
+            with self.subTest(age=age):
+                anchor = Anchor(self.now - age, "simulated_remote", "filler")
+                monitor._block.inject(anchor)
+                self.assertIs(evaluate(anchor, self.now), state)
+                self.assertIs(monitor._block.state(), state)
+                if state is BlockState.TRIPPED:
+                    with self.assertRaises(PolicyRefusal):
+                        monitor.check_block()
+                else:
+                    self.assertIsNone(monitor.check_block())
+
+    def test_absent_future_and_unusable_clock_still_allow_dispatch(self) -> None:
+        monitor = self.make_monitor(transport=NullTransport())
+        cases = (
+            (None, self.now, BlockState.DORMANT),
+            (Anchor(self.now + timedelta(days=1), "test", "test"),
+             self.now, BlockState.CLOCK_UNUSABLE),
+            (Anchor(self.now - timedelta(days=30), "test", "test"),
+             None, BlockState.CLOCK_UNUSABLE),
+        )
+        for anchor, now, state in cases:
+            with self.subTest(state=state, now=now):
+                monitor._block.inject(anchor)
+                self.assertIs(evaluate(anchor, now), state)
+                self.clock.now.side_effect = OSError("clock unavailable") if now is None else None
+                self.assertIs(monitor._block.state(), state)
+                self.assertIsNone(monitor.check_block())
+        self.clock.now.side_effect = None
+
+    def _deliver_sealed_segment(self, transport):
+        monitor = self.make_monitor(transport=transport)
+        anchor = Anchor(self.now - timedelta(days=30), "simulated_remote", "filler")
+        monitor._block.inject(anchor)
+        from tests.test_monitor_ledger import add_snapshot
+
+        add_snapshot(monitor._ledger)
+        sealed = monitor._ledger.seal()
+        assert sealed is not None
+        monitor._delivery.drain_for_closeout([sealed], budget=2.0)
+        return monitor, anchor, sealed
+
+    def test_confirmed_delivery_refreshes_anchor_and_allows_dispatch(self) -> None:
+        monitor, _, sealed = self._deliver_sealed_segment(TestTransport())
+        self.assertFalse(sealed.path.exists())
+        self.assertEqual(monitor._delivery.describe()["state"], DeliveryState.SENT.value)
+        self.assertEqual(monitor._block.anchor, Anchor(self.now, "test", "test"))
+        self.assertIs(monitor._block.state(), BlockState.ARMED)
+        self.assertIsNone(monitor.check_block())
+
+    def test_simulated_acknowledgement_still_refreshes_anchor(self) -> None:
+        transport = SimulatedRemoteTransport(self.simulated_remote, "ws")
+        self.addCleanup(transport.close)
+        monitor, _, sealed = self._deliver_sealed_segment(transport)
+        self.assertFalse(sealed.path.exists())
+        self.assertTrue(list((self.simulated_remote / "ws" / "ledger").glob("*.jsonl")))
+        self.assertEqual(monitor._delivery.describe()["state"], "filler_simulated")
+        self.assertFalse(monitor._delivery.describe()["durable_off_box"])
+        self.assertEqual(monitor._block.anchor, Anchor(self.now, "simulated_remote", "filler"))
+        self.assertIsNone(monitor.check_block())
+
+    def test_actual_failed_delivery_leaves_the_old_anchor_and_gate(self) -> None:
+        monitor, anchor, sealed = self._deliver_sealed_segment(TestTransport(fail_always=True))
+        self.assertTrue(sealed.path.exists())
+        self.assertEqual(monitor._delivery.describe()["state"], "failed")
+        self.assertIs(monitor._block.anchor, anchor)
+        with self.assertRaises(PolicyRefusal) as caught:
+            monitor.check_block()
+        self.assertIn("transport: simulated_remote", str(caught.exception))
+        self.assertIn("server_health_check", str(caught.exception))
+        self.assertNotIn("Restore network", str(caught.exception))
+
+    def test_null_transport_cannot_refresh_a_previous_anchor(self) -> None:
+        monitor, anchor, sealed = self._deliver_sealed_segment(NullTransport())
+        self.assertTrue(sealed.path.exists())
+        self.assertEqual(monitor._delivery.describe()["state"], "not_configured")
+        self.assertIs(monitor._block.anchor, anchor)
+        with self.assertRaises(PolicyRefusal):
+            monitor.check_block()
+
+    def test_refusal_keeps_file_io_off_the_dispatch_path(self) -> None:
+        monitor = self.make_monitor(transport=NullTransport())
+        monitor._block.inject(Anchor(self.now - timedelta(days=30), "test", "test"))
+        with patch("pathlib.Path.open", side_effect=AssertionError("dispatch did file I/O")):
+            with self.assertRaises(PolicyRefusal):
+                monitor.check_block()
 
 
 if __name__ == "__main__":

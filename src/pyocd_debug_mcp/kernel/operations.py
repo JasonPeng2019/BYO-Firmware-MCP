@@ -763,14 +763,6 @@ async def dispatch(
         raise ValueError("timeout must be a positive finite number")
 
     managed = manager.create(request_id, tool_name, board_id, timeout)
-    if resource_binder is not None:
-        try:
-            resource_binder(managed)
-        except BaseException:
-            managed.cleanup()
-            managed.done.set()
-            manager.finish(managed)
-            raise
     token = _current_operation.set(managed)
     if inspect.iscoroutinefunction(operation):
         reservation = manager.batch_lock(board_id)
@@ -778,21 +770,35 @@ async def dispatch(
         acquired_reservation = False
         reservation_token = None
         try:
-            if not owns_reservation and isinstance(reservation, type(threading.Lock())):
-                concrete_reservation = cast(Any, reservation)
-                while not concrete_reservation.acquire(blocking=False):
-                    managed.checkpoint()
-                    await anyio.sleep(BOARD_LOCK_POLL_SECONDS)
-                acquired_reservation = True
-            if tool_name == "action_batch" and board_id is not None:
-                reservation_token = _reserved_batch_boards.set(
-                    _reserved_batch_boards.get() | {board_id}
-                )
-            managed.mark_running()
-            if before_execution is not None:
-                before_execution()
-            managed.mark_handler_started()
-            with anyio.fail_after(timeout):
+            # Queue waiting and execution share one budget, including batch parents.
+            with anyio.fail_after(timeout) as deadline:
+                if not owns_reservation and isinstance(reservation, type(threading.Lock())):
+                    concrete_reservation = cast(Any, reservation)
+                    while not concrete_reservation.acquire(blocking=False):
+                        managed.checkpoint()
+                        await anyio.sleep(BOARD_LOCK_POLL_SECONDS)
+                    acquired_reservation = True
+                managed.checkpoint()
+                # Acquisition can succeed before the overdue scope gets a chance to
+                # deliver cancellation. Do not bind or preflight an expired waiter.
+                if anyio.current_time() >= deadline.deadline:
+                    raise TimeoutError
+                if tool_name == "action_batch" and board_id is not None:
+                    reservation_token = _reserved_batch_boards.set(
+                        _reserved_batch_boards.get() | {board_id}
+                    )
+                # Bind board resources only once this operation holds the board, so a
+                # queued interruption cannot clean up another operation's resources.
+                if resource_binder is not None:
+                    resource_binder(managed)
+                managed.mark_running()
+                if before_execution is not None:
+                    before_execution()
+                managed.checkpoint()
+                # Synchronous preflight can spend the remaining budget without yielding.
+                if anyio.current_time() >= deadline.deadline:
+                    raise TimeoutError
+                managed.mark_handler_started()
                 async_operation = cast(Callable[[], Awaitable[T]], operation)
                 result = await async_operation()
             managed.result = result
@@ -801,6 +807,8 @@ async def dispatch(
         except TimeoutError as exc:
             managed.request_cancel("operation timeout")
             managed.finish(OperationState.TIMED_OUT)
+            if managed.execution_started_at is None and board_id is not None:
+                raise BoardBusyError(tool_name, board_id, timeout) from exc
             raise OperationTimeoutError(tool_name, timeout, board_id=board_id) from exc
         except anyio.get_cancelled_exc_class():
             managed.request_cancel("MCP request cancelled or client disconnected")
@@ -845,6 +853,9 @@ async def dispatch(
                 try:
                     with execution_lock or nullcontext():
                         managed.checkpoint()
+                        # Bind only after acquiring the board; see the async path.
+                        if resource_binder is not None:
+                            resource_binder(managed)
                         managed.mark_running()
                         if before_execution is not None:
                             before_execution()

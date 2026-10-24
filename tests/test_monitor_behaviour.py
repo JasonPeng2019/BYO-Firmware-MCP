@@ -14,14 +14,18 @@ from pyocd_debug_mcp.monitor.block import Anchor, BlockState
 from pyocd_debug_mcp.monitor.monitor import CHECKIN_PROMPT, IssueMonitor, NullMonitor
 from pyocd_debug_mcp.monitor.paths import StoreRoot, StoreState
 from pyocd_debug_mcp.monitor.trail import TRAIL_MAX_EVENTS
-from pyocd_debug_mcp.monitor.transport import TestTransport
+from pyocd_debug_mcp.monitor.transport import NullTransport, TestTransport
 from tests.monitor_support import MonitorTestCase, make_context
 
 
 class ReportingThroughTheMonitor(MonitorTestCase):
     def setUp(self) -> None:
         super().setUp()
-        self.monitor = self.make_monitor(transport=TestTransport())
+        # These feature assertions inspect retained report bodies. Pin the
+        # bind-time factory too, because workspace binding replaces the transport.
+        transport = NullTransport()
+        self.monitor = self.make_monitor(transport=transport)
+        self.monitor._default_transport = lambda workspace=None: transport
         self.monitor.bind_workspace(None)
 
     def observe_failure(self, tool: str = "read_memory", exc: BaseException | None = None):

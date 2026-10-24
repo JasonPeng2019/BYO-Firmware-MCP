@@ -127,6 +127,7 @@ class UnlockToolServices:
     reserve_manual_mass_erase: Callable[[UnlockBinding], str] | None = None
     consume_manual_mass_erase: Callable[[UnlockBinding, str], None] | None = None
     abandon_manual_mass_erase: Callable[[UnlockBinding, str], None] | None = None
+    retire_manual_mass_erase: Callable[[UnlockBinding, str], None] | None = None
     policy_profile: Callable[[str], BoardProfile] | None = None
     policy_safety: Callable[[str], SafetyMapDocument] | None = None
     policy_lite_recovery: Callable[[str], LiteRecoveryPolicy | None] | None = None
@@ -206,13 +207,34 @@ class UnlockCoordinator:
         binding: UnlockBinding | None,
         claim_id: str | None,
         primary: BaseException,
-    ) -> None:
-        """Best-effort reservation cleanup must not replace the real failure."""
+    ) -> bool:
+        """Report reservation cleanup failure without replacing the real failure."""
 
         try:
             self._abandon_manual_claim(binding, claim_id)
         except Exception as cleanup_error:  # noqa: BLE001 - keep the submit/backend error primary
             primary.add_note(f"manual mass-erase reservation cleanup failed: {cleanup_error}")
+            return False
+        return True
+
+    def _retire_manual_claim(self, binding: UnlockBinding, claim_id: str) -> None:
+        if self.services.retire_manual_mass_erase is not None:
+            self.services.retire_manual_mass_erase(binding, claim_id)
+
+    def _retire_without_masking(
+        self,
+        binding: UnlockBinding,
+        claim_id: str,
+        primary: BaseException,
+    ) -> bool:
+        """Return whether retirement was confirmed, retaining the real failure."""
+
+        try:
+            self._retire_manual_claim(binding, claim_id)
+        except Exception as cleanup_error:  # noqa: BLE001 - keep the attempt error primary
+            primary.add_note(f"manual mass-erase grant retirement failed: {cleanup_error}")
+            return False
+        return True
 
     def _identity(
         self, board_id: str
@@ -781,13 +803,56 @@ class UnlockCoordinator:
                 "unlock/parameter-mismatch",
                 "The recovery mechanism differs from the approved typed vendor operation.",
             )
-        if approved.mechanism.mass_erase:
-            if manual_claim is None or self.services.consume_manual_mass_erase is None:
-                raise PlanRefusal(
-                    "manual/locked",
-                    "Ask the human to invoke $mass-erase for the current disclosed recovery scope.",
-                )
+        if not approved.mechanism.mass_erase:
+            return self._attempt(board_id, approved)
+        if manual_claim is None or self.services.consume_manual_mass_erase is None:
+            raise PlanRefusal(
+                "manual/locked",
+                "Ask the human to invoke $mass-erase for the current disclosed recovery scope.",
+            )
+        try:
             self.services.consume_manual_mass_erase(approved, manual_claim)
+        except BaseException as primary:
+            # Consumption may fail before or after its durable write; whichever
+            # state remains, this claim never reaches the backend.
+            abandoned = self._abandon_without_masking(approved, manual_claim, primary)
+            retired = self._retire_without_masking(approved, manual_claim, primary)
+            if not (abandoned and retired) and isinstance(primary, Exception):
+                # MCP renders str(error); keep the consumption cause and cancellation identity.
+                # Retirement can no-op on reserved state after failed abandonment.
+                raise RuntimeError(
+                    f"{primary}\nClosure of the manual mass-erase grant could not be confirmed "
+                    "after abandonment and retirement; the old grant remains unusable. "
+                    "A server restart may be required, "
+                    "followed by a new disclosure and a distinct human $mass-erase invocation."
+                ) from primary
+            raise
+        try:
+            result = self._attempt(board_id, approved)
+        except BaseException as primary:
+            retired = self._retire_without_masking(approved, manual_claim, primary)
+            if not retired and isinstance(primary, Exception):
+                # MCP renders str(error), so notes alone cannot relay this remedy.
+                # Keep cancellation semantics and the original backend cause intact.
+                raise RuntimeError(
+                    f"{primary}\nRetirement of the spent manual mass-erase grant could not be "
+                    "confirmed; the old grant remains unusable. A server restart may be required, "
+                    "followed by a new disclosure and a distinct human $mass-erase invocation."
+                ) from primary
+            raise
+        try:
+            self._retire_manual_claim(approved, manual_claim)
+        except Exception as retire_error:
+            raise RuntimeError(
+                f"{result} Retirement of the spent manual mass-erase grant could not be "
+                f"confirmed ({retire_error}); the old grant remains unusable. If a fresh "
+                "$mass-erase invocation is refused, restart the server and request a new disclosure."
+            ) from retire_error
+        return result
+
+    def _attempt(self, board_id: str, approved: UnlockBinding) -> str:
+        """Run one recovery attempt; readiness is invalidated even if reporting fails."""
+
         plan_id = approved.plan_id
         fields = {
             "live_identity": asdict(approved.identity),
@@ -805,12 +870,15 @@ class UnlockCoordinator:
             )
         except BaseException as exc:
             backend_error = exc
-            self._report(
-                status="unlock_failed_revalidation_required",
-                board_id=board_id,
-                plan_id=plan_id,
-                fields=fields,
-            )
+            try:
+                self._report(
+                    status="unlock_failed_revalidation_required",
+                    board_id=board_id,
+                    plan_id=plan_id,
+                    fields=fields,
+                )
+            except Exception as report_error:  # noqa: BLE001 - keep the backend error primary
+                exc.add_note(f"recovery failure report could not be written: {report_error}")
         try:
             self.services.finalize_recovery(board_id)
         except Exception as cleanup_error:
@@ -819,29 +887,39 @@ class UnlockCoordinator:
                     f"recovery cleanup after failed backend attempt also failed: {cleanup_error}"
                 )
             else:
-                report = self._report(
-                    status="unlock_completed_cleanup_uncertain_reconnect_required",
-                    board_id=board_id,
-                    plan_id=plan_id,
-                    fields={**fields, "backend": backend, "cleanup_error": str(cleanup_error)},
-                )
+                try:
+                    report = self._report(
+                        status="unlock_completed_cleanup_uncertain_reconnect_required",
+                        board_id=board_id,
+                        plan_id=plan_id,
+                        fields={**fields, "backend": backend, "cleanup_error": str(cleanup_error)},
+                    )
+                    outcome = f"Report: {report}"
+                except Exception as report_error:  # noqa: BLE001 - recovery outcome stays primary
+                    outcome = f"The cleanup-uncertain report could not be written: {report_error}"
                 raise RuntimeError(
                     "Target recovery completed, but connection cleanup was uncertain. The old "
-                    f"connection was revoked; reconnect and run board_validate before further use. Report: {report}"
+                    f"connection was revoked; reconnect and run board_validate before further use. {outcome}"
                 ) from cleanup_error
         if backend_error is not None:
             raise backend_error
-        report = self._report(
-            status="unlock_completed_revalidation_required",
-            board_id=board_id,
-            plan_id=plan_id,
-            fields={**fields, "backend": backend},
-        )
-        return (
+        completed = (
             f"Target unlock completed using {approved.mechanism.description}. The operation "
             f"performed mass erase and consumed plan {plan_id}. The board was disconnected; "
-            f"reconnect and run board_validate before any debug, validation, read, or write action. Report: {report}"
+            "reconnect and run board_validate before any debug, validation, read, or write action."
         )
+        try:
+            report = self._report(
+                status="unlock_completed_revalidation_required",
+                board_id=board_id,
+                plan_id=plan_id,
+                fields={**fields, "backend": backend},
+            )
+        except Exception as report_error:
+            raise RuntimeError(
+                f"{completed} The completion report could not be written: {report_error}"
+            ) from report_error
+        return f"{completed} Report: {report}"
 
 
 def build_unlock_handlers(

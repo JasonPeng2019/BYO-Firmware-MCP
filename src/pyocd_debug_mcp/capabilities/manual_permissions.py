@@ -3,6 +3,8 @@
 The files are a coordination protocol with the shipped manual-only skills, not
 proof of human origin.  Server-issued tokens remain memory-only and every
 destructive/transition attempt is durably marked consumed before it runs.
+A terminal mass-erase attempt then retires its consumed grant to ``locked`` so
+only a fresh human invocation can authorize another attempt in the same run.
 """
 
 from __future__ import annotations
@@ -231,6 +233,45 @@ class ManualPermissionRepository:
                         or document.get("board_id") != board_id
                     ):
                         return
+                    self._atomic_write(
+                        self._action_path("mass-erase"),
+                        self._locked_document("mass-erase"),
+                    )
+                finally:
+                    self._unlink_claim_if_matches(transient_path, transient_claim)
+
+    def retire_mass_erase(
+        self,
+        board_id: str,
+        policy_digest: str,
+        binding_digest: str,
+        claim_id: str,
+    ) -> None:
+        """Close one terminal attempt's consumed grant to a clean locked state.
+
+        This is not a rollback to ``unlocked``: the consumed grant and its
+        claim stay dead.  It only lets a fresh human helper invocation
+        authorize another attempt in this same run.  A record owned by any
+        other claim is left untouched; a mismatched binding refuses and stays
+        consumed.
+        """
+
+        with self._guard:
+            self._require_ready()
+            with self._protocol_lock():
+                transient_path, transient_claim = self._acquire_claim("mass-erase")
+                try:
+                    document = self._load_action("mass-erase")
+                    if document["state"] != "consumed" or document.get("claim_id") != claim_id:
+                        return
+                    self._validate_binding(
+                        document,
+                        "mass-erase",
+                        board_id,
+                        self._field(document, "grant_id", str),
+                        policy_digest,
+                        binding_digest,
+                    )
                     self._atomic_write(
                         self._action_path("mass-erase"),
                         self._locked_document("mass-erase"),

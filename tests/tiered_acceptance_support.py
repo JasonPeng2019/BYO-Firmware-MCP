@@ -25,6 +25,7 @@ from typing import Any
 from unittest.mock import patch
 
 from pyocd_debug_mcp.adapters.swd_interface import TargetSessionHandle
+from pyocd_debug_mcp.probe_inventory import registered_provider_ids
 
 
 SERVER_ROOT = Path(__file__).resolve().parents[1]
@@ -280,24 +281,33 @@ def tiered_test_server(project_root: Path) -> Generator[Any, None, None]:
         monitor_paths._override_root,  # noqa: SLF001 - fixture isolation boundary
     )
     monitor_root = project_root.resolve() / MONITOR_RELATIVE
+    server = None
     try:
         with server_environment(project_root, BYO_MCP_TEST_SEAMS="1"):
             monitor_paths._reset_cache()  # noqa: SLF001 - import-time fixture isolation
             sys.modules.pop("pyocd_debug_mcp.server", None)
-            yield importlib.import_module("pyocd_debug_mcp.server")
+            server = importlib.import_module("pyocd_debug_mcp.server")
+            yield server
     finally:
-        target_control.configure_backend_for_tests(original_backend)
-        monitor_paths._reset_cache()  # noqa: SLF001 - do not retain a disposable root
-        (
-            monitor_paths._cached_root,  # noqa: SLF001 - fixture isolation boundary
-            monitor_paths._cached_salt,  # noqa: SLF001 - fixture isolation boundary
-            monitor_paths._override_root,  # noqa: SLF001 - fixture isolation boundary
-        ) = original_monitor_cache
-        shutil.rmtree(monitor_root, ignore_errors=True)
-        discarded = sys.modules.pop("pyocd_debug_mcp.server", None)
-        package = sys.modules.get("pyocd_debug_mcp")
-        if package is not None and getattr(package, "server", None) is discarded:
-            delattr(package, "server")
+        try:
+            if server is not None:
+                # The fixture owns the imported server's lifecycle. Seal its
+                # active ledger and stop delivery before deleting monitor data.
+                server._monitor.closeout("test-fixture")  # noqa: SLF001
+        finally:
+            target_control.configure_backend_for_tests(original_backend)
+            monitor_paths._reset_cache()  # noqa: SLF001 - do not retain a disposable root
+            (
+                monitor_paths._cached_root,  # noqa: SLF001 - fixture isolation boundary
+                monitor_paths._cached_salt,  # noqa: SLF001 - fixture isolation boundary
+                monitor_paths._override_root,  # noqa: SLF001 - fixture isolation boundary
+            ) = original_monitor_cache
+            discarded = sys.modules.pop("pyocd_debug_mcp.server", None)
+            package = sys.modules.get("pyocd_debug_mcp")
+            if package is not None and getattr(package, "server", None) is discarded:
+                delattr(package, "server")
+            if monitor_root.exists():
+                shutil.rmtree(monitor_root)
 
 
 class DeterministicTargetBackend:
@@ -328,10 +338,21 @@ class DeterministicTargetBackend:
         target = kwargs.get("target")
         if self.supported_targets is not None and target not in self.supported_targets:
             raise RuntimeError(f"unsupported target fixture refusal: {target!r}")
+        # Model the observed native UID, not the caller's provider selector.
+        # TCP is different: its observed UID already includes "remote:".
+        probe_uid = kwargs.get("unique_id")
+        if probe_uid:
+            provider, separator, uid = probe_uid.partition(":")
+            if (
+                separator
+                and provider.casefold() in registered_provider_ids()
+                and provider.casefold() != "remote"
+            ):
+                probe_uid = uid
         return TargetSessionHandle(
             session=object(),
             board=kwargs["board"],
-            probe_uid=kwargs.get("unique_id"),
+            probe_uid=probe_uid,
             route_used="tiered-acceptance-fake",
             target_override=kwargs.get("target"),
         )

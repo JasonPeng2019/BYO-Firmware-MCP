@@ -210,6 +210,55 @@ def _lookup_or_artifact_refusal(
     return _reverify_symbol_artifact(services, handle, selection) or _symbol_lookup_refusal(exc)
 
 
+def prepare_symbol_read(
+    services: MemoryToolServices,
+    board_id: str,
+    symbol: str,
+    width: int,
+    elf_artifact: str | None,
+) -> tuple[SymbolArtifactSelection, ResolvedSymbol] | PolicyRefusal:
+    """Validate a symbol read using local artifacts and mapped-memory policy only.
+
+    Dispatch can run this before starting the handler. The handler repeats it so
+    artifact changes between preflight and execution still refuse before I/O.
+    """
+
+    if not _valid_width(width):
+        return PolicyRefusal("memory/invalid-width", "width must be one of: 8, 16, 32.")
+    if not symbol.strip():
+        return PolicyRefusal("memory/empty-symbol", "symbol must not be empty.")
+    handle = services.handle_for(board_id)
+    selection, refusal = _select_symbol_artifact(services, handle, elf_artifact)
+    if selection is None:
+        assert refusal is not None
+        return refusal
+    try:
+        resolved = services.resolve_symbol(selection.path, symbol)
+    except SymbolLookupError as exc:
+        return _lookup_or_artifact_refusal(services, handle, selection, exc)
+    except (ELFError, OSError, RuntimeError, ValueError) as exc:
+        return _symbol_parse_refusal(exc)
+    refusal = _reverify_symbol_artifact(services, handle, selection)
+    if refusal is not None:
+        return refusal
+    refusal = symbol_scalar_refusal(resolved, width)
+    if refusal is not None:
+        return refusal
+    if resolved.size <= 0:
+        return PolicyRefusal(
+            "memory/symbol-size-unknown",
+            "The ELF does not describe this symbol as a sized variable; use a real "
+            "variable symbol or the planned raw-address path with an explicit width.",
+        )
+    if width // 8 > resolved.size:
+        return PolicyRefusal(
+            "memory/symbol-width-exceeds-object",
+            f"The {width}-bit read exceeds the {resolved.size}-byte symbol.",
+        )
+    services.check_memory_read(board_id, resolved.address, width // 8)
+    return selection, resolved
+
+
 def build_memory_handlers(
     services: MemoryToolServices,
 ) -> dict[str, Callable[..., str]]:
@@ -291,95 +340,13 @@ def build_memory_handlers(
             "width": width,
             "elf_artifact": elf_artifact,
         }
-        if not _valid_width(width):
+        prepared = prepare_symbol_read(services, board_id, symbol, width, elf_artifact)
+        if isinstance(prepared, PolicyRefusal):
             return _record_refusal(
-                services,
-                "read_memory_symbol",
-                board_id,
-                args,
-                PolicyRefusal("memory/invalid-width", "width must be one of: 8, 16, 32."),
-                started,
-                runtime,
+                services, "read_memory_symbol", board_id, args, prepared, started, runtime
             )
-        if not symbol.strip():
-            return _record_refusal(
-                services,
-                "read_memory_symbol",
-                board_id,
-                args,
-                PolicyRefusal("memory/empty-symbol", "symbol must not be empty."),
-                started,
-                runtime,
-            )
-        handle = services.handle_for(board_id)
-        selection, refusal = _select_symbol_artifact(services, handle, elf_artifact)
-        if selection is None:
-            assert refusal is not None
-            return _record_refusal(
-                services, "read_memory_symbol", board_id, args, refusal, started, runtime
-            )
-        try:
-            resolved = services.resolve_symbol(selection.path, symbol)
-        except SymbolLookupError as exc:
-            return _record_refusal(
-                services,
-                "read_memory_symbol",
-                board_id,
-                args,
-                _lookup_or_artifact_refusal(services, handle, selection, exc),
-                started,
-                runtime,
-            )
-        except (ELFError, OSError, RuntimeError, ValueError) as exc:
-            return _record_refusal(
-                services,
-                "read_memory_symbol",
-                board_id,
-                args,
-                _symbol_parse_refusal(exc),
-                started,
-                runtime,
-            )
-        refusal = _reverify_symbol_artifact(services, handle, selection)
-        if refusal is not None:
-            return _record_refusal(
-                services, "read_memory_symbol", board_id, args, refusal, started, runtime
-            )
-        refusal = symbol_scalar_refusal(resolved, width)
-        if refusal is not None:
-            return _record_refusal(
-                services, "read_memory_symbol", board_id, args, refusal, started, runtime
-            )
-        requested_bytes = width // 8
-        if resolved.size <= 0:
-            return _record_refusal(
-                services,
-                "read_memory_symbol",
-                board_id,
-                args,
-                PolicyRefusal(
-                    "memory/symbol-size-unknown",
-                    "The ELF does not describe this symbol as a sized variable; use a real "
-                    "variable symbol or the planned raw-address path with an explicit width.",
-                ),
-                started,
-                runtime,
-            )
-        if requested_bytes > resolved.size:
-            return _record_refusal(
-                services,
-                "read_memory_symbol",
-                board_id,
-                args,
-                PolicyRefusal(
-                    "memory/symbol-width-exceeds-object",
-                    f"The {width}-bit read exceeds the {resolved.size}-byte symbol.",
-                ),
-                started,
-                runtime,
-            )
-        services.check_memory_read(board_id, resolved.address, requested_bytes)
-        value = services.read_target_memory(handle, resolved.address, width)
+        selection, resolved = prepared
+        value = services.read_target_memory(services.handle_for(board_id), resolved.address, width)
         result = (
             f"Symbol {resolved.name} from {selection.path} @0x{resolved.address:08X} "
             f"size={resolved.size} type={resolved.type} value=0x{value:0{width // 4}X}"

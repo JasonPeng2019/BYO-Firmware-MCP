@@ -261,10 +261,9 @@ def _normalized_serial(serial: str) -> str:
 def _numeric_serial_variants(value: str) -> set[str]:
     normalized = _normalized_serial(value)
     variants = {normalized}
-    digits = re.sub(r"\D", "", normalized)
-    if digits:
-        variants.add(digits)
-        variants.add(digits.lstrip("0") or "0")
+    # Letters belong to the identity, including hexadecimal ST-Link serials.
+    if normalized.isdecimal():
+        variants.add(normalized.lstrip("0") or "0")
     return {item for item in variants if item}
 
 
@@ -277,9 +276,27 @@ def probe_uid_matches_serial(uid: str, serial: str) -> bool:
     if uid_variants & serial_variants:
         return True
 
+    # pyOCD may qualify a selector as provider:unique-id. Remove only a
+    # registered provider qualifier, never arbitrary letters from the serial.
+    if ":" not in uid:
+        return False
+    from pyocd_debug_mcp.probe_families import provider_qualified_family
+    from pyocd_debug_mcp.probe_inventory import registered_provider_ids
+
+    selector = uid.strip()
+    if provider_qualified_family(selector) not in registered_provider_ids():
+        return False
+    return bool(_numeric_serial_variants(selector.partition(":")[2]) & serial_variants)
+
+
+def _probe_uid_in_metadata(uid: str, port: SerialPortInfo) -> bool:
+    """Keep metadata hints from recreating a rejected partial serial match."""
+
     normalized_uid = _normalized_probe_uid(uid)
-    normalized_serial = _normalized_serial(serial)
-    return normalized_uid.endswith(normalized_serial) or normalized_serial.endswith(normalized_uid)
+    return bool(normalized_uid) and any(
+        normalized_uid in token and probe_uid_matches_serial(uid, token)
+        for token in re.split(r"[\s=]+", port.searchable_text)
+    )
 
 
 def score_terms(text: str, terms: tuple[str, ...]) -> int:
@@ -447,10 +464,7 @@ def _generic_candidates(
         if probe and probe.uid:
             if probe_uid_matches_serial(probe.uid, port.serial_number):
                 score += 100
-            elif (
-                _normalized_probe_uid(probe.uid)
-                and _normalized_probe_uid(probe.uid) in port.searchable_text
-            ):
+            elif _probe_uid_in_metadata(probe.uid, port):
                 score += 10
         # Weak boost so an external USB-serial adapter on a decoupled custom PCB
         # surfaces as a candidate when nothing stronger matches. Stays below a
@@ -571,9 +585,8 @@ def resolve_serial_port(
     candidates = _generic_candidates(board, ports, probe)
     if len(candidates) == 1 and probe and probe.uid:
         candidate = candidates[0]
-        if probe_uid_matches_serial(probe.uid, candidate.serial_number) or (
-            _normalized_probe_uid(probe.uid)
-            and _normalized_probe_uid(probe.uid) in candidate.searchable_text
+        if probe_uid_matches_serial(probe.uid, candidate.serial_number) or _probe_uid_in_metadata(
+            probe.uid, candidate
         ):
             return SerialResolution(candidate, "resolved from serial-port metadata")
 

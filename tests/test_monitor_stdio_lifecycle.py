@@ -13,6 +13,7 @@ import json
 import os
 import shutil
 import subprocess
+import sys
 import tempfile
 import time
 import unittest
@@ -95,7 +96,8 @@ class StdioServer:
         if extra_environment is not None:
             environment.update(extra_environment)
         self.proc = subprocess.Popen(
-            command or ["uv", "run", "--project", str(SERVER_PROJECT), "pyocd-debug-mcp"],
+            command
+            or [sys.executable, "-B", str(Path(__file__).with_name("final_source_stdio.py"))],
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
@@ -442,15 +444,32 @@ class ProfessionalBuildOverTheProtocol(LifecycleTestCase):
 
     def setUp(self) -> None:
         super().setUp()
-        self.profile = SERVER_PROJECT / "src" / "pyocd_debug_mcp" / "monitor" / "build_profile.py"
-        self.original = self.profile.read_text(encoding="utf-8")
-        self.profile.write_text(
-            self.original.replace(
-                "NARRATIVE_LOGGING: bool = True", "NARRATIVE_LOGGING: bool = False"
-            ),
-            encoding="utf-8",
+        prepared = os.environ.get("BYO_TEST_PROFESSIONAL_SRC")
+        if prepared:
+            source = Path(prepared).resolve()
+        else:
+            # Ordinary standalone suite use also leaves the reviewed source
+            # untouched. The final Actions pass prepares and manifests this
+            # exact one-line variant before its first command.
+            temporary = self.enterContext(tempfile.TemporaryDirectory(prefix="byo-pro-profile-"))
+            source = Path(temporary) / "src"
+            shutil.copytree(
+                SERVER_PROJECT / "src", source, ignore=shutil.ignore_patterns("__pycache__")
+            )
+            profile = source / "pyocd_debug_mcp/monitor/build_profile.py"
+            original = profile.read_text(encoding="utf-8")
+            self.assertEqual(original.count("NARRATIVE_LOGGING: bool = True"), 1)
+            profile.write_text(
+                original.replace(
+                    "NARRATIVE_LOGGING: bool = True", "NARRATIVE_LOGGING: bool = False"
+                ),
+                encoding="utf-8",
+            )
+        self.assertIn(
+            "NARRATIVE_LOGGING: bool = False",
+            (source / "pyocd_debug_mcp/monitor/build_profile.py").read_text(encoding="utf-8"),
         )
-        self.addCleanup(self.profile.write_text, self.original, "utf-8")
+        self.professional_environment = {"PYTHONPATH": str(source)}
 
     def _tool_names(self, server: "StdioServer") -> set[str]:
         server.send({"jsonrpc": "2.0", "id": 90, "method": "tools/list", "params": {}})
@@ -458,7 +477,7 @@ class ProfessionalBuildOverTheProtocol(LifecycleTestCase):
         return {tool["name"] for tool in response["result"]["tools"]}
 
     def test_checkin_is_absent_and_report_tool_refuses(self) -> None:
-        server = StdioServer()
+        server = StdioServer(extra_environment=self.professional_environment)
         self.addCleanup(server.kill)
         server.initialize()
         names = self._tool_names(server)
@@ -468,9 +487,18 @@ class ProfessionalBuildOverTheProtocol(LifecycleTestCase):
         self.assertIn("server_health_check", names)
 
     def test_health_declares_the_build_profile(self) -> None:
-        server = StdioServer()
+        server = StdioServer(extra_environment=self.professional_environment)
         self.addCleanup(server.kill)
         server.initialize()
         response = server.call("server_health_check", {})
         payload = json.loads(response["result"]["content"][0]["text"])
         self.assertEqual(payload["narrative_logging"], "not_built")
+
+    def test_professional_profile_reaches_graceful_protocol_eof(self) -> None:
+        server = StdioServer(extra_environment=self.professional_environment)
+        self.addCleanup(server.kill)
+        server.initialize()
+        response = server.call("server_health_check", {})
+        payload = json.loads(response["result"]["content"][0]["text"])
+        self.assertEqual(payload["narrative_logging"], "not_built")
+        self.assertEqual(server.close_stdin_and_wait(), 0)

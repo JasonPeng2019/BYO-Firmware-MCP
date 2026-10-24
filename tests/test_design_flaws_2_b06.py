@@ -47,7 +47,7 @@ def nordic_observers(session):
 
 
 class ConnectSafetyTests(unittest.TestCase):
-    def make_session(self, **kwargs):
+    def make_session(self, *args, **kwargs):
         session = Session(ProbeFixture(), auto_open=False, options=kwargs["options"])
         self.addCleanup(swd_pyocd._close_session, session)
         return session
@@ -76,10 +76,9 @@ class ConnectSafetyTests(unittest.TestCase):
         for options in (None, {}, {"auto_unlock": True}, {"auto_unlock": False}):
             with self.subTest(options=options):
                 original = None if options is None else options.copy()
-                with patch.object(
-                    swd_pyocd.ConnectHelper,
-                    "session_with_chosen_probe",
-                    side_effect=self.make_session,
+                with (
+                    patch.object(swd_pyocd, "_choose_unique_probe", return_value=ProbeFixture()),
+                    patch.object(swd_pyocd, "Session", side_effect=self.make_session),
                 ):
                     session = swd_pyocd.PyOCDSWDInterface._choose_session(
                         probe_uid="123", options=options
@@ -103,21 +102,23 @@ class ConnectSafetyTests(unittest.TestCase):
                 sessions = []
                 requested_uids = []
 
-                def choose(**kwargs):
+                def make_session(*args, **kwargs):
                     session = self.make_session(**kwargs)
                     sessions.append(session)
-                    requested_uids.append(kwargs["unique_id"])
                     session.open = Mock()
                     if route == "retry" and len(sessions) == 1:
                         session.open.side_effect = RuntimeError("no emulator with serial number")
                     return session
 
+                def choose(probe_uid):
+                    requested_uids.append(probe_uid)
+                    return ProbeFixture()
+
                 interface = swd_pyocd.PyOCDSWDInterface()
                 with (
                     patch.dict("os.environ", {"PYOCD_TARGET": ""}),
-                    patch.object(
-                        swd_pyocd.ConnectHelper, "session_with_chosen_probe", side_effect=choose
-                    ),
+                    patch.object(swd_pyocd, "_choose_unique_probe", side_effect=choose),
+                    patch.object(swd_pyocd, "Session", side_effect=make_session),
                     patch.object(swd_pyocd, "_should_retry_without_uid", return_value=True),
                 ):
                     if route == "under-reset":
@@ -140,7 +141,7 @@ class ConnectSafetyTests(unittest.TestCase):
     def test_locked_open_refuses_with_typed_error_and_closes_isolated_session(self):
         sessions = []
 
-        def choose(**kwargs):
+        def choose(*args, **kwargs):
             session = self.make_session(**kwargs)
             session.open = Mock(side_effect=RuntimeError("device locked"))
             sessions.append(session)
@@ -148,7 +149,8 @@ class ConnectSafetyTests(unittest.TestCase):
 
         with (
             patch.dict("os.environ", {"PYOCD_TARGET": ""}),
-            patch.object(swd_pyocd.ConnectHelper, "session_with_chosen_probe", side_effect=choose),
+            patch.object(swd_pyocd, "_choose_unique_probe", return_value=ProbeFixture()),
+            patch.object(swd_pyocd, "Session", side_effect=choose),
         ):
             with self.assertRaisesRegex(LockedTargetError, "device locked"):
                 swd_pyocd.PyOCDSWDInterface().open(board=None, unique_id="123", target=None)

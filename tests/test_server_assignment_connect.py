@@ -120,14 +120,14 @@ class AssignmentAwareConnectTests(unittest.TestCase):
             side_effect=lambda **kwargs: TargetSessionHandle(
                 session=SimpleNamespace(board=SimpleNamespace(name="nRF52840")),
                 board=kwargs["board"],
-                probe_uid=kwargs["unique_id"],
+                probe_uid=kwargs["unique_id"].removeprefix("jlink:"),
                 route_used="test-route",
                 target_override=kwargs["target"],
             )
         )
         generic_resolution = Mock(
             return_value=SimpleNamespace(
-                probe=SimpleNamespace(uid=generic_uid),
+                probe=SimpleNamespace(uid=generic_uid, family="jlink"),
                 note="generic discovery selected a probe",
             )
         )
@@ -162,7 +162,7 @@ class AssignmentAwareConnectTests(unittest.TestCase):
             inventory=_inventory(FIRST_PROBE, SECOND_PROBE),
         )
 
-        self.assertEqual(open_session.call_args.kwargs["unique_id"], SECOND_PROBE)
+        self.assertEqual(open_session.call_args.kwargs["unique_id"], f"jlink:{SECOND_PROBE}")
         self.assertIn(SECOND_PROBE, result)
         generic_resolution.assert_not_called()
 
@@ -271,7 +271,7 @@ class AssignmentAwareConnectTests(unittest.TestCase):
             generic_uid=FIRST_PROBE,
         )
 
-        self.assertEqual(open_session.call_args.kwargs["unique_id"], FIRST_PROBE)
+        self.assertEqual(open_session.call_args.kwargs["unique_id"], f"jlink:{FIRST_PROBE}")
         self.assertIn(FIRST_PROBE, result)
         generic_resolution.assert_called_once()
 

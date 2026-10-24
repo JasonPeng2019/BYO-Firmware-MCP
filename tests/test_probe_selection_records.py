@@ -85,6 +85,26 @@ class ResolutionTests(unittest.TestCase):
     def setUp(self) -> None:
         self.store = ProbeSelectionStore()
 
+    def test_duplicate_native_uid_refuses_unrecorded_canonical_and_legacy_tokens(self) -> None:
+        rows = (_probe_row("jlink", "123"), _probe_row("jlink", "123"))
+        for token in (probe_connection_id("jlink", "123"), "probe:123", "123"):
+            with self.subTest(token=token):
+                with self.assertRaises(SelectionDisappeared) as caught:
+                    self.store.resolve(token, _snapshot(*rows))
+                self.assertIn("UID is ambiguous", caught.exception.reason)
+                self.assertIn("disconnect", caught.exception.reason)
+                self.assertIn("setup_overview", caught.exception.reason)
+                self.assertIsNone(self.store.recorded(token))
+
+    def test_recorded_native_selection_refuses_new_same_provider_uid_ambiguity(self) -> None:
+        token = probe_connection_id("jlink", "123")
+        original = _probe_row("jlink", "123")
+        self.store.record(ProbeSelection.from_row(token, original))
+        duplicate = _probe_row("jlink", "123")
+        with self.assertRaises(SelectionDisappeared) as caught:
+            self.store.resolve(token, _snapshot(original, duplicate))
+        self.assertIn("UID is ambiguous", caught.exception.reason)
+
     def test_connection_id_resolves_to_provider_and_unique_id(self) -> None:
         row = _probe_row("jlink", "683710208")
         token = probe_connection_id("jlink", "683710208")

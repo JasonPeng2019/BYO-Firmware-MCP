@@ -65,6 +65,20 @@ def registered_provider_ids() -> tuple[str, ...]:
     return tuple(sorted(str(key).casefold() for key in PROBE_CLASSES))
 
 
+def provider_qualified_probe_uid(provider: str, unique_id: str) -> str:
+    """Carry an inventory provider into pyOCD's existing selector syntax.
+
+    UID text is opaque. Only an existing prefix for this same provider is
+    already qualified (notably remote/hook selectors); other colons belong to
+    the UID. Unknown CLI families have no authoritative provider to add.
+    """
+
+    if not provider or provider.casefold() == "unknown":
+        return unique_id
+    prefix = f"{provider}:"
+    return unique_id if unique_id.casefold().startswith(prefix.casefold()) else prefix + unique_id
+
+
 def probe_family_from_pyocd_probe(probe: Any) -> str:
     """Return pyOCD's registered provider key for a live probe object."""
 

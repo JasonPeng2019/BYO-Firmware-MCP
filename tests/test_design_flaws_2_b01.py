@@ -108,12 +108,9 @@ class SessionLookupIsolation(unittest.TestCase):
             ordinary.close()
             marker.unlink()
 
-            def make_session(**kwargs):
-                return Session(Probe(), auto_open=False, options=kwargs["options"])
-
             with (
                 patch.dict(os.environ, {"PYOCD_PROJECT_DIR": str(root)}),
-                patch.object(swd_pyocd.ConnectHelper, "session_with_chosen_probe", side_effect=make_session),
+                patch.object(swd_pyocd, "_choose_unique_probe", return_value=Probe()),
             ):
                 session = swd_pyocd.PyOCDSWDInterface._choose_session(probe_uid="fixture-probe", options={})
             self.assertFalse(marker.exists())
@@ -129,13 +126,16 @@ class SessionLookupIsolation(unittest.TestCase):
         captured = []
         previous = Path.cwd()
 
-        def fail(**kwargs):
+        def fail(*args, **kwargs):
             folder = Path(kwargs["options"]["project_dir"])
             captured.append(folder)
             os.chdir(folder)
             raise RuntimeError("fixture failure")
 
-        with patch.object(swd_pyocd.ConnectHelper, "session_with_chosen_probe", side_effect=fail):
+        with (
+            patch.object(swd_pyocd, "_choose_unique_probe", return_value=object()),
+            patch.object(swd_pyocd, "Session", side_effect=fail),
+        ):
             with self.assertRaisesRegex(RuntimeError, "fixture failure"):
                 swd_pyocd.PyOCDSWDInterface._choose_session(probe_uid=None, options={})
         self.assertEqual(Path.cwd(), previous)

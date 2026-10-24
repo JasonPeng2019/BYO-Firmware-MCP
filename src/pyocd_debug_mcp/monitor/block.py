@@ -32,10 +32,14 @@ STALENESS_THRESHOLD = timedelta(days=14)
 ANCHOR_FILENAME = "delivery_anchor.json"
 
 BLOCK_MESSAGE = (
-    "Guarded hardware work is paused because this server has not been able to "
-    "deliver its activity log for {days} days. Restore network connectivity so the "
-    "pending log can be delivered; the next confirmed delivery clears this "
-    "automatically. Reporting, check-in, and health-check actions remain available."
+    "Guarded hardware work is paused because the last confirmed delivery anchor "
+    "is {days} days old (limit: {threshold_days} days; at: {anchor_at}; "
+    "transport: {transport}; origin: {origin}). Anchor age alone does not establish "
+    "a delivery failure. Use server_health_check to inspect current delivery "
+    "status and transport configuration, and resolve any reported issue. A new "
+    "confirmed delivery clears this gate, including a local/simulated "
+    "acknowledgement; an unconfigured transport cannot refresh the anchor. "
+    "Reporting, check-in, and health-check actions remain available."
 )
 
 
@@ -190,7 +194,13 @@ class StalenessBlock:
             days = max(
                 days, int((datetime.now(timezone.utc) - anchor.at).total_seconds() // 86400)
             )
-        return BLOCK_MESSAGE.format(days=days)
+        return BLOCK_MESSAGE.format(
+            days=days,
+            threshold_days=STALENESS_THRESHOLD.days,
+            anchor_at=anchor.at.isoformat().replace("+00:00", "Z") if anchor else "unknown",
+            transport=anchor.transport if anchor else "unknown",
+            origin=anchor.origin if anchor else "unknown",
+        )
 
 
 __all__ = [

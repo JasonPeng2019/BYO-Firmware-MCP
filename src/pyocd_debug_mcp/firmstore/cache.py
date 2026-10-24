@@ -191,20 +191,24 @@ class AttachmentCache:
         self.path = store.layout.cache_artifact("attachments.json")
 
     def load_records(self) -> list[AttachmentRecord]:
-        if not self.path.exists():
-            return []
         try:
+            if not self.path.exists():
+                return []
             raw = json.loads(self.path.read_text(encoding="utf-8"))
-        except (OSError, UnicodeError, json.JSONDecodeError) as exc:
-            raise AttachmentCacheError(f"Could not parse attachment cache: {exc}") from exc
-        ensure_no_persisted_authority(raw, location="attachment cache")
-        if not isinstance(raw, dict) or raw.get("schema_version") != CACHE_SCHEMA_VERSION:
+            ensure_no_persisted_authority(raw, location="attachment cache")
+            if not isinstance(raw, dict) or raw.get("schema_version") != CACHE_SCHEMA_VERSION:
+                raise AttachmentCacheError(
+                    f"Attachment cache must declare schema_version {CACHE_SCHEMA_VERSION}"
+                )
+            if set(raw) != {"schema_version", "records"} or not isinstance(raw["records"], list):
+                raise AttachmentCacheError("Attachment cache must contain only a records list")
+            return [AttachmentRecord.from_document(record) for record in raw["records"]]
+        except (OSError, ValueError, TypeError) as exc:
+            # ValueError includes Unicode/JSON decode and record validation errors,
+            # as well as JSON integers exceeding the interpreter's conversion limit.
             raise AttachmentCacheError(
-                f"Attachment cache must declare schema_version {CACHE_SCHEMA_VERSION}"
-            )
-        if set(raw) != {"schema_version", "records"} or not isinstance(raw["records"], list):
-            raise AttachmentCacheError("Attachment cache must contain only a records list")
-        return [AttachmentRecord.from_document(record) for record in raw["records"]]
+                f"Could not read/admit attachment hint cache '{self.path}': {exc}"
+            ) from exc
 
     def _write(self, records: list[AttachmentRecord]) -> None:
         document = {
@@ -223,7 +227,9 @@ class AttachmentCache:
         if not probe.is_stable:
             raise AttachmentCacheError("A stable probe family and USB serial are required")
         if not uart.has_stable_identity:
-            raise AttachmentCacheError("Stable UART USB serial, vendor ID, and product ID are required")
+            raise AttachmentCacheError(
+                "Stable UART USB serial, vendor ID, and product ID are required"
+            )
         assert probe.usb_serial is not None
         uart_key = uart.stable_key()
         assert uart_key is not None
@@ -241,6 +247,7 @@ class AttachmentCache:
         *,
         confirmed_at: str | None = None,
     ) -> AttachmentRecord:
+        """Confirm one current UART per board/probe and retire other active claims."""
         identity, probe_key, uart_key = self._validated_identity(board_id, probe, uart)
         timestamp = _absolute_timestamp(confirmed_at or _timestamp(), "confirmed_at")
         candidate = AttachmentRecord(
@@ -262,19 +269,27 @@ class AttachmentCache:
                 and record.probe_key == probe_key
                 and record.uart_key == uart_key
             ]
-            if len(matching) == 1 and matching[0] == candidate:
-                return matching[0]
-            records = [
-                record
-                for record in records
-                if not (
-                    record.board_id == identity
-                    and record.probe_key == probe_key
-                    and record.uart_key == uart_key
-                )
-            ]
-            records.append(candidate)
-            self._write(records)
+            if len(matching) == 1 and matching[0].confirmed and confirmed_at is None:
+                candidate = matching[0]
+            updated: list[AttachmentRecord] = []
+            published = False
+            for record in records:
+                same_pair = record.board_id == identity and record.probe_key == probe_key
+                same_uart = record.uart_key == uart_key
+                if same_pair and same_uart:
+                    if not published:
+                        updated.append(candidate)
+                        published = True
+                elif record.confirmed and (same_pair or same_uart):
+                    # Only explicit confirmation replaces a pairing. Keep retired
+                    # history so a returning old cable cannot silently be reused.
+                    updated.append(replace(record, confirmed=False, revoked_at=timestamp))
+                else:
+                    updated.append(record)
+            if not published:
+                updated.append(candidate)
+            if updated != records:
+                self._write(updated)
         return candidate
 
     def revoke(
@@ -317,18 +332,35 @@ class AttachmentCache:
             return CacheResolution(False, "missing_stable_identity")
         assert probe.usb_serial is not None
         probe_key = (probe.probe_family.strip(), probe.usb_serial.strip())
-        records = [record for record in self.load_records() if record.board_id == identity]
+        all_records = self.load_records()
+        records = [record for record in all_records if record.board_id == identity]
         if not records:
             return CacheResolution(False, "no_record")
         probe_records = [record for record in records if record.probe_key == probe_key]
         if not probe_records:
             return CacheResolution(False, "probe_changed")
 
+        active_records = [
+            record for record in probe_records if record.confirmed and record.revoked_at is None
+        ]
+        # Legacy conflicts need explicit confirmation, even if only one of the
+        # saved cables is currently visible. Discovery cannot decide ownership.
+        if len(active_records) > 1 or (
+            active_records
+            and any(
+                record.confirmed
+                and record.revoked_at is None
+                and record.uart_key == active_records[0].uart_key
+                and (record.board_id != identity or record.probe_key != probe_key)
+                for record in all_records
+            )
+        ):
+            return CacheResolution(False, "multiple_matches")
+
         candidates = [endpoint for endpoint in uart_endpoints if endpoint.is_resolvable]
         matches = [
             (record, endpoint)
-            for record in probe_records
-            if record.confirmed and record.revoked_at is None
+            for record in active_records
             for endpoint in candidates
             if endpoint.stable_key() == record.uart_key
         ]

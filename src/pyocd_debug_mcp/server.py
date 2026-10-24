@@ -59,6 +59,7 @@ from pyocd_debug_mcp.guardrails.plan_defs import PLAN_DEFINITIONS, PlanDefinitio
 from pyocd_debug_mcp.guardrails.plan_engine import PlanEngine, PlanRefusal, canonical_json
 from pyocd_debug_mcp.firmstore.cache import (
     AttachmentCache,
+    AttachmentCacheError,
     CacheResolution,
     ProbeIdentity,
     SerialEndpoint,
@@ -67,7 +68,7 @@ from pyocd_debug_mcp.firmstore.profiles import BoardProfile, ProfileError, Profi
 from pyocd_debug_mcp.identities import display_name_identity, is_reserved_board_id
 from pyocd_debug_mcp.project_paths import resolve_project_path
 from pyocd_debug_mcp.firmstore.reports import ReportWriter
-from pyocd_debug_mcp.firmstore.store import FirmStore
+from pyocd_debug_mcp.firmstore.store import FirmStore, PersistedAuthorityError
 from pyocd_debug_mcp.local_env import load_local_env
 from pyocd_debug_mcp.kernel.registry import RegistryFastMCP
 from pyocd_debug_mcp.kernel.operations import (
@@ -125,6 +126,7 @@ from pyocd_debug_mcp.hardware_inventory import (
 )
 from pyocd_debug_mcp.probe_inventory import (
     list_connected_probes_detailed,
+    provider_qualified_probe_uid,
     registered_provider_ids,
     resolve_probe_for_board_cli,
 )
@@ -330,7 +332,10 @@ from pyocd_debug_mcp.tools.execution import ExecutionToolServices, build_executi
 from pyocd_debug_mcp.tools.flash import FlashToolServices, build_flash_handlers
 from pyocd_debug_mcp.tools.memory import (
     MemoryToolServices,
+    SymbolArtifactSelection,
+    _reverify_symbol_artifact,
     build_memory_handlers,
+    prepare_symbol_read,
     symbol_scalar_refusal,
 )
 from pyocd_debug_mcp.tools.misc import MiscToolServices, build_misc_handlers
@@ -873,6 +878,9 @@ def _check_lite_range(board_id: str, action: ActionCategory, requested: AddressR
             "setup-lite has no confirmed region classifications for this operation.",
             remedy=("board_setup",),
         )
+    containing_kinds: set[RegionKind] = set()
+    denied = False
+    write_only = False
     try:
         for raw in rows:
             if not isinstance(raw, Mapping):
@@ -886,8 +894,11 @@ def _check_lite_range(board_id: str, action: ActionCategory, requested: AddressR
             parsed_start = int(start, 0) if isinstance(start, str) else int(start)
             parsed_end = int(end, 0) if isinstance(end, str) else int(end)
             region = AddressRange(parsed_start, parsed_end)
-            contained = region.contains(requested)
-            if not contained:
+            if not region.overlaps(requested):
+                continue
+            # Physical flash describes geometry, not application/bootloader
+            # authority. Keep requiring a containing operational declaration.
+            if kind is RegionKind.PHYSICAL_FLASH:
                 continue
             allowed = (
                 action is ActionCategory.MEMORY_READ
@@ -925,14 +936,26 @@ def _check_lite_range(board_id: str, action: ActionCategory, requested: AddressR
                 and raw.get("writable") is True
                 and kind is RegionKind.BOOTLOADER_FLASH
             )
-            if allowed:
-                return kind
+            # An intersecting restriction applies even when it covers only a
+            # byte of a larger request. A later permissive row cannot undo it.
+            if not allowed:
+                denied = True
+            elif region.contains(requested):
+                containing_kinds.add(kind)
+            if action is ActionCategory.REGISTER_WRITE and (
+                kind is RegionKind.PERIPHERAL_WRITE_ONLY or raw.get("readable") is not True
+            ):
+                write_only = True
     except (KeyError, TypeError, ValueError) as exc:
         raise SafetyPolicyError(
             "safety/lite-map-invalid",
             f"setup-lite confirmed geometry is invalid: {exc}",
             remedy=("board_setup",),
         ) from exc
+    if containing_kinds and not denied:
+        if write_only:
+            return RegionKind.PERIPHERAL_WRITE_ONLY
+        return min(containing_kinds, key=lambda kind: kind.value)
     raise SafetyPolicyError(
         "safety/lite-containment-refused",
         f"The requested {action.value} range is not fully confirmed by this setup-lite map.",
@@ -1386,6 +1409,34 @@ def _enforce_direct_tiered_hardware(
     _monitor.check_block()
 
 
+def _enforce_symbol_read(
+    tool_name: str,
+    board_id: str,
+    arguments: Mapping[str, object],
+) -> None:
+    """Preflight the no-plan mapped symbol read while holding its board lock."""
+
+    _enforce_tier_route(tool_name, board_id, arguments)
+    _monitor.check_block()
+    try:
+        prepared = prepare_symbol_read(
+            memory_services,
+            board_id,
+            cast(str, arguments["symbol"]),
+            cast(int, arguments.get("width", 32)),
+            cast(str | None, arguments.get("elf_artifact")),
+        )
+    except SafetyPolicyError as exc:
+        raise PlanRefusal(exc.code, str(exc), session_id=_active_session_id(board_id)) from exc
+    if isinstance(prepared, PolicyRefusal):
+        raise PlanRefusal(
+            prepared.code, prepared.message, session_id=_active_session_id(board_id)
+        )
+    operation = current_operation()
+    if operation is not None:
+        operation.prepared["read_memory_symbol_artifact"] = prepared[0]
+
+
 def _enforce_full_identity_route(
     tool_name: str,
     board_id: str,
@@ -1669,7 +1720,7 @@ def _resolve_probe_uid_for_connect(
         raise RuntimeError(
             f"Probe resolution for {board.display_name} did not yield a unique id. {remedy}"
         )
-    return resolution.probe.uid
+    return provider_qualified_probe_uid(resolution.probe.family, resolution.probe.uid)
 
 
 def _assigned_probe_uid_for_connect(board_id: str) -> str | None:
@@ -1713,7 +1764,7 @@ def _assigned_probe_uid_for_connect(board_id: str) -> str | None:
     # hook-discovered selection is checked against the admitted hook set instead.
     _require_unchanged_hook_source(board_id, selection)
     if selection.unique_id is not None:
-        return selection.unique_id
+        return provider_qualified_probe_uid(selection.provider, selection.unique_id)
     # A UID-less live session is identified only by its exact session token, which is
     # what the downstream provider already expects for this run.
     return selection.connection_id
@@ -1767,7 +1818,11 @@ def _resolved_probe_uid_for_connection(connection_id: str) -> str:
         raise TargetControlError(
             f"{failure.code}: {failure.message} {' '.join(failure.remedies)}"
         ) from exc
-    return selection.unique_id or selection.connection_id
+    return (
+        provider_qualified_probe_uid(selection.provider, selection.unique_id)
+        if selection.unique_id is not None
+        else selection.connection_id
+    )
 
 
 def _handle(board_id: str) -> TargetSessionHandle:
@@ -2564,6 +2619,27 @@ def _resolve_serial_port_for_session(
     *,
     override: str | None,
 ) -> SerialPortInfo:
+    """Keep cache admission failures actionable on every managed UART route."""
+
+    try:
+        return _resolve_serial_port_from_inventory(handle, override=override)
+    except (AttachmentCacheError, PersistedAuthorityError) as exc:
+        path = _attachment_cache.path
+        raise RuntimeError(
+            f"uart/attachment-cache-unavailable: Automatic UART selection refused because "
+            f"attachment hints at '{path}' could not be read or admitted: {exc}. "
+            "Stop processes using this non-authority attachment-hint file; back up its "
+            f"contents and move aside only '{path}'. Restart the server and explicitly "
+            "reconfirm this board's UART selection through board_setup before retrying "
+            "automatic serial operations."
+        ) from exc
+
+
+def _resolve_serial_port_from_inventory(
+    handle: TargetSessionHandle,
+    *,
+    override: str | None,
+) -> SerialPortInfo:
     """Resolve this board's serial endpoint immediately before a UART action.
 
     This is the hot path: it runs before `read_serial`, `write_serial`,
@@ -2590,7 +2666,7 @@ def _resolve_serial_port_for_session(
     metadata = session_metadata(handle)
     probe_uid = metadata.probe_uid
 
-    # 1. An explicit override still wins, and is still scored, never trusted blindly.
+    # 1. An explicit planned override selects a listed port without changing ownership.
     if override is None:
         # 2. A recorded selection is re-resolved to its *current* path.
         resolved = _resolve_recorded_uart(
@@ -2605,6 +2681,26 @@ def _resolve_serial_port_for_session(
     if not ports:
         raise RuntimeError("No serial ports detected")
 
+    if override is None:
+        # Filter before every scoring/vendor path: even a strong metadata match
+        # cannot automatically borrow another board's actively confirmed cable.
+        owners = {
+            record.uart_key: record.board_id
+            for record in _attachment_cache.load_records()
+            if record.confirmed and record.revoked_at is None and record.board_id != board_id
+        }
+        eligible = []
+        excluded = []
+        for port in ports:
+            key = SerialEndpoint(port.device, port.serial_number, port.vid, port.pid).stable_key()
+            if key in owners:
+                excluded.append(f"{port.device} is confirmed for board {owners[key]}")
+            else:
+                eligible.append(port)
+        ports = eligible
+        if not ports:
+            raise _automatic_uart_unavailable(board_id, snapshot, "; ".join(excluded))
+
     # 3. Fall back to the existing scoring only when there is no recorded selection.
     probe = _ProbeHint(probe_uid) if probe_uid else None
     resolution = resolve_serial_port(
@@ -2612,14 +2708,36 @@ def _resolve_serial_port_for_session(
         ports=ports,
         probe=cast(ProbeLike | None, probe),
         override=override,
-        allow_single_fallback=len(ports) == 1,
+        # Port count alone is not evidence of a board link. Metadata and vendor
+        # matches still support first use, including legitimate non-USB UARTs.
+        allow_single_fallback=False,
         run_cmd=_run_cmd,
         interactive=False,
     )
     if resolution.port is None:
+        if override is None:
+            raise _automatic_uart_unavailable(board_id, snapshot, resolution.note)
         raise RuntimeError(f"Serial port resolution failed: {resolution.note}")
-    _record_uart_selection(board_id, resolution.port, snapshot)
+    _record_uart_selection(board_id, resolution.port, snapshot, explicit=override is not None)
     return resolution.port
+
+
+def _automatic_uart_unavailable(
+    board_id: str,
+    snapshot: InventorySnapshot,
+    reason: str,
+) -> RuntimeError:
+    visible = ", ".join(
+        f"{row.port_path} ({row.description})" for row in snapshot.uarts
+    ) or "none"
+    return RuntimeError(
+        f"uart/automatic-selection-refused: Cannot associate a serial adapter with board "
+        f"{board_id} automatically: {reason}. Ports visible now: {visible}. "
+        "Ask the user which adapter to use. For a deliberate per-action choice, submit a new "
+        "read_serial-plan, write_serial-plan, or serial_exchange-plan with port set explicitly, "
+        "then call the paired action with the same port. This does not change a saved pairing. "
+        "To confirm this board's adapter permanently, rerun board_setup."
+    )
 
 
 def _saved_uart_unavailable(
@@ -2651,8 +2769,9 @@ def _resolve_recorded_uart(
 ) -> SerialPortInfo | None:
     """Re-derive this board's recorded endpoint against a fresh snapshot.
 
-    Returns None only for a genuinely unrecorded board. Missing, revoked, or
-    ambiguous saved selections must never become permission to score another port.
+    Returns None for an unrecorded board or a run-local inference that needs fresh
+    scoring. Missing, revoked, or ambiguous explicit/confirmed selections must
+    never become permission to score another port.
     """
 
     if not board_id:
@@ -2690,7 +2809,7 @@ def _resolve_recorded_uart(
     session_row = _session_uart_selections.resolve(board_id, snapshot)
     if session_row is not None:
         return _uart_row_as_port(session_row)
-    if selection is not None:
+    if selection is not None and selection.explicit:
         raise _saved_uart_unavailable(
             board_id,
             f"{selection.port_path}: {selection.description}",
@@ -2704,8 +2823,10 @@ def _record_uart_selection(
     board_id: str,
     port: SerialPortInfo,
     snapshot: InventorySnapshot,
+    *,
+    explicit: bool,
 ) -> None:
-    """Remember a session-local choice so the next action re-resolves the same endpoint."""
+    """Remember run-local provenance; only a deliberate override authorizes reuse."""
 
     if not board_id:
         return
@@ -2726,6 +2847,7 @@ def _record_uart_selection(
             port_path=row.port_path,
             description=row.description,
             provenance=row.provenance,
+            explicit=explicit,
         )
     )
 
@@ -3307,6 +3429,21 @@ def _prepared_symbol_write_for(
     return resolved
 
 
+def _read_memory_with_symbol_tracking(handle: Any, address: int, width: int) -> int:
+    # A handler can still refuse a changed ELF after dispatch preflight. Reset
+    # cleanup is appropriate only once this read actually enters the backend.
+    operation = current_operation()
+    if operation is not None and operation.tool_name == "read_memory_symbol":
+        selection = cast(SymbolArtifactSelection, operation.prepared["read_memory_symbol_artifact"])
+        refusal = _reverify_symbol_artifact(memory_services, handle, selection)
+        if refusal is not None:
+            raise PlanRefusal(
+                refusal.code, refusal.message, session_id=_active_session_id(operation.board_id)
+            )
+        operation.prepared["read_memory_symbol_io_started"] = True
+    return target_control.read_memory(handle, address, width)
+
+
 memory_services = MemoryToolServices(
     runtime_for=_runtime_for,
     active_session_id=_active_session_id,
@@ -3317,7 +3454,7 @@ memory_services = MemoryToolServices(
     symbol_artifact_for=_symbol_artifact_for_handle,
     find_symbols=lambda artifact, query: find_symbols(artifact, query),
     resolve_symbol=resolve_symbol,
-    read_target_memory=target_control.read_memory,
+    read_target_memory=_read_memory_with_symbol_tracking,
     read_target_block=target_control.read_memory_block,
     write_target_memory=target_control.write_memory,
     check_memory_read=_check_memory_read_safety,
@@ -3352,6 +3489,10 @@ def _stage_generic_allocation(
     pending_handle: object,
 ) -> None:
     _pending_generic_allocations.pop(board_id, None)
+    # Lite flash uses its confirmed artifact/sector containment, not full-tier
+    # generic allocation authority. Other tiers still require a full document.
+    if _tier_router.state_for(board_id).tier is Tier.SETUP_LITE:
+        return
     current = _active_full_document(board_id)
     if not isinstance(current, GenericSafetyMapDocument):
         return
@@ -3423,6 +3564,9 @@ def _prepare_generic_allocation(
 ) -> _PendingGenericAllocation | None:
     del pending_handle
     if tool_name != "flash_application":
+        return None
+    if _tier_router.state_for(board_id).tier is Tier.SETUP_LITE:
+        _pending_generic_allocations.pop(board_id, None)
         return None
     current = _active_full_document(board_id)
     if not isinstance(current, GenericSafetyMapDocument):
@@ -3828,7 +3972,7 @@ for _direct_hardware_action in route_names("direct"):
 mcp.configure_route_guard("read_memory_symbol", guard=_enforce_tier_route)
 mcp.configure_guarded_dispatch(
     "read_memory_symbol",
-    guard=_enforce_guarded_invocation,
+    guard=_enforce_symbol_read,
     lock_for_board=lambda board_id: connection_manager.lock_for(board_id),
 )
 
@@ -3923,7 +4067,18 @@ def _selection_for_validation_probe(
     `ValidationInventory` still gets a usable, native-provenance selection.
     """
 
-    row = next((item for item in snapshot.probes if item.probe_id == probe.probe_id), None)
+    matches = [
+        item
+        for item in snapshot.probes
+        if item.probe_id == probe.probe_id and item.provider == probe.probe_family
+    ]
+    if len(matches) > 1:
+        raise SelectionDisappeared(
+            connection_id,
+            "The probe UID is ambiguous across native observations; disconnect probes "
+            "sharing that UID and rerun setup_overview to choose one distinguishable connection.",
+        )
+    row = matches[0] if matches else None
     if row is not None:
         return ProbeSelection.from_row(connection_id, row)
     return ProbeSelection(
@@ -4036,7 +4191,11 @@ def _validation_connect(profile, probe: ValidationProbe, timeout: float) -> obje
         try:
             handle = target_control.open_session(
                 board=profile.board,
-                unique_id=probe.usb_serial,
+                unique_id=(
+                    provider_qualified_probe_uid(probe.probe_family, probe.usb_serial)
+                    if probe.usb_serial is not None
+                    else probe.probe_id
+                ),
                 target=profile.board.pyocd_target,
                 server_timeouts=_staged_server_timeouts,
                 protocol=protocol,
@@ -5359,7 +5518,11 @@ def _setup_lite_connection_phase(context: SetupPhaseContext) -> SetupPhaseOutcom
     def connect(candidate_target: str, _pack_path: str | None) -> None:
         handle = target_control.open_session(
             board=board,
-            unique_id=probe.usb_serial,
+            unique_id=(
+                provider_qualified_probe_uid(probe.probe_family, probe.usb_serial)
+                if probe.usb_serial is not None
+                else probe.probe_id
+            ),
             target=candidate_target,
             server_timeouts=_staged_server_timeouts,
         )
@@ -5619,7 +5782,11 @@ def _setup_connection_phase(context: SetupPhaseContext) -> SetupPhaseOutcome:
             try:
                 handle = target_control.open_session(
                     board=setup_board,
-                    unique_id=probe.usb_serial,
+                    unique_id=(
+                        provider_qualified_probe_uid(probe.probe_family, probe.usb_serial)
+                        if probe.usb_serial is not None
+                        else probe.probe_id
+                    ),
                     target=candidate_target,
                     server_timeouts=_staged_server_timeouts,
                     protocol=protocol,
@@ -8091,6 +8258,16 @@ def _abandon_manual_mass_erase(binding: object, claim_id: str) -> None:
     _manual_permissions.abandon_mass_erase(binding.identity.board_id, claim_id)
 
 
+def _retire_manual_mass_erase(binding: object, claim_id: str) -> None:
+    policy_digest, binding_digest = _manual_mass_erase_binding_digest(binding)
+    from pyocd_debug_mcp.tools.unlock import UnlockBinding
+
+    assert isinstance(binding, UnlockBinding)
+    _manual_permissions.retire_mass_erase(
+        binding.identity.board_id, policy_digest, binding_digest, claim_id
+    )
+
+
 _unlock_coordinator = UnlockCoordinator(
     UnlockToolServices(
         server_run=server_run,
@@ -8113,6 +8290,7 @@ _unlock_coordinator = UnlockCoordinator(
         reserve_manual_mass_erase=_reserve_manual_mass_erase,
         consume_manual_mass_erase=_consume_manual_mass_erase,
         abandon_manual_mass_erase=_abandon_manual_mass_erase,
+        retire_manual_mass_erase=_retire_manual_mass_erase,
         policy_profile=_active_policy_profile,
         policy_safety=lambda board_id: cast(SafetyMapDocument, _active_full_document(board_id)),
         policy_lite_recovery=_active_lite_recovery_policy,
@@ -8165,7 +8343,8 @@ def _bind_managed_board_resources(operation: ManagedOperation) -> None:
     Cancellation and timeout close a debug connection only for operations that use it, because
     backend completion is then uncertain. UART-only, metadata-only, and wait operations do not
     own that independent transport. An ordinary handler error is reported without assuming that
-    the healthy connection itself became unsafe.
+    the healthy connection itself became unsafe. Dispatch binds only after the operation holds
+    the board, so the captured connection is the one it can use; a queued operation binds nothing.
     """
 
     board_id = operation.board_id
@@ -8240,6 +8419,10 @@ def _bind_managed_board_resources(operation: ManagedOperation) -> None:
         # the outer batch complete. Keep release cleanup for handlers that did
         # begin (and therefore may have touched the debug target).
         if operation.handler_started_at is None:
+            return
+        if operation.tool_name == "read_memory_symbol" and not operation.prepared.get(
+            "read_memory_symbol_io_started"
+        ):
             return
         try:
             target_control.release_reset(handle)

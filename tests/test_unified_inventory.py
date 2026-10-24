@@ -149,12 +149,12 @@ class NativeOnlyTests(unittest.TestCase):
         self.assertEqual(row.stable_identity, "U1")
         self.assertIsNone(row.hook_source_sha256)
 
-    def test_duplicate_native_uids_are_collapsed(self) -> None:
+    def test_duplicate_native_uids_do_not_establish_the_same_endpoint(self) -> None:
         listing = _listing(("U1", "cmsisdap"), ("U1", "cmsisdap"))
 
         snapshot = _service(listing, []).snapshot()
 
-        self.assertEqual(len(snapshot.probes), 1)
+        self.assertEqual(len(snapshot.probes), 2)
 
     def test_native_uart_scope_follows_stable_identity(self) -> None:
         ports = [
@@ -217,6 +217,14 @@ class ActiveConnectionTests(unittest.TestCase):
 
         self.assertEqual(len(snapshot.probes), 1)
         self.assertEqual(snapshot.probes[0].description, "cmsisdap U1")
+
+    def test_active_uid_aliases_supplement_native_inventory_without_extra_rows(self) -> None:
+        for native_uid, active_uid in (("AbCd", "aBcD"), ("123", "000123")):
+            with self.subTest(native_uid=native_uid, active_uid=active_uid):
+                active = (ActiveConnectionRow(active_uid, active_uid, "Open board", "jlink"),)
+                snapshot = _service(_listing((native_uid, "jlink")), [], active=active).snapshot()
+                self.assertEqual(len(snapshot.probes), 1)
+                self.assertEqual(snapshot.probes[0].unique_id, native_uid)
 
     def test_active_probes_remain_visible_to_validation(self) -> None:
         active = (ActiveConnectionRow("U9", "U9", "Open board", "jlink"),)

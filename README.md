@@ -113,7 +113,11 @@ resets those grants at every startup, and consumes each authorization once. Ask
 the human to invoke the named skill; do not create or edit a grant directly.
 Mass erase reserves that exact disclosure before plan acceptance and consumes it
 before the backend call; a cancelled, changed, or failed plan discards the old
-grant and requires a fresh skill invocation.
+grant and requires a fresh skill invocation. After a completed or failed recovery
+attempt, reconnect, request the current loss disclosure, and ask the human to
+invoke `$mass-erase` again. This creates a distinct grant without restarting the
+server; the spent grant and its reservation remain unusable. If terminal grant
+cleanup fails, follow the reported restart instructions before trying again.
 
 Raw memory, flash, and UART routes are deliberately bounded: raw serial reads,
 writes, exchanges, payloads, and captured output have finite operation limits.

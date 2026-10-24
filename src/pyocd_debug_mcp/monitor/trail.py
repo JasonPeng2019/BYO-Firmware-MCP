@@ -23,6 +23,8 @@ from collections import deque
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 
+from pyocd_debug_mcp.monitor.redaction import digest_id
+
 TRAIL_MAX_EVENTS = 100
 
 
@@ -74,7 +76,8 @@ class BoardTrail:
             ts=_timestamp(),
             tool=tool,
             board=board,
-            connection=connection,
+            # Match board_scope identity semantics before retaining any raw ID.
+            connection=digest_id(connection) if connection is not None else None,
             args_fp=args_fp,
             outcome=outcome,
             error_class=error_class,
