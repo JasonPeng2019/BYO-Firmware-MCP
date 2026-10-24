@@ -1,118 +1,57 @@
-name: Native code analysis contracts
+name: FR09 repair material and per-command source observation
 
 on:
-  push:
-    branches:
-      - chore/Proto-0.03
   workflow_dispatch:
 
 permissions:
   contents: read
 
 jobs:
-  native-analysis:
+  uart-diagnostic:
     strategy:
       fail-fast: false
       matrix:
         include:
-          - os: windows-2025
-            target: windows-x86_64
-          - os: ubuntu-24.04
+          - runner: ubuntu-24.04
             target: linux-x86_64
-          - os: macos-15
-            target: macos-aarch64
-          - os: macos-15-intel
-            target: macos-x86_64
-    runs-on: ${{ matrix.os }}
-    timeout-minutes: 40
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 20
     steps:
-      - name: Check out exact server candidate
-        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - name: Preserve exact exported LF source bytes
+        shell: bash
+        run: git config --global core.autocrlf false
+
+      - name: Check out diagnostic overlay and exact bound source
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
 
       - name: Install Python
-        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
         with:
           python-version: '3.12'
 
-      - name: Record source and native host
-        shell: bash
-        run: |
-          git rev-parse HEAD
-          python -c "import platform, sys; print(sys.version); print(platform.platform()); print(platform.machine())"
-          echo "BYO_MANAGED_TEST_EVIDENCE=$RUNNER_TEMP/managed-analysis-contracts" >> "$GITHUB_ENV"
-          echo "BYO_WINDOWS_REGRESSION_EVIDENCE=$RUNNER_TEMP/windows-analysis-regressions" >> "$GITHUB_ENV"
-          echo "BYO_WINDOWS_ACCEPTANCE_EVIDENCE=$RUNNER_TEMP/windows-analysis-acceptance" >> "$GITHUB_ENV"
-
       - name: Install uv
-        uses: astral-sh/setup-uv@94527f2e458b27549849d47d273a16bec83a01e9 # v7
+        uses: astral-sh/setup-uv@94527f2e458b27549849d47d273a16bec83a01e9
         with:
           enable-cache: false
 
-      - name: Install locked server dependencies
+      - name: Install actual locked dependencies
         id: dependencies
         run: uv sync --locked --all-groups
 
-      - name: Lint server
-        run: uv run ruff check .
-
-      - name: Check analysis formatting
-        run: >-
-          uv run ruff format --check
-          src/pyocd_debug_mcp/code_analysis_manifest.py
-          src/pyocd_debug_mcp/code_analysis_runtime.py
-          src/pyocd_debug_mcp/_analysis_native.py
-          src/pyocd_debug_mcp/kernel/_analysis_posix.py
-          src/pyocd_debug_mcp/adapters/clangd.py
-          src/pyocd_debug_mcp/kernel/processes.py
-          tests/code_analysis_managed_support.py
-          tests/test_code_analysis_managed_runtime_unit.py
-          tests/test_code_analysis_managed_runtime_contract.py
-          tests/test_code_analysis_portability.py
-          tests/test_code_analysis_posix_ownership.py
-          tests/test_code_analysis_runtime_contract.py
-          tests/test_clangd_adapter_unit.py
-
-      - name: Type check analysis runtime
-        run: >-
-          uv run pyright
-          src/pyocd_debug_mcp/code_analysis_manifest.py
-          src/pyocd_debug_mcp/code_analysis_runtime.py
-          src/pyocd_debug_mcp/_analysis_native.py
-          src/pyocd_debug_mcp/kernel/_analysis_posix.py
-          src/pyocd_debug_mcp/adapters/clangd.py
-          src/pyocd_debug_mcp/kernel/processes.py
-
-      - name: Focused portability and cleanup regression gate
+      - name: Record source and run all independent diagnostic controls
+        if: ${{ !cancelled() && steps.dependencies.outcome == 'success' }}
+        shell: bash
         env:
-          PYTHONPATH: tests
-        run: >-
-          uv run python -m unittest -v
-          tests.test_code_analysis_managed_runtime_unit
-          tests.test_code_analysis_portability
-          tests.test_code_analysis_posix_ownership
-          tests.test_clangd_adapter_unit
-          tests.test_code_analysis_managed_runtime_contract.MappingSyntax
-          tests.test_code_analysis_managed_runtime_contract.SharedDeadline
-          tests.test_code_analysis_service_unit.ServiceTests.test_concurrent_same_file_versions_and_source_change
+          FR09_EVIDENCE: ${{ runner.temp }}/MCP_Server_Dev/development/fr09-diagnostic-evidence
+        run: |
+          git rev-parse HEAD
+          uv run --no-sync python .diagnostics/fr09_diagnostic.py --source . --evidence "$FR09_EVIDENCE"
 
-      - name: All analysis unit, protocol and native lifecycle contracts
-        run: uv run python -m unittest discover -s tests -p "test_code_analysis*.py" -v
-
-      - name: Clangd adapter and process cleanup regressions
-        run: uv run python -m unittest -v tests.test_clangd_adapter_unit tests.test_process_cleanup
-
-      - name: Windows hardware process isolation regression
-        if: success() && runner.os == 'Windows'
-        run: uv run python -m unittest -v tests.test_swd_process_isolation
-
-      - name: Retain native analysis contract evidence
+      - name: Retain every diagnostic command, method and raw failure
         if: always()
-        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f
         with:
-          name: server-analysis-${{ matrix.target }}-${{ github.sha }}-${{ github.run_attempt }}
-          path: |
-            ${{ runner.temp }}/managed-analysis-contracts/
-            ${{ runner.temp }}/windows-analysis-regressions/
-            ${{ runner.temp }}/windows-analysis-acceptance/
+          name: fr09-repair-material-${{ matrix.target }}-${{ github.sha }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/MCP_Server_Dev/development/fr09-diagnostic-evidence/
           if-no-files-found: warn
           retention-days: 90
