@@ -206,7 +206,52 @@ class NativePosixOwnership(unittest.TestCase):
         self.enterContext(mock.patch.object(self.runtime, "_spawn_cleanup_failure", None))
         self.enterContext(mock.patch.object(self.runtime, "_spawn_admission", threading.Lock()))
         self.enterContext(mock.patch.object(self.runtime, "_probe_cache", {}))
+        self.admission_threads = []
+        actual_thread = threading.Thread
+
+        def owned_thread(*args, **kwargs):
+            thread = actual_thread(*args, **kwargs)
+            target = kwargs.get("target")
+            if (
+                kwargs.get("name") == "analysis-spawn"
+                and getattr(target, "__module__", None) == self.runtime.__name__
+            ):
+                self.admission_threads.append(thread)
+            return thread
+
+        self.enterContext(mock.patch.object(self.runtime.threading, "Thread", owned_thread))
         self.addCleanup(self.emergency_cleanup)
+        # These actual fixture-owned handles must finish before the patched
+        # admission lock is restored, including after a failed assertion.
+        self.addCleanup(self.quiesce_admissions)
+
+    def quiesce_admissions(self, deadline: float | None = None) -> None:
+        deadline = time.monotonic() + 5 if deadline is None else deadline
+        events = []
+        for thread in self.admission_threads:
+            if thread.ident is not None:
+                thread.join(max(0, deadline - time.monotonic()))
+            alive = thread.is_alive()
+            events.append(
+                {
+                    "boundary": "fixture-owned admission thread completion",
+                    "thread_name": thread.name,
+                    "thread_ident": thread.ident,
+                    "native_id": thread.native_id,
+                    "started": thread.ident is not None,
+                    "alive_after_join": alive,
+                }
+            )
+        evidence = os.environ.get("BYO_FINAL_CLEANUP_EVIDENCE")
+        if evidence and events:
+            path = Path(evidence) / (self._testMethodName + ".admission-threads.jsonl")
+            path.parent.mkdir(parents=True, exist_ok=True)
+            with path.open("a", encoding="utf-8") as stream:
+                stream.write(json.dumps({"test": self.id(), "at": time.monotonic(), "events": events}) + "\n")
+        self.assertFalse(
+            any(event["alive_after_join"] for event in events),
+            "Owned admission/late cleanup exceeded the fixture barrier: " + repr(events),
+        )
 
     def until(self, predicate, budget: float = 5):
         deadline = time.monotonic() + budget
@@ -1289,6 +1334,7 @@ class NativePosixOwnership(unittest.TestCase):
                 spawned = []
                 actual = self.runtime.popen_owned
                 stop = threading.Event()
+                admitted = threading.Event()
 
                 def capture(argv, **kwargs):
                     result = actual(
@@ -1303,13 +1349,14 @@ class NativePosixOwnership(unittest.TestCase):
                     spawned.append(result)
                     self.owned.append(result)
                     self.observe(result[0].pid)
+                    admitted.set()
                     return result
 
                 def cancel_when_ready():
                     deadline = time.monotonic() + 5
-                    while not gate.exists() and time.monotonic() < deadline:
+                    while not (gate.exists() and admitted.is_set()) and time.monotonic() < deadline:
                         time.sleep(0.01)
-                    if gate.exists():
+                    if gate.exists() and admitted.is_set():
                         stop.set()
 
                 thread = threading.Thread(target=cancel_when_ready) if cancel else None
@@ -1322,17 +1369,31 @@ class NativePosixOwnership(unittest.TestCase):
                     mock.patch.object(self.runtime, "popen_owned", side_effect=capture),
                     mock.patch.object(self.runtime, "ProcessMarkerStore", return_value=self.store),
                 ):
-                    with self.assertRaises(TimeoutError):
-                        self.runtime._probe_program(
-                            candidate, time.monotonic() + (5 if cancel else 2), stop
-                        )
-                if thread:
-                    thread.join(5)
-                    self.assertFalse(thread.is_alive())
+                    try:
+                        with self.assertRaises(TimeoutError):
+                            self.runtime._probe_program(
+                                candidate, time.monotonic() + (5 if cancel else 2), stop
+                            )
+                    finally:
+                        # Share the existing five-second fixture barrier; a
+                        # child's ready file alone does not complete admission.
+                        cleanup_deadline = time.monotonic() + 5
+                        try:
+                            if thread:
+                                thread.join(max(0, cleanup_deadline - time.monotonic()))
+                                self.assertFalse(thread.is_alive())
+                        finally:
+                            self.quiesce_admissions(cleanup_deadline)
                 self.assertTrue(gate.exists(), "The actual native probe must start before expiry")
+                self.assertTrue(admitted.is_set(), "Actual ownership admission must be recorded")
+                if cancel:
+                    self.assertTrue(stop.is_set(), "Cancel only the admitted live probe")
                 self.assertEqual(len(spawned), 1)
                 process, marker = spawned[0]
-                self.until(lambda: process.poll() is not None and not marker.exists())
+                self.until(
+                    lambda: process.poll() is not None and not marker.exists(),
+                    budget=max(0, cleanup_deadline - time.monotonic()),
+                )
                 self.assertIsNotNone(process.poll())
                 self.assertFalse(self.is_owned_live(process.pid, self.observed[process.pid]))
                 self.assertFalse(marker.exists())
