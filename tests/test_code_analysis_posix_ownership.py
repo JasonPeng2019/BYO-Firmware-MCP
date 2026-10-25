@@ -247,7 +247,9 @@ class NativePosixOwnership(unittest.TestCase):
             path = Path(evidence) / (self._testMethodName + ".admission-threads.jsonl")
             path.parent.mkdir(parents=True, exist_ok=True)
             with path.open("a", encoding="utf-8") as stream:
-                stream.write(json.dumps({"test": self.id(), "at": time.monotonic(), "events": events}) + "\n")
+                stream.write(
+                    json.dumps({"test": self.id(), "at": time.monotonic(), "events": events}) + "\n"
+                )
         self.assertFalse(
             any(event["alive_after_join"] for event in events),
             "Owned admission/late cleanup exceeded the fixture barrier: " + repr(events),
