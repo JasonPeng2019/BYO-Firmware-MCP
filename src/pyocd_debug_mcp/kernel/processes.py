@@ -431,6 +431,9 @@ def _terminate_retained_posix_group(process: subprocess.Popen[Any], grace_second
     complete group whose members are all terminal, then the actual leader reap.
     An unproven group keeps its anchor and reports unconfirmed cleanup.
     """
+    if os.name == "nt":
+        # Windows cleanup is owned by terminate_process_group's Job branch.
+        return False
     from pyocd_debug_mcp.kernel import _analysis_posix
 
     process_group = process.pid
@@ -522,6 +525,8 @@ def _released_group_absent(process_group: int, budget_seconds: float) -> bool:
     number may belong to a later session. It never receives a signal; only
     ESRCH, proving that no process at all still has this PGID, confirms it.
     """
+    if os.name == "nt":
+        return False  # Windows has no POSIX group; absence is never proven here.
     deadline = time.monotonic() + budget_seconds
     while True:
         try:
@@ -538,6 +543,8 @@ def _released_group_absent(process_group: int, budget_seconds: float) -> bool:
 
 def _current_group_members(process_group: int, deadline: float) -> set[int]:
     """Complete current PGID membership including zombies; errors never mean empty."""
+    if os.name == "nt":
+        raise RuntimeError("POSIX process-group membership is unavailable on Windows")
     from pyocd_debug_mcp.kernel import _analysis_posix
 
     if sys.platform == "darwin":
@@ -566,6 +573,8 @@ def _retained_group_state(process_group: int, leader_exit: int | None, deadline:
     live member is never terminal proof. Unknown/reused/newly listed identities
     cannot authorize a signal or confirm cleanup.
     """
+    if os.name == "nt":
+        return "unknown"
     from pyocd_debug_mcp.kernel import _analysis_posix
 
     try:
