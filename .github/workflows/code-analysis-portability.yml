@@ -141,7 +141,7 @@ jobs:
 
       - name: Build server wheel and source distribution
         if: ${{ !cancelled() && steps.dependencies.outcome == 'success' }}
-        run: uv build --build-constraint .github/ci/build-constraints.txt --require-build-hashes --out-dir "$RUNNER_TEMP/server-package"
+        run: uv build --build-constraint .github/ci/build-constraints.txt --require-hashes --out-dir "$RUNNER_TEMP/server-package"
 
       - name: Bind complete committed source after independent gates
         if: always()
