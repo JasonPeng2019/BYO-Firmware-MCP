@@ -392,17 +392,23 @@ class NativePosixOwnership(unittest.TestCase):
 
     def gated_exit(self, exit_code: int, name: str, *, release: bool = True):
         gate = self.base / name
+        ready = self.base / (name + "-ready")
         process, marker = self.spawn(
             [
                 sys.executable,
                 "-c",
                 "import pathlib,sys,time; gate=pathlib.Path(sys.argv[1]);\n"
+                "pathlib.Path(sys.argv[3]).touch()\n"
                 "while not gate.exists(): time.sleep(.01)\n"
                 "print('retained exit'); sys.exit(int(sys.argv[2]))",
                 str(gate),
                 str(exit_code),
+                str(ready),
             ]
         )
+        # Spawn/identity admission precedes Python startup. Establish the live
+        # gate waiter before a test opens the gate inside its cleanup reserve.
+        self.until(ready.exists)
         self.assertIsNone(native_retained_exit(process.pid), "Positive live startup control")
         if not release:
             return process, marker, gate

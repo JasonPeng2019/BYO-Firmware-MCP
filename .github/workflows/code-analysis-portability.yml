@@ -4,7 +4,18 @@ on:
   push:
     branches:
       - chore/Proto-0.03
+      - chore/Proto-0.04
   workflow_dispatch:
+
+env:
+  GIT_CONFIG_COUNT: '1'
+  GIT_CONFIG_KEY_0: core.autocrlf
+  GIT_CONFIG_VALUE_0: 'false'
+  PYTHONDONTWRITEBYTECODE: '1'
+
+defaults:
+  run:
+    shell: bash
 
 permissions:
   contents: read
@@ -15,24 +26,37 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - os: windows-2025
+          - os: windows-2022
+            container: ''
             target: windows-x86_64
           - os: ubuntu-24.04
-            target: linux-x86_64
+            target: linux-x86_64-glibc-2.28
+            container: quay.io/pypa/manylinux_2_28_x86_64@sha256:fdb9a9c223b215604dc7b6f7e8fff4b39bfea5fbaa7777a2e5544a60dfa437f8
           - os: macos-15
+            container: ''
             target: macos-aarch64
           - os: macos-15-intel
+            container: ''
             target: macos-x86_64
     runs-on: ${{ matrix.os }}
+    container: ${{ matrix.container }}
     timeout-minutes: 40
     steps:
       - name: Check out exact server candidate
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
 
+      - name: Qualify pinned glibc Python
+        if: runner.os == 'Linux'
+        run: |
+          test "$(getconf GNU_LIBC_VERSION)" = 'glibc 2.28'
+          echo /opt/python/cp312-cp312/bin >> "$GITHUB_PATH"
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+
       - name: Install Python
+        if: runner.os != 'Linux'
         uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
         with:
-          python-version: '3.12'
+          python-version: '3.12.10'
 
       - name: Record source and native host
         shell: bash
@@ -46,16 +70,22 @@ jobs:
       - name: Install uv
         uses: astral-sh/setup-uv@94527f2e458b27549849d47d273a16bec83a01e9 # v7
         with:
+          version: '0.11.20'
           enable-cache: false
 
       - name: Install locked server dependencies
         id: dependencies
         run: uv sync --locked --all-groups
 
+      - name: Bind complete committed source before native gates
+        run: python .github/ci/source_gate.py before
+
       - name: Lint server
+        if: ${{ !cancelled() && steps.dependencies.outcome == 'success' }}
         run: uv run ruff check .
 
       - name: Check analysis formatting
+        if: ${{ !cancelled() && steps.dependencies.outcome == 'success' }}
         run: >-
           uv run ruff format --check
           src/pyocd_debug_mcp/code_analysis_manifest.py
@@ -73,6 +103,7 @@ jobs:
           tests/test_clangd_adapter_unit.py
 
       - name: Type check analysis runtime
+        if: ${{ !cancelled() && steps.dependencies.outcome == 'success' }}
         run: >-
           uv run pyright
           src/pyocd_debug_mcp/code_analysis_manifest.py
@@ -83,6 +114,7 @@ jobs:
           src/pyocd_debug_mcp/kernel/processes.py
 
       - name: Focused portability and cleanup regression gate
+        if: ${{ !cancelled() && steps.dependencies.outcome == 'success' }}
         env:
           PYTHONPATH: tests
         run: >-
@@ -96,14 +128,42 @@ jobs:
           tests.test_code_analysis_service_unit.ServiceTests.test_concurrent_same_file_versions_and_source_change
 
       - name: All analysis unit, protocol and native lifecycle contracts
+        if: ${{ !cancelled() && steps.dependencies.outcome == 'success' }}
         run: uv run python -m unittest discover -s tests -p "test_code_analysis*.py" -v
 
       - name: Clangd adapter and process cleanup regressions
+        if: ${{ !cancelled() && steps.dependencies.outcome == 'success' }}
         run: uv run python -m unittest -v tests.test_clangd_adapter_unit tests.test_process_cleanup
 
       - name: Windows hardware process isolation regression
-        if: success() && runner.os == 'Windows'
+        if: ${{ !cancelled() && runner.os == 'Windows' && steps.dependencies.outcome == 'success' }}
         run: uv run python -m unittest -v tests.test_swd_process_isolation
+
+      - name: Build server wheel and source distribution
+        if: ${{ !cancelled() && steps.dependencies.outcome == 'success' }}
+        run: uv build --build-constraint .github/ci/build-constraints.txt --require-build-hashes --out-dir "$RUNNER_TEMP/server-package"
+
+      - name: Bind complete committed source after independent gates
+        if: always()
+        run: python .github/ci/source_gate.py after
+
+      - name: Retain exact server package
+        if: always()
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f
+        with:
+          name: server-package-${{ matrix.target }}-${{ github.sha }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/server-package/
+          if-no-files-found: error
+          retention-days: 90
+
+      - name: Retain exact server source bindings
+        if: always()
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f
+        with:
+          name: server-source-${{ matrix.target }}-${{ github.sha }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/server-source/
+          if-no-files-found: error
+          retention-days: 90
 
       - name: Retain native analysis contract evidence
         if: always()
