@@ -570,8 +570,9 @@ def _retained_group_state(process_group: int, leader_exit: int | None, deadline:
 
     Two equal complete snapshots bracket fresh same-birth zombie observations
     of every non-leader member, and the leader's retained exit is unchanged. A
-    live member is never terminal proof. Unknown/reused/newly listed identities
-    cannot authorize a signal or confirm cleanup.
+    live member is never terminal proof. Ordinary growth in the pinned session
+    may still need a signal; it cannot establish terminal membership. Unknown,
+    reused, foreign or unreadable identities never authorize a signal.
     """
     if os.name == "nt":
         return "unknown"
@@ -598,17 +599,49 @@ def _retained_group_state(process_group: int, leader_exit: int | None, deadline:
                     state = _analysis_posix._process_state(pid, birth)
                     if state not in {"gone", "zombie", "live"}:
                         return "unknown"
-                    if state == "live" and (
-                        os.getpgid(pid) != process_group or os.getsid(pid) != process_group
-                    ):
-                        return "unknown"
+                    if state == "live":
+                        try:
+                            if os.getpgid(pid) != process_group or os.getsid(pid) != process_group:
+                                return "unknown"
+                        except ProcessLookupError:
+                            # A member can exit after its live read. This is
+                            # churn, not failed identity access. Retry within
+                            # the existing phase; never use it as terminal proof.
+                            return "changed"
                     states[pid] = state
             # Final membership must FOLLOW the liveness reads. Otherwise a live
             # branch can fork after this snapshot, then look terminal while its
             # new leaf is absent from the purported complete terminal proof.
             following = _current_group_members(process_group, deadline)
-            if process_group not in following or not following <= members:
+            if process_group not in following:
                 return "unknown"
+            if not following <= members:
+                # The exact unreaped new-session leader pins both PGID and
+                # SID under the caller's reap lock. New in-group descendants
+                # cannot be a foreign session. A verified live member permits
+                # bounded escalation despite growth; cleanup confirmation
+                # still requires the complete terminal proof below.
+                live = leader_exit is None or "live" in states.values()
+                for pid in sorted(following - members):
+                    try:
+                        birth = f"psutil:{psutil.Process(pid).create_time():.9f}"
+                    except psutil.ZombieProcess:
+                        return "unknown"
+                    except psutil.NoSuchProcess:
+                        return "changed"
+                    state = _analysis_posix._process_state(pid, birth)
+                    if state == "gone":
+                        return "changed"
+                    if state not in {"live", "zombie"}:
+                        return "unknown"
+                    if state == "live":
+                        try:
+                            if os.getpgid(pid) != process_group or os.getsid(pid) != process_group:
+                                return "unknown"
+                        except ProcessLookupError:
+                            return "changed"
+                        live = True
+                return "live" if live else "changed"
             live = leader_exit is None
             for pid in sorted(following - {process_group}):
                 birth = births[pid]
