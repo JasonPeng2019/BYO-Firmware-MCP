@@ -66,6 +66,7 @@ jobs:
           echo "BYO_MANAGED_TEST_EVIDENCE=$RUNNER_TEMP/managed-analysis-contracts" >> "$GITHUB_ENV"
           echo "BYO_WINDOWS_REGRESSION_EVIDENCE=$RUNNER_TEMP/windows-analysis-regressions" >> "$GITHUB_ENV"
           echo "BYO_WINDOWS_ACCEPTANCE_EVIDENCE=$RUNNER_TEMP/windows-analysis-acceptance" >> "$GITHUB_ENV"
+          echo "BYO_FR15_CASE_EVIDENCE=$RUNNER_TEMP/fr15-nrf-controls" >> "$GITHUB_ENV"
 
       - name: Install uv
         uses: astral-sh/setup-uv@94527f2e458b27549849d47d273a16bec83a01e9 # v7
@@ -141,8 +142,9 @@ jobs:
 
       - name: FR15 genuine nRF registered-pack public protection controls
         if: ${{ !cancelled() && steps.dependencies.outcome == 'success' }}
+        env:
+          BYO_FINAL_CASE_EVIDENCE: ${{ env.BYO_FR15_CASE_EVIDENCE }}
         run: >-
-          BYO_FINAL_CASE_EVIDENCE="$RUNNER_TEMP/fr15-nrf-controls"
           uv run python -m unittest -v
           tests.test_generic_builtin_safety_map.NrfRegisteredPackGeometry
           tests.test_tiered_acceptance_workspace.NrfPublicRegeneratedMapControls
@@ -182,6 +184,6 @@ jobs:
             ${{ runner.temp }}/managed-analysis-contracts/
             ${{ runner.temp }}/windows-analysis-regressions/
             ${{ runner.temp }}/windows-analysis-acceptance/
-            ${{ runner.temp }}/fr15-nrf-controls/
+            ${{ env.BYO_FR15_CASE_EVIDENCE }}/
           if-no-files-found: warn
           retention-days: 90

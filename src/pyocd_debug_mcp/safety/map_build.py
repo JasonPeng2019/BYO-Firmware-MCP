@@ -63,7 +63,7 @@ _GENERIC_GENERATOR_SCHEMA_DOCUMENT: Final[dict[str, object]] = {
     "nullable_partitions": True,
     "artifact_application_allocation": 1,
     "cmsis_svd_access_default": "read-write",
-    "svd_prohibited_register_policy": 1,
+    "svd_prohibited_register_policy": 2,
 }
 
 

@@ -401,7 +401,7 @@ class NrfPublicRegeneratedMapControls(unittest.TestCase):
 
     def test_real_nrf_nvmc_uicr_public_refusals_have_zero_backend_effects(self) -> None:
         fixture = self.fixture
-        rows = {row.name: row for row in fixture.geometry.peripheral_regions}
+        rows = {row.name.split(" (+", 1)[0]: row for row in fixture.geometry.peripheral_regions}
         for name in (
             "NVMC.CONFIG",
             "NVMC.ERASEPAGE",
@@ -516,7 +516,10 @@ class NrfPublicRegeneratedMapControls(unittest.TestCase):
             details["read_response"] = read_response
             self.assertIn("0x410FC241", read_response)
             uid = fixture.server._handle(fixture.board_id).probe_uid
-            self.assertEqual(fixture.backend.calls, [("read_memory", uid, row.start, 32)])
+            self.assertEqual(
+                fixture.backend.calls,
+                [("read_memory", uid, row.start, 32), ("release_reset", uid)],
+            )
             self.assertIsNone(
                 fixture.server.plan_engine.active_plan("read_memory_address", fixture.board_id)
             )
@@ -528,8 +531,10 @@ class NrfPublicRegeneratedMapControls(unittest.TestCase):
                 fixture.backend.calls,
                 [
                     ("read_memory", uid, row.start, 32),
+                    ("release_reset", uid),
                     ("read_memory", uid, row.start, 32),
                     ("write_memory", uid, row.start, 0x410FC240, 32),
+                    ("release_reset", uid),
                 ],
             )
             self.assertIsNone(

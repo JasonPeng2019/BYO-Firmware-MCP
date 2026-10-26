@@ -1051,7 +1051,11 @@ def _svd_peripheral_regions(
                         continue
                     if start < 0xE0100000 and end > 0xE0000000:
                         continue
-                    if not _overlaps_memory(row, memory_regions):
+                    # A pack may also describe security registers as physical
+                    # flash (for example Nordic UICR). Keep their restrictive
+                    # overlay; ordinary overlapping SVD rows still grant no
+                    # peripheral capability over physical memory.
+                    if row.prohibited or not _overlaps_memory(row, memory_regions):
                         rows.add(row)
                 continue
             block = peripheral.address_block
@@ -1074,7 +1078,7 @@ def _svd_peripheral_regions(
                 continue
             if start < 0xE0100000 and end > 0xE0000000:
                 continue
-            if not _overlaps_memory(row, memory_regions):
+            if row.prohibited or not _overlaps_memory(row, memory_regions):
                 rows.add(row)
 
         return _intersect_access_regions(rows)

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import io
 import json
 import os
 import shutil
@@ -327,13 +328,22 @@ class NrfRegisteredPackGeometry(unittest.TestCase):
             "UICR.NFCPINS": (0x1000120C, True),
             "P0.OUT": (0x50000504, False),
         }
-        rows = {row.name: row for row in fixture.geometry.peripheral_regions}
+        # Intersected aliases retain a display suffix; it is not a missing
+        # register. Addresses/access/prohibitions below still come from pyOCD.
+        rows = {row.name.split(" (+", 1)[0]: row for row in fixture.geometry.peripheral_regions}
         for name, (address, prohibited) in expected.items():
             with self.subTest(register=name):
                 row = rows[name]
                 self.assertEqual((row.start, row.end), (address, address + 4))
                 self.assertEqual(row.prohibited, prohibited)
                 self.assertTrue(row.writable)
+                if name.startswith("UICR."):
+                    self.assertTrue(
+                        any(
+                            memory.start <= row.start and row.end <= memory.end
+                            for memory in fixture.geometry.flash_regions
+                        )
+                    )
         self.assertTrue(rows["P0.OUT"].readable)
         self.assertFalse(rows["NVMC.ERASEALL"].readable)
         self.assertTrue(
@@ -348,6 +358,24 @@ class NrfRegisteredPackGeometry(unittest.TestCase):
         self.assertEqual(fixture.document.authority_source["kind"], "resolved_pack")
         self.assertEqual(fixture.document.authority_source["pack_sha256"], NRF_PACK_SHA256)
         self.assertEqual(fixture.backend.calls, [])
+
+    def test_real_svd_memory_overlap_preserves_prohibitions_without_granting_access(self) -> None:
+        # Use the original verified SVD bytes with an explicit exclusion covering
+        # all registers: ordinary P0 must disappear, security controls must not.
+        source = NRF_FIXTURES / "NordicSemiconductor.nRF_DeviceFamilyPack.8.44.1.pack"
+        self.assertEqual(hashlib.sha256(source.read_bytes()).hexdigest(), NRF_PACK_SHA256)
+        with zipfile.ZipFile(source) as archive:
+            svd = archive.read("SVD/nrf52840.svd")
+        rows = device_support._svd_peripheral_regions(
+            SimpleNamespace(svd=io.BytesIO(svd)),
+            (device_support.PackAddressRegion("excluded physical memory", 0, 0xE0000000),),
+        )
+        self.assertTrue(rows)
+        self.assertTrue(all(row.prohibited for row in rows))
+        self.assertFalse(any(row.start == 0x50000504 for row in rows))
+        for address in (0x10001208, 0x1000120C, 0x4001E508):
+            with self.subTest(address=address):
+                self.assertTrue(any((row.start, row.end) == (address, address + 4) for row in rows))
 
 
 if __name__ == "__main__":
