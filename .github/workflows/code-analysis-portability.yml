@@ -139,6 +139,14 @@ jobs:
         if: ${{ !cancelled() && runner.os == 'Windows' && steps.dependencies.outcome == 'success' }}
         run: uv run python -m unittest -v tests.test_swd_process_isolation
 
+      - name: FR15 genuine nRF registered-pack public protection controls
+        if: ${{ !cancelled() && steps.dependencies.outcome == 'success' }}
+        run: >-
+          BYO_FINAL_CASE_EVIDENCE="$RUNNER_TEMP/fr15-nrf-controls"
+          uv run python -m unittest -v
+          tests.test_generic_builtin_safety_map.NrfRegisteredPackGeometry
+          tests.test_tiered_acceptance_workspace.NrfPublicRegeneratedMapControls
+
       - name: Build server wheel and source distribution
         if: ${{ !cancelled() && steps.dependencies.outcome == 'success' }}
         run: uv build --build-constraint .github/ci/build-constraints.txt --require-hashes --out-dir "$RUNNER_TEMP/server-package"
@@ -174,5 +182,6 @@ jobs:
             ${{ runner.temp }}/managed-analysis-contracts/
             ${{ runner.temp }}/windows-analysis-regressions/
             ${{ runner.temp }}/windows-analysis-acceptance/
+            ${{ runner.temp }}/fr15-nrf-controls/
           if-no-files-found: warn
           retention-days: 90

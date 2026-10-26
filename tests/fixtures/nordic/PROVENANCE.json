@@ -1,0 +1,139 @@
+{
+  "schema_version": 1,
+  "purpose": "Test-only genuine registered-pack nRF52840 geometry and original Nordic datasheet; no physical operations",
+  "scope_assignments": [
+    "a03d9292ad084bdca921eef665a582dd",
+    "0c43a27a5556402a8353c348ca710af1"
+  ],
+  "pack": {
+    "filename": "NordicSemiconductor.nRF_DeviceFamilyPack.8.44.1.pack",
+    "vendor": "NordicSemiconductor",
+    "name": "nRF_DeviceFamilyPack",
+    "version": "8.44.1",
+    "source_url": "https://nsscprodmedia.blob.core.windows.net/prod/software-and-other-downloads/desktop-software/nrf-mdk/sw/8-44-1/nordicsemiconductor.nrf_devicefamilypack.8.44.1.pack",
+    "documentation_url": "https://www.nordicsemi.com/Products/Development-tools/nRF-MDK/Download",
+    "bytes": 2218801,
+    "sha256": "95136b57a8310ba367aa46cb66c8d149561fc7876c5f3736f323a9dbfb8f559e",
+    "expected_sha256": "95136b57a8310ba367aa46cb66c8d149561fc7876c5f3736f323a9dbfb8f559e",
+    "license": "BSD-3-Clause",
+    "members": [
+      {
+        "path": "NordicSemiconductor.nRF_DeviceFamilyPack.pdsc",
+        "bytes": 89012,
+        "sha256": "9587b615ba2f8e67af0b2233174ee3fb9e7127236fdbca4c858b617a0fe5a7d8"
+      },
+      {
+        "path": "SVD/nrf52840.svd",
+        "bytes": 2151927,
+        "sha256": "d44d5f615b2464243acd1a3cd5caced17291e291621c2edd037a477fa503dd8f"
+      },
+      {
+        "path": "License/license.txt",
+        "bytes": 1594,
+        "sha256": "429290d4ede4601b2f306d0e8470009da88a67ae66167aa3a26c9eb8a4114df9"
+      }
+    ],
+    "pdsc_leaf": "nRF52840_xxAA",
+    "svd_member": "SVD/nrf52840.svd"
+  },
+  "datasheet": {
+    "filename": "nRF52840_PS_v1.0.pdf",
+    "publisher": "Nordic Semiconductor ASA",
+    "version": "1.0",
+    "document": "4413_417",
+    "date": "2018-03-16",
+    "bytes": 10711568,
+    "sha256": "c3c94efaa39d8e2c7df48ba25f2d8b8430275c1f7bff22e1a93b5ab1052d5e94",
+    "acquisition": {
+      "at": "2026-10-26T01:02:44.910228+00:00",
+      "argv": [
+        "curl.exe",
+        "--fail",
+        "--show-error",
+        "--silent",
+        "--location",
+        "--max-time",
+        "45",
+        "--proto",
+        "=https",
+        "--tlsv1.2",
+        "--output",
+        "MCP_Server_Dev\\development\\verified-issues\\root-fr15-20261026\\official-resources\\nRF52840_PS_v1.0.pdf",
+        "--write-out",
+        "http_code=%{http_code} effective_url=%{url_effective} bytes=%{size_download} ssl_verify_result=%{ssl_verify_result}",
+        "https://cdn-learn.adafruit.com/assets/assets/000/068/543/original/nRF52840_PS_v1.0.pdf"
+      ],
+      "exit_code": 0,
+      "stdout": "http_code=200 effective_url=https://cdn-learn.adafruit.com/assets/assets/000/068/543/original/nRF52840_PS_v1.0.pdf bytes=10711568 ssl_verify_result=0",
+      "stderr": "",
+      "publisher": "Nordic Semiconductor",
+      "mirror_host": "Adafruit Learning CDN",
+      "version": "nRF52840 Product Specification v1.0 / 4413_417 / 2018-03-16",
+      "provenance_limit": "Original Nordic-authored PDF as publicly indexed/linked by Adafruit. No exact-byte equivalence to blocked Nordic v1.9 endpoints or manufacturer-published hash asserted.",
+      "bytes": 10711568,
+      "sha256": "c3c94efaa39d8e2c7df48ba25f2d8b8430275c1f7bff22e1a93b5ab1052d5e94",
+      "is_pdf": true,
+      "path": "C:\\Users\\Jason\\Documents\\Jason\\FirmCLI-10-12\\.harness-runtime\\worktrees\\verified-issues\\root-fr15-20261026\\official-resources\\nRF52840_PS_v1.0.pdf"
+    },
+    "qualification": "Original Nordic-authored v1.0 PDF from Adafruit mirror, not latest v1.9; no manufacturer-published digest or v1.9 equivalence claimed"
+  },
+  "selected_registers": [
+    {
+      "name": "NVMC.CONFIG",
+      "base": "0x4001e000",
+      "offset": "0x504",
+      "address": "0x4001e504",
+      "size_bits": "0x20",
+      "access": "read-write"
+    },
+    {
+      "name": "NVMC.ERASEPAGE",
+      "base": "0x4001e000",
+      "offset": "0x508",
+      "address": "0x4001e508",
+      "size_bits": "0x20",
+      "access": "write-only"
+    },
+    {
+      "name": "NVMC.ERASEALL",
+      "base": "0x4001e000",
+      "offset": "0x50C",
+      "address": "0x4001e50c",
+      "size_bits": "0x20",
+      "access": "write-only"
+    },
+    {
+      "name": "NVMC.ERASEUICR",
+      "base": "0x4001e000",
+      "offset": "0x514",
+      "address": "0x4001e514",
+      "size_bits": "0x20",
+      "access": "write-only"
+    },
+    {
+      "name": "UICR.APPROTECT",
+      "base": "0x10001000",
+      "offset": "0x208",
+      "address": "0x10001208",
+      "size_bits": "0x20",
+      "access": "read-write"
+    },
+    {
+      "name": "UICR.NFCPINS",
+      "base": "0x10001000",
+      "offset": "0x20C",
+      "address": "0x1000120c",
+      "size_bits": "0x20",
+      "access": "read-write"
+    },
+    {
+      "name": "P0.OUT",
+      "base": "0x50000000",
+      "offset": "0x504",
+      "address": "0x50000504",
+      "size_bits": "0x20",
+      "access": "read-write"
+    }
+  ],
+  "execution": "UNRUN; byte/hash/stdlib XML and ZIP metadata inspection only"
+}
