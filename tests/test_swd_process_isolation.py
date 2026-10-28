@@ -501,12 +501,43 @@ print(json.dumps(payload, separators=(",", ":")))
         self.assertLess(time.monotonic() - started, 2.5)
 
     def test_ready_hang_is_bounded(self) -> None:
+        from pyocd_debug_mcp.adapters import swd_process
         from pyocd_debug_mcp.target_errors import TargetConnectionError
 
+        # The bound has two phases with different owners. A missing ready handshake
+        # must be detected at the startup deadline, not after the worker's 60s hang.
+        # Cleanup then waits for the OS to report the signalled worker's exit, which
+        # took 0.02-0.16s on Intel macOS runners (run 40285363892) against 0.02s on
+        # Linux, so it is held to the managed operation's cleanup reserve instead.
+        original = swd_process.terminate_process_group
+        cleanup: list[tuple[float, bool, float]] = []
+
+        def timed_cleanup(process: subprocess.Popen[bytes]) -> bool:
+            entered = time.monotonic()
+            confirmed = original(process)
+            cleanup.append((entered, confirmed, time.monotonic()))
+            return confirmed
+
         started = time.monotonic()
-        with self.assertRaises(TargetConnectionError):
+        with (
+            patch.object(swd_process, "terminate_process_group", timed_cleanup),
+            self.assertRaises(TargetConnectionError) as raised,
+        ):
             self._client("ready_hang", deadline=started + 0.05)
-        self.assertLess(time.monotonic() - started, 0.3)
+        finished = time.monotonic()
+        self.assertEqual(len(cleanup), 1)
+        entered, confirmed, cleaned = cleanup[0]
+        self.assertTrue(confirmed)
+        self.assertTrue(str(raised.exception).endswith(" Worker was terminated."))
+        phases = {
+            "startup": entered - started,
+            "cleanup": cleaned - entered,
+            "total": finished - started,
+        }
+        reserve = swd_process.CANCELLATION_CLEANUP_GRACE_SECONDS
+        self.assertLess(phases["startup"], 0.3, phases)
+        self.assertLess(phases["cleanup"], reserve, phases)
+        self.assertLess(phases["total"], 0.3 + reserve, phases)
 
     @observe_cleanup
     def test_typed_child_errors_are_preserved_without_retry(self) -> None:
