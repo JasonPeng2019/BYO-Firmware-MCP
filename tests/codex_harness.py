@@ -9,17 +9,19 @@ Model is pinned to ``gpt-5.6-luna`` and the run fails rather than silently
 downgrading: a test that quietly used a different model would be testing
 something other than what it claims.
 
-Isolation: the monitoring store resolves to the per-user application-data
-directory through the platform's shell API, which no environment variable can
-redirect. Each run therefore uses a unique temporary project directory, whose
-anonymized workspace digest gives it a private folder inside the real store. The
-harness removes exactly those folders afterwards, and ``store_cleanup`` restores
-every prior byte of the store at module teardown.
+Isolation: prepared local runs use the supported BYO_MCP_MONITOR_ROOT setting
+under their owned boundary; the normal default remains native application data.
+Each run uses a unique temporary project and anonymized workspace folder. The
+harness removes those folders afterwards, and ``store_cleanup`` restores every
+prior byte of the effective store at module teardown.
 
-Credentials: the harness never reads, copies or moves them. Runs use a dedicated
-codex home that the local operator signed in once through codex's own supported
-login (``CODEX_HOME=<dedicated dir> codex login``) and names in
-``BYO_CODEX_TEST_HOME``. These real requests run locally only, never in CI.
+Credentials: the harness never reads, copies or moves them. Runs reuse the
+operator's existing codex sign-in. ``--ignore-user-config`` keeps the operator's
+own ``config.toml``, and every MCP server it registers, out of the run while
+authentication still comes from ``CODEX_HOME``; this suite's single server,
+model and effort are passed as ``-c`` overrides instead. ``--ignore-rules`` and
+``--ephemeral`` keep the operator's execpolicy rules out and write no session
+files. These real requests run locally only, never in CI.
 """
 
 from __future__ import annotations
@@ -48,8 +50,6 @@ DEFAULT_TIMEOUT = 600
 # cadence -- so the interaction between the two is the same one production sees.
 E2E_SNAPSHOT_CADENCE = 2
 E2E_CHECKIN_CADENCE = 4
-
-OWNED_HOME_ENV = "BYO_CODEX_TEST_HOME"
 
 
 # Model renames that codex's own `[notice.model_migrations]` mechanism is
@@ -82,36 +82,12 @@ def codex_executable() -> str | None:
     return shutil.which("codex")
 
 
-def owned_codex_home() -> tuple[Path | None, str]:
-    """Return the dedicated codex home the operator signed in for this suite.
-
-    The operator creates an empty directory, signs it in once through codex's own
-    supported login with ``CODEX_HOME`` pointing at it, and names it in
-    ``BYO_CODEX_TEST_HOME``. Codex keeps the resulting credentials there; this
-    harness never opens them. The developer's everyday home is refused so the
-    suite cannot change their real client's configuration.
-    """
-
-    value = os.environ.get(OWNED_HOME_ENV, "").strip()
-    if not value:
-        return None, f"{OWNED_HOME_ENV} does not name a dedicated signed-in codex home"
-    home = Path(value).resolve()
-    if not home.is_dir():
-        return None, f"{OWNED_HOME_ENV} is not an existing directory"
-    if home == (Path.home() / ".codex").resolve():
-        return None, f"{OWNED_HOME_ENV} must not be the developer's everyday codex home"
-    return home, ""
-
-
 def codex_available() -> tuple[bool, str]:
-    """Return whether codex is present and signed in through the dedicated home."""
+    """Return whether codex is present and signed in through its existing home."""
 
     executable = codex_executable()
     if executable is None:
         return False, "codex CLI is not on PATH"
-    home, reason = owned_codex_home()
-    if home is None:
-        return False, reason
     try:
         status = subprocess.run(
             [executable, "login", "status"],
@@ -121,7 +97,6 @@ def codex_available() -> tuple[bool, str]:
             errors="replace",
             timeout=60,
             stdin=subprocess.DEVNULL,
-            env={**os.environ, "CODEX_HOME": str(home)},
         )
     except (OSError, subprocess.SubprocessError) as exc:
         return False, f"codex login status failed: {exc}"
@@ -130,6 +105,58 @@ def codex_available() -> tuple[bool, str]:
     if status.returncode != 0 or "Logged in" not in combined:
         return False, f"codex CLI is not logged in: {combined.strip()[:200]}"
     return True, ""
+
+
+def _toml_literal(value: str) -> str:
+    """Quote ``value`` as a TOML literal string.
+
+    Literal strings have no escape sequences, so paths written with ``/`` are
+    taken verbatim.
+    """
+
+    if "'" in value or "\n" in value:
+        raise ValueError(f"{value!r} cannot be a TOML literal string")
+    return f"'{value}'"
+
+
+def codex_overrides() -> list[str]:
+    """Return the ``-c`` overrides that are this suite's entire codex configuration.
+
+    The developer's real config may already register a BYO server whose tools
+    have identical names. With both visible the agent picks whichever it likes
+    and the test silently measures the wrong server -- which is exactly what
+    happened before this existed. Runs therefore ignore the user config and
+    receive only these settings, which keeps them authentic on the operator's
+    existing sign-in while making the tool surface unambiguous. Nothing is
+    written to any codex home and credentials are never opened.
+    """
+
+    project = str(SERVER_PROJECT).replace("\\", "/")
+    server = f"mcp_servers.{SERVER_NAME}"
+    launch = ",".join(
+        _toml_literal(arg) for arg in ("run", "--project", project, "pyocd-debug-mcp")
+    )
+    overrides = [
+        f"model={_toml_literal(REQUIRED_MODEL)}",
+        "model_reasoning_effort='medium'",
+        f"{server}.command='uv'",
+        f"{server}.args=[{launch}]",
+        f"{server}.cwd={_toml_literal(project)}",
+        f"{server}.startup_timeout_sec=180",
+        f"{server}.tool_timeout_sec=120",
+        # Scaled-down cadences so a handful of real agent calls reaches the
+        # snapshot and check-in paths. Without this the centrepiece of the
+        # recording design is unreachable end to end: no test session makes 100
+        # tool calls. Set here as well as in the subprocess environment because
+        # the server is codex's child and either route could be the one that
+        # carries it.
+        f"{server}.env.{SNAPSHOT_CADENCE_ENV}={_toml_literal(str(E2E_SNAPSHOT_CADENCE))}",
+        f"{server}.env.{CHECKIN_CADENCE_ENV}={_toml_literal(str(E2E_CHECKIN_CADENCE))}",
+    ]
+    monitor_root = os.environ.get("BYO_MCP_MONITOR_ROOT", "").strip()
+    if monitor_root:
+        overrides.append(f"{server}.env.BYO_MCP_MONITOR_ROOT={_toml_literal(str(_store_root()))}")
+    return overrides
 
 
 @dataclass
@@ -148,9 +175,9 @@ class CodexResult:
 
 
 def _store_root() -> Path:
-    from platformdirs import user_data_dir
+    from tests.store_cleanup import store_root
 
-    return Path(user_data_dir("BYO", appauthor=False, roaming=False))
+    return store_root()
 
 
 def _workspace_digest(project: Path) -> str:
@@ -185,55 +212,8 @@ class CodexAgentTestCase(unittest.TestCase):
         self.store = _store_root()
         self.workspace = _workspace_digest(self.project)
         self.addCleanup(self._clean_workspace)
-        # The dedicated home holds the operator's sign-in, so it outlives the test.
-        self.codex_home = self._isolated_codex_home()
-
-    def _isolated_codex_home(self) -> Path:
-        """Return the dedicated codex home, exposing only this test's MCP server.
-
-        The developer's real config may already register a BYO server whose tools
-        have identical names. With both visible the agent picks whichever it likes
-        and the test silently measures the wrong server -- which is exactly what
-        happened before this existed. A dedicated home signed in through codex's
-        own supported login keeps the run authentic while making the tool surface
-        unambiguous. Credentials are never read, copied or moved, and an existing
-        config that is not exactly this fixture is left untouched.
-        """
-
-        home, reason = owned_codex_home()
-        if home is None:
-            self.skipTest(reason)
-        project = str(SERVER_PROJECT).replace("\\", "/")
-        expected = "\n".join(
-            [
-                f'model = "{REQUIRED_MODEL}"',
-                'model_reasoning_effort = "medium"',
-                "",
-                f"[mcp_servers.{SERVER_NAME}]",
-                "command = 'uv'",
-                f"args = ['run','--project','{project}','pyocd-debug-mcp']",
-                f"cwd = '{project}'",
-                "startup_timeout_sec = 180",
-                "tool_timeout_sec = 120",
-                "",
-                # Scaled-down cadences so a handful of real agent calls reaches
-                # the snapshot and check-in paths. Without this the centrepiece
-                # of the recording design is unreachable end to end: no test
-                # session makes 100 tool calls. Set here as well as in the
-                # subprocess environment because the server is codex's child
-                # and either route could be the one that carries it.
-                f"[mcp_servers.{SERVER_NAME}.env]",
-                f'{SNAPSHOT_CADENCE_ENV} = "{E2E_SNAPSHOT_CADENCE}"',
-                f'{CHECKIN_CADENCE_ENV} = "{E2E_CHECKIN_CADENCE}"',
-                "",
-            ]
-        )
-        config = home / "config.toml"
-        if not config.exists():
-            config.write_text(expected, encoding="utf-8")
-        elif config.read_text(encoding="utf-8") != expected:
-            self.skipTest(f"{config} is not this suite's single-server fixture")
-        return home
+        # Applied per run; nothing is written to the operator's codex home.
+        self.codex_overrides = codex_overrides()
 
     def _clean_workspace(self) -> None:
         for base in ("server_data", "simulated_remote"):
@@ -268,6 +248,13 @@ class CodexAgentTestCase(unittest.TestCase):
         command = [
             executable,
             "exec",
+            # Only this run's overrides apply: the operator's config.toml, its MCP
+            # servers and execpolicy rules stay out, and no session files are
+            # written. Authentication still comes from the existing sign-in.
+            "--ignore-user-config",
+            "--ignore-rules",
+            "--ephemeral",
+            *(item for pair in self.codex_overrides for item in ("-c", pair)),
             "--model",
             REQUIRED_MODEL,
             "--skip-git-repo-check",
@@ -290,8 +277,6 @@ class CodexAgentTestCase(unittest.TestCase):
             env={
                 **os.environ,
                 "RUST_LOG": "error",
-                # Isolated home: only this test's MCP server is visible.
-                "CODEX_HOME": str(self.codex_home),
                 # Inherited by the MCP server codex spawns, so a short session
                 # still reaches a snapshot boundary.
                 SNAPSHOT_CADENCE_ENV: str(E2E_SNAPSHOT_CADENCE),

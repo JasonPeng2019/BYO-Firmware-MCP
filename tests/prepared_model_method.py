@@ -2,12 +2,13 @@
 
 The pin oracle executes the original deterministic body with zero model requests
 and may run anywhere, including CI. Each of the 17 genuine request methods runs
-LOCALLY only -- never in GitHub Actions or on a self-hosted runner -- through a
-dedicated codex home the local operator signed in with codex's own supported
-login. Nothing here reads or copies authentication; only the test fixture's home
-selection is replaced, not any product decision or assertion. The module's own
-fixtures snapshot and restore the effective monitoring store byte for byte. Run
-all eighteen selectors in CASE-MATRIX.json exactly once in the fixed pass.
+LOCALLY only -- never in GitHub Actions or on a self-hosted runner -- on the
+operator's existing supported codex sign-in, with the user config ignored and the
+suite's own frozen ``-c`` overrides applied. Nothing here reads or copies
+authentication or opens a codex config, and no product decision, fixture or
+assertion is replaced. The module's own fixtures snapshot and restore the
+effective monitoring store byte for byte. Run all eighteen selectors in
+CASE-MATRIX.json exactly once in the fixed pass.
 """
 
 from __future__ import annotations
@@ -150,7 +151,7 @@ def main():
         raise SystemExit("Real model methods run locally only, never in GitHub Actions")
     # Metadata-only checks precede every dependency/product/test import.
     qualification = json.loads(args.qualification.read_text(encoding="utf-8"))
-    if qualification.get("schema") != "v-final-model-boundary/v2":
+    if qualification.get("schema") != "v-final-model-boundary/v3":
         raise RuntimeError("local model-boundary qualification is missing")
     if qualification.get("acceptance_execution_authorized") is not True:
         raise RuntimeError("ROOT exact freeze/execution authority is required")
@@ -163,20 +164,24 @@ def main():
             raise RuntimeError("missing ROOT boundary evidence: " + key)
     if qualification.get("model") != "gpt-5.6-luna":
         raise RuntimeError("preserve the test model pin; no silent migration")
-    if qualification.get("all_homes_disposable_and_exclusive") is not True:
-        raise RuntimeError("per-method dedicated codex homes must be disposable and exclusive")
-    if qualification.get("config_is_nonsecret_mcp_fixture") is not True:
-        raise RuntimeError("do not open a config that may contain authentication material")
+    if qualification.get("codex_sign_in") != "existing-supported":
+        raise RuntimeError("use the operator's existing supported codex sign-in")
     private = Path(qualification["private_root"]).resolve(strict=True)
     profile = native_profile()
     if profile != Path(qualification["native_profile"]).resolve(strict=True):
         raise RuntimeError("actual OS token/passwd profile does not match the qualification")
     if not Path(tempfile.gettempdir()).resolve().is_relative_to(private):
         raise RuntimeError("temporary projects would escape the private boundary")
-    if os.environ.get("BYO_MCP_MONITOR_ROOT"):
-        raise RuntimeError(
-            "existing model assertions use actual app-data storage; no projected monitor override"
-        )
+    configured_monitor = os.environ.get("BYO_MCP_MONITOR_ROOT", "").strip()
+    if not configured_monitor or not Path(configured_monitor).is_absolute():
+        raise RuntimeError("prepared local requests require an absolute scoped monitor root")
+    monitor_root = Path(configured_monitor).resolve()
+    if monitor_root != Path(qualification["monitor_root"]).resolve():
+        raise RuntimeError("effective monitor root differs from the frozen qualification")
+    if monitor_root == private or not monitor_root.is_relative_to(private):
+        raise RuntimeError("monitor root must be a dedicated child of the private boundary")
+    if monitor_root.exists():
+        raise RuntimeError("each real method requires a fresh owned monitor root")
     source = args.firmware_source.resolve(strict=True)
     target = source / "tests/test_monitor_codex_e2e.py"
     for relative, expected in qualification["source_hashes"].items():
@@ -204,24 +209,50 @@ def main():
         raise RuntimeError(
             "run the deterministic original body with --pin-oracle; no auth required"
         )
-    home = Path(qualification["method_homes"][args.method]).resolve(strict=True)
+    methods = qualification["methods"]
+    if args.method not in methods or set(methods) != {
+        s for s in selectors if ".ModelPinningIsEnforced." not in s
+    }:
+        raise RuntimeError("qualification must list exactly the 17 genuine request methods")
+    # The existing sign-in's home, by path only; it is never opened.
+    codex_home = Path(os.environ.get("CODEX_HOME") or profile / ".codex").resolve()
+    if args.evidence.exists():
+        raise RuntimeError("do not overwrite/rerun a reserved method result")
+    args.evidence.mkdir(parents=True)
+    sys.path[:0] = [str(source), str(source / "src"), str(source / "tests")]
+    # Dependencies are real; no shim or product monkeypatch is installed.
+    from platformdirs import user_data_dir
+
+    app_data = Path(user_data_dir("BYO", appauthor=False, roaming=False)).resolve()
+    if app_data != Path(qualification["native_app_data"]).resolve():
+        raise RuntimeError("actual native app-data selector differs from KnownFolder qualification")
+    # Native default selection is qualified separately. Real-model traffic uses
+    # the supported exclusive launch root; no shared application-data content is
+    # read, copied or restored by these fixtures.
+    if codex_home.is_relative_to(app_data) or app_data.is_relative_to(codex_home):
+        raise RuntimeError("credential home and monitoring store must be disjoint")
     if (
-        not home.is_relative_to(private)
-        or home in (private, profile)
-        or home.is_relative_to(profile / ".codex")
+        codex_home.is_relative_to(monitor_root)
+        or monitor_root.is_relative_to(codex_home)
+        or monitor_root.is_relative_to(app_data)
+        or app_data.is_relative_to(monitor_root)
     ):
-        raise RuntimeError("model codex home is not an exact dedicated disposable child")
-    config = home / "config.toml"
-    if (
-        hashlib.sha256(config.read_bytes()).hexdigest()
-        != qualification["config_sha256"][args.method]
-    ):
-        raise RuntimeError("nonsecret preprovisioned MCP config differs from frozen input")
-    # This file is explicitly a nonsecret fixture; authentication lives elsewhere
-    # and is never opened. Pin the same single source MCP surface as the test.
-    settings = tomllib.loads(config.read_text(encoding="utf-8"))
+        raise RuntimeError("scoped store, native shared store and credential home must be disjoint")
+    from tests import codex_harness
+
+    # Pin the same single source MCP surface as the test: the frozen overrides
+    # are the run's entire codex configuration.
+    overrides = codex_harness.codex_overrides()
+    settings = {}
+    for pair in overrides:
+        key, _, value = pair.partition("=")
+        *parents, leaf = key.split(".")
+        node = settings
+        for part in parents:
+            node = node.setdefault(part, {})
+        node[leaf] = tomllib.loads("value = " + value)["value"]
     if settings.get("model") != "gpt-5.6-luna":
-        raise RuntimeError("preprovisioned config changed the required model")
+        raise RuntimeError("codex overrides changed the required model")
     if settings.get("model_reasoning_effort") != "medium":
         raise RuntimeError("preserve the existing model fixture's effort setting")
     servers = settings.get("mcp_servers", {})
@@ -233,36 +264,17 @@ def main():
         raise RuntimeError("model fixture does not launch the exact source interface")
     if Path(selected.get("cwd", "")).resolve() != source:
         raise RuntimeError("preserve the source fixture's MCP cwd")
-    if args.evidence.exists():
-        raise RuntimeError("do not overwrite/rerun a reserved method result")
-    args.evidence.mkdir(parents=True)
-    os.environ["CODEX_HOME"] = str(home)
-    os.environ["BYO_CODEX_TEST_HOME"] = str(home)
-    sys.path[:0] = [str(source), str(source / "src"), str(source / "tests")]
-    # Dependencies are real; no shim or product monkeypatch is installed.
-    from platformdirs import user_data_dir
-
-    app_data = Path(user_data_dir("BYO", appauthor=False, roaming=False)).resolve()
-    if app_data != Path(qualification["native_app_data"]).resolve():
-        raise RuntimeError("actual native app-data selector differs from KnownFolder qualification")
-    # The effective store is the real one; the module's fixtures restore its exact
-    # prior bytes, and a store they cannot restore fails the method.
-    if home.is_relative_to(app_data) or app_data.is_relative_to(home):
-        raise RuntimeError("credential home and monitoring store must be disjoint")
-    from tests import codex_harness
-
     expected_cadences = {
         codex_harness.SNAPSHOT_CADENCE_ENV: str(codex_harness.E2E_SNAPSHOT_CADENCE),
         codex_harness.CHECKIN_CADENCE_ENV: str(codex_harness.E2E_CHECKIN_CADENCE),
+        "BYO_MCP_MONITOR_ROOT": str(monitor_root),
     }
     if selected.get("env") != expected_cadences:
-        raise RuntimeError("preserve the original model fixture's exact cadence environment")
-    original_home = codex_harness.CodexAgentTestCase._isolated_codex_home
+        raise RuntimeError("preserve exact cadences and the qualified exclusive monitor root")
+    if codex_harness._store_root() != monitor_root:
+        raise RuntimeError("test assertions and actual child must use the same scoped store")
     original_pin = codex_harness.CodexAgentTestCase._assert_model_was_honoured
     calls = []
-
-    def prepared_home(self):
-        return home  # Signed in by codex's supported login; credentials never opened.
 
     def observed_pin(self, result):
         index = len(calls)
@@ -279,7 +291,6 @@ def main():
         )
         return original_pin(self, result)
 
-    codex_harness.CodexAgentTestCase._isolated_codex_home = prepared_home
     codex_harness.CodexAgentTestCase._assert_model_was_honoured = observed_pin
     try:
         suite = unittest.defaultTestLoader.loadTestsFromName(args.method)
@@ -293,8 +304,13 @@ def main():
             "skipped": [(t.id(), reason) for t, reason in result.skipped],
             "model_result_boundaries": calls,
             "execution": "local",
+            "codex_sign_in": "existing-supported",
+            "codex_home": str(codex_home),
+            "codex_overrides": overrides,
             "native_profile": str(profile),
             "native_app_data": str(app_data),
+            "monitor_root": str(monitor_root),
+            "shared_store_content_access": False,
             "outcome": "ERROR"
             if result.errors
             else "FAIL"
@@ -314,7 +330,6 @@ def main():
         )
         raise
     finally:
-        codex_harness.CodexAgentTestCase._isolated_codex_home = original_home
         codex_harness.CodexAgentTestCase._assert_model_was_honoured = original_pin
 
 

@@ -29,27 +29,35 @@ This is one original method and two synthetic header checks, zero model requests
 It needs no authentication and may also run locally.
 
 The other 17 original methods make real pinned `gpt-5.6-luna` requests and run
-LOCALLY only; the driver refuses GitHub Actions and self-hosted runners. Each
-method uses a dedicated disposable codex home under the qualified private root,
-signed in once through codex's own supported login
-(`CODEX_HOME=<method home> codex login`). Nothing reads, copies or moves
-credentials, and no new OS account, CI model secret or runner is required.
-`fixtures/model-boundary.template.json` is deliberately nonlaunchable. Once its
-actual source hashes, KnownFolder proof, OS profile/app-data paths and per-method
-nonsecret config/home bindings are supplied, each original method runs once:
+LOCALLY only; the driver refuses GitHub Actions and self-hosted runners. They
+use the operator's existing supported codex sign-in. `codex exec
+--ignore-user-config --ignore-rules --ephemeral` keeps the operator's own
+config, its MCP servers and execpolicy rules out of the run and writes no
+session files; authentication still comes from the existing codex home. The
+suite's single MCP server, model, effort and cadences are `-c` overrides frozen
+in `tests/codex_harness.py`. Nothing reads, copies or moves credentials or
+opens a codex config, and no second sign-in, new OS account, CI model secret or
+runner is required. `fixtures/model-boundary.template.json` is deliberately
+nonlaunchable. Once its actual source hashes, KnownFolder proof and OS
+profile/app-data paths are supplied, each original method runs once:
 
 ```sh
 uv run python tests/prepared_model_method.py --firmware-source . --qualification QUALIFIED.json --method ORIGINAL_SELECTOR --evidence CASE_DIRECTORY --execute
 ```
 
-The test module snapshots the effective monitoring store, including every prior
-file's bytes, and restores it at teardown; a store it cannot restore fails the
-method. The historical `uv run python -m unittest tests.test_monitor_codex_e2e -v`
-entrypoint uses the same route through `BYO_CODEX_TEST_HOME`, and skips (never
-passes) without a dedicated signed-in home. The product pin, effort and cadence
-are unchanged. The complete source runner in Actions records the 17 real
-requests as blocked before import and runs the deterministic body in its own
-observed child. Historical all-model blocks remain raw.
+Set `BYO_MCP_MONITOR_ROOT` to a fresh dedicated directory below the qualified
+private root and bind that exact path as `monitor_root` in the qualification.
+The existing supported production launch setting is forwarded explicitly to
+the source MCP child; assertions and cleanup select that same effective store.
+Native default application-data selection is still qualified independently;
+real model requests do not snapshot, rewrite or restore unrelated shared stores.
+Each method refuses an existing monitor root and restores its owned store at
+teardown. The historical `uv run python -m unittest tests.test_monitor_codex_e2e -v`
+entrypoint supports the same setting, and skips (never passes) when codex is absent
+or not signed in. The product pin, effort and cadence are unchanged. The
+complete source runner in Actions records the 17 real requests as blocked
+before import and runs the deterministic body in its own observed child.
+Historical all-model blocks remain raw.
 
 The Installer's existing native build workflow executes
 `release/scripts/final_hosted_forwarding.py` against each newly built native

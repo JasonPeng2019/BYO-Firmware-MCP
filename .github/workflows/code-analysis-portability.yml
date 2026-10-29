@@ -127,6 +127,7 @@ jobs:
           tests.test_code_analysis_managed_runtime_unit
           tests.test_code_analysis_portability
           tests.test_code_analysis_posix_ownership
+          tests.test_model_store_boundary
           tests.test_clangd_adapter_unit
           tests.test_code_analysis_managed_runtime_contract.MappingSyntax
           tests.test_code_analysis_managed_runtime_contract.SharedDeadline

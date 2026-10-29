@@ -1,10 +1,9 @@
 """Leave the developer's real monitoring store exactly as it was found.
 
-Tests that launch the real server cannot redirect the store: it resolves through
-the platform's application-data API, which no environment variable overrides. So
-these tests genuinely write to the per-user store, and the honest way to stay
-polite is to snapshot what was there beforehand, remove only what the run added,
-and put back the exact prior bytes of anything the run changed or removed.
+Prepared real-model runs use the supported BYO_MCP_MONITOR_ROOT launch setting
+inside their owned local boundary. Ordinary callers without that setting retain
+the native application-data default. Snapshot the effective store before any
+server starts, remove additions and restore changed or removed prior bytes.
 
 Per-test cleanup is not enough on its own -- a server subprocess can still be
 flushing when a test tears down, and sessions that never bound a workspace land
@@ -20,6 +19,12 @@ from pathlib import Path
 
 
 def store_root() -> Path:
+    configured = os.environ.get("BYO_MCP_MONITOR_ROOT", "").strip()
+    if configured:
+        path = Path(configured).expanduser()
+        if not path.is_absolute():
+            raise ValueError("model monitoring root must be absolute")
+        return path.resolve()
     from platformdirs import user_data_dir
 
     return Path(user_data_dir("BYO", appauthor=False, roaming=False))
