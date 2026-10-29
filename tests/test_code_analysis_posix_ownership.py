@@ -1001,6 +1001,60 @@ class NativePosixOwnership(unittest.TestCase):
                 self.assertEqual(native_group_members(process.pid), set())
                 self.assertTrue(self.is_owned_live(peer.pid, peer_token))
 
+    @unittest.skipUnless(sys.platform == "darwin", "Darwin bounded-phase terminal proof")
+    def test_darwin_eperm_phase_expiry_requires_fresh_proof_in_original_total_reserve(self):
+        peer, peer_token = self.peer()
+        process, marker, gate = self.gated_exit(23, "darwin-expired-proof", release=False)
+        actual_killpg, actual_terminal = os.killpg, process._darwin_terminal_group
+        denied, expired, complete = [], [], []
+
+        def terminal_group(deadline):
+            if denied and not expired:
+                # Delay a real terminal observation until this signal phase is
+                # exhausted. Later success must come from fresh native proof,
+                # not this withheld result or the injected signal errno.
+                self.assertEqual(native_retained_exit(process.pid), (process.pid, 1, 23))
+                self.assertEqual(native_group_members(process.pid), {process.pid})
+                threading.Event().wait(max(0, deadline - time.monotonic()))
+                expired.append(deadline)
+                return None
+            terminal = actual_terminal(deadline)
+            if terminal is not None:
+                complete.append((deadline, time.monotonic(), terminal))
+            return terminal
+
+        def race_at_term(group, selected_signal):
+            if group == process.pid and selected_signal == signal.SIGTERM:
+                gate.touch()
+                self.assertEqual(
+                    self.until(lambda: native_retained_exit(process.pid), budget=0.25),
+                    (process.pid, 1, 23),
+                )
+                denied.append(selected_signal)
+                raise PermissionError(errno.EPERM, "Darwin phase-limited terminal proof")
+            return actual_killpg(group, selected_signal)
+
+        before = time.monotonic()
+        with (
+            mock.patch.object(process, "_darwin_terminal_group", side_effect=terminal_group),
+            mock.patch.object(os, "killpg", side_effect=race_at_term),
+        ):
+            self.confirm_cleanup(process, marker, [process.pid])
+        self.assertEqual(denied, [signal.SIGTERM])
+        self.assertEqual(len(expired), 1)
+        self.assertTrue(complete)
+        self.assertGreater(complete[0][0], expired[0])
+        self.assertGreaterEqual(complete[0][1], expired[0])
+        receipt = process.cleanup_receipt
+        self.assertEqual(receipt["budget_seconds"], 1.5)
+        self.assertLess(time.monotonic() - before, 1.7)
+        self.assertEqual(receipt["leader_exit"], 23)
+        self.assertIs(receipt["leader_reaped"], True)
+        self.assertGreater(receipt["incomplete_observation_count"], 0)
+        self.assertTrue(receipt["native_terminal_group"])
+        self.assertEqual(native_group_members(process.pid), set())
+        self.assertTrue(self.is_owned_live(peer.pid, peer_token))
+
     @unittest.skipUnless(sys.platform == "darwin", "Darwin terminal signal failure controls")
     def test_darwin_term_eperm_cannot_confirm_live_or_unavailable_terminal_membership(self) -> None:
         peer, peer_token = self.peer()

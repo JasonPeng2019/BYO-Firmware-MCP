@@ -643,7 +643,7 @@ class AnalysisPopen(subprocess.Popen[Any]):
         if sys.platform == "win32":
             raise RuntimeError("AnalysisPopen cannot signal Windows processes")
         if time.monotonic() >= deadline:
-            self._uncertainties.add("owned signal phase exceeded cleanup reserve")
+            self._note_incomplete_observation("owned signal phase exceeded bounded phase")
             return
         if self._anchor_matches():
             terminal = self._darwin_terminal_group(deadline)
@@ -689,6 +689,15 @@ class AnalysisPopen(subprocess.Popen[Any]):
                             exc.errno,
                             operation="terminal-group-proof",
                         )
+                    elif sys.platform == "darwin" and exc.errno == errno.EPERM:
+                        # This signal phase can expire before positive terminal
+                        # proof is available. Keep the failed syscall, but let
+                        # the final fresh native proof use the remaining total
+                        # reserve. Live/unknown members or a real observation
+                        # fault still prevent retirement; errno grants nothing.
+                        self._note_incomplete_observation(
+                            "Darwin EPERM terminal proof deferred to final observation"
+                        )
                     else:
                         self._uncertainties.add("owned group signal unavailable")
         else:
@@ -696,7 +705,9 @@ class AnalysisPopen(subprocess.Popen[Any]):
             self._record_group_signal(selected_signal, "refused-anchor", None)
         for (pid, token), state in self._states(deadline).items():
             if time.monotonic() >= deadline:
-                self._uncertainties.add("descendant signal phase exceeded cleanup reserve")
+                self._note_incomplete_observation(
+                    "descendant signal phase exceeded bounded phase"
+                )
                 return
             if state != "live" or pid == self.pid:
                 continue

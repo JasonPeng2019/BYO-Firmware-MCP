@@ -200,7 +200,9 @@ def main():
     if len(selectors) != 18 or args.method not in selectors:
         raise RuntimeError("reconcile current model discovery before execution")
     if ".ModelPinningIsEnforced." in args.method:
-        raise RuntimeError("run the deterministic original body with --pin-oracle; no auth required")
+        raise RuntimeError(
+            "run the deterministic original body with --pin-oracle; no auth required"
+        )
     home = Path(qualification["method_homes"][args.method]).resolve(strict=True)
     if not home.is_relative_to(private) or home in (private, profile):
         raise RuntimeError("model credential home is not an exact disposable child")
