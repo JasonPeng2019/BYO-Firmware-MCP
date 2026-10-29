@@ -28,6 +28,7 @@ import urllib.error
 from tests import final_acceptance_suite as acceptance
 from tests.process_cleanup_observations import (
     CleanupTrace,
+    RetainedWindowsProcesses,
     descendant_facts,
     execution_relationship,
     marker_facts,
@@ -673,6 +674,75 @@ module_identity = process_facts(os.getpid())
                 self.assertFalse(observed["resolved_identity_gaps"])
         OBSERVATIONS[self.id()] = results
         self.assertIsNotNone(child.returncode)
+
+    @unittest.skipUnless(os.name == "nt", "Actual Windows retained process objects")
+    def test_retained_windows_handle_supplies_exact_nonreaping_terminal_witness(self):
+        child, facts = self.real_child()
+        key = (facts["pid"], facts["creation_time"])
+        captured = [
+            (key, {"source": "actual owned child", "prior": facts, "owned_by_command": True})
+        ]
+        gap = {
+            "gap": "Controlled later identity gap",
+            "child": {"pid": key[0], "creation_time": key[1]},
+        }
+        reused = {
+            "pid": key[0],
+            "expected_creation_time": key[1],
+            "creation_time": key[1] + 1,
+            "identity": "reused",
+        }
+        with tempfile.TemporaryDirectory() as temporary, RetainedWindowsProcesses() as retained:
+            retained.retain(*key)
+            self.assertEqual(retained.observe(*key)["state"], "live")
+            retained.retain(key[0], key[1] + 1)
+            retained.retain(key[0], None)
+            self.assertIsNone(retained.observe(key[0], key[1] + 1))
+            self.assertIsNone(retained.observe(key[0], None))
+            # A denied acquisition of an actual live child grants no witness.
+            with RetainedWindowsProcesses() as denied:
+                with mock.patch.object(
+                    denied._api,
+                    "OpenProcess",
+                    side_effect=OSError(errno.EACCES, "Controlled access denial"),
+                ):
+                    denied.retain(*key)
+                self.assertIsNone(denied.observe(*key))
+                self.assertFalse(denied.summary()["captures"][0]["qualified"])
+            directory = Path(temporary)
+            with mock.patch.object(acceptance, "process_facts", return_value=reused):
+                no_proof = acceptance.module_exit_observations(directory, captured, [gap])
+                still_live = acceptance.module_exit_observations(
+                    directory, captured, [gap], retained
+                )
+            self.assertEqual(no_proof["gate"], "ERROR")
+            self.assertEqual(still_live["gate"], "FAIL")
+            child.stdin.close()
+            deadline = time.monotonic() + 15
+            while retained.observe(*key)["state"] != "terminal":
+                self.assertLess(time.monotonic(), deadline, "Owned child did not exit")
+                time.sleep(0.01)
+            # The kernel object proved exit before the fixture owner reaps/waits.
+            self.assertIsNone(child.returncode)
+            with mock.patch.object(acceptance, "process_facts", return_value=reused):
+                terminal = acceptance.module_exit_observations(directory, captured, [gap], retained)
+            self.assertEqual(terminal["gate"], "PASS")
+            row = terminal["seen_identities"][0]
+            self.assertEqual(row["after_module_exit"], reused)
+            self.assertEqual(row["retained_process_observation"]["state"], "terminal")
+            self.assertFalse(row["retained_process_observation"]["reap_or_signal"])
+            self.assertEqual(
+                terminal["resolved_identity_gaps"][0]["resolved_by"]["state"], "terminal"
+            )
+            child.wait(timeout=15)
+            retained.close()
+            self.assertTrue(all(item["closed"] for item in retained.summary()["closed"]))
+            OBSERVATIONS[self.id()] = {
+                "no_proof": no_proof,
+                "live": still_live,
+                "terminal": terminal,
+                "handles": retained.summary(),
+            }
 
     def test_real_zombie_capture_gap_resolves_by_its_terminal_identity(self):
         if os.name == "nt":

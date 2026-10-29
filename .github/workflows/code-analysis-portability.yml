@@ -12,6 +12,8 @@ env:
   GIT_CONFIG_KEY_0: core.autocrlf
   GIT_CONFIG_VALUE_0: 'false'
   PYTHONDONTWRITEBYTECODE: '1'
+  # Pyright's fallback nodeenv must not resolve a moving prerelease alias.
+  PYRIGHT_PYTHON_NODE_VERSION: '22.15.0'
 
 defaults:
   run:

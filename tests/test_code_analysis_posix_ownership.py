@@ -563,6 +563,27 @@ class NativePosixOwnership(unittest.TestCase):
                 self.assertTrue(marker.exists())
                 self.assertEqual(native_retained_exit(process.pid), (process.pid, 1, exit_code))
 
+    def test_lock_unavailable_state_snapshot_keeps_all_captured_identities_unknown(self):
+        peer, peer_token = self.peer()
+        process, marker, _directory, ready = self.tree(detach=True)
+        child = ready["child"]
+        self.until(lambda: any(pid == child for pid, _ in process._captured))
+        before = process._captured
+        marker_bytes = marker.read_bytes()
+        # A real held lock forces the same bounded refusal as the failed CI
+        # observation. No extra wait or cleanup is granted by this snapshot.
+        with process._ownership_guard:
+            states = process._states(time.monotonic())
+        self.assertEqual(set(states), set(before))
+        self.assertTrue(all(state == "unknown" for state in states.values()))
+        self.assertEqual(process._captured, before)
+        self.assertEqual(
+            process._last_incomplete_observation, "owned states unavailable within bounded phase"
+        )
+        self.assertEqual(marker.read_bytes(), marker_bytes)
+        self.assertTrue(self.is_owned_live(child, self.observed[child]))
+        self.assertTrue(self.is_owned_live(peer.pid, peer_token))
+
     def test_retained_leader_exit_cannot_hide_inaccessible_captured_detached_live_child(
         self,
     ) -> None:

@@ -1,7 +1,8 @@
 """Bind an Actions-built source wheel to its actual no-sync console selection.
 
 Only metadata and package bytes are read; no MCP deployment or model runs here.
-The proof environment installs locked prebuilt dependencies and the built wheel.
+The proof environment installs locked dependencies and the Actions-built wheel.
+Dependency compilation is allowed here in Actions; LOCAL installs require wheels.
 """
 
 import argparse
@@ -93,6 +94,7 @@ def main():
         "python_payload": payload,
         "model_requests": 0,
         "mcp_deployment": False,
+        "dependency_install_scope": "Actions-only locked uv sync; dependency compilation allowed here, never in the LOCAL qualifier",
         "outcome": "ERROR",
     }
     try:
@@ -112,14 +114,12 @@ def main():
         run(
             [
                 "uv",
-                "pip",
-                "install",
+                "sync",
+                "--locked",
+                "--no-default-groups",
+                "--no-install-project",
                 "--python",
-                str(python),
-                "--require-hashes",
-                "--only-binary=:all:",
-                "-r",
-                str(requirements),
+                sys.executable,
             ]
         )
         run(

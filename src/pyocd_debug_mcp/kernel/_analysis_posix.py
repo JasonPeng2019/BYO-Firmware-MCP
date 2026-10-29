@@ -218,7 +218,9 @@ class AnalysisPopen(subprocess.Popen[Any]):
         self._spawn_parent_pid = os.getpid()
         self._spawn_succeeded = False
         self._session_established = False
-        self._captured: set[tuple[int, str]] = set()
+        # Immutable snapshots preserve every acquired identity even when a
+        # bounded receipt read cannot obtain the active observer's lock.
+        self._captured: frozenset[tuple[int, str]] = frozenset()
         self._uncertainties: set[str] = set()
         self._first_observation_failure: dict[str, Any] | None = None
         self._wait_error: str | None = None
@@ -287,7 +289,7 @@ class AnalysisPopen(subprocess.Popen[Any]):
             if self._leader_state() != "zombie":
                 self._uncertainties.add("leader birth unavailable for descendant acquisition")
         if self._leader_token is not None:
-            self._captured.add((self.pid, self._leader_token))
+            self._captured = self._captured | {(self.pid, self._leader_token)}
         before_observation = self._leader_state()
         if before_observation == "unknown":
             raise RuntimeError("Owned analysis direct-child observation unavailable")
@@ -463,13 +465,16 @@ class AnalysisPopen(subprocess.Popen[Any]):
         finally:
             # Preserve only acquisitions already completed with exact proof;
             # never replace their token after a partial snapshot or PID reuse.
-            self._captured.update(candidates)
+            self._captured = self._captured | candidates
             self._ownership_guard.release()
 
     def _states(self, deadline: float) -> dict[tuple[int, str], str]:
         if not self._ownership_guard.acquire(timeout=max(0, deadline - time.monotonic())):
             self._note_incomplete_observation("owned states unavailable within bounded phase")
-            return {(self.pid, self._leader_token or "unobserved"): "unknown"}
+            return {
+                **{identity: "unknown" for identity in self._captured},
+                (self.pid, self._leader_token or "unobserved"): "unknown",
+            }
         try:
             states = {}
             for identity in self._captured:

@@ -1,7 +1,8 @@
 """Test-only, non-reaping cleanup receipts. Observations never grant authority.
 
-No reads of protocol streams, extra poll/wait calls, signals or helper launches
-occur here. OS identity queries are snapshots, not exhaustive containment proof.
+No reads of protocol streams, Popen poll/wait calls, signals or helper launches
+occur here. Windows retained handles use only a zero-time kernel state query.
+OS identity queries are snapshots, not exhaustive containment proof.
 All byte/event/receipt reads are capped with explicit gaps. Instrumentation adds
 overhead, so an observed duration alone is not a causal or cleanup-success claim.
 """
@@ -104,6 +105,161 @@ def process_facts(pid, expected_birth=None):
 
 
 EXITED = {"missing", "gone_during_observation"}
+
+
+def _windows_process_api():
+    import ctypes
+    from ctypes import wintypes
+
+    api = ctypes.WinDLL("kernel32", use_last_error=True)
+    signatures = {
+        "OpenProcess": ([wintypes.DWORD, wintypes.BOOL, wintypes.DWORD], wintypes.HANDLE),
+        "GetProcessId": ([wintypes.HANDLE], wintypes.DWORD),
+        "GetProcessTimes": (
+            [wintypes.HANDLE, *([ctypes.POINTER(wintypes.FILETIME)] * 4)],
+            wintypes.BOOL,
+        ),
+        "WaitForSingleObject": ([wintypes.HANDLE, wintypes.DWORD], wintypes.DWORD),
+        "CloseHandle": ([wintypes.HANDLE], wintypes.BOOL),
+    }
+    for name, (arguments, result) in signatures.items():
+        function = getattr(api, name)
+        function.argtypes, function.restype = arguments, result
+    return api
+
+
+class RetainedWindowsProcesses:
+    """Observe exact process objects without reaping or cleanup authority.
+
+    The same psutil birth must bracket OpenProcess, and GetProcessId must match.
+    The non-inheritable handle then pins that process object independently of
+    later PID lookups. Its native creation FILETIME is rechecked at judgment.
+    Failure to acquire/qualify a handle supplies no terminal witness. Processes
+    missed between tree snapshots remain outside this observer's coverage.
+    """
+
+    def __init__(self):
+        self._api = _windows_process_api() if os.name == "nt" else None
+        self._handles = {}
+        self._attempts = {}
+        self._closed = []
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_exc):
+        self.close()
+
+    def _times(self, handle):
+        import ctypes
+        from ctypes import wintypes
+
+        values = [wintypes.FILETIME() for _ in range(4)]
+        if not self._api.GetProcessTimes(handle, *(ctypes.byref(value) for value in values)):
+            raise ctypes.WinError(ctypes.get_last_error())
+        return [value.dwLowDateTime | (value.dwHighDateTime << 32) for value in values]
+
+    def retain(self, pid, birth):
+        if self._api is None:
+            return
+        key = (pid, birth)
+        if key in self._handles:
+            return
+        record = {
+            "pid": pid,
+            "creation_time": birth,
+            "at_monotonic": time.monotonic(),
+            "qualified": False,
+            "access": "SYNCHRONIZE|PROCESS_QUERY_LIMITED_INFORMATION",
+            "inheritable": False,
+        }
+        self._attempts[key] = record
+        if type(birth) not in (int, float) or not math.isfinite(birth) or birth <= 0:
+            record["gap"] = "No exact birth; no handle attribution"
+            return
+        handle = None
+        try:
+            import ctypes
+
+            before = process_facts(pid, birth)
+            record["before_open"] = before
+            if before.get("identity") != "same_birth" or before.get("birth_after_queries") != birth:
+                raise RuntimeError("Exact birth unavailable before handle acquisition")
+            handle = self._api.OpenProcess(0x100000 | 0x1000, False, pid)
+            if not handle:
+                raise ctypes.WinError(ctypes.get_last_error())
+            native_pid = self._api.GetProcessId(handle)
+            created = self._times(handle)[0]
+            after = process_facts(pid, birth)
+            record.update(native_pid=native_pid, creation_filetime=created, after_open=after)
+            if (
+                native_pid != pid
+                or not created
+                or after.get("identity") != "same_birth"
+                or after.get("birth_after_queries") != birth
+            ):
+                raise RuntimeError("Exact birth did not bracket the retained process handle")
+            record["qualified"] = True
+            self._handles[key] = (handle, record)
+            handle = None
+        except (OSError, RuntimeError) as exc:
+            record["error"] = exception_facts(exc)
+        finally:
+            if handle is not None:
+                self._api.CloseHandle(handle)
+
+    def observe(self, pid, birth):
+        item = self._handles.get((pid, birth))
+        if item is None:
+            return None
+        handle, capture = item
+        record = {
+            "pid": pid,
+            "creation_time": birth,
+            "capture": capture,
+            "at_monotonic": time.monotonic(),
+            "state": "unknown",
+            "operation": "WaitForSingleObject(retained process handle, 0)",
+            "reap_or_signal": False,
+        }
+        try:
+            import ctypes
+
+            created, exited, _kernel, _user = self._times(handle)
+            if self._api.GetProcessId(handle) != pid or created != capture["creation_filetime"]:
+                raise RuntimeError("Retained process object identity changed")
+            result = self._api.WaitForSingleObject(handle, 0)
+            record["wait_result"] = result
+            if result == 0:
+                created_after, exited, _kernel, _user = self._times(handle)
+                if created_after != created:
+                    raise RuntimeError("Retained terminal process creation time changed")
+                record.update(state="terminal", exit_filetime=exited)
+            elif result == 258:
+                record["state"] = "live"
+            else:
+                raise ctypes.WinError(ctypes.get_last_error())
+        except (OSError, RuntimeError) as exc:
+            record["error"] = exception_facts(exc)
+        return record
+
+    def close(self):
+        for key, (handle, _capture) in list(self._handles.items()):
+            self._closed.append(
+                {
+                    "pid": key[0],
+                    "creation_time": key[1],
+                    "closed": bool(self._api.CloseHandle(handle)),
+                }
+            )
+            del self._handles[key]
+
+    def summary(self):
+        return {
+            "captures": list(self._attempts.values()),
+            "closed": self._closed,
+            "scope": "Read-only retained objects; no polling completeness, reaping, signaling or cleanup authority",
+        }
 
 
 def descendant_facts(pid, birth, boundary, directory=None):

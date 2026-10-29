@@ -30,6 +30,7 @@ import xml.etree.ElementTree as ET
 if __package__:
     from .process_cleanup_observations import (
         CleanupTrace,
+        RetainedWindowsProcesses,
         descendant_facts,
         exception_facts,
         popen_facts,
@@ -40,6 +41,7 @@ if __package__:
 else:
     from process_cleanup_observations import (
         CleanupTrace,
+        RetainedWindowsProcesses,
         descendant_facts,
         exception_facts,
         popen_facts,
@@ -695,8 +697,8 @@ def worker(module, evidence, select=None):
     return 0 if successful and not snapshot["evidence_gaps"] else 1
 
 
-def module_exit_observations(directory, captured=(), capture_gaps=()):
-    """Reobserve recorded identities without any wait, reap or signal authority.
+def module_exit_observations(directory, captured=(), capture_gaps=(), retained=None):
+    """Reobserve identities without Popen wait, reap or signal authority.
 
     Missing suite receipts remain diagnostic gaps (the caller enforces required
     ledgers); unknown ownership/state can never pass the owned-survivor gate.
@@ -745,8 +747,15 @@ def module_exit_observations(directory, captured=(), capture_gaps=()):
             else {"gap": "No birth identity was recorded; no PID-only attribution"}
         )
         state = terminal_identity(facts)
+        proof = (
+            retained.observe(pid, birth)
+            if retained is not None and prior.get("owned_by_command")
+            else None
+        )
+        if proof is not None and proof["state"] in ("live", "terminal"):
+            state = proof["state"]
         if state == "unknown":
-            identity_gaps.append({"pid": pid, "creation_time": birth, "identity": facts})
+            identity_gaps.append({"child": {"pid": pid, "creation_time": birth}, "identity": facts})
         if not prior.get("owned_by_command"):
             gaps.append(
                 {
@@ -769,6 +778,7 @@ def module_exit_observations(directory, captured=(), capture_gaps=()):
                 "creation_time": birth,
                 **prior,
                 "after_module_exit": facts,
+                "retained_process_observation": proof,
                 "state": state,
             }
         )
@@ -785,7 +795,12 @@ def module_exit_observations(directory, captured=(), capture_gaps=()):
             else None
         )
         if row is not None and row["state"] in ("gone", "terminal"):
-            resolved.append({**gap, "resolved_by": row["after_module_exit"]})
+            resolved.append(
+                {
+                    **gap,
+                    "resolved_by": row["retained_process_observation"] or row["after_module_exit"],
+                }
+            )
         else:
             unresolved.append(gap)
     return {
@@ -813,6 +828,7 @@ def run_module(command, environment, directory, timeout):
     with (
         (directory / "stdout.log").open("wb") as stdout,
         (directory / "stderr.log").open("wb") as stderr,
+        RetainedWindowsProcesses() as retained,
     ):
         child = subprocess.Popen(command, cwd=ROOT, env=environment, stdout=stdout, stderr=stderr)
         trace = CleanupTrace("module-parent", directory / "cleanup-observations")
@@ -853,6 +869,8 @@ def run_module(command, environment, directory, timeout):
                         },
                     )
                     entry["latest"] = row
+                    if entry["owned_by_command"]:
+                        retained.retain(*key)
                 remaining = deadline - time.monotonic()
                 try:
                     code = child.wait(timeout=max(0, min(0.1, remaining)))
@@ -900,7 +918,7 @@ def run_module(command, environment, directory, timeout):
                 finalization_deadline = finalization_started + 5.0
                 while True:
                     descendants = module_exit_observations(
-                        directory, captured.items(), capture_gaps
+                        directory, captured.items(), capture_gaps, retained
                     )
                     if immediate_post_exit is None:
                         immediate_post_exit = descendants
@@ -912,6 +930,7 @@ def run_module(command, environment, directory, timeout):
                             capture_gaps.append(
                                 {
                                     "boundary": "passive post-exit observation",
+                                    "child": {"pid": key[0], "creation_time": key[1]},
                                     "identity": row["after_module_exit"],
                                 }
                             )
@@ -949,6 +968,9 @@ def run_module(command, environment, directory, timeout):
                         emergency["error"] = exception_facts(exc)
                     emergency["after"] = process_facts(row["pid"], row["creation_time"])
                     row["emergency_cleanup"] = emergency
+            retained.close()
+            if outcome == "PASS" and any(not row["closed"] for row in retained.summary()["closed"]):
+                outcome = "ERROR"
             write(
                 directory / "module-exit.json",
                 {
@@ -962,6 +984,7 @@ def run_module(command, environment, directory, timeout):
                     "finalization_started_monotonic": finalization_started,
                     "finalization_allowance_seconds": 5.0,
                     "tree_observation_gaps": raw_capture_gaps,
+                    "retained_windows_processes": retained.summary(),
                     "normal_wait_exit": code if normal_wait_completed else None,
                     "natural_eof0": (
                         normal_wait_completed
