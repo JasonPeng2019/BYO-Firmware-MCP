@@ -16,6 +16,7 @@ import tempfile
 import time
 import unittest
 from pathlib import Path
+from typing import Any
 from unittest.mock import patch
 
 import psutil
@@ -367,10 +368,29 @@ class FailureClassTests(_HookProcessCase):
 class CleanupFailureTests(_HookProcessCase):
     def test_unconfirmed_cleanup_is_reported_and_keeps_the_marker(self) -> None:
         spec = self.spec("probe")
+        real_popen_owned = discovery_hooks.popen_owned
+        spawned: list[subprocess.Popen[bytes]] = []
 
-        with patch.object(discovery_hooks, "terminate_process_group", return_value=False):
+        def recording_popen_owned(*args: Any, **kwargs: Any) -> tuple[Any, Path | None]:
+            process, marker = real_popen_owned(*args, **kwargs)
+            spawned.append(process)
+            return process, marker
+
+        with (
+            patch.object(discovery_hooks, "popen_owned", recording_popen_owned),
+            patch.object(discovery_hooks, "terminate_process_group", return_value=False),
+        ):
             execution = execute_hook(spec, marker_store=self.marker_store)
 
+        # The simulated failure leaves the real leader retained (unreaped on POSIX,
+        # Job open on Windows); release it through the real cleanup after the test.
+        self.assertEqual(len(spawned), 1)
+        self.addCleanup(
+            lambda: self.assertTrue(
+                discovery_hooks.terminate_process_group(spawned[0]),
+                "the retained fixture leader was not released",
+            )
+        )
         self.assertEqual(execution.outcome, "cleanup_failed")
         self.assertEqual(execution.failure_code, "discovery/hook-failed")
         self.assertIn("cleanup could not be confirmed", execution.failure_detail)

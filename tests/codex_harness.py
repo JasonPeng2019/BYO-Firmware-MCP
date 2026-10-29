@@ -134,7 +134,8 @@ def codex_overrides() -> list[str]:
     project = str(SERVER_PROJECT).replace("\\", "/")
     server = f"mcp_servers.{SERVER_NAME}"
     launch = ",".join(
-        _toml_literal(arg) for arg in ("run", "--project", project, "pyocd-debug-mcp")
+        _toml_literal(arg)
+        for arg in ("run", "--no-sync", "--no-build", "--project", project, "pyocd-debug-mcp")
     )
     overrides = [
         f"model={_toml_literal(REQUIRED_MODEL)}",
@@ -156,6 +157,13 @@ def codex_overrides() -> list[str]:
     monitor_root = os.environ.get("BYO_MCP_MONITOR_ROOT", "").strip()
     if monitor_root:
         overrides.append(f"{server}.env.BYO_MCP_MONITOR_ROOT={_toml_literal(str(_store_root()))}")
+    # The prepared route installs the exact Actions-built wheel into this owned
+    # environment. Forward uv's supported selector so no global/stale console or
+    # implicit local build can replace that wheel in the MCP child.
+    if runtime := os.environ.get("UV_PROJECT_ENVIRONMENT", "").strip():
+        if not Path(runtime).is_absolute():
+            raise ValueError("UV_PROJECT_ENVIRONMENT must be absolute")
+        overrides.append(f"{server}.env.UV_PROJECT_ENVIRONMENT={_toml_literal(runtime)}")
     return overrides
 
 

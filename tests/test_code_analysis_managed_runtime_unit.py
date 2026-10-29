@@ -406,6 +406,33 @@ class ManagedRuntimeTests(unittest.TestCase):
             scan.assert_called()
         self.assertEqual(self.spawn.call_count, 1)
 
+    def test_added_entry_with_unchanged_directory_metadata_prevents_probe(self):
+        # Restoring timestamps exercises unchanged directory metadata on
+        # Windows. This does not infer the original CI filesystem's cause;
+        # POSIX change time can still differ in this control.
+        self.resolve()
+        directory = self.root / "analysis/clangd/lib/clang/23/include"
+        before = os.lstat(directory)
+        (directory / "extra.h").write_bytes(b"extra")
+        os.utime(directory, ns=(before.st_atime_ns, before.st_mtime_ns))
+        if os.name == "nt":
+            self.assertEqual(
+                self.manifest._identity(directory, time.monotonic() + 5, None)[:7],
+                (
+                    before.st_dev,
+                    before.st_ino,
+                    before.st_mode,
+                    before.st_size,
+                    before.st_mtime_ns,
+                    before.st_ctime_ns,
+                    before.st_file_attributes,
+                ),
+            )
+        result = self.resolve()
+        self.assertTrue(result.problems)
+        self.assertIn("extra.h", str(result.observed_identity))
+        self.assertEqual(self.spawn.call_count, 1)
+
     def test_metadata_change_invalidates_receipt_and_version_cache_before_probe(self):
         self.resolve()
         mapping = self.root / "analysis/runtime.json"

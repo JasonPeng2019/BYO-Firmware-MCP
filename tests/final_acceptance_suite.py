@@ -214,6 +214,87 @@ def built_native_inputs(bundle, installer):
     return lock, payload, provenance, measured
 
 
+ARM_CORPUS = ROOT / "tests/code_analysis_fixtures/arm_firmware"
+
+
+def build_arm_corpus(gnu, destination, facts):
+    """Actually build the frozen ARM corpus; export only argv that really ran.
+
+    The template fixes the captured argv form. Its machine-local prefixes bind
+    to this owned copy and the receipt-admitted toolchain, then every compile
+    and the vector/linker-script link execute before any database is written.
+    """
+    shutil.copytree(ARM_CORPUS, destination, ignore=shutil.ignore_patterns("*.template.json"))
+    project = destination.resolve(strict=True)
+
+    def bind(value):
+        if isinstance(value, dict):
+            return {key: bind(item) for key, item in value.items()}
+        if isinstance(value, list):
+            return [bind(item) for item in value]
+        if not isinstance(value, str):
+            return value
+        for token, root in (("@PROJECT", project), ("@ARM_GNU", gnu)):
+            if f"{token}_NATIVE@" in value:
+                value = str(root) + value.split(f"{token}_NATIVE@", 1)[1].replace("\\", os.sep)
+            value = value.replace(f"{token}@", root.as_posix())
+        return value if os.name == "nt" else value.replace(".exe", "")
+
+    def run(argv):
+        completed = subprocess.run(  # noqa: S603 - receipt-admitted toolchain
+            argv, cwd=project, capture_output=True, text=True, timeout=300, check=False
+        )
+        facts["steps"].append(
+            {
+                "argv": argv,
+                "exit": completed.returncode,
+                "stdout": completed.stdout,
+                "stderr": completed.stderr,
+            }
+        )
+        if completed.returncode != 0:
+            raise RuntimeError("Arm GCC step failed: " + " ".join(argv))
+
+    template = json.loads((ARM_CORPUS / "build/compile_commands.template.json").read_bytes())
+    executed = [{key: bind(value) for key, value in entry.items()} for entry in template]
+    for entry in executed:
+        run(entry["arguments"])
+    elf = project / "build/firmware.elf"
+    run(
+        [
+            executed[0]["arguments"][0],
+            "-mcpu=cortex-m4",
+            "-mthumb",
+            "-mfloat-abi=soft",
+            "-nostdlib",
+            "-Wl,-Map," + str(project / "build/firmware.map"),
+            "-T",
+            str(project / "firmware.ld"),
+            *(entry["output"] for entry in executed),
+            "-o",
+            str(elf),
+        ]
+    )
+    header = elf.read_bytes()[:20]
+    # ELFCLASS32, little-endian, EM_ARM: the linked image is the selected target.
+    if header[:6] != b"\x7fELF\x01\x01" or int.from_bytes(header[18:20], "little") != 40:
+        raise RuntimeError("Linked image is not a 32-bit little-endian ARM ELF")
+    database = project / "build/compile_commands.json"
+    database.write_text(json.dumps(executed, indent=2) + "\n", encoding="utf-8")
+    configuration = bind(json.loads((ARM_CORPUS / "byo-analysis.template.json").read_bytes()))
+    (project / "byo-analysis.json").write_text(
+        json.dumps(configuration, indent=2) + "\n", encoding="utf-8"
+    )
+    facts.update(
+        outcome="PASS",
+        corpus=str(project),
+        database_sha256=digest(database),
+        elf_sha256=digest(elf),
+        map_sha256=digest(project / "build/firmware.map"),
+        objects={entry["output"]: digest(entry["output"]) for entry in executed},
+    )
+
+
 def prepare_native_inputs(args, evidence, environment):
     """Collect independent prerequisites, keeping every error and usable real input."""
     facts, protected, errors = {}, {}, []
@@ -332,11 +413,25 @@ def prepare_native_inputs(args, evidence, environment):
             "acquisition_receipt": pack_acquisition,
         }
         errors.append("official_pack")
-    arm_inputs = {
-        str(p.resolve()): digest(p)
-        for p in (ROOT / "tests/code_analysis_fixtures/arm_firmware").rglob("*")
-        if p.is_file()
-    }
+    protected.update({str(p.resolve()): digest(p) for p in ARM_CORPUS.rglob("*") if p.is_file()})
+    # Only the Windows native record consumes the built corpus. A failed or
+    # blocked build publishes no corpus, so its native query stays nonpassing.
+    arm_inputs = {}
+    if os.name != "nt":
+        facts["arm_build"] = {"outcome": "NOT_RUN", "reason": "consumed by Windows native only"}
+    elif "arm" in errors:
+        facts["arm_build"] = {"outcome": "BLOCKED", "reason": "ARM toolchain not admitted"}
+    else:
+        facts["arm_build"] = {"outcome": "ERROR", "steps": []}
+        corpus = evidence / "arm-built-corpus"
+        try:
+            build_arm_corpus(
+                Path(environment["BYO_MCP_TEST_ARM_GNU_ROOT"]), corpus, facts["arm_build"]
+            )
+            arm_inputs = {str(p.resolve()): digest(p) for p in corpus.rglob("*") if p.is_file()}
+        except Exception:
+            facts["arm_build"]["error"] = traceback.format_exc()
+            errors.append("arm_build")
     protected.update(arm_inputs)
     if os.name == "nt" and payload is not None:
         record = evidence / "native-input-record.json"
@@ -605,6 +700,8 @@ def module_exit_observations(directory, captured=(), capture_gaps=()):
 
     Missing suite receipts remain diagnostic gaps (the caller enforces required
     ledgers); unknown ownership/state can never pass the owned-survivor gate.
+    A gap naming an exact child identity is resolved only by that same identity's
+    positive gone/terminal state here, and is retained with its resolving facts.
     """
     seen = dict(captured)
     gaps, identity_gaps = [], list(capture_gaps)
@@ -678,13 +775,27 @@ def module_exit_observations(directory, captured=(), capture_gaps=()):
     survivors = [
         row for row in observations if row["state"] == "live" and row.get("owned_by_command")
     ]
+    states = {(row["pid"], row["creation_time"]): row for row in observations}
+    unresolved, resolved = [], []
+    for gap in identity_gaps:
+        child = gap.get("child") if isinstance(gap, dict) else None
+        row = (
+            states.get((child.get("pid"), child.get("creation_time")))
+            if isinstance(child, dict) and child.get("creation_time") is not None
+            else None
+        )
+        if row is not None and row["state"] in ("gone", "terminal"):
+            resolved.append({**gap, "resolved_by": row["after_module_exit"]})
+        else:
+            unresolved.append(gap)
     return {
         "at_monotonic": time.monotonic(),
         "seen_identities": observations,
         "survivors": survivors,
-        "identity_gaps": identity_gaps,
+        "identity_gaps": unresolved,
+        "resolved_identity_gaps": resolved,
         "evidence_gaps": gaps,
-        "gate": "FAIL" if survivors else ("ERROR" if identity_gaps else "PASS"),
+        "gate": "FAIL" if survivors else ("ERROR" if unresolved else "PASS"),
         "rule": "Exact post-exit judgment before intervention; unknown/reused facts never prove absence",
     }
 
@@ -725,12 +836,12 @@ def run_module(command, environment, directory, timeout):
                     directory / "cleanup-observations",
                 )
                 raw_capture_gaps.extend(snapshot["evidence_gaps"])
-                # Root disappearance can race the real wait. Retain that raw
-                # gap; lack of an initial birth cannot become ownership proof.
-                if leader.get("creation_time") is None:
-                    capture_gaps.extend(snapshot["evidence_gaps"])
-                elif snapshot["root_identity"].get("identity") != "missing":
-                    capture_gaps.extend(snapshot["evidence_gaps"])
+                # A positively observed exit of the exact root races the real
+                # wait. Retain that raw gap; without an initial birth nothing is
+                # marked, so a missing birth cannot become ownership proof.
+                capture_gaps.extend(
+                    gap for gap in snapshot["evidence_gaps"] if not gap.get("root_exit")
+                )
                 for row in snapshot["descendants"]:
                     key = (row["pid"], row["creation_time"])
                     entry = captured.setdefault(
@@ -1015,7 +1126,13 @@ def parent(args):
                 "real_request_methods_blocked": len(declared) - 1,
                 "exit": None,
             }
-            failed = True
+            # Real deployments are mandatory LOCAL acceptance, outside this
+            # deterministic CI pass. Keep every LOCAL method BLOCKED in the raw
+            # ledger; only the separately executed zero-request pin gates CI.
+            record["execution_scope"] = "mandatory-local-acceptance"
+            record["local_acceptance_complete"] = False
+            record["applicable_ci_outcome"] = oracle_record["outcome"]
+            failed |= oracle_record["outcome"] != "PASS"
         else:
             command = [
                 sys.executable,
@@ -1122,6 +1239,8 @@ def parent(args):
             "professional_unchanged": variant_unchanged,
             "outcome": "FAIL" if failed or not unchanged or not variant_unchanged else "PASS",
             "blocked_agent_policy": BLOCKED,
+            "execution_scope": "deterministic-ci",
+            "local_acceptance_complete": False,
             "remaining_acceptance": "SAME V must provision safe real native-client/model/auth isolation for every real-model declaration; U1 trust/version, physical/clone/replug/active-UART remain separate requirements.",
         },
     )

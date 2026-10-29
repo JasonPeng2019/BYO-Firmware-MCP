@@ -15,10 +15,12 @@ import json
 import os
 from pathlib import Path
 import platform
+import re
 import shutil
 import tempfile
 import subprocess
 import sys
+import time
 import unittest
 from unittest import mock
 import urllib.error
@@ -36,6 +38,50 @@ from tests.process_cleanup_observations import (
 )
 
 OBSERVATIONS = {}
+# Windows' venv redirector delegates to a base child; a macOS framework stub can
+# exec its app image in place after a parent's start snapshot; others are direct.
+RELATIONSHIPS = (
+    {"direct", "launcher-child"}
+    if os.name == "nt"
+    else {"direct", "framework-exec"}
+    if sys.platform == "darwin"
+    else {"direct"}
+)
+
+
+def same_process_refusals(start, interpreter, command, argv, expected_argv, parent, launch):
+    """Alter only rejection inputs of a real same-process join; none may still join."""
+    if start.get("pid") != interpreter.get("pid") or not interpreter.get("cmdline"):
+        return {}
+    tail = interpreter["cmdline"][1:]
+    foreign = str(Path(tempfile.gettempdir(), "foreign-image", "python"))
+    variants = {
+        "foreign_image": ({**interpreter, "exe": foreign, "cmdline": [foreign, *tail]}, launch)
+    }
+    joined = execution_relationship(
+        start, interpreter, command, argv, expected_argv, parent=parent, launch=launch
+    )
+    if joined["relationship"] == "framework-exec":
+        image, birth = interpreter["exe"], interpreter["creation_time"]
+        other = re.sub(r"/Versions/[^/]+/", "/Versions/0.0/", image, count=1)
+        variants.update(
+            no_launch_self_report=(interpreter, None),
+            launch_through_other_path=(interpreter, {**launch, "executable": foreign}),
+            launch_resolving_elsewhere=(interpreter, {**launch, "resolved": image}),
+            other_version_image=({**interpreter, "exe": other, "cmdline": [other, *tail]}, launch),
+            argv0_not_the_image=({**interpreter, "cmdline": [start["cmdline"][0], *tail]}, launch),
+            changed_parent=({**interpreter, "ppid": interpreter["ppid"] + 1}, launch),
+            changed_birth=(
+                {**interpreter, "creation_time": birth + 1, "birth_after_queries": birth + 1},
+                launch,
+            ),
+        )
+    return {
+        label: execution_relationship(
+            start, facts, command, argv, expected_argv, parent=parent, launch=self_report
+        )
+        for label, (facts, self_report) in variants.items()
+    }
 
 
 class FinalAcceptanceLedgerContracts(unittest.TestCase):
@@ -321,9 +367,13 @@ class FinalAcceptanceLedgerContracts(unittest.TestCase):
 
     def test_execution_relationship_binds_a_real_portable_launcher_child(self):
         # Run the same command through a real Python wrapper and its actual
-        # base interpreter on every OS. The wrapper's sole wait is its normal
+        # interpreter child on every OS, keeping the locked environment the way
+        # that OS selects it: POSIX by the invoked venv path; Windows' venv
+        # redirector by naming itself in __PYVENV_LAUNCHER__, which the base
+        # image consumes at startup. The wrapper's sole wait is its normal
         # subprocess.run lifecycle; the identity observer never waits/signals.
         script = r"""
+import importlib.util
 import json
 import os
 from pathlib import Path
@@ -333,18 +383,24 @@ from tests.process_cleanup_observations import process_facts
 
 directory = Path(sys.argv[1])
 identity = process_facts(os.getpid())
+psutil = importlib.util.find_spec("psutil")
+context = {"prefix": sys.prefix, "psutil": psutil and psutil.origin}
 if os.environ.get("BYO_FR11_LAYER_CONTROL") == "child":
     (directory / "executed.json").write_text(json.dumps({
         "identity": identity, "parent": process_facts(os.getppid()),
-        "argv": sys.argv, "module_name": __name__,
+        "argv": sys.argv, "module_name": __name__, **context,
     }), encoding="utf-8")
 else:
-    command = [identity["exe"], *identity["cmdline"][1:]]
-    (directory / "launcher.json").write_text(json.dumps({
-        "identity": identity, "command": command,
-    }), encoding="utf-8")
     environment = dict(os.environ)
     environment["BYO_FR11_LAYER_CONTROL"] = "child"
+    if os.name == "nt":
+        command = [identity["exe"], *identity["cmdline"][1:]]
+        environment["__PYVENV_LAUNCHER__"] = sys.executable
+    else:
+        command = [sys.executable, *identity["cmdline"][1:]]
+    (directory / "launcher.json").write_text(json.dumps({
+        "identity": identity, "command": command, **context,
+    }), encoding="utf-8")
     raise SystemExit(subprocess.run(command, env=environment).returncode)
 """
         with tempfile.TemporaryDirectory() as temporary:
@@ -382,6 +438,14 @@ else:
             self.assertEqual(exit_record["popen"]["cached_returncode"], 0)
             self.assertEqual(launcher["command"][1:], command[1:])
             self.assertEqual(executed["module_name"], "__main__")
+            # Both layers really execute in this locked environment and load its
+            # dependency; a base interpreter outside it is not this chain.
+            self.assertEqual((launcher["prefix"], executed["prefix"]), (sys.prefix, sys.prefix))
+            self.assertIsNotNone(executed["psutil"])
+            self.assertEqual(executed["psutil"], launcher["psutil"])
+            self.assertTrue(
+                Path(executed["psutil"]).resolve().is_relative_to(Path(sys.prefix).resolve())
+            )
             self.assertFalse(relationship["evidence_gaps"], relationship)
             self.assertEqual(relationship["relationship"], "launcher-child")
             # Missing/reused/unknown parent observations and a different real
@@ -428,7 +492,7 @@ from multiprocessing import resource_tracker
 import os
 from pathlib import Path
 import sys
-from tests.process_cleanup_observations import CleanupTrace, process_facts
+from tests.process_cleanup_observations import CleanupTrace, launch_facts, process_facts
 
 directory = Path(sys.argv[1])
 trace = CleanupTrace("natural-interpreter-exit-control", directory / "cleanup-observations")
@@ -440,7 +504,7 @@ if pid is not None:
 module_identity = process_facts(os.getpid())
 (directory / "control.json").write_text(json.dumps({"module_pid": os.getpid(), "helper_pid": pid,
     "module_identity": module_identity, "parent_identity": process_facts(os.getppid()),
-    "module_argv": sys.argv, "module_name": __name__,
+    "module_argv": sys.argv, "module_name": __name__, "launch": launch_facts(),
     "boundary": "before normal interpreter exit; no emergency cleanup"}), encoding="utf-8")
 """
         with tempfile.TemporaryDirectory() as temporary:
@@ -457,24 +521,30 @@ module_identity = process_facts(os.getpid())
                 }
             control = json.loads((directory / "control.json").read_text(encoding="utf-8"))
             exit_record = json.loads((directory / "module-exit.json").read_text(encoding="utf-8"))
-            relationship = execution_relationship(
+            joined = (
                 exit_record["module_identity_at_start"],
                 control["module_identity"],
                 command,
                 control["module_argv"],
                 ["-c", str(directory)],
-                parent=control["parent_identity"],
+                control["parent_identity"],
+                control["launch"],
             )
+            relationship = execution_relationship(*joined[:5], parent=joined[5], launch=joined[6])
+            refusals = same_process_refusals(*joined)
             OBSERVATIONS[self.id()]["module_execution_relationship"] = relationship
+            OBSERVATIONS[self.id()]["same_process_refusals"] = refusals
         self.assertEqual((code, outcome), (0, "PASS"))
         self.assertTrue(exit_record["wait_completed"])
         self.assertEqual(exit_record["popen"]["cached_returncode"], 0)
         self.assertEqual(control["module_name"], "__main__")
         self.assertEqual(control["module_identity"]["pid"], control["module_pid"])
         self.assertFalse(relationship["evidence_gaps"], relationship)
-        self.assertIn(relationship["relationship"], {"direct", "launcher-child"})
-        if os.name != "nt":
-            self.assertEqual(relationship["relationship"], "direct")
+        self.assertIn(relationship["relationship"], RELATIONSHIPS)
+        for label, refused in refusals.items():
+            with self.subTest(refusal=label):
+                self.assertEqual(refused["relationship"], "unknown")
+                self.assertTrue(refused["evidence_gaps"])
         if control["helper_pid"] is not None:
             observations = exit_record["descendants"]["seen_identities"]
             helpers = [r for r in observations if r["pid"] == control["helper_pid"]]
@@ -489,6 +559,234 @@ module_identity = process_facts(os.getpid())
         # must expose that gap, rather than fabricate an empty cleanup success.
         self.assertTrue(exit_record["descendants"]["evidence_gaps"])
 
+    def real_child(self):
+        """Start an actual child this test owns; it exits once its stdin closes."""
+        child = subprocess.Popen(
+            [sys.executable, "-B", "-c", "import sys; sys.stdin.read()"], stdin=subprocess.PIPE
+        )
+        self.addCleanup(child.wait, timeout=15)
+        self.addCleanup(child.stdin.close)
+        facts = process_facts(child.pid)
+        self.assertIsNotNone(facts.get("creation_time"), facts)
+        return child, facts
+
+    def exited_child(self):
+        # The owner's own wait reaps it. The Popen stays referenced by the
+        # caller, so Windows keeps that PID's handle and cannot reuse it.
+        child, facts = self.real_child()
+        child.stdin.close()
+        child.wait(timeout=15)
+        return child, facts
+
+    def test_capture_gap_resolves_only_by_its_exact_identity_exit(self):
+        # A capture gap is retained and resolved only by its own exact identity's
+        # positive post-exit state; any other identity or state keeps it an error.
+        exited_process, exited = self.exited_child()
+        live_process, live = self.real_child()
+
+        def gap(facts, **override):
+            child = {"pid": facts["pid"], "creation_time": facts["creation_time"], **override}
+            return {
+                "gap": "Child cmdline unavailable during capture",
+                "identity": process_facts(child["pid"], child.get("creation_time")),
+                "child": child,
+            }
+
+        def captured(facts, **override):
+            key = (facts["pid"], override.get("creation_time", facts["creation_time"]))
+            entry = {"source": "contract capture", "prior": facts, "owned_by_command": True}
+            return [(key, entry)]
+
+        changed = {"creation_time": live["creation_time"] + 1}
+        cases = {
+            "exact_exit": (captured(exited), gap(exited), "PASS"),
+            "live_owned": (captured(live), gap(live), "FAIL"),
+            "changed_birth": (captured(live, **changed), gap(live, **changed), "ERROR"),
+            "unseen_identity": (
+                captured(exited),
+                gap(exited, creation_time=exited["creation_time"] + 1),
+                "ERROR",
+            ),
+            "birthless": (
+                captured(exited),
+                {
+                    "pid": exited["pid"],
+                    "error": {"type": "contract"},
+                    "child": {"pid": exited["pid"]},
+                },
+                "ERROR",
+            ),
+            "no_child_identity": (
+                captured(exited),
+                {"gap": "Root changed during tree capture", "identity": exited},
+                "ERROR",
+            ),
+        }
+        results = {}
+        for label, (seen, raw_gap, expected) in cases.items():
+            with self.subTest(case=label), tempfile.TemporaryDirectory() as temporary:
+                observed = acceptance.module_exit_observations(Path(temporary), seen, [raw_gap])
+                results[label] = observed
+                self.assertEqual(observed["gate"], expected, observed)
+                if label == "exact_exit":
+                    self.assertEqual(observed["identity_gaps"], [])
+                    [resolved] = observed["resolved_identity_gaps"]
+                    self.assertEqual({k: resolved[k] for k in raw_gap}, raw_gap)
+                    self.assertEqual(terminal_identity(resolved["resolved_by"]), "gone")
+                else:
+                    self.assertIn(raw_gap, observed["identity_gaps"])
+                    self.assertEqual(observed["resolved_identity_gaps"], [])
+        OBSERVATIONS[self.id()] = results
+        self.assertEqual(
+            terminal_identity(process_facts(live["pid"], live["creation_time"])), "live"
+        )
+        self.assertIsNotNone(exited_process.returncode)
+        self.assertIsNone(live_process.returncode)
+
+    def test_exact_child_gap_stays_error_when_later_facts_are_unavailable(self):
+        child, facts = self.exited_child()
+        key = (facts["pid"], facts["creation_time"])
+        captured = [(key, {"source": "contract", "prior": facts, "owned_by_command": True})]
+        gap = {
+            "gap": "Child cmdline unavailable during capture",
+            "child": {"pid": key[0], "creation_time": key[1]},
+        }
+        results = {}
+        for reason in ("AccessDenied", "SystemError", "missed-birth", "malformed"):
+            unavailable = {
+                "pid": key[0],
+                "expected_creation_time": key[1],
+                "identity": "unavailable",
+                "error": {"type": reason},
+            }
+            if reason == "missed-birth":
+                unavailable["expected_creation_time"] = None
+            if reason == "malformed":
+                unavailable["identity"] = "same_birth"
+                unavailable["status"] = "dead"
+            with self.subTest(reason=reason), tempfile.TemporaryDirectory() as temporary:
+                with mock.patch.object(acceptance, "process_facts", return_value=unavailable):
+                    observed = acceptance.module_exit_observations(Path(temporary), captured, [gap])
+                results[reason] = observed
+                self.assertEqual(observed["gate"], "ERROR", observed)
+                self.assertIn(gap, observed["identity_gaps"])
+                self.assertFalse(observed["resolved_identity_gaps"])
+        OBSERVATIONS[self.id()] = results
+        self.assertIsNotNone(child.returncode)
+
+    def test_real_zombie_capture_gap_resolves_by_its_terminal_identity(self):
+        if os.name == "nt":
+            self.skipTest("Windows has no zombie process state")
+        child, facts = self.real_child()
+        child.stdin.close()
+        birth = facts["creation_time"]
+        deadline = time.monotonic() + 15
+        # Waiting only for this fixture's exit, never as a completeness guarantee.
+        while terminal_identity(process_facts(child.pid, birth)) != "terminal":
+            self.assertLess(time.monotonic(), deadline, "the exited child never became a zombie")
+            time.sleep(0.05)
+        own = process_facts(os.getpid())
+        snapshot = descendant_facts(os.getpid(), own["creation_time"], "zombie capture control")
+        rows = [row for row in snapshot["descendants"] if row["pid"] == child.pid]
+        gaps = [
+            gap for gap in snapshot["evidence_gaps"] if gap.get("child", {}).get("pid") == child.pid
+        ]
+        self.assertEqual(len(rows), 1, snapshot)
+        self.assertTrue(gaps, "a zombie's unavailable fields must be capture gaps")
+        seen = [
+            ((child.pid, birth), {"source": "contract", "prior": rows[0], "owned_by_command": True})
+        ]
+        with tempfile.TemporaryDirectory() as temporary:
+            observed = acceptance.module_exit_observations(Path(temporary), seen, gaps)
+        OBSERVATIONS[self.id()] = {"snapshot": snapshot, "observed": observed}
+        self.assertIsNone(child.returncode, "the observer must not reap the zombie")
+        self.assertEqual(observed["gate"], "PASS", observed)
+        self.assertEqual(observed["identity_gaps"], [])
+        self.assertEqual(len(observed["resolved_identity_gaps"]), len(gaps))
+        for resolved in observed["resolved_identity_gaps"]:
+            self.assertEqual(terminal_identity(resolved["resolved_by"]), "terminal")
+
+    def test_root_exit_is_marked_only_on_positive_exact_absence(self):
+        import psutil
+
+        exited_process, exited = self.exited_child()
+        own = process_facts(os.getpid())
+        birth = own["creation_time"]
+        gone = descendant_facts(exited["pid"], exited["creation_time"], "exited root control")
+        birthless = descendant_facts(exited["pid"], None, "birthless root control")
+        changed = descendant_facts(os.getpid(), birth + 1, "changed root control")
+        with mock.patch("psutil.Process.children", side_effect=psutil.NoSuchProcess(os.getpid())):
+            raced = descendant_facts(os.getpid(), birth, "live root, failed tree capture")
+        with mock.patch("psutil.Process.children", side_effect=psutil.AccessDenied(os.getpid())):
+            denied = descendant_facts(os.getpid(), birth, "live root, denied tree capture")
+        OBSERVATIONS[self.id()] = {
+            "gone": gone,
+            "birthless": birthless,
+            "changed": changed,
+            "raced": raced,
+            "denied": denied,
+        }
+        self.assertEqual([gap.get("root_exit") for gap in gone["evidence_gaps"]], [True])
+        self.assertEqual(terminal_identity(gone["root_identity"]), "gone")
+        for label, snapshot in (
+            ("birthless", birthless),
+            ("changed", changed),
+            ("raced", raced),
+            ("denied", denied),
+        ):
+            with self.subTest(root=label):
+                self.assertTrue(snapshot["evidence_gaps"], snapshot)
+                self.assertFalse(any(gap.get("root_exit") for gap in snapshot["evidence_gaps"]))
+        self.assertEqual(raced["root_after_capture"]["identity"], "same_birth")
+        self.assertEqual(
+            terminal_identity(
+                {"identity": "gone_during_observation", "expected_creation_time": birth}
+            ),
+            "gone",
+        )
+        self.assertEqual(terminal_identity({"identity": "gone_during_observation"}), "unknown")
+        self.assertIsNotNone(exited_process.returncode)
+
+    def run_with_first_root_observation(self, pid, birth, directory):
+        """Run a real command whose first tree observation is of another real root."""
+        real = acceptance.descendant_facts
+        first = []
+
+        def observe(*args, **kwargs):
+            if first:
+                return real(*args, **kwargs)
+            first.append(real(pid, birth, "contract root observation"))
+            return first[0]
+
+        command = [sys.executable, "-B", "-c", "pass"]
+        with mock.patch.object(acceptance, "descendant_facts", observe):
+            code, outcome = acceptance.run_module(command, dict(os.environ), directory, 15)
+        exit_record = json.loads((directory / "module-exit.json").read_text(encoding="utf-8"))
+        return code, outcome, exit_record, first[0]
+
+    def test_module_gate_excludes_only_a_positive_root_exit(self):
+        # The raw gap is always retained; only an exact root's positive exit
+        # leaves the module's real wait to decide without a descendant error.
+        exited_process, exited = self.exited_child()
+        results = {}
+        for label, birth, expected in (
+            ("exact_root_exit", exited["creation_time"], "PASS"),
+            ("birthless_root", None, "ERROR"),
+        ):
+            with self.subTest(root=label), tempfile.TemporaryDirectory() as temporary:
+                code, outcome, exit_record, first = self.run_with_first_root_observation(
+                    exited["pid"], birth, Path(temporary)
+                )
+                results[label] = exit_record
+                [raw] = first["evidence_gaps"]
+                self.assertEqual(bool(raw.get("root_exit")), expected == "PASS")
+                self.assertIn(raw, exit_record["tree_observation_gaps"])
+                self.assertEqual((code, outcome), (0, expected))
+                self.assertEqual(exit_record["descendants"]["gate"], expected)
+                self.assertFalse(exit_record["interventions"])
+        OBSERVATIONS[self.id()] = results
+        self.assertIsNotNone(exited_process.returncode)
+
 
 FINALIZATION_PROBE = r"""
 import atexit
@@ -501,7 +799,7 @@ import subprocess
 import sys
 import time
 import unittest
-from tests.process_cleanup_observations import CleanupTrace, process_facts
+from tests.process_cleanup_observations import CleanupTrace, launch_facts, process_facts
 
 root = Path(os.environ["BYO_FR12_PROBE_ROOT"])
 event = writer = leaked = None
@@ -561,7 +859,8 @@ class OrdinaryFinalization(unittest.TestCase):
         self.assertTrue(ready.is_file(), "actual child must be ready before body completion")
         record("body.json", {
             "identity": process_facts(os.getpid()), "parent": process_facts(os.getppid()),
-            "argv": sys.argv, "at_monotonic": time.monotonic(), "mode": mode,
+            "argv": sys.argv, "launch": launch_facts(), "at_monotonic": time.monotonic(),
+            "mode": mode,
             "writer_pid": None if writer is None else writer.pid,
             "leak_pid": None if leaked is None else leaked.pid,
         })
@@ -684,7 +983,7 @@ class OrdinaryInterpreterExitContracts(unittest.TestCase):
         body = json.loads((directory / "body.json").read_bytes())
         finished = json.loads((directory / "writer-finished.json").read_bytes())
         finalizer = json.loads((directory / "ordinary-finalizer.json").read_bytes())
-        relationship = execution_relationship(
+        joined = (
             exit_record["module_identity_at_start"],
             body["identity"],
             exit_record["popen"]["argv"],
@@ -696,12 +995,19 @@ class OrdinaryInterpreterExitContracts(unittest.TestCase):
                 "--evidence",
                 str(directory),
             ],
-            parent=body["parent"],
+            body["parent"],
+            body["launch"],
         )
+        relationship = execution_relationship(*joined[:5], parent=joined[5], launch=joined[6])
+        refusals = same_process_refusals(*joined)
+        OBSERVATIONS[self.id()]["module_execution_relationship"] = relationship
+        OBSERVATIONS[self.id()]["same_process_refusals"] = refusals
         self.assertFalse(relationship["evidence_gaps"], relationship)
-        self.assertIn(relationship["relationship"], {"direct", "launcher-child"})
-        if os.name != "nt":
-            self.assertEqual(relationship["relationship"], "direct")
+        self.assertIn(relationship["relationship"], RELATIONSHIPS)
+        for label, refused in refusals.items():
+            with self.subTest(refusal=label):
+                self.assertEqual(refused["relationship"], "unknown")
+                self.assertTrue(refused["evidence_gaps"])
         self.assertTrue(finished["released"], finished)
         writers = [row for row in pre["pre_exit_descendants"] if row["pid"] == body["writer_pid"]]
         self.assertEqual(len(writers), 1)

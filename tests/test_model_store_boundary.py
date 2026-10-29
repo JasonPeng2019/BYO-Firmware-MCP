@@ -56,6 +56,27 @@ class ModelStoreBoundary(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "absolute"):
                 store_cleanup.snapshot()
 
+    def test_prebuilt_runtime_is_forwarded_without_sync_or_build(self):
+        with tempfile.TemporaryDirectory() as directory:
+            runtime = str(Path(directory).resolve() / "runtime")
+            with mock.patch.dict(os.environ, {"UV_PROJECT_ENVIRONMENT": runtime}):
+                overrides = codex_harness.codex_overrides()
+            selected = {
+                key: tomllib.loads("value=" + value)["value"]
+                for pair in overrides
+                for key, value in [pair.split("=", 1)]
+            }
+            self.assertEqual(
+                selected["mcp_servers.byo_monitor_itest.env.UV_PROJECT_ENVIRONMENT"], runtime
+            )
+            command = selected["mcp_servers.byo_monitor_itest.args"]
+            self.assertEqual(command[:3], ["run", "--no-sync", "--no-build"])
+            self.assertEqual(command[-1], "pyocd-debug-mcp")
+            self.assertFalse(Path(runtime).exists())
+        with mock.patch.dict(os.environ, {"UV_PROJECT_ENVIRONMENT": "relative-runtime"}):
+            with self.assertRaisesRegex(ValueError, "absolute"):
+                codex_harness.codex_overrides()
+
 
 if __name__ == "__main__":
     unittest.main()

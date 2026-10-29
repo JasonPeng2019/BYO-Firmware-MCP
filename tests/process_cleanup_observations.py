@@ -14,6 +14,8 @@ import json
 import math
 import os
 from pathlib import Path
+import re
+import sys
 import threading
 import time
 import traceback
@@ -101,12 +103,18 @@ def process_facts(pid, expected_birth=None):
     return result
 
 
+EXITED = {"missing", "gone_during_observation"}
+
+
 def descendant_facts(pid, birth, boundary, directory=None):
     """Snapshot an observed tree without polling, waiting, reaping or signaling.
 
     Retain the child's actual argv/image and its contemporaneous parent identity.
     A tree observation is ownership evidence, not a guessed functional role.
     Short-lived processes between snapshots are outside this observation's scope.
+    Each child gap names its exact (pid, birth) so only a later positive state of
+    that identity can resolve it. A gap caused by a positively observed exit of
+    the exact root is marked root_exit; it never covers any child's state.
     """
     rows, gaps = [], []
     result = {
@@ -119,7 +127,10 @@ def descendant_facts(pid, birth, boundary, directory=None):
     leader = process_facts(pid, birth)
     result["root_identity"] = leader
     if birth is None or leader.get("identity") != "same_birth":
-        gaps.append({"gap": "Observed root identity unavailable or changed", "identity": leader})
+        gap = {"gap": "Observed root identity unavailable or changed", "identity": leader}
+        if birth is not None and leader.get("identity") in EXITED:
+            gap["root_exit"] = True
+        gaps.append(gap)
         return result
     try:
         import psutil
@@ -127,10 +138,23 @@ def descendant_facts(pid, birth, boundary, directory=None):
         gaps.append({"error": exception_facts(exc)})
         return result
     try:
-        processes = psutil.Process(pid).children(recursive=True)
+        try:
+            processes = psutil.Process(pid).children(recursive=True)
+        except psutil.NoSuchProcess as exc:
+            # NoSuchProcess also covers a reused PID; only the exact root's
+            # own re-observed absence makes this an exit race.
+            after = process_facts(pid, birth)
+            result["root_after_capture"] = after
+            gap = {"gap": "Observed root unavailable for tree capture", "identity": after}
+            if after.get("identity") in EXITED:
+                gap["root_exit"] = True
+            gaps.append({**gap, "error": exception_facts(exc)})
+            return result
         for process in processes:
+            child = {"pid": process.pid}
             try:
                 child_birth = process.create_time()
+                child["creation_time"] = child_birth
                 identity = process_facts(process.pid, child_birth)
                 parent_pid = identity.get("ppid")
                 parent = (
@@ -159,11 +183,19 @@ def descendant_facts(pid, birth, boundary, directory=None):
                 rows.append(row)
                 if identity.get("identity") != "same_birth":
                     gaps.append(
-                        {"gap": "Child changed or unavailable during capture", "identity": identity}
+                        {
+                            "gap": "Child changed or unavailable during capture",
+                            "identity": identity,
+                            "child": child,
+                        }
                     )
                 if parent.get("identity") != "observed":
                     gaps.append(
-                        {"gap": "Parent identity unavailable during capture", "identity": parent}
+                        {
+                            "gap": "Parent identity unavailable during capture",
+                            "identity": parent,
+                            "child": child,
+                        }
                     )
                 for field in ("ppid", "cmdline", "exe", "status"):
                     if not identity.get(field) or isinstance(identity[field], dict):
@@ -171,13 +203,18 @@ def descendant_facts(pid, birth, boundary, directory=None):
                             {
                                 "gap": "Child " + field + " unavailable during capture",
                                 "identity": identity,
+                                "child": child,
                             }
                         )
             except (OSError, psutil.Error) as exc:
-                gaps.append({"pid": process.pid, "error": exception_facts(exc)})
+                gaps.append({"pid": process.pid, "error": exception_facts(exc), "child": child})
         after = process_facts(pid, birth)
         result["root_after_capture"] = after
-        if after.get("identity") not in {"same_birth", "missing"}:
+        if after.get("identity") in EXITED:
+            gaps.append(
+                {"gap": "Root exited during tree capture", "identity": after, "root_exit": True}
+            )
+        elif after.get("identity") != "same_birth":
             gaps.append({"gap": "Root changed during tree capture", "identity": after})
     except (OSError, psutil.Error) as exc:
         gaps.append({"error": exception_facts(exc)})
@@ -190,7 +227,8 @@ def terminal_identity(facts):
     birth = facts.get("expected_creation_time")
     if type(birth) not in (int, float) or not math.isfinite(birth) or birth <= 0:
         return "unknown"
-    if identity == "missing":
+    if identity in EXITED:
+        # Absent now, or the matching birth then absent before the facts ended.
         return "gone"
     if (
         identity == "same_birth"
@@ -205,12 +243,45 @@ def terminal_identity(facts):
     return "unknown"
 
 
-def execution_relationship(launcher, interpreter, command, argv, expected_argv, parent=None):
+FRAMEWORK_STUB = re.compile(r"(/.+/Python\.framework/Versions/(\d+\.\d+))/bin/python\2")
+
+
+def launch_facts():
+    """The executing interpreter's own record of the path it was launched through."""
+    return {"executable": sys.executable, "resolved": os.path.realpath(sys.executable)}
+
+
+def framework_exec(before, after, launch):
+    """Qualify only the macOS framework stub's same-process exec of its own app image.
+
+    The framework's bin/pythonX.Y stub execs Resources/Python.app/Contents/MacOS/Python
+    in place, rewriting argv[0] and handing the invoked path to the new image via
+    __PYVENV_LAUNCHER__. Require that exact image pair under one version root, plus
+    the executing interpreter's self-reported launch path resolving to the observed
+    stub. Same birth alone never joins two images.
+    """
+    stub = FRAMEWORK_STUB.fullmatch(before["exe"])
+    image = stub.group(1) + "/Resources/Python.app/Contents/MacOS/Python" if stub else None
+    return bool(
+        image
+        and after["exe"] == image
+        and after["cmdline"][0] == image
+        and isinstance(launch, dict)
+        and launch.get("executable") == before["cmdline"][0]
+        and launch.get("resolved") == before["exe"]
+    )
+
+
+def execution_relationship(
+    launcher, interpreter, command, argv, expected_argv, parent=None, launch=None
+):
     """Join recorded execution facts, never a PID-only or descendant ownership claim.
 
     A Windows venv launcher can delegate the unchanged command to base Python.
     Require the specific interpreter's self-report and stable OS identities; a
     child also needs a contemporaneous observation of that exact parent birth.
+    A start snapshot can precede a macOS framework stub's in-place exec; only
+    framework_exec with the interpreter's launch self-report joins that pair.
     This pure join neither queries processes nor grants any cleanup authority.
     """
     gaps = []
@@ -223,6 +294,7 @@ def execution_relationship(launcher, interpreter, command, argv, expected_argv, 
         "command": command,
         "argv": argv,
         "expected_argv": expected_argv,
+        "launch": launch,
     }
 
     def stable(label, facts):
@@ -276,12 +348,13 @@ def execution_relationship(launcher, interpreter, command, argv, expected_argv, 
     if gaps:
         return result
     if launcher["pid"] == interpreter["pid"]:
-        if any(
-            launcher[key] != interpreter[key] for key in ("creation_time", "ppid", "exe", "cmdline")
-        ):
-            gaps.append("Direct execution does not have the same birth and command identity")
-        else:
+        same_birth = all(launcher[key] == interpreter[key] for key in ("creation_time", "ppid"))
+        if same_birth and all(launcher[key] == interpreter[key] for key in ("exe", "cmdline")):
             result["relationship"] = "direct"
+        elif same_birth and framework_exec(launcher, interpreter, launch):
+            result["relationship"] = "framework-exec"
+        else:
+            gaps.append("Direct execution does not have the same birth and command identity")
     else:
         stable("parent at execution", parent)
         if not gaps and (

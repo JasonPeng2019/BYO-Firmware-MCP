@@ -502,7 +502,9 @@ class NativeManagedBinding(NativeCase):
 
     def test_built_arm_corpus_vendor_uint32_definition_uses_mapped_resources(self) -> None:
         originals = self.inputs["frozen_arm_inputs"]
-        source_root = next(Path(p).parent for p in originals if p.endswith("README.txt"))
+        readme = next((Path(p) for p in originals if p.endswith("README.txt")), None)
+        self.assertIsNotNone(readme, "UNMET: no Actions-built ARM corpus was published")
+        source_root = readme.parent
         arm_root = self.project.root / "arm"
         copied = {}
         for source, expected in originals.items():
@@ -512,6 +514,8 @@ class NativeManagedBinding(NativeCase):
             target.parent.mkdir(parents=True, exist_ok=True)
             target.write_bytes(path.read_bytes())
             copied[target.relative_to(arm_root).as_posix()] = digest(target)
+        # This case owns its copied corpus; preservation covers later writes only.
+        self.project_before = tree_hashes(self.project.root)
         # Preserve the genuinely built corpus bytes. A separate analysis DB
         # relocates its project includes and selects the same ARM ABI using
         # clang's freestanding builtin headers instead of GCC's supplied ones.

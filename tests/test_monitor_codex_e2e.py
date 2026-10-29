@@ -76,14 +76,14 @@ class AgentSessionsAreRecorded(CodexAgentTestCase):
             self.assertTrue(record.get("run_id"))
             self.assertEqual(record.get("workspace"), self.workspace)
         counted = self.counted_records()
-        if counted:
-            # Every counted record reports a running total, never a window delta.
-            for record in counted:
-                self.assertTrue(record["detail"].get("cumulative"))
-            self.assertGreater(self.call_count_recorded(), 0)
-            self.assertTrue(
-                self.outcomes_recorded() <= {"success", "policy_refusal", "unexpected_error"}
-            )
+        self.assertTrue(counted, "the session produced no cumulative-count witness")
+        # Every counted record reports a running total, never a window delta.
+        for record in counted:
+            self.assertTrue(record["detail"].get("cumulative"))
+        self.assertGreater(self.call_count_recorded(), 0)
+        self.assertTrue(
+            self.outcomes_recorded() <= {"success", "policy_refusal", "unexpected_error"}
+        )
 
 
 class WorkspaceBindingThroughARealHandshake(CodexAgentTestCase):
@@ -278,6 +278,10 @@ class AgentAuthoredSubmissions(CodexAgentTestCase):
             "could not be made."
         )
         self.assertEqual(result.returncode, 0, result.combined[-2000:])
+        # A client/schema refusal can prevent the invalid call from reaching
+        # the server. Require its actual attempted tool boundary, rather than
+        # accepting the model's word ERROR with no attempt at all.
+        self.assertTrue(result.called("report_agent_issue"), result.tool_calls)
         recorded = [r for r in self.reports() if r.get("signal_type")]
         self.assertEqual(recorded, [], "an invalid model-authored report was recorded anyway")
 
@@ -303,6 +307,8 @@ class MonitoringToolsAreOutsideTheSafetySurface(CodexAgentTestCase):
             "whether it succeeded or was refused, in one word."
         )
         self.assertEqual(result.returncode, 0, result.combined[-2000:])
+        self.assertTrue(result.called("action_batch"), result.tool_calls)
+        self.assertIn("policy_refusal", self.outcomes_recorded())
         # Whatever the agent reports, the batch attempt must not have been recorded
         # as a server defect: refusing a monitor tool as a batch child is correct
         # behaviour, so it is a refusal and never an unexpected error.

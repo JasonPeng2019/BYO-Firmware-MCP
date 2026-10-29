@@ -552,6 +552,21 @@ def _load(root: Path, deadline: float, cancellation: Cancellation | None) -> _Me
     )
 
 
+def _names(path: Path, deadline: float, cancellation: Cancellation | None) -> tuple[str, ...]:
+    names = []
+    with os.scandir(path) as entries:
+        for entry in entries:
+            remaining(deadline, cancellation)
+            _relative(entry.name)
+            names.append(entry.name)
+    _require(
+        len({n.casefold() for n in names}) == len(names),
+        str(path),
+        "filesystem case collision",
+    )
+    return tuple(sorted(names))
+
+
 def _scan(
     root: Path, relative: str, deadline: float, cancellation: Cancellation | None
 ) -> tuple[dict[Path, tuple[Any, ...]], dict[Path, tuple[str, ...]]]:
@@ -562,19 +577,10 @@ def _scan(
         identity = _identity(path, deadline, cancellation)
         identities[path] = identity
         if stat.S_ISDIR(identity[2]):
-            names = []
-            with os.scandir(path) as entries:
-                for entry in entries:
-                    remaining(deadline, cancellation)
-                    _relative(entry.name)
-                    names.append(entry.name)
-                    visit(path / entry.name)
-            _require(
-                len({n.casefold() for n in names}) == len(names),
-                str(path),
-                "filesystem case collision",
-            )
-            directories[path] = tuple(sorted(names))
+            names = _names(path, deadline, cancellation)
+            for name in names:
+                visit(path / name)
+            directories[path] = names
         else:
             _require(stat.S_ISREG(identity[2]), str(path), "nonregular payload")
 
@@ -844,6 +850,12 @@ def _validate(receipt: PayloadReceipt, deadline: float, cancellation: Cancellati
         remaining(deadline, cancellation)
         try:
             observed = _identity(path, deadline, cancellation)
+            changed = observed != expected
+            if not changed and path in receipt.directories:
+                # Directory metadata alone cannot prove its listing. A local
+                # Windows control retains that identity after adding an entry;
+                # compare the actual names independently of the stat cache.
+                changed = _names(path, deadline, cancellation) != receipt.directories[path]
         except TimeoutError:
             raise
         except (OSError, RuntimeIntegrityError) as exc:
@@ -854,7 +866,7 @@ def _validate(receipt: PayloadReceipt, deadline: float, cancellation: Cancellati
                 observed="missing/unusable",
                 changed=True,
             ) from exc
-        if observed != expected:
+        if changed:
             entries = None
             if path in receipt.directories and stat.S_ISDIR(observed[2]):
                 # Re-enumerate a changed directory; never silently revalidate.

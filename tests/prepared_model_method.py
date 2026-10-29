@@ -191,6 +191,8 @@ def main():
         "tests/test_monitor_codex_e2e.py",
         "tests/codex_harness.py",
         "tests/store_cleanup.py",
+        "uv.lock",
+        "pyproject.toml",
     }
     required.update(p.relative_to(source).as_posix() for p in (source / "src").rglob("*.py"))
     if not required <= set(qualification["source_hashes"]):
@@ -256,7 +258,14 @@ def main():
     if settings.get("model_reasoning_effort") != "medium":
         raise RuntimeError("preserve the existing model fixture's effort setting")
     servers = settings.get("mcp_servers", {})
-    expected_args = ["run", "--project", str(source).replace("\\", "/"), "pyocd-debug-mcp"]
+    expected_args = [
+        "run",
+        "--no-sync",
+        "--no-build",
+        "--project",
+        str(source).replace("\\", "/"),
+        "pyocd-debug-mcp",
+    ]
     if set(servers) != {"byo_monitor_itest"}:
         raise RuntimeError("model config must expose only the frozen test server")
     selected = servers["byo_monitor_itest"]
@@ -269,6 +278,50 @@ def main():
         codex_harness.CHECKIN_CADENCE_ENV: str(codex_harness.E2E_CHECKIN_CADENCE),
         "BYO_MCP_MONITOR_ROOT": str(monitor_root),
     }
+    runtime = Path(qualification["prebuilt_environment"]).resolve(strict=True)
+    if not runtime.is_relative_to(private) or runtime == private:
+        raise RuntimeError("prebuilt environment must be an owned private child")
+    if os.environ.get("UV_PROJECT_ENVIRONMENT") != str(runtime):
+        raise RuntimeError("uv must select the qualified prebuilt environment")
+    expected_cadences["UV_PROJECT_ENVIRONMENT"] = str(runtime)
+    console = runtime / (
+        "Scripts/pyocd-debug-mcp.exe" if os.name == "nt" else "bin/pyocd-debug-mcp"
+    )
+    if hashlib.sha256(console.read_bytes()).hexdigest() != qualification["console_sha256"]:
+        raise RuntimeError("exact Actions-wheel console is missing or changed")
+    package_receipt = Path(qualification["prebuilt_package_receipt"]).resolve(strict=True)
+    if (
+        hashlib.sha256(package_receipt.read_bytes()).hexdigest()
+        != qualification["prebuilt_package_receipt_sha256"]
+    ):
+        raise RuntimeError("Actions wheel qualification changed")
+    package = json.loads(package_receipt.read_bytes())
+    if (
+        package.get("outcome") != "PASS"
+        or package.get("schema") != "actions-prebuilt-source-console/v1"
+    ):
+        raise RuntimeError("exact successful Actions source-wheel proof is required")
+    if package["uv_lock_sha256"] != hashlib.sha256((source / "uv.lock").read_bytes()).hexdigest():
+        raise RuntimeError("prebuilt wheel uses a different dependency lock")
+    package_roots = (
+        list(runtime.glob("Lib/site-packages/pyocd_debug_mcp"))
+        if os.name == "nt"
+        else list(runtime.glob("lib/python*/site-packages/pyocd_debug_mcp"))
+    )
+    if len(package_roots) != 1:
+        raise RuntimeError("prebuilt environment does not contain exactly one source package")
+    installed = {
+        "pyocd_debug_mcp/" + p.relative_to(package_roots[0]).as_posix(): hashlib.sha256(
+            p.read_bytes()
+        ).hexdigest()
+        for p in package_roots[0].rglob("*.py")
+    }
+    candidate = {
+        p.relative_to(source / "src").as_posix(): hashlib.sha256(p.read_bytes()).hexdigest()
+        for p in (source / "src/pyocd_debug_mcp").rglob("*.py")
+    }
+    if installed != candidate or installed != package["python_payload"]:
+        raise RuntimeError("installed source wheel differs from the frozen exact candidate")
     if selected.get("env") != expected_cadences:
         raise RuntimeError("preserve exact cadences and the qualified exclusive monitor root")
     if codex_harness._store_root() != monitor_root:

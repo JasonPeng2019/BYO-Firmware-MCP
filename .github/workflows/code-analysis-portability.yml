@@ -169,8 +169,13 @@ jobs:
           uv run ruff format --diff tests/test_final_policy_fingerprint_migration.py tests/policy_one_producer.py tests/prepared_model_method.py tests/final_acceptance_suite.py > "$BYO_FR15_CASE_EVIDENCE/preparation-format.diff" || exit $?
 
       - name: Build server wheel and source distribution
+        id: source-package
         if: ${{ !cancelled() && steps.dependencies.outcome == 'success' }}
         run: uv build --build-constraint .github/ci/build-constraints.txt --require-hashes --out-dir "$RUNNER_TEMP/server-package"
+
+      - name: Qualify exact prebuilt source wheel and no-sync console
+        if: ${{ !cancelled() && steps.source-package.outcome == 'success' }}
+        run: uv run --no-sync python .github/ci/package_gate.py --packages "$RUNNER_TEMP/server-package"
 
       - name: Bind complete committed source after independent gates
         if: always()
@@ -182,6 +187,18 @@ jobs:
         with:
           name: server-package-${{ matrix.target }}-${{ github.sha }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/server-package/
+          if-no-files-found: error
+          retention-days: 90
+
+      - name: Retain prebuilt console qualification streams
+        if: always()
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f
+        with:
+          name: server-package-proof-${{ matrix.target }}-${{ github.sha }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/server-package-proof/*.stdout
+            ${{ runner.temp }}/server-package-proof/*.stderr
+            ${{ runner.temp }}/server-package-proof/*.txt
           if-no-files-found: error
           retention-days: 90
 
