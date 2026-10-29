@@ -50,7 +50,7 @@ else:
 
 ROOT = Path(__file__).resolve().parents[1]
 BLOCKED = {
-    "test_monitor_codex_e2e": "Actual isolated native-client/model/auth provisioning remains unresolved for the 17 real-request methods. The separate original deterministic pin body runs without auth. This source job must not launch agents or copy credentials."
+    "test_monitor_codex_e2e": "The 17 real-request methods run locally only, through tests/prepared_model_method.py with a dedicated codex home signed in by codex's supported login; they are never executed in CI. The separate original deterministic pin body runs without auth. This source job must not launch agents or copy credentials."
 }
 U5_FILENAME = "Keil.STM32U5xx_DFP.3.2.0.pack"
 U5_SHA256 = "e320687fe534f2fe6902e9bcdee981315abea26c4ca547142af9b9439e958be6"

@@ -1,9 +1,13 @@
-"""Run one unchanged real-model method with ROOT-provisioned disposable auth.
+"""Run one unchanged real-model method locally, or the deterministic pin oracle.
 
-UNEXECUTED preparation fixture. ROOT must freeze this file and qualify a real
-native account before use. It never reads/copies authentication and replaces
-only the test fixture's auth-copy method, not any product decision or assertion.
-Run all eighteen selectors in CASE-MATRIX.json exactly once in the fixed pass.
+The pin oracle executes the original deterministic body with zero model requests
+and may run anywhere, including CI. Each of the 17 genuine request methods runs
+LOCALLY only -- never in GitHub Actions or on a self-hosted runner -- through a
+dedicated codex home the local operator signed in with codex's own supported
+login. Nothing here reads or copies authentication; only the test fixture's home
+selection is replaced, not any product decision or assertion. The module's own
+fixtures snapshot and restore the effective monitoring store byte for byte. Run
+all eighteen selectors in CASE-MATRIX.json exactly once in the fixed pass.
 """
 
 from __future__ import annotations
@@ -128,8 +132,6 @@ def pin_oracle(source, evidence):
 
 
 def main():
-    if os.environ.get("GITHUB_ACTIONS") != "true":
-        raise SystemExit("Model methods and pin oracle execute only in GitHub Actions")
     parser = argparse.ArgumentParser()
     parser.add_argument("--qualification", type=Path)
     parser.add_argument("--firmware-source", type=Path, required=True)
@@ -144,16 +146,17 @@ def main():
         return pin_oracle(args.firmware_source, args.evidence)
     if not args.qualification or not args.method or not args.execute:
         parser.error("real model method requires qualification, method and explicit execute")
+    if os.environ.get("GITHUB_ACTIONS") or os.environ.get("RUNNER_ENVIRONMENT"):
+        raise SystemExit("Real model methods run locally only, never in GitHub Actions")
     # Metadata-only checks precede every dependency/product/test import.
     qualification = json.loads(args.qualification.read_text(encoding="utf-8"))
-    if qualification.get("schema") != "v-final-model-boundary/v1":
-        raise RuntimeError("ROOT model-boundary qualification is missing")
+    if qualification.get("schema") != "v-final-model-boundary/v2":
+        raise RuntimeError("local model-boundary qualification is missing")
     if qualification.get("acceptance_execution_authorized") is not True:
         raise RuntimeError("ROOT exact freeze/execution authority is required")
     for key in (
         "freeze_commit",
         "execution_card_sha256",
-        "os_account_proof_sha256",
         "native_knownfolder_proof_sha256",
     ):
         if not qualification.get(key):
@@ -161,15 +164,13 @@ def main():
     if qualification.get("model") != "gpt-5.6-luna":
         raise RuntimeError("preserve the test model pin; no silent migration")
     if qualification.get("all_homes_disposable_and_exclusive") is not True:
-        raise RuntimeError("per-method native credential homes must be disposable and exclusive")
+        raise RuntimeError("per-method dedicated codex homes must be disposable and exclusive")
     if qualification.get("config_is_nonsecret_mcp_fixture") is not True:
         raise RuntimeError("do not open a config that may contain authentication material")
     private = Path(qualification["private_root"]).resolve(strict=True)
     profile = native_profile()
     if profile != Path(qualification["native_profile"]).resolve(strict=True):
-        raise RuntimeError("actual OS token/passwd profile does not match ROOT qualification")
-    if not profile.is_relative_to(private):
-        raise RuntimeError("native profile is outside the qualified private boundary")
+        raise RuntimeError("actual OS token/passwd profile does not match the qualification")
     if not Path(tempfile.gettempdir()).resolve().is_relative_to(private):
         raise RuntimeError("temporary projects would escape the private boundary")
     if os.environ.get("BYO_MCP_MONITOR_ROOT"):
@@ -204,8 +205,12 @@ def main():
             "run the deterministic original body with --pin-oracle; no auth required"
         )
     home = Path(qualification["method_homes"][args.method]).resolve(strict=True)
-    if not home.is_relative_to(private) or home in (private, profile):
-        raise RuntimeError("model credential home is not an exact disposable child")
+    if (
+        not home.is_relative_to(private)
+        or home in (private, profile)
+        or home.is_relative_to(profile / ".codex")
+    ):
+        raise RuntimeError("model codex home is not an exact dedicated disposable child")
     config = home / "config.toml"
     if (
         hashlib.sha256(config.read_bytes()).hexdigest()
@@ -232,6 +237,7 @@ def main():
         raise RuntimeError("do not overwrite/rerun a reserved method result")
     args.evidence.mkdir(parents=True)
     os.environ["CODEX_HOME"] = str(home)
+    os.environ["BYO_CODEX_TEST_HOME"] = str(home)
     sys.path[:0] = [str(source), str(source / "src"), str(source / "tests")]
     # Dependencies are real; no shim or product monkeypatch is installed.
     from platformdirs import user_data_dir
@@ -239,8 +245,8 @@ def main():
     app_data = Path(user_data_dir("BYO", appauthor=False, roaming=False)).resolve()
     if app_data != Path(qualification["native_app_data"]).resolve():
         raise RuntimeError("actual native app-data selector differs from KnownFolder qualification")
-    if not app_data.is_relative_to(private):
-        raise RuntimeError("model module snapshot/restore would touch unowned app data")
+    # The effective store is the real one; the module's fixtures restore its exact
+    # prior bytes, and a store they cannot restore fails the method.
     if home.is_relative_to(app_data) or app_data.is_relative_to(home):
         raise RuntimeError("credential home and monitoring store must be disjoint")
     from tests import codex_harness
@@ -256,7 +262,7 @@ def main():
     calls = []
 
     def prepared_home(self):
-        return home  # Already authenticated by ROOT; no auth.json inspection/copy.
+        return home  # Signed in by codex's supported login; credentials never opened.
 
     def observed_pin(self, result):
         index = len(calls)
@@ -286,6 +292,7 @@ def main():
             "errors": [(t.id(), reason) for t, reason in result.errors],
             "skipped": [(t.id(), reason) for t, reason in result.skipped],
             "model_result_boundaries": calls,
+            "execution": "local",
             "native_profile": str(profile),
             "native_app_data": str(app_data),
             "outcome": "ERROR"

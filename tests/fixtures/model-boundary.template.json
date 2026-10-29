@@ -1,9 +1,8 @@
 {
-  "schema": "v-final-model-boundary/v1",
+  "schema": "v-final-model-boundary/v2",
   "acceptance_execution_authorized": false,
   "freeze_commit": null,
   "execution_card_sha256": null,
-  "os_account_proof_sha256": null,
   "native_knownfolder_proof_sha256": null,
   "private_root": null,
   "native_profile": null,
@@ -32,5 +31,5 @@
     "tests.test_monitor_codex_e2e.StdoutStaysClean.test_a_full_session_keeps_the_protocol_intact": null
   },
   "config_sha256": {},
-  "qualification": "Template only for17 genuine request methods. ROOT must bind all actual deciding source hashes, native account/KnownFolder proofs and nonsecret per-method configs before real requests. The separate --pin-oracle executes the18th deterministic original body without this qualification or auth. Never put credential material in evidence."
+  "qualification": "Template only for17 genuine request methods, executed LOCALLY only and never in GitHub Actions or on a self-hosted runner. Bind all actual deciding source hashes, the native KnownFolder proof, the actual OS profile/app-data paths and nonsecret per-method configs before real requests. Each method home is a dedicated disposable child of private_root, signed in once through codex's own supported login (CODEX_HOME=<home> codex login); no credential is read, copied or moved and no new OS account is required. The effective monitoring store is snapshotted and restored byte for byte by the test module. The separate --pin-oracle executes the18th deterministic original body without this qualification or auth. Never put credential material in evidence."
 }

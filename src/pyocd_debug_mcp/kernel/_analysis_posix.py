@@ -705,9 +705,7 @@ class AnalysisPopen(subprocess.Popen[Any]):
             self._record_group_signal(selected_signal, "refused-anchor", None)
         for (pid, token), state in self._states(deadline).items():
             if time.monotonic() >= deadline:
-                self._note_incomplete_observation(
-                    "descendant signal phase exceeded bounded phase"
-                )
+                self._note_incomplete_observation("descendant signal phase exceeded bounded phase")
                 return
             if state != "live" or pid == self.pid:
                 continue

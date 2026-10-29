@@ -1,8 +1,11 @@
 # Final preparation execution paths
 
-These commands execute only in GitHub Actions with the real locked dependencies.
-They prepare source for the SAME independent V/R final roles. Build-owner runs
-do not close the original complete source/native/installed/model/U1/board scope.
+Deterministic quality, build, source and artifact checks execute in GitHub
+Actions with the real locked dependencies. Real model requests, native-client/U1
+integration and physical board acceptance execute LOCALLY only, never in GitHub
+Actions or on a self-hosted runner. These paths prepare source for the SAME
+independent V/R final roles. Build-owner runs do not close the original
+complete source/native/installed/model/U1/board scope.
 
 The existing native code-analysis workflow now executes
 `tests.test_final_policy_fingerprint_migration` on all four targets. Its controlled
@@ -23,21 +26,30 @@ uv run python tests/prepared_model_method.py --firmware-source . --pin-oracle --
 ```
 
 This is one original method and two synthetic header checks, zero model requests.
-The other 17 original methods require real pinned `gpt-5.6-luna` requests and
-ROOT-qualified native disposable homes, credentials, quota and client trust.
+It needs no authentication and may also run locally.
+
+The other 17 original methods make real pinned `gpt-5.6-luna` requests and run
+LOCALLY only; the driver refuses GitHub Actions and self-hosted runners. Each
+method uses a dedicated disposable codex home under the qualified private root,
+signed in once through codex's own supported login
+(`CODEX_HOME=<method home> codex login`). Nothing reads, copies or moves
+credentials, and no new OS account, CI model secret or runner is required.
 `fixtures/model-boundary.template.json` is deliberately nonlaunchable. Once its
-actual source hashes/native account/KnownFolder/config/home proof is supplied,
-each original method can run once using:
+actual source hashes, KnownFolder proof, OS profile/app-data paths and per-method
+nonsecret config/home bindings are supplied, each original method runs once:
 
 ```sh
 uv run python tests/prepared_model_method.py --firmware-source . --qualification QUALIFIED.json --method ORIGINAL_SELECTOR --evidence CASE_DIRECTORY --execute
 ```
 
-No driver copies or reads credentials. The product pin, effort and cadence are
-unchanged. The complete source runner records the 17 real requests as blocked
-before import and runs the deterministic body in its own observed child.
-Historical all-model blocks remain raw; the new command has no authentication
-or quota prerequisite.
+The test module snapshots the effective monitoring store, including every prior
+file's bytes, and restores it at teardown; a store it cannot restore fails the
+method. The historical `uv run python -m unittest tests.test_monitor_codex_e2e -v`
+entrypoint uses the same route through `BYO_CODEX_TEST_HOME`, and skips (never
+passes) without a dedicated signed-in home. The product pin, effort and cadence
+are unchanged. The complete source runner in Actions records the 17 real
+requests as blocked before import and runs the deterministic body in its own
+observed child. Historical all-model blocks remain raw.
 
 The Installer's existing native build workflow executes
 `release/scripts/final_hosted_forwarding.py` against each newly built native
@@ -60,4 +72,8 @@ selector denial includes exact path/mode/callers and stays fatal until explained
 
 No hosted check supplies native client U1 trust enforcement, real model calls,
 hardware authority, compiled-positive board/ELF/setup/flash-plan acceptance or
-either safe physical board. Those original prerequisites remain explicit.
+either safe physical board. Those original prerequisites remain explicit and
+are LOCAL acceptance: use the existing supported native client sign-in and the
+client's own project/hook review, and rediscover both boards' actual probe/UART
+identities before any safe read-only check. No erase, program, unlock,
+protection, reset, halt or resume operation is part of this acceptance.
