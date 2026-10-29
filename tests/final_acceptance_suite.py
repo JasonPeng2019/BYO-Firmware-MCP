@@ -979,12 +979,21 @@ def parent(args):
             assert oracle in declared
             oracle_directory = directory / "pin-oracle-command"
             oracle_directory.mkdir()
-            oracle_command = [sys.executable, "-B", str(ROOT / "tests/prepared_model_method.py"),
-                              "--firmware-source", str(ROOT), "--pin-oracle",
-                              "--evidence", str(oracle_directory / "body")]
+            oracle_command = [
+                sys.executable,
+                "-B",
+                str(ROOT / "tests/prepared_model_method.py"),
+                "--firmware-source",
+                str(ROOT),
+                "--pin-oracle",
+                "--evidence",
+                str(oracle_directory / "body"),
+            ]
             oracle_record = {"method": oracle, "outcome": "UNRUN", "real_model_requests": 0}
             try:
-                code, outcome = run_module(oracle_command, environment, oracle_directory, args.module_timeout)
+                code, outcome = run_module(
+                    oracle_command, environment, oracle_directory, args.module_timeout
+                )
                 result_path = oracle_directory / "body/result.json"
                 if result_path.is_file():
                     oracle_record.update(json.loads(result_path.read_text(encoding="utf-8")))
@@ -997,8 +1006,10 @@ def parent(args):
                 "module": module,
                 "outcome": "BLOCKED",
                 "reason": BLOCKED[module],
-                "methods": {name: oracle_record["outcome"] if name == oracle else "BLOCKED"
-                            for name in declared},
+                "methods": {
+                    name: oracle_record["outcome"] if name == oracle else "BLOCKED"
+                    for name in declared
+                },
                 "deterministic_pin_oracle": oracle_record,
                 "actual_model_requests": 0,
                 "real_request_methods_blocked": len(declared) - 1,

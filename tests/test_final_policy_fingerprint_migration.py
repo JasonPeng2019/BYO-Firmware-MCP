@@ -17,6 +17,7 @@ import sys
 import unittest
 
 from pyocd_debug_mcp.capabilities.policy import CapabilityPolicyRepository, Tier
+from pyocd_debug_mcp.safety.enforce import SafetyPolicyError
 from pyocd_debug_mcp.safety.map_build import (
     GenericSafetyMapDocument,
     SafetyMapError,
@@ -107,6 +108,8 @@ class FinalPolicyFingerprintMigration(unittest.TestCase):
         fixture.backend.calls.clear()
         response = None
         try:
+            with self.assertRaisesRegex(SafetyPolicyError, "unsupported generator"):
+                server._active_full_document(fixture.board_id)
             response = json.loads(
                 public_text(server, "board_safety_refresh", {"board_id": fixture.board_id})
             )
@@ -135,11 +138,20 @@ class FinalPolicyFingerprintMigration(unittest.TestCase):
         profile = fixture.root / "old-producer-profile.json"
         profile.write_text(json.dumps(state.profile_snapshot), encoding="utf-8")
         output = fixture.root / "old-producer"
-        command = [sys.executable, "-B", str(Path(__file__).with_name("policy_one_producer.py")),
-                   "--project", str(fixture.root), "--profile", str(profile),
-                   "--output", str(output)]
-        result = subprocess.run(command, capture_output=True, text=True, encoding="utf-8",
-                                timeout=180, check=False)
+        command = [
+            sys.executable,
+            "-B",
+            str(Path(__file__).with_name("policy_one_producer.py")),
+            "--project",
+            str(fixture.root),
+            "--profile",
+            str(profile),
+            "--output",
+            str(output),
+        ]
+        result = subprocess.run(
+            command, capture_output=True, text=True, encoding="utf-8", timeout=180, check=False
+        )
         produced = None
         response = None
         try:
@@ -148,30 +160,45 @@ class FinalPolicyFingerprintMigration(unittest.TestCase):
             self.assertEqual(produced["native_source"], "a7982ab4645020f0e85ff8a682a30e24ff7cc3be")
             self.assertTrue(produced["imports"])
             previous = GenericSafetyMapDocument.from_document(produced["document"])
-            self.assertEqual(previous.source_digests.map_generator_schema,
-                             generator_digest(POLICY_ONE_SCHEMA))
+            self.assertEqual(
+                previous.source_digests.map_generator_schema, generator_digest(POLICY_ONE_SCHEMA)
+            )
             self.assertEqual(previous.authority_source, fixture.document.authority_source)
             self.assertNotEqual(previous.to_document(), self.previous_document().to_document())
             server._capability_policies.commit(
-                fixture.board_id, Tier.SETUP_FULL, profile_snapshot=state.profile_snapshot,
-                map_snapshot=previous.to_document(), evidence=state.evidence, expected_state=state,
+                fixture.board_id,
+                Tier.SETUP_FULL,
+                profile_snapshot=state.profile_snapshot,
+                map_snapshot=previous.to_document(),
+                evidence=state.evidence,
+                expected_state=state,
             )
             server._safety_repository.commit(fixture.board_id, previous)
             fixture.backend.calls.clear()
             with self.assertRaisesRegex(SafetyMapError, "unsupported generator"):
                 server._require_map_authority(previous)
-            response = json.loads(public_text(server, "board_safety_refresh",
-                                              {"board_id": fixture.board_id}))
+            with self.assertRaisesRegex(SafetyPolicyError, "unsupported generator"):
+                server._active_full_document(fixture.board_id)
+            response = json.loads(
+                public_text(server, "board_safety_refresh", {"board_id": fixture.board_id})
+            )
             self.assertEqual(response["status"], "safety_refresh_completed", response)
             current = server._active_full_document(fixture.board_id)
             server._require_map_authority(current)
             self.assertEqual(current.to_document(), fixture.document.to_document())
             self.assertEqual(fixture.backend.calls, [])
         finally:
-            observe_nrf_control(self, fixture, "genuine-original-producer-migration",
-                                producer_command=command, producer_exit=result.returncode,
-                                producer_stdout=result.stdout, producer_stderr=result.stderr,
-                                produced=produced, public_response=response)
+            observe_nrf_control(
+                self,
+                fixture,
+                "genuine-original-producer-migration",
+                producer_command=command,
+                producer_exit=result.returncode,
+                producer_stdout=result.stdout,
+                producer_stderr=result.stderr,
+                produced=produced,
+                public_response=response,
+            )
 
 
 if __name__ == "__main__":

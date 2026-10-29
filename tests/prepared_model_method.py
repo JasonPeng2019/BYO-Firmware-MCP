@@ -5,6 +5,7 @@ native account before use. It never reads/copies authentication and replaces
 only the test fixture's auth-copy method, not any product decision or assertion.
 Run all eighteen selectors in CASE-MATRIX.json exactly once in the fixed pass.
 """
+
 from __future__ import annotations
 
 import argparse
@@ -37,9 +38,17 @@ def native_profile():
     advapi = ctypes.WinDLL("advapi32", use_last_error=True)
     userenv = ctypes.WinDLL("userenv", use_last_error=True)
     kernel.GetCurrentProcess.restype = wintypes.HANDLE
-    advapi.OpenProcessToken.argtypes = [wintypes.HANDLE, wintypes.DWORD, ctypes.POINTER(wintypes.HANDLE)]
+    advapi.OpenProcessToken.argtypes = [
+        wintypes.HANDLE,
+        wintypes.DWORD,
+        ctypes.POINTER(wintypes.HANDLE),
+    ]
     advapi.OpenProcessToken.restype = wintypes.BOOL
-    userenv.GetUserProfileDirectoryW.argtypes = [wintypes.HANDLE, wintypes.LPWSTR, ctypes.POINTER(wintypes.DWORD)]
+    userenv.GetUserProfileDirectoryW.argtypes = [
+        wintypes.HANDLE,
+        wintypes.LPWSTR,
+        ctypes.POINTER(wintypes.DWORD),
+    ]
     userenv.GetUserProfileDirectoryW.restype = wintypes.BOOL
     kernel.CloseHandle.argtypes = [wintypes.HANDLE]
     if not advapi.OpenProcessToken(kernel.GetCurrentProcess(), 8, ctypes.byref(token)):
@@ -78,26 +87,40 @@ def pin_oracle(source, evidence):
         calls.append({"stdout": result.stdout, "stderr": result.stderr})
         return deciding(self, result)
 
-    oracle = type("DeterministicOriginalPinBody", (unittest.TestCase,), {
-        "__module__": __name__, method: original,
-        "_assert_model_was_honoured": observed,
-    })
+    oracle = type(
+        "DeterministicOriginalPinBody",
+        (unittest.TestCase,),
+        {
+            "__module__": __name__,
+            method: original,
+            "_assert_model_was_honoured": observed,
+        },
+    )
     with (evidence / "unittest.stderr.txt").open("w", encoding="utf-8") as stream:
         result = unittest.TextTestRunner(stream=stream, verbosity=2).run(oracle(method))
     record = {
         "schema": "original-model-pin-oracle/v1",
         "method": "tests.test_monitor_codex_e2e.ModelPinningIsEnforced." + method,
-        "loaded": 1, "testsRun": result.testsRun, "real_model_requests": 0,
-        "original_body": original.__qualname__, "original_assertion": deciding.__qualname__,
-        "source_hashes": {name: hashlib.sha256((source / name).read_bytes()).hexdigest()
-                          for name in ("tests/test_monitor_codex_e2e.py", "tests/codex_harness.py")},
+        "loaded": 1,
+        "testsRun": result.testsRun,
+        "real_model_requests": 0,
+        "original_body": original.__qualname__,
+        "original_assertion": deciding.__qualname__,
+        "source_hashes": {
+            name: hashlib.sha256((source / name).read_bytes()).hexdigest()
+            for name in ("tests/test_monitor_codex_e2e.py", "tests/codex_harness.py")
+        },
         "fixture_scope": "Original deterministic body/assertion; real-agent class/module setup unused",
         "synthetic_header_checks": calls,
         "failures": [(test.id(), reason) for test, reason in result.failures],
         "errors": [(test.id(), reason) for test, reason in result.errors],
         "skipped": [(test.id(), reason) for test, reason in result.skipped],
-        "outcome": "PASS" if result.wasSuccessful() and result.testsRun == 1
-                   and not result.skipped and len(calls) == 2 else "FAIL",
+        "outcome": "PASS"
+        if result.wasSuccessful()
+        and result.testsRun == 1
+        and not result.skipped
+        and len(calls) == 2
+        else "FAIL",
     }
     dump(evidence / "result.json", record)
     print(json.dumps(record), flush=True)
@@ -127,7 +150,12 @@ def main():
         raise RuntimeError("ROOT model-boundary qualification is missing")
     if qualification.get("acceptance_execution_authorized") is not True:
         raise RuntimeError("ROOT exact freeze/execution authority is required")
-    for key in ("freeze_commit", "execution_card_sha256", "os_account_proof_sha256", "native_knownfolder_proof_sha256"):
+    for key in (
+        "freeze_commit",
+        "execution_card_sha256",
+        "os_account_proof_sha256",
+        "native_knownfolder_proof_sha256",
+    ):
         if not qualification.get(key):
             raise RuntimeError("missing ROOT boundary evidence: " + key)
     if qualification.get("model") != "gpt-5.6-luna":
@@ -145,29 +173,42 @@ def main():
     if not Path(tempfile.gettempdir()).resolve().is_relative_to(private):
         raise RuntimeError("temporary projects would escape the private boundary")
     if os.environ.get("BYO_MCP_MONITOR_ROOT"):
-        raise RuntimeError("existing model assertions use actual app-data storage; no projected monitor override")
+        raise RuntimeError(
+            "existing model assertions use actual app-data storage; no projected monitor override"
+        )
     source = args.firmware_source.resolve(strict=True)
     target = source / "tests/test_monitor_codex_e2e.py"
     for relative, expected in qualification["source_hashes"].items():
         if hashlib.sha256((source / relative).read_bytes()).hexdigest() != expected:
             raise RuntimeError("model fixture source changed: " + relative)
-    required = {"tests/test_monitor_codex_e2e.py", "tests/codex_harness.py", "tests/store_cleanup.py"}
+    required = {
+        "tests/test_monitor_codex_e2e.py",
+        "tests/codex_harness.py",
+        "tests/store_cleanup.py",
+    }
     required.update(p.relative_to(source).as_posix() for p in (source / "src").rglob("*.py"))
     if not required <= set(qualification["source_hashes"]):
         raise RuntimeError("qualification omits deciding model fixtures")
     tree = ast.parse(target.read_text(encoding="utf-8"))
     selectors = {
         "tests.test_monitor_codex_e2e." + cls.name + "." + method.name
-        for cls in tree.body if isinstance(cls, ast.ClassDef)
-        for method in cls.body if isinstance(method, ast.FunctionDef) and method.name.startswith("test_")
+        for cls in tree.body
+        if isinstance(cls, ast.ClassDef)
+        for method in cls.body
+        if isinstance(method, ast.FunctionDef) and method.name.startswith("test_")
     }
     if len(selectors) != 18 or args.method not in selectors:
         raise RuntimeError("reconcile current model discovery before execution")
+    if ".ModelPinningIsEnforced." in args.method:
+        raise RuntimeError("run the deterministic original body with --pin-oracle; no auth required")
     home = Path(qualification["method_homes"][args.method]).resolve(strict=True)
     if not home.is_relative_to(private) or home in (private, profile):
         raise RuntimeError("model credential home is not an exact disposable child")
     config = home / "config.toml"
-    if hashlib.sha256(config.read_bytes()).hexdigest() != qualification["config_sha256"][args.method]:
+    if (
+        hashlib.sha256(config.read_bytes()).hexdigest()
+        != qualification["config_sha256"][args.method]
+    ):
         raise RuntimeError("nonsecret preprovisioned MCP config differs from frozen input")
     # This file is explicitly a nonsecret fixture; authentication lives elsewhere
     # and is never opened. Pin the same single source MCP surface as the test.
@@ -219,8 +260,15 @@ def main():
         index = len(calls)
         (args.evidence / f"model-{index}.stdout.txt").write_text(result.stdout, encoding="utf-8")
         (args.evidence / f"model-{index}.stderr.txt").write_text(result.stderr, encoding="utf-8")
-        calls.append({"exit": result.returncode, "tool_calls": result.tool_calls,
-                      "origin": "synthetic-pin-oracle" if ".ModelPinningIsEnforced." in args.method else "actual-codex-result"})
+        calls.append(
+            {
+                "exit": result.returncode,
+                "tool_calls": result.tool_calls,
+                "origin": "synthetic-pin-oracle"
+                if ".ModelPinningIsEnforced." in args.method
+                else "actual-codex-result",
+            }
+        )
         return original_pin(self, result)
 
     codex_harness.CodexAgentTestCase._isolated_codex_home = prepared_home
@@ -229,17 +277,32 @@ def main():
         suite = unittest.defaultTestLoader.loadTestsFromName(args.method)
         with (args.evidence / "unittest.stderr.txt").open("w", encoding="utf-8") as stream:
             result = unittest.TextTestRunner(stream=stream, verbosity=2).run(suite)
-        record = {"method": args.method, "testsRun": result.testsRun,
-                  "failures": [(t.id(), reason) for t, reason in result.failures],
-                  "errors": [(t.id(), reason) for t, reason in result.errors],
-                  "skipped": [(t.id(), reason) for t, reason in result.skipped],
-                  "model_result_boundaries": calls, "native_profile": str(profile),
-                  "native_app_data": str(app_data),
-                  "outcome": "ERROR" if result.errors else "FAIL" if result.failures else "SKIP" if result.skipped else "PASS" if result.wasSuccessful() and result.testsRun == 1 else "UNRUN"}
+        record = {
+            "method": args.method,
+            "testsRun": result.testsRun,
+            "failures": [(t.id(), reason) for t, reason in result.failures],
+            "errors": [(t.id(), reason) for t, reason in result.errors],
+            "skipped": [(t.id(), reason) for t, reason in result.skipped],
+            "model_result_boundaries": calls,
+            "native_profile": str(profile),
+            "native_app_data": str(app_data),
+            "outcome": "ERROR"
+            if result.errors
+            else "FAIL"
+            if result.failures
+            else "SKIP"
+            if result.skipped
+            else "PASS"
+            if result.wasSuccessful() and result.testsRun == 1
+            else "UNRUN",
+        }
         dump(args.evidence / "result.json", record)
         return int(record["outcome"] != "PASS")
     except BaseException:
-        dump(args.evidence / "exception.json", {"method": args.method, "outcome": "ERROR", "traceback": traceback.format_exc()})
+        dump(
+            args.evidence / "exception.json",
+            {"method": args.method, "outcome": "ERROR", "traceback": traceback.format_exc()},
+        )
         raise
     finally:
         codex_harness.CodexAgentTestCase._isolated_codex_home = original_home

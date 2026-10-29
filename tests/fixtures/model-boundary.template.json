@@ -29,9 +29,8 @@
     "tests.test_monitor_codex_e2e.AgentAuthoredSubmissions.test_malformed_report_is_rejected_and_not_stored": null,
     "tests.test_monitor_codex_e2e.MonitoringToolsAreOutsideTheSafetySurface.test_all_three_actions_are_discoverable": null,
     "tests.test_monitor_codex_e2e.MonitoringToolsAreOutsideTheSafetySurface.test_monitor_tools_are_refused_inside_a_batch": null,
-    "tests.test_monitor_codex_e2e.StdoutStaysClean.test_a_full_session_keeps_the_protocol_intact": null,
-    "tests.test_monitor_codex_e2e.ModelPinningIsEnforced.test_the_harness_refuses_a_run_on_another_model": null
+    "tests.test_monitor_codex_e2e.StdoutStaysClean.test_a_full_session_keeps_the_protocol_intact": null
   },
   "config_sha256": {},
-  "qualification": "Template only. ROOT must bind all actual deciding source hashes, native account/KnownFolder proofs and nonsecret per-method configs before execution. Never put credential material in evidence."
+  "qualification": "Template only for17 genuine request methods. ROOT must bind all actual deciding source hashes, native account/KnownFolder proofs and nonsecret per-method configs before real requests. The separate --pin-oracle executes the18th deterministic original body without this qualification or auth. Never put credential material in evidence."
 }

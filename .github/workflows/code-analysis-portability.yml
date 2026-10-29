@@ -105,6 +105,7 @@ jobs:
           tests/test_final_policy_fingerprint_migration.py
           tests/policy_one_producer.py
           tests/prepared_model_method.py
+          tests/final_acceptance_suite.py
 
       - name: Type check analysis runtime
         if: ${{ !cancelled() && steps.dependencies.outcome == 'success' }}
@@ -164,7 +165,7 @@ jobs:
         if: ${{ !cancelled() && steps.dependencies.outcome == 'success' }}
         run: |
           mkdir -p "$BYO_FR15_CASE_EVIDENCE"
-          uv run ruff format --diff tests/test_final_policy_fingerprint_migration.py tests/policy_one_producer.py tests/prepared_model_method.py > "$BYO_FR15_CASE_EVIDENCE/preparation-format.diff" || exit $?
+          uv run ruff format --diff tests/test_final_policy_fingerprint_migration.py tests/policy_one_producer.py tests/prepared_model_method.py tests/final_acceptance_suite.py > "$BYO_FR15_CASE_EVIDENCE/preparation-format.diff" || exit $?
 
       - name: Build server wheel and source distribution
         if: ${{ !cancelled() && steps.dependencies.outcome == 'success' }}

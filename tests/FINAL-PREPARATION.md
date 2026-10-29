@@ -42,13 +42,21 @@ or quota prerequisite.
 The Installer's existing native build workflow executes
 `release/scripts/final_hosted_forwarding.py` against each newly built native
 bundle. Before install/store effects, it records OS token/profile/KnownFolder
-and directory ownership on Windows or uid/passwd-home and ownership on POSIX,
+and directory owner/DACL/token access on Windows or uid/passwd-home and ownership on POSIX,
 joined to the exact ephemeral hosted job. It reuses the compiled read-only
 selector, installs privately, observes the actual installed launcher's unique
 credential-free sidecar PID/birth/image/environment, performs the real handshake
 and health call, and retains new workspace records, preservation and EOF cleanup.
 Unknown/denied observations stay nonpassing. The original strict observation
 environment and its refusal outside its single root are unchanged.
+
+The Windows hosted profile may be SYSTEM-owned: its native account/profile and
+KnownFolder join, trusted owner and actual enabled-token DACL Modify rights must
+all qualify before product effects. EOF can deliver sealed records to the local
+`simulated_remote` directory; the observation retains both permitted locations
+and requires the current actual run's bound workspace and durable close counts.
+This local simulated delivery does not establish off-box permanence. Read-only
+selector denial includes exact path/mode/callers and stays fatal until explained.
 
 No hosted check supplies native client U1 trust enforcement, real model calls,
 hardware authority, compiled-positive board/ELF/setup/flash-plan acceptance or

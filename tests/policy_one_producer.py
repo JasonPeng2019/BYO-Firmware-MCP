@@ -66,9 +66,16 @@ def main():
                 assert actual == expected["sha256"], name
                 imports[name] = {"path": relative, "sha256": actual}
         (args.output / "produced.json").write_text(
-            json.dumps({"document": document.to_document(), "imports": imports,
-                        "native_source": provenance["native_commit"],
-                        "source_archive_sha256": provenance["archive"]["sha256"]}, indent=2) + "\n",
+            json.dumps(
+                {
+                    "document": document.to_document(),
+                    "imports": imports,
+                    "native_source": provenance["native_commit"],
+                    "source_archive_sha256": provenance["archive"]["sha256"],
+                },
+                indent=2,
+            )
+            + "\n",
             encoding="utf-8",
         )
     finally:

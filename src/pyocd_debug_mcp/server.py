@@ -782,9 +782,11 @@ def _active_snapshot_aggregate(board_id: str) -> str:
         ) from exc
 
 
-def _active_full_document(
+def _full_document_snapshot(
     board_id: str, *, state: CapabilityState | None = None
 ) -> SafetyMapDocument | GenericSafetyMapDocument:
+    """Parse immutable refresh input without granting protected authority."""
+
     state = state or _tier_router.state_for(board_id)
     if state.tier is not Tier.SETUP_FULL or not isinstance(state.map_snapshot, Mapping):
         raise SafetyPolicyError(
@@ -798,6 +800,20 @@ def _active_full_document(
             if state.map_snapshot.get("schema_version") == 2
             else GenericSafetyMapDocument.from_document(state.map_snapshot)
         )
+        return document
+    except (SafetyMapError, ValueError) as exc:
+        raise SafetyPolicyError(
+            "safety/map-refresh-required",
+            f"The committed safety snapshot is invalid: {exc}",
+            remedy=("board_safety_refresh",),
+        ) from exc
+
+
+def _active_full_document(
+    board_id: str, *, state: CapabilityState | None = None
+) -> SafetyMapDocument | GenericSafetyMapDocument:
+    document = _full_document_snapshot(board_id, state=state)
+    try:
         require_reconciled_authority(document)
         return document
     except (SafetyMapError, ValueError) as exc:
@@ -4785,7 +4801,10 @@ def _run_board_safety_refresh(board_id: str) -> Mapping[str, object]:
     request = SafetyRefreshRequest(board_id, _safety_continuation("safety-refresh"))
     try:
         profile = _active_policy_profile(board_id, state=tier_state)
-        previous = _active_full_document(board_id, state=tier_state)
+        # An older generator is invalid protected authority, but its immutable
+        # snapshot must remain readable so this maintenance remedy can rederive
+        # current authority from the committed profile and reviewed evidence.
+        previous = _full_document_snapshot(board_id, state=tier_state)
         candidate = _derive_safety_map(
             board_id,
             profile=profile,
