@@ -50,7 +50,7 @@ else:
 
 ROOT = Path(__file__).resolve().parents[1]
 BLOCKED = {
-    "test_monitor_codex_e2e": "Campaign authorization is established; actual isolated native-client/model/auth provisioning remains unresolved. Retain every declared method BLOCKED for SAME V; this source job must not launch agents or copy credentials."
+    "test_monitor_codex_e2e": "Actual isolated native-client/model/auth provisioning remains unresolved for the 17 real-request methods. The separate original deterministic pin body runs without auth. This source job must not launch agents or copy credentials."
 }
 U5_FILENAME = "Keil.STM32U5xx_DFP.3.2.0.pack"
 U5_SHA256 = "e320687fe534f2fe6902e9bcdee981315abea26c4ca547142af9b9439e958be6"
@@ -975,11 +975,33 @@ def parent(args):
         declared = declarations(path)
         write(directory / "declared.json", declared)
         if module in BLOCKED:
+            oracle = "tests.test_monitor_codex_e2e.ModelPinningIsEnforced.test_the_harness_refuses_a_run_on_another_model"
+            assert oracle in declared
+            oracle_directory = directory / "pin-oracle-command"
+            oracle_directory.mkdir()
+            oracle_command = [sys.executable, "-B", str(ROOT / "tests/prepared_model_method.py"),
+                              "--firmware-source", str(ROOT), "--pin-oracle",
+                              "--evidence", str(oracle_directory / "body")]
+            oracle_record = {"method": oracle, "outcome": "UNRUN", "real_model_requests": 0}
+            try:
+                code, outcome = run_module(oracle_command, environment, oracle_directory, args.module_timeout)
+                result_path = oracle_directory / "body/result.json"
+                if result_path.is_file():
+                    oracle_record.update(json.loads(result_path.read_text(encoding="utf-8")))
+                oracle_record.update(command=oracle_command, exit=code, command_outcome=outcome)
+                if code != 0 or outcome != "PASS":
+                    oracle_record["outcome"] = outcome if outcome != "PASS" else "FAIL"
+            except Exception:
+                oracle_record.update(outcome="ERROR", traceback=traceback.format_exc())
             record = {
                 "module": module,
                 "outcome": "BLOCKED",
                 "reason": BLOCKED[module],
-                "methods": {name: "BLOCKED" for name in declared},
+                "methods": {name: oracle_record["outcome"] if name == oracle else "BLOCKED"
+                            for name in declared},
+                "deterministic_pin_oracle": oracle_record,
+                "actual_model_requests": 0,
+                "real_request_methods_blocked": len(declared) - 1,
                 "exit": None,
             }
             failed = True

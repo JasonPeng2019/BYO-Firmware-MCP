@@ -1,0 +1,888 @@
+{
+  "schema": "original-policy-one-producer/v1",
+  "native_commit": "a7982ab4645020f0e85ff8a682a30e24ff7cc3be",
+  "prefix": "MCP_Server_Dev/BYO-Firmware-MCP/src/",
+  "archive": {
+    "path": "source.zip",
+    "bytes": 561733,
+    "sha256": "f1fb67df0809bc4626f3d827e6b395d149cce710f4aa814dfca4416e1f245207"
+  },
+  "files": [
+    {
+      "path": "pyocd_debug_mcp/__init__.py",
+      "mode": "100644",
+      "blob": "1058e82b4b19050a0a29482251745c4f61ffcd86",
+      "bytes": 102,
+      "sha256": "373073be93a36348624f9b6f2aede35181bda6165667f9c5c4bdfcdba967e423"
+    },
+    {
+      "path": "pyocd_debug_mcp/_analysis_native.py",
+      "mode": "100644",
+      "blob": "b1b0246aa6f4b7cc93d017dfe9e15c8d0282b490",
+      "bytes": 3833,
+      "sha256": "5f2767dac00d9a46ff43b52743c8c2c606e86014011688d3dfcf16c0f367908c"
+    },
+    {
+      "path": "pyocd_debug_mcp/adapters/__init__.py",
+      "mode": "100644",
+      "blob": "31583feb32957a157113fd46492e88824ad6dc54",
+      "bytes": 47,
+      "sha256": "aeaca5cd6e20e82fa23087f6cba599531f1097a46d6927e6978762dc3548129e"
+    },
+    {
+      "path": "pyocd_debug_mcp/adapters/clangd.py",
+      "mode": "100644",
+      "blob": "f35c85dc8e1efad5e1bab1c6b00f12fe278480f0",
+      "bytes": 27183,
+      "sha256": "1da31b018336236dbdfd42b1fb48482c9f03956272ca63d73b3895e305525182"
+    },
+    {
+      "path": "pyocd_debug_mcp/adapters/provider_worker.py",
+      "mode": "100644",
+      "blob": "efde3493b2d2743eb2159baf7f292d2b35b76c7b",
+      "bytes": 1013,
+      "sha256": "23c3ce0969ba7aa4a9a6d30b4b0ec43b0b19d178fb9aceb2376b320cd516556b"
+    },
+    {
+      "path": "pyocd_debug_mcp/adapters/provider_worker_runtime.py",
+      "mode": "100644",
+      "blob": "4fd69d1438b6382ba3c0fe755dec11ec09a4fe98",
+      "bytes": 16980,
+      "sha256": "f1c890026b1b17d2a8f223c1ccfad2f96c7ed540cd47a52671077869a9044e93"
+    },
+    {
+      "path": "pyocd_debug_mcp/adapters/swd_interface.py",
+      "mode": "100644",
+      "blob": "a81afe57726150d28023a3b0802a8c2ae4250c87",
+      "bytes": 6746,
+      "sha256": "e770d80f02d414af09244f1a9d07d5bc8e2fe17a67f9d9f0f24b49d23299af58"
+    },
+    {
+      "path": "pyocd_debug_mcp/adapters/swd_process.py",
+      "mode": "100644",
+      "blob": "171025d7a16532dbf4b1ee1665365792ba85a579",
+      "bytes": 27557,
+      "sha256": "6299d34c67edf223d4c08e443c391943adf550aeef608e98892436c08b94f78e"
+    },
+    {
+      "path": "pyocd_debug_mcp/adapters/swd_pyocd.py",
+      "mode": "100644",
+      "blob": "39960e5edc2fbb31a31e2517f8adc67005753fc7",
+      "bytes": 49882,
+      "sha256": "f857922440a424d8c776a686aa07a80cf4ab11efed893e69dd114323626cf712"
+    },
+    {
+      "path": "pyocd_debug_mcp/adapters/uart_interface.py",
+      "mode": "100644",
+      "blob": "cee6588fbf832b068deb10321dad7c3e45e3b8af",
+      "bytes": 2946,
+      "sha256": "24e78fd46f398c098eb10a77ae9c4d1ce85f4f03d4c1dca5e94fcf0af6057740"
+    },
+    {
+      "path": "pyocd_debug_mcp/adapters/uart_pyserial.py",
+      "mode": "100644",
+      "blob": "6304efdd11cb7dd5a2c61664216e1f4cf60da3e1",
+      "bytes": 1846,
+      "sha256": "59e4a50d93d01e68f0fb53c250564d3fe610c24f313ab32f8ab643620263e11e"
+    },
+    {
+      "path": "pyocd_debug_mcp/artifact_collector.py",
+      "mode": "100644",
+      "blob": "174ddef187f1e2804dde270c257d22a6a4f98ac8",
+      "bytes": 8388,
+      "sha256": "547f06d16244a542b5cecdacef8ddd4993672640edf77f75ee063424dac56168"
+    },
+    {
+      "path": "pyocd_debug_mcp/board_config.py",
+      "mode": "100644",
+      "blob": "921a6ea637277a62822614b682733d6d9ce6d1d6",
+      "bytes": 15288,
+      "sha256": "c7ea74b2ccf66ffd45f42827a54471faa1d71e891d5ff6c9e67b40e1f95c9fb2"
+    },
+    {
+      "path": "pyocd_debug_mcp/capabilities/__init__.py",
+      "mode": "100644",
+      "blob": "1dceb9f4c4a91c518f1f0cbf384b4bf6b5d26fb7",
+      "bytes": 201,
+      "sha256": "2cd3db1c99dd0b58cd0bfa6266be938ed93895a2e48f869091d3046eec87b00d"
+    },
+    {
+      "path": "pyocd_debug_mcp/capabilities/lite.py",
+      "mode": "100644",
+      "blob": "44dbbaa2b8981b546dfce8ad5f4b008ce9aa37fc",
+      "bytes": 15639,
+      "sha256": "1d5c34cb4534302284410e6943f6be272c47a6907e9cc3e8ed3f073ec6cf5808"
+    },
+    {
+      "path": "pyocd_debug_mcp/capabilities/manual_permission_helper.py",
+      "mode": "100644",
+      "blob": "a149be4e717dc3aacd11cf46eeb0700f6bd77786",
+      "bytes": 10518,
+      "sha256": "dd5859af431c4c15e591c518f2422db5baec04f9bdbd8af90e452112b3084edb"
+    },
+    {
+      "path": "pyocd_debug_mcp/capabilities/manual_permissions.py",
+      "mode": "100644",
+      "blob": "6a18572475e42ef910c712334a2685fee6a5deaf",
+      "bytes": 27585,
+      "sha256": "3efb5c4d73e40373d9708238536474a8e3f8bce2affd14f04f03005e8176eca1"
+    },
+    {
+      "path": "pyocd_debug_mcp/capabilities/matrix.py",
+      "mode": "100644",
+      "blob": "ab195505aca3f3c973e090e3b5ea1ef18c59d927",
+      "bytes": 9914,
+      "sha256": "4f16e19e602bf04ba21cb5475d0c2617989d249279bf19a57eb05f223160f108"
+    },
+    {
+      "path": "pyocd_debug_mcp/capabilities/policy.py",
+      "mode": "100644",
+      "blob": "668fa13f89e2306057262ee722a099a28d72bc40",
+      "bytes": 36957,
+      "sha256": "49e301ccf11b258035be15381590b966208f6a296d6e8ec6ba645b7858c7bb98"
+    },
+    {
+      "path": "pyocd_debug_mcp/capabilities/routing.py",
+      "mode": "100644",
+      "blob": "ee1c47a406d52c05beca045b4cee98cd9137b7e4",
+      "bytes": 17989,
+      "sha256": "d95a0439ea768f417f7e9da0eb3b8dc0554b4bdbb31bc657762709d7c6da3eea"
+    },
+    {
+      "path": "pyocd_debug_mcp/code_analysis_config.py",
+      "mode": "100644",
+      "blob": "b2625eb87c500499c02bd5acf72625fc3f05adf3",
+      "bytes": 22933,
+      "sha256": "ee46370ec2dac3f9bfeefb61eeedb0971e81ff7e45babcf8236e0738c6687b9d"
+    },
+    {
+      "path": "pyocd_debug_mcp/code_analysis_manifest.py",
+      "mode": "100644",
+      "blob": "a11406afc52ff4d2f9286a961f6a989935aec481",
+      "bytes": 37064,
+      "sha256": "79688780d89017b8e72656b524b964a6603a52c3e285a46f33da46c5b71a635e"
+    },
+    {
+      "path": "pyocd_debug_mcp/code_analysis_runtime.py",
+      "mode": "100644",
+      "blob": "63829150385309a60ef835337b2a90d92de611f5",
+      "bytes": 24102,
+      "sha256": "bc518e180c38dbfcad4ba8779e40031a9dc46902f01419a7837cc3f0a9213636"
+    },
+    {
+      "path": "pyocd_debug_mcp/discovery_failures.py",
+      "mode": "100644",
+      "blob": "faa04be0337ca50b7806daae57954ed3baac9fba",
+      "bytes": 14098,
+      "sha256": "4e6e9b7c7c66fcb6da01ccdc76589842b48b284f4b1ec39691dae5cb98e9a9ed"
+    },
+    {
+      "path": "pyocd_debug_mcp/discovery_hooks.py",
+      "mode": "100644",
+      "blob": "89a1f21cb3f4fecf38f788e17b8daedee0f9f1a1",
+      "bytes": 48521,
+      "sha256": "a776294b83059340df00e7477a24b05ee1c5bc6a152da19b99e7b8dd457ba698"
+    },
+    {
+      "path": "pyocd_debug_mcp/firmstore/__init__.py",
+      "mode": "100644",
+      "blob": "59f4f7331a2aa489385107b4960c496d2f5827a4",
+      "bytes": 561,
+      "sha256": "decfbcc8986183e297bd123e3d2b9c04f768ecfe6ba1dfb2c1c9af1cf615fce9"
+    },
+    {
+      "path": "pyocd_debug_mcp/firmstore/cache.py",
+      "mode": "100644",
+      "blob": "b4b2dea1b7cac58a3703b4319e26e1c355f2b252",
+      "bytes": 14732,
+      "sha256": "e8896388e9212d0176beb7ce226fc2b9297f7b69c2f2d7386a9c8eab063cab2a"
+    },
+    {
+      "path": "pyocd_debug_mcp/firmstore/profiles.py",
+      "mode": "100644",
+      "blob": "ff7662d58bf2828f1f966b81c973b8c073e9cecd",
+      "bytes": 25341,
+      "sha256": "2631f7c2984eeba9ada6a52f7dce1767aa3e98af99a58ceb641f885967466015"
+    },
+    {
+      "path": "pyocd_debug_mcp/firmstore/reports.py",
+      "mode": "100644",
+      "blob": "99d1d4f1177ea7f4df87f323ab5812b873ca2ec4",
+      "bytes": 4165,
+      "sha256": "1ef42e3ab63adcb92b0e270f32189e4369d583c72e9ad2473427b10454dfeb61"
+    },
+    {
+      "path": "pyocd_debug_mcp/firmstore/store.py",
+      "mode": "100644",
+      "blob": "da8daa46b5a53896679c88f56859a36a50395b7a",
+      "bytes": 15531,
+      "sha256": "64cd957f630f123682a97fec1694900a0aa9d241b17aff9335edd3f8c164d551"
+    },
+    {
+      "path": "pyocd_debug_mcp/guardrails/__init__.py",
+      "mode": "100644",
+      "blob": "35fc9f8e3e09d82930f83b8092f0528c18026363",
+      "bytes": 172,
+      "sha256": "12d64f5df26a7f9e7cca88a46e58b34ef5ad76ad7a6649bed236510d79080528"
+    },
+    {
+      "path": "pyocd_debug_mcp/guardrails/flash_gate.py",
+      "mode": "100644",
+      "blob": "a9f9f8f01a05bed6806b65e20c1525c46d24a749",
+      "bytes": 3756,
+      "sha256": "95c50806b1b0d62591246c9619c8364246c9b6ef67996fc9e447a08e458b5145"
+    },
+    {
+      "path": "pyocd_debug_mcp/guardrails/gate.py",
+      "mode": "100644",
+      "blob": "18aa297b9396a1fbb7eb3c9c20d6bc7aa4c92f08",
+      "bytes": 16143,
+      "sha256": "7522d6ec0370f4a0be8983b9342946b01bd3680106026f8e98671d11062aa1b6"
+    },
+    {
+      "path": "pyocd_debug_mcp/guardrails/permissions.py",
+      "mode": "100644",
+      "blob": "6d587612805f93a0042c51086476f7fa78c45c13",
+      "bytes": 11061,
+      "sha256": "668ee026f00c26f2e2e7f16ba96126e58663b81b7ae0797e0528571dbc4f38fd"
+    },
+    {
+      "path": "pyocd_debug_mcp/guardrails/plan_defs.py",
+      "mode": "100644",
+      "blob": "d863048a8d1ed0c7c2ec6a814ed1c31dda405fd0",
+      "bytes": 66951,
+      "sha256": "f94a8ac2bbec88c94f25376bae706c3029f6f60cd44dc06fc50665f6b6fba1ed"
+    },
+    {
+      "path": "pyocd_debug_mcp/guardrails/plan_engine.py",
+      "mode": "100644",
+      "blob": "36c7ede6cfbf66932d381abf0d2ea81c80a4776b",
+      "bytes": 47654,
+      "sha256": "0e2f7b7d83044e9152ab57b2143da4f3af39dc8d6d5c42ceefc8e3f562469051"
+    },
+    {
+      "path": "pyocd_debug_mcp/guardrails/recover_gate.py",
+      "mode": "100644",
+      "blob": "0e832e2d0b70ebe8e4835e49d4b4601545e2c78c",
+      "bytes": 2290,
+      "sha256": "bdc0cc4f96e2dc3d52dd7a4203c0345d8194c3664ae513ba1e88da8b11c7a8db"
+    },
+    {
+      "path": "pyocd_debug_mcp/hardware_inventory.py",
+      "mode": "100644",
+      "blob": "d4a0ae8158e1bb921500e127d9264c1a17454872",
+      "bytes": 50321,
+      "sha256": "d548aaa1ede61f678ab7a933e59058fe813072e5e2f062d922f700b9f5d42745"
+    },
+    {
+      "path": "pyocd_debug_mcp/identities.py",
+      "mode": "100644",
+      "blob": "62f24c7665b34739a5cbda8bf01b6c2c6294c1f0",
+      "bytes": 547,
+      "sha256": "49ccd442a2e0fb84d70c788459c81d8734ddddb4d83839f0aecd69af22348fdc"
+    },
+    {
+      "path": "pyocd_debug_mcp/kernel/__init__.py",
+      "mode": "100644",
+      "blob": "851d616d5b9f652e3b5dd374459869840c06c327",
+      "bytes": 574,
+      "sha256": "eabd3a44386ff39c789c32bba7104ab4599ea105b7aff8650ba2430319e3e9b6"
+    },
+    {
+      "path": "pyocd_debug_mcp/kernel/_analysis_posix.py",
+      "mode": "100644",
+      "blob": "0c3f2f8ab25ea9251fdf2b73dd39cd0bdc4750be",
+      "bytes": 40845,
+      "sha256": "b96318c961bbb6b91ae9f94cc55929fcd2bba6846014380b8e6aea09265b3990"
+    },
+    {
+      "path": "pyocd_debug_mcp/kernel/file_transactions.py",
+      "mode": "100644",
+      "blob": "991005cabe86396d523b9e0325f7af008e80577f",
+      "bytes": 5653,
+      "sha256": "fb91ead51c561e8563728424daef6d9ce6ab04ad8bd5684ab4fe2e14ba3155ea"
+    },
+    {
+      "path": "pyocd_debug_mcp/kernel/finalizers.py",
+      "mode": "100644",
+      "blob": "063922a57daa907777e8a811d5c6680dea53aa65",
+      "bytes": 2585,
+      "sha256": "40c24d77323f8c5be739d850376266b8eaa9ecc42e4bc9953809644624c29a8f"
+    },
+    {
+      "path": "pyocd_debug_mcp/kernel/hygiene.py",
+      "mode": "100644",
+      "blob": "a1db84063ccf67022d58e8b11bdaafd5222c3f6e",
+      "bytes": 3757,
+      "sha256": "9dc545bc3046154c30bd7f5b132e6be8c893732e801c5d7f2a04461789807bad"
+    },
+    {
+      "path": "pyocd_debug_mcp/kernel/operations.py",
+      "mode": "100644",
+      "blob": "c0753955206d329950b71d403dcad4e2ce015520",
+      "bytes": 39810,
+      "sha256": "451960d0f5340dfaef02abd70caae8a23a82588eb53c2ccddd61c85f9d60ba08"
+    },
+    {
+      "path": "pyocd_debug_mcp/kernel/processes.py",
+      "mode": "100644",
+      "blob": "24b05e150def3993b44fa1ccfc5497e439a8b842",
+      "bytes": 24151,
+      "sha256": "1c3b0f88b9b7e943f7c42ff1f34f903ba4fdffe8ccb7ebbc165e1458544adf69"
+    },
+    {
+      "path": "pyocd_debug_mcp/kernel/registry.py",
+      "mode": "100644",
+      "blob": "971c4db353fe09a364e5cf4bfd87fbef5b50738f",
+      "bytes": 28791,
+      "sha256": "4072369e38f818d8d657e13cd15121b1614cce4e7da727c9d458e4dbd76b9b23"
+    },
+    {
+      "path": "pyocd_debug_mcp/kernel/run_state.py",
+      "mode": "100644",
+      "blob": "d22a7ef93375cbf09ab8d4707d0666274d50e56e",
+      "bytes": 1452,
+      "sha256": "030ddff54d2bc0117d7869c7409d43da3464c7e7e8b136025942218deedf083d"
+    },
+    {
+      "path": "pyocd_debug_mcp/local_env.py",
+      "mode": "100644",
+      "blob": "cd91d0da1180e1b7715a71396dde258d32fe65da",
+      "bytes": 683,
+      "sha256": "a9b1cd4c8591d7d591821bcd45f0cba97a3ff0843a53db77fe8073701e2d4c0c"
+    },
+    {
+      "path": "pyocd_debug_mcp/monitor/__init__.py",
+      "mode": "100644",
+      "blob": "1fb7c9a8ee7574c72463cfd3e00068b34e8d022a",
+      "bytes": 935,
+      "sha256": "9a7b40ce9ce053194021628e4948287153a3d9a585c2f02fb49221c53674cd6c"
+    },
+    {
+      "path": "pyocd_debug_mcp/monitor/block.py",
+      "mode": "100644",
+      "blob": "6e19cf0b269225cc205c20d7133e1d93ed02104f",
+      "bytes": 7446,
+      "sha256": "81ce2fd1abab75d7c067ff3898ef7687837863f3e1b27cfcab0f4eae56870530"
+    },
+    {
+      "path": "pyocd_debug_mcp/monitor/build_profile.py",
+      "mode": "100644",
+      "blob": "70262804bf8a70d85f02a5f0f307303698163570",
+      "bytes": 1268,
+      "sha256": "3c0fb22cfb08c3984707cac1879e7cbb781887659a769c9f75d6d31dbebe0463"
+    },
+    {
+      "path": "pyocd_debug_mcp/monitor/classify.py",
+      "mode": "100644",
+      "blob": "59805a4b052ef095a06c58f42e7c5a661dd79053",
+      "bytes": 16550,
+      "sha256": "3aa4d6c2ebda17cf871ddc66c80ffb234abc3d11e8591d001a5f990264b858ad"
+    },
+    {
+      "path": "pyocd_debug_mcp/monitor/counters.py",
+      "mode": "100644",
+      "blob": "f4b5a8990aa32ceda64a6cb5a3d07d14eaf04972",
+      "bytes": 6383,
+      "sha256": "cb17b892e266c222f24797ab32eb53d419f83d8c9ce44090d0fd7b61626a3092"
+    },
+    {
+      "path": "pyocd_debug_mcp/monitor/delivery.py",
+      "mode": "100644",
+      "blob": "3b884361405f8a72462b0d31fe0850b50d35c586",
+      "bytes": 23583,
+      "sha256": "93e3ec017093d5fa4b2cfe689f073dd713c6c350c505866ec5eabc8a2d7e3a2a"
+    },
+    {
+      "path": "pyocd_debug_mcp/monitor/ledger.py",
+      "mode": "100644",
+      "blob": "3729deed46cbe6c7d1dedcbb6474788846436fcf",
+      "bytes": 17556,
+      "sha256": "267e2aaf6fa7adffcc2b0af43d28fa96e9a0e67be93b040897d17380071129b8"
+    },
+    {
+      "path": "pyocd_debug_mcp/monitor/monitor.py",
+      "mode": "100644",
+      "blob": "e0c9bfebf0d045ffed4b4af70202671b339e184b",
+      "bytes": 39443,
+      "sha256": "4be9bf0049884a09e009d78f164a980e39568431ed163bfaa83dcd0fa0d8f782"
+    },
+    {
+      "path": "pyocd_debug_mcp/monitor/narrative.py",
+      "mode": "100644",
+      "blob": "d4899cc7859b0d6914978e2be30481e97038d8e4",
+      "bytes": 7092,
+      "sha256": "4927089454047d0db1c9a5a17cfd78b0b4671d28c818902835f8b83fda2cd66c"
+    },
+    {
+      "path": "pyocd_debug_mcp/monitor/paths.py",
+      "mode": "100644",
+      "blob": "5fbdd2d74a59ba4dba5c216472302cd899650fe6",
+      "bytes": 10221,
+      "sha256": "82ccfbd067787b821f631dceb73950d92be3de3285069a19c3a515cb34e773a7"
+    },
+    {
+      "path": "pyocd_debug_mcp/monitor/redaction.py",
+      "mode": "100644",
+      "blob": "0cb3658d9bcf3bb2b341a1916d6596e6485cf7cc",
+      "bytes": 10025,
+      "sha256": "91b0dbde5d7c6268ff5ef93c6195451f059e04c48561bfeadbc6b08459f2ce9e"
+    },
+    {
+      "path": "pyocd_debug_mcp/monitor/reports.py",
+      "mode": "100644",
+      "blob": "2be6d29bea46bafe3b8c16c290b4fad5786f39a0",
+      "bytes": 6988,
+      "sha256": "c5f05ee1e656fcccb29b7f772429a000e392006df11eec0a5cedc66527e26807"
+    },
+    {
+      "path": "pyocd_debug_mcp/monitor/thrash.py",
+      "mode": "100644",
+      "blob": "998717d15d5fc205fc34561d42d9a00d67dd7385",
+      "bytes": 5923,
+      "sha256": "163d83652eec69398bbd90ca31ff7f0bcb42937fa1d7d37175f4dc9feae28883"
+    },
+    {
+      "path": "pyocd_debug_mcp/monitor/tools.py",
+      "mode": "100644",
+      "blob": "c3926412a4a24969a9f345abf07ac8a8bf863ffa",
+      "bytes": 8169,
+      "sha256": "30a414b80b0537625ae899288b81f7ba95fbb995811144d23b0d53e07402233d"
+    },
+    {
+      "path": "pyocd_debug_mcp/monitor/trail.py",
+      "mode": "100644",
+      "blob": "4012e985b7ac1e99243eebeebc3ed61a9f56aab4",
+      "bytes": 3641,
+      "sha256": "7ce6f58c6dd944ea25740832a366978ebc6083d0ded31dddd906e85343b25fb5"
+    },
+    {
+      "path": "pyocd_debug_mcp/monitor/transport.py",
+      "mode": "100644",
+      "blob": "4a8b9a0f379066b892db98610b65155254c9bd2f",
+      "bytes": 11667,
+      "sha256": "b89b55572d1b079597eec9a5ff95dbded6f10c7d5cca6cb27caf5d7957cca17b"
+    },
+    {
+      "path": "pyocd_debug_mcp/native_build.py",
+      "mode": "100644",
+      "blob": "327504ac9f541e562f863ac06ec3f72ecff89429",
+      "bytes": 31619,
+      "sha256": "08406c3f79a4e364d5b261362a3a2d629c7834e9deab49a679493eb2a6ab0d4a"
+    },
+    {
+      "path": "pyocd_debug_mcp/pack_index_repair.py",
+      "mode": "100644",
+      "blob": "5afb013fac41c2db030cf93eceabfc190fd2404f",
+      "bytes": 10791,
+      "sha256": "bbf26b66b825b9ff74ffac605383900f4e0f5fa4f6fc295b6ede0d6e9adb70c5"
+    },
+    {
+      "path": "pyocd_debug_mcp/pack_provision.py",
+      "mode": "100644",
+      "blob": "e296608a9fd7e69ee1be3bcc6d41f64198b5eba6",
+      "bytes": 18806,
+      "sha256": "e590d9b277a1eed06041ae61de18a5afb7a728932b3519dc7bea9acd4bea4b71"
+    },
+    {
+      "path": "pyocd_debug_mcp/probe_families.json",
+      "mode": "100644",
+      "blob": "0e1488be93820434858bce6a59a02fc30900160c",
+      "bytes": 608,
+      "sha256": "b02042c49cf58e41edaef2c1f32097518dc4f992206f6aa51e47ccb70e19b620"
+    },
+    {
+      "path": "pyocd_debug_mcp/probe_families.py",
+      "mode": "100644",
+      "blob": "4dbd603eac8844ce3d936a7deb72f1528edbae95",
+      "bytes": 7171,
+      "sha256": "cac2e748a436b9afaecbee35c0ac2b84f651d26f29606f0b33f2d348e9a36ac3"
+    },
+    {
+      "path": "pyocd_debug_mcp/probe_inventory.py",
+      "mode": "100644",
+      "blob": "0e3438135d7f7908e6220af49810092177f7555c",
+      "bytes": 12763,
+      "sha256": "a8441f7cb8bff961697ce308ea82832eaabb4333b3d1bc2f89b6501aef80da0f"
+    },
+    {
+      "path": "pyocd_debug_mcp/project_paths.py",
+      "mode": "100644",
+      "blob": "7ea550c65a76c2b75ccb1b977cc73699d79096dd",
+      "bytes": 1428,
+      "sha256": "748ad71c873204267bed0e067781fff2a222ce46e3cfd97568e81c424984a662"
+    },
+    {
+      "path": "pyocd_debug_mcp/remote_probes.py",
+      "mode": "100644",
+      "blob": "3f3a2ffb9e4f3604cb1be375256a9fcb040de46a",
+      "bytes": 9475,
+      "sha256": "531f4a2c29f867cb24e7520de88143d449a6daf938949d0b450e0ad7532fc776"
+    },
+    {
+      "path": "pyocd_debug_mcp/runtime_commands.py",
+      "mode": "100644",
+      "blob": "edf2ff9a511295644f9d0d1d0f732a47c056b02d",
+      "bytes": 1100,
+      "sha256": "3c43909a9d1b95922c83aa52c705358e2e6f1b88086b8c20abdd806ebe27b9e1"
+    },
+    {
+      "path": "pyocd_debug_mcp/safety/__init__.py",
+      "mode": "100644",
+      "blob": "babb5d7bb61e914d0f856a40c3249f56bab331f8",
+      "bytes": 484,
+      "sha256": "98e9b4c93dd583811c55330b0447cdf203f88b00ec083ac52d5bfcea37f98dfb"
+    },
+    {
+      "path": "pyocd_debug_mcp/safety/enforce.py",
+      "mode": "100644",
+      "blob": "d1d01bddaffd8c48522fc70f191bf6bdf3fc01b0",
+      "bytes": 20372,
+      "sha256": "6cfe134b2a86ff4103fc53523ff08d459551860d36b2be20ea6bdf191d11b921"
+    },
+    {
+      "path": "pyocd_debug_mcp/safety/linker.py",
+      "mode": "100644",
+      "blob": "34e41b954ffcbf6ef74d1f2b0d48d424cbbebba7",
+      "bytes": 24769,
+      "sha256": "0284d79c15027674cb82895d94ba46a203d61ae05526e347d9f01c12cda201c6"
+    },
+    {
+      "path": "pyocd_debug_mcp/safety/map_build.py",
+      "mode": "100644",
+      "blob": "c6ea386f060c3087464c725cc3a12a1f3d4a7904",
+      "bytes": 63405,
+      "sha256": "17248750c402457590a2486800df18ebe2986dc577a5758dffe3568aa9fcebed"
+    },
+    {
+      "path": "pyocd_debug_mcp/safety/refresh.py",
+      "mode": "100644",
+      "blob": "4e6634396d74396dc33456563ed3fd46b7feaf90",
+      "bytes": 7388,
+      "sha256": "cce0ac83371326988dec041f5e1bc549e6da7e627ec6449524508c281cd68731"
+    },
+    {
+      "path": "pyocd_debug_mcp/safety/regions.py",
+      "mode": "100644",
+      "blob": "f6a506fd21395faac5dacea101d9ab886cb08ee1",
+      "bytes": 19332,
+      "sha256": "8f1f9f59e388ae29a1ea9d1f87090150119542132e2ccde5092227868febf4ea"
+    },
+    {
+      "path": "pyocd_debug_mcp/safety/register_policy.py",
+      "mode": "100644",
+      "blob": "994aae7fafc126059794ba775da84caa6043334a",
+      "bytes": 1506,
+      "sha256": "d3b1e55900cc7f7b08d7173e1c8251a443ed18fdbb2a9f356d4c79bf309aabe7"
+    },
+    {
+      "path": "pyocd_debug_mcp/safety/verify2.py",
+      "mode": "100644",
+      "blob": "f6c4b3e4ab108e4f3806a38c71c666ba0d0e4a86",
+      "bytes": 23674,
+      "sha256": "85e81049c771df01545fadc2be144695c23d2d37642e0880b7aa003d5e1c4e5a"
+    },
+    {
+      "path": "pyocd_debug_mcp/serial_resolver.py",
+      "mode": "100644",
+      "blob": "d95f00fabf4607fac6cf6de171dedea916bf26cc",
+      "bytes": 21539,
+      "sha256": "a5e6fa3dd64446045b08a3b88f3975809f56c87c86a9d1fa15c18b61b0126041"
+    },
+    {
+      "path": "pyocd_debug_mcp/server.py",
+      "mode": "100644",
+      "blob": "e4de7a4a64e9630c58b230b07af3b5a8680ca236",
+      "bytes": 358275,
+      "sha256": "4a29d5944bf0261c64e80836556637a1aab5346b0f2f8660c6083a35ab4e1cc3"
+    },
+    {
+      "path": "pyocd_debug_mcp/services/__init__.py",
+      "mode": "100644",
+      "blob": "22c049b32913c443ad153bee2b4814dc848a8957",
+      "bytes": 61,
+      "sha256": "455387e272e22d2997dfcc2a9dff394cf398e10b579197681e02bc9b0824dd3c"
+    },
+    {
+      "path": "pyocd_debug_mcp/services/code_analysis.py",
+      "mode": "100644",
+      "blob": "a60064e560408f7913dc17edb4c37dc14bffe19c",
+      "bytes": 42976,
+      "sha256": "5cd181ee99179ca1337b147cb2579f7f23439ff332eef7053e156a8395770633"
+    },
+    {
+      "path": "pyocd_debug_mcp/services/connections.py",
+      "mode": "100644",
+      "blob": "659bc17ec6ed0a25f5bfb258325ea2690a572039",
+      "bytes": 10343,
+      "sha256": "e863883de274b4856385c7ebe7a34b3911baf7641d43d19e8249107a034f9f04"
+    },
+    {
+      "path": "pyocd_debug_mcp/services/session_runtime.py",
+      "mode": "100644",
+      "blob": "b051279815ec15453bfdca3d974407b5facbcba3",
+      "bytes": 6698,
+      "sha256": "127353b991b5f8d8a319957ed5089f96b6b5fa37c2a711f04e5bec126c9d92de"
+    },
+    {
+      "path": "pyocd_debug_mcp/services/symbols.py",
+      "mode": "100644",
+      "blob": "bd0e07e66a5799ac502db6f7e8a250da3afdae73",
+      "bytes": 4708,
+      "sha256": "8cd595f6d90e861d7554348c8b81a2df7a53f2b0716d13e0291f2ea7e86fc1f6"
+    },
+    {
+      "path": "pyocd_debug_mcp/services/target_control.py",
+      "mode": "100644",
+      "blob": "8f8d3976b5219f43375b4f88ca3c49bd2334067a",
+      "bytes": 7127,
+      "sha256": "84b4741ab94bf8e8568305c4672655c5a4a1dda951aaf667bb8f2fbc987565f1"
+    },
+    {
+      "path": "pyocd_debug_mcp/services/uart_capture.py",
+      "mode": "100644",
+      "blob": "6fa37c2a9f88dfd4c6e3f6c50ba2ec28c11064c0",
+      "bytes": 14367,
+      "sha256": "c54a6a793917cdc38f3e95fb79dac63c332134bcb0d330c10cb94c04b90e63c1"
+    },
+    {
+      "path": "pyocd_debug_mcp/services/uart_exchange_schema.py",
+      "mode": "100644",
+      "blob": "a9026eb40fbf57274e39f8c06ee626bfb50cf5a6",
+      "bytes": 6629,
+      "sha256": "72609d81ab433f17fe9e4d25ddfa86690d14ea8222dd9972acf81f8bcadfb11b"
+    },
+    {
+      "path": "pyocd_debug_mcp/setup_flow/__init__.py",
+      "mode": "100644",
+      "blob": "abcc52565f6947fcd6c3667be0b7965418f4ca57",
+      "bytes": 989,
+      "sha256": "8622c37a6f9c03bcc09ec96fc253aa00e4393ddfc091d116b4cd36796697ea9f"
+    },
+    {
+      "path": "pyocd_debug_mcp/setup_flow/board_catalog.py",
+      "mode": "100644",
+      "blob": "975df03053f1504b34ab95c3221575308afcf4b6",
+      "bytes": 19617,
+      "sha256": "c184551578bd56a166d02863e67a4084286b7a33da286d966479fa70c1011ffb"
+    },
+    {
+      "path": "pyocd_debug_mcp/setup_flow/datasheet_evidence.py",
+      "mode": "100644",
+      "blob": "65b76a9044391eec670968496db797223405cc56",
+      "bytes": 3771,
+      "sha256": "d2ac19dc34f9e52bafb67f314b3d90241e69ed2adea6d378f2d4e5751dc85256"
+    },
+    {
+      "path": "pyocd_debug_mcp/setup_flow/device_support.py",
+      "mode": "100644",
+      "blob": "f6d41753f54dd70d6761ebf1e89d789cacc60143",
+      "bytes": 55212,
+      "sha256": "abda0be82d67e76145e4c08466fa16444eaeca275e4f9e6e172f4f6042e10e07"
+    },
+    {
+      "path": "pyocd_debug_mcp/setup_flow/packs.py",
+      "mode": "100644",
+      "blob": "bd65498a50b5531cc8129c7e792b2675b535b6fb",
+      "bytes": 19210,
+      "sha256": "97430bb8eb49582b255a7ee95fa7eaeadca9c0e00a15c56dc2e92e77903f6722"
+    },
+    {
+      "path": "pyocd_debug_mcp/setup_flow/preflight.py",
+      "mode": "100644",
+      "blob": "95255ae4d2fed3f2419d8afe0c3c8d4febc0265d",
+      "bytes": 19822,
+      "sha256": "5d508c9c73e7b3d6c636fa57e85e35a298474f9423c5829f95e9d880d6f8c797"
+    },
+    {
+      "path": "pyocd_debug_mcp/setup_flow/research.py",
+      "mode": "100644",
+      "blob": "674a3ada4b4a73fbde5b3d06b8b1fa8871bf89d0",
+      "bytes": 8189,
+      "sha256": "9afa65fe51e10454ea6152a4cb36fe350cfec1a234c8b208ef3726760d2f22e3"
+    },
+    {
+      "path": "pyocd_debug_mcp/setup_flow/reviewed_evidence.py",
+      "mode": "100644",
+      "blob": "b4105193a79cd6728fb9e938889dcb6c5b213985",
+      "bytes": 12604,
+      "sha256": "41f20531be1d99f3b530181088286ceebe389db11ab6b807d34fc4bb0156fe39"
+    },
+    {
+      "path": "pyocd_debug_mcp/setup_flow/setup.py",
+      "mode": "100644",
+      "blob": "11cd617b177e07278b6b957e74879a25b8a538e1",
+      "bytes": 39024,
+      "sha256": "ad705a0cad102cad5cb76a343ec78a801458c85eed67a57fc718522c2b9c12f4"
+    },
+    {
+      "path": "pyocd_debug_mcp/setup_flow/targets.py",
+      "mode": "100644",
+      "blob": "160cb4df36dc2ecc7f9bd5a5ba0b5be92db08b31",
+      "bytes": 6568,
+      "sha256": "78a0922fe2b5d3bc9b48425c39d444033570a3e50a65e589444cf9b56626fb08"
+    },
+    {
+      "path": "pyocd_debug_mcp/setup_flow/validate.py",
+      "mode": "100644",
+      "blob": "887afa4a548734cec0259c5fe82ca2538a7ad9a9",
+      "bytes": 26177,
+      "sha256": "39e75aaaee38b705aa20fd5012c2d34e2de5d72df520919337d885eb767c327b"
+    },
+    {
+      "path": "pyocd_debug_mcp/sidecar.py",
+      "mode": "100644",
+      "blob": "08b0064ab49df91795a3d27aa7f4a59b88900375",
+      "bytes": 20329,
+      "sha256": "ae0dd279ca04d30aeae3e735040c6ee2344964180ad8c82db54cee5eb1d61d7d"
+    },
+    {
+      "path": "pyocd_debug_mcp/target_errors.py",
+      "mode": "100644",
+      "blob": "ad6e0a92463410c67bff4b8f9c05cab17ee445f5",
+      "bytes": 1221,
+      "sha256": "eb0c665b08dc3f14e24b699c6584e07fbc17abb94918f4ee9ead481eb1351f7c"
+    },
+    {
+      "path": "pyocd_debug_mcp/timeouts.py",
+      "mode": "100644",
+      "blob": "8898b4bbee80117a97f3391eb5cccdf9c430f099",
+      "bytes": 3840,
+      "sha256": "2f64fb623aeb312640d01d2ef93ba25d49d2cd96dda678ad6ed90e4c0fdb76ee"
+    },
+    {
+      "path": "pyocd_debug_mcp/tools/__init__.py",
+      "mode": "100644",
+      "blob": "1f69cd46f940588d94de328b1f4e65bf3dedb661",
+      "bytes": 250,
+      "sha256": "8e5e7424d52875147011e2bde5d0678d6fc5aab8a1b8508fcde9db525897b9cc"
+    },
+    {
+      "path": "pyocd_debug_mcp/tools/artifacts.py",
+      "mode": "100644",
+      "blob": "2a3ba40378e220f0399040c7161470bc2e8dc07f",
+      "bytes": 4657,
+      "sha256": "cc0a3ecb7a0276c774d7f4af4dcde1ba93fb0bbb7d67ba20aaaa0b8f85080d3c"
+    },
+    {
+      "path": "pyocd_debug_mcp/tools/batch.py",
+      "mode": "100644",
+      "blob": "993493ea6207022f9efa45d8250096f06354eada",
+      "bytes": 7226,
+      "sha256": "537a8b1816651ef5e0825828f04b5095e3ac4bf11ee352dd20874efa079be99d"
+    },
+    {
+      "path": "pyocd_debug_mcp/tools/breakpoints.py",
+      "mode": "100644",
+      "blob": "1770a2a8b6da0f88834afeb3cd999ead4ec1a332",
+      "bytes": 6262,
+      "sha256": "f02aacf0b4bb637ef076116a590c9b87619ba7767bb3f1f8a5a906ab51000e43"
+    },
+    {
+      "path": "pyocd_debug_mcp/tools/code_analysis.py",
+      "mode": "100644",
+      "blob": "ad6b774fb7a7214421f6240ed1968cff12f0c9ff",
+      "bytes": 4850,
+      "sha256": "00f86db369974c1e91980c4adc119b8d3792d641168637ccf06c2a9e3a7f7b16"
+    },
+    {
+      "path": "pyocd_debug_mcp/tools/discovery.py",
+      "mode": "100644",
+      "blob": "66b3e7de847e34ce0384c58c95f6a01999a4c383",
+      "bytes": 27331,
+      "sha256": "50319c274d0e57c34356ece8b6f524eb5f1b27a24f3b56172b31ce1839abf318"
+    },
+    {
+      "path": "pyocd_debug_mcp/tools/execution.py",
+      "mode": "100644",
+      "blob": "a1a5920432eea3336b7850e93d8a539bb88db7ea",
+      "bytes": 2166,
+      "sha256": "0bdf46d576fb9d53bb7c39d00b8258559e2f352ffa45f6be378344218aeffc07"
+    },
+    {
+      "path": "pyocd_debug_mcp/tools/flash.py",
+      "mode": "100644",
+      "blob": "9618bead7e8105b75cf6a4187d03f0ccf72b2226",
+      "bytes": 6615,
+      "sha256": "4dd645092438d4117f8b75f2aa3becc94d04008b708991f3cd494a8aa87828af"
+    },
+    {
+      "path": "pyocd_debug_mcp/tools/handshake.py",
+      "mode": "100644",
+      "blob": "12f9c21731b744d9669baae7e15c9fc645ad3724",
+      "bytes": 10620,
+      "sha256": "4a96b222f15a0995ae2a30aa0fb143ed4c708912f61f1a9dd8b9af0a1276e154"
+    },
+    {
+      "path": "pyocd_debug_mcp/tools/memory.py",
+      "mode": "100644",
+      "blob": "9bef9912b131566ddb1a5d06a0af23b5c42a65a8",
+      "bytes": 24160,
+      "sha256": "bf48fbc77c3a745d5cf2e873040e155bb90b41be65b54936a1c12b72fef234b3"
+    },
+    {
+      "path": "pyocd_debug_mcp/tools/misc.py",
+      "mode": "100644",
+      "blob": "c4fd2e265816a92cf90ddff5d1dfb124e858cd93",
+      "bytes": 2028,
+      "sha256": "e7a4bb8c017f094fbce95cb3fa0ff620f2eb1f9b2ef00f2500e3e60fa19a12bf"
+    },
+    {
+      "path": "pyocd_debug_mcp/tools/plans.py",
+      "mode": "100644",
+      "blob": "efa0f3bafda12bbc66827806bc61956ab6b9c0c9",
+      "bytes": 5856,
+      "sha256": "5545cc538c654629f28bc24f29705977ccdc8031e1b47bcbd0f08baf4c3f22b6"
+    },
+    {
+      "path": "pyocd_debug_mcp/tools/raw.py",
+      "mode": "100644",
+      "blob": "d25a0d73df31fc87774fa729525e9df262222c56",
+      "bytes": 18701,
+      "sha256": "23671c0dc3077a46022f766797177bd4cc2a062dd3182045d63d6cef5068979d"
+    },
+    {
+      "path": "pyocd_debug_mcp/tools/registers.py",
+      "mode": "100644",
+      "blob": "95986b9322f8787ab8141c0eeccdba3546f496d4",
+      "bytes": 10164,
+      "sha256": "ab509ef9fb9b4f56824a999782063d1944e52d360e079a0e4a3938c5c79af8ea"
+    },
+    {
+      "path": "pyocd_debug_mcp/tools/remote_probes.py",
+      "mode": "100644",
+      "blob": "571375a5df655c6005f7348da893c7d2eea860b5",
+      "bytes": 9764,
+      "sha256": "fd7e11d46c003babeb551458f46a062ff6a7880252a1a996082108b47e39ecd7"
+    },
+    {
+      "path": "pyocd_debug_mcp/tools/serial.py",
+      "mode": "100644",
+      "blob": "4f37e9c25b92dd7bad70c1e0ea470e3dc1170bf6",
+      "bytes": 19250,
+      "sha256": "aafbbd411a5d50fd7f6d5e8c47869b2342f9104d3de9dc03797e1192d336d802"
+    },
+    {
+      "path": "pyocd_debug_mcp/tools/session.py",
+      "mode": "100644",
+      "blob": "ad02297ca8bb31d3e87b764607ce7fa6dde554c8",
+      "bytes": 2432,
+      "sha256": "524f061864492ada02d402e6e48c3d1ea74f667bd5758d2158862dff5b5bfab2"
+    },
+    {
+      "path": "pyocd_debug_mcp/tools/setup.py",
+      "mode": "100644",
+      "blob": "1fda0484499d176f0735b9f9c3c73f5afacf35af",
+      "bytes": 30030,
+      "sha256": "9ae92f24a5bcbffca1d1265ce7ce2fe885a35644e3bb1ae76deecfa8563e654f"
+    },
+    {
+      "path": "pyocd_debug_mcp/tools/unlock.py",
+      "mode": "100644",
+      "blob": "3cba138ce7cba87431bc93998b440b698eb5be8b",
+      "bytes": 42734,
+      "sha256": "717aa9d419ff7580d2cdc5fbcca38e0a70a839b8b20df28db5fba2a3cc745fcc"
+    }
+  ],
+  "qualification": "Exact original production source, no edits or current producer substitutions. Execution must use isolated child and real locked dependencies in Actions. This snapshot alone is not original-producer execution or migration acceptance."
+}

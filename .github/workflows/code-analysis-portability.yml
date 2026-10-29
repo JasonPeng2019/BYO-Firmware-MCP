@@ -102,6 +102,9 @@ jobs:
           tests/test_code_analysis_posix_ownership.py
           tests/test_code_analysis_runtime_contract.py
           tests/test_clangd_adapter_unit.py
+          tests/test_final_policy_fingerprint_migration.py
+          tests/policy_one_producer.py
+          tests/prepared_model_method.py
 
       - name: Type check analysis runtime
         if: ${{ !cancelled() && steps.dependencies.outcome == 'success' }}
@@ -148,6 +151,20 @@ jobs:
           uv run python -m unittest -v
           tests.test_generic_builtin_safety_map.NrfRegisteredPackGeometry
           tests.test_tiered_acceptance_workspace.NrfPublicRegeneratedMapControls
+          tests.test_final_policy_fingerprint_migration
+
+      - name: Original deterministic model-pin oracle without authentication
+        if: ${{ !cancelled() && steps.dependencies.outcome == 'success' }}
+        run: >-
+          uv run python tests/prepared_model_method.py
+          --firmware-source . --pin-oracle
+          --evidence "${{ env.BYO_FR15_CASE_EVIDENCE }}/model-pin-oracle"
+
+      - name: Retain preparation formatter diagnostic without modifying source
+        if: ${{ !cancelled() && steps.dependencies.outcome == 'success' }}
+        run: |
+          mkdir -p "$BYO_FR15_CASE_EVIDENCE"
+          uv run ruff format --diff tests/test_final_policy_fingerprint_migration.py tests/policy_one_producer.py tests/prepared_model_method.py > "$BYO_FR15_CASE_EVIDENCE/preparation-format.diff" || exit $?
 
       - name: Build server wheel and source distribution
         if: ${{ !cancelled() && steps.dependencies.outcome == 'success' }}
