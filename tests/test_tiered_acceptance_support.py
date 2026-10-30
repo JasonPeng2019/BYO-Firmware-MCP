@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import tempfile
+import threading
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -15,11 +16,57 @@ from tests.tiered_acceptance_support import (
     MONITOR_RELATIVE,
     isolated_project,
     tiered_test_server,
+    _remove_monitor_root,
 )
 
 
 class TieredAcceptanceMonitorIsolationTests(unittest.TestCase):
     """The seven observed acceptance error-path reports must be disposable."""
+
+    def test_acknowledged_segment_can_disappear_during_fixture_removal(self) -> None:
+        """A real concurrent unlink after enumeration must leave no owned data."""
+
+        with tempfile.TemporaryDirectory(prefix="monitor-removal-") as temporary:
+            root = Path(temporary) / "monitor"
+            root.mkdir()
+            segment = root / "acknowledged.jsonl"
+            segment.write_text("sealed\n", encoding="utf-8")
+            enumerated, deleted = threading.Event(), threading.Event()
+            unlink = os.unlink
+
+            def acknowledge() -> None:
+                if enumerated.wait(5):
+                    unlink(segment)
+                    deleted.set()
+
+            def remove(path, *args, **kwargs):
+                if Path(path).name == segment.name:
+                    enumerated.set()
+                    self.assertTrue(deleted.wait(5), "Concurrent ACK did not unlink its real file")
+                return unlink(path, *args, **kwargs)
+
+            worker = threading.Thread(target=acknowledge)
+            worker.start()
+            try:
+                with patch("os.unlink", side_effect=remove):
+                    _remove_monitor_root(root)
+            finally:
+                enumerated.set()
+                worker.join(5)
+            self.assertFalse(worker.is_alive())
+            self.assertTrue(deleted.is_set())
+            self.assertFalse(root.exists())
+
+    def test_fixture_removal_does_not_hide_permission_denial(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="monitor-denial-") as temporary:
+            root = Path(temporary) / "monitor"
+            root.mkdir()
+            segment = root / "denied.jsonl"
+            segment.write_text("sealed\n", encoding="utf-8")
+            with patch("os.unlink", side_effect=PermissionError("controlled denial")):
+                with self.assertRaisesRegex(PermissionError, "controlled denial"):
+                    _remove_monitor_root(root)
+            self.assertTrue(segment.is_file())
 
     def test_fixture_closes_active_ledger_and_delivery_before_removing_data(self) -> None:
         """E01: a fixture must end the real server lifecycle before strict deletion."""

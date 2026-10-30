@@ -307,7 +307,26 @@ def tiered_test_server(project_root: Path) -> Generator[Any, None, None]:
             if package is not None and getattr(package, "server", None) is discarded:
                 delattr(package, "server")
             if monitor_root.exists():
-                shutil.rmtree(monitor_root)
+                _remove_monitor_root(monitor_root)
+
+
+def _remove_monitor_root(root: Path) -> None:
+    """Remove owned fixture data while bounded closeout may unlink an ACKed file.
+
+    Python3.12 rmtree raises when an interior entry disappears after enumeration.
+    An absent entry satisfies deletion; permission errors and other failures do
+    not. Production closeout keeps its original client-bound deadline.
+    """
+
+    def disappeared(_operation: Any, path: str, failure: Any) -> None:
+        error = failure[1]
+        if not isinstance(error, FileNotFoundError) or Path(path) == root:
+            raise error
+
+    # onerror also supports the project's Python3.10/3.11 test interpreters.
+    shutil.rmtree(root, onerror=disappeared)
+    if root.exists():
+        raise AssertionError(f"Owned monitor fixture root remains after removal: {root}")
 
 
 class DeterministicTargetBackend:
