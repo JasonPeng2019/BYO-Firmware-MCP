@@ -584,7 +584,8 @@ is consulted by analysis. Check-in observation/deadlines remain in place.
 The service stores its own local analysis reports and metadata under
 `.firm/code-analysis/`. Clangd may also maintain its ordinary background-index
 cache at `<selected-database-directory>/.cache/clangd/index/`, including its
-generated `.gitignore` and index shards. This native cache is disposable analysis
+generated `.gitignore`, index shards and their atomic-write
+`<basename>.<16 hex>.idx.temp-stream-<6 hex>` intermediates. This native cache is disposable analysis
 data; its location does not change the selected original database or authorize
 other project writes. The original specification permits local analysis caches;
 it does not require a modified clangd build to relocate this native cache.

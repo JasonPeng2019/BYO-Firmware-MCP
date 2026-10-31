@@ -474,6 +474,27 @@ def native_start_token(pid: int) -> str | None:
         kernel.CloseHandle(handle)
 
 
+def windows_retained_birth(process: Any) -> tuple[str, int]:
+    """Birth and exit code read through the Popen-retained Windows process handle.
+
+    The retained handle keeps the process object, and so its PID, from reuse;
+    an already-terminal child still reports its actual creation time.
+    """
+    from ctypes import wintypes
+
+    kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel.GetProcessTimes.argtypes = [wintypes.HANDLE] + [ctypes.POINTER(wintypes.FILETIME)] * 4
+    kernel.GetExitCodeProcess.argtypes = [wintypes.HANDLE, ctypes.POINTER(wintypes.DWORD)]
+    handle = wintypes.HANDLE(int(getattr(process, "_handle")))
+    code = wintypes.DWORD()
+    if not kernel.GetExitCodeProcess(handle, ctypes.byref(code)):
+        raise ctypes.WinError(ctypes.get_last_error())
+    times = [wintypes.FILETIME() for _ in range(4)]
+    if not kernel.GetProcessTimes(handle, *(ctypes.byref(t) for t in times)):
+        raise ctypes.WinError(ctypes.get_last_error())
+    return f"win:{times[0].dwHighDateTime:08x}{times[0].dwLowDateTime:08x}", code.value
+
+
 class OwnedSpawns:
     def __init__(self, directory: Path, redirect: Any = None) -> None:
         self.directory = directory
@@ -518,6 +539,13 @@ class OwnedSpawns:
             # A fast version peer may already be a retained zombie with a real birth.
             observation = posix_process_identity(process.pid)
             token = observation[0] if observation else None
+        elif token is None and os.name == "nt":
+            # A fast version peer may already have exited after its suspended
+            # marker birth; the retained handle still binds that same process.
+            token, exit_code = windows_retained_birth(process)
+            record["terminal_at_observation"] = exit_code != 259
+        if os.name == "nt" and record["marker"] is not None:
+            assert token == record["marker"]["start_token"], record
         record["native_creation"] = token
         if marker is None and os.name == "posix":
             # The accepted early-terminal boundary returns only after scoped reap.

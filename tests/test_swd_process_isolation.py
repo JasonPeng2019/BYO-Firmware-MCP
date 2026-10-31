@@ -671,6 +671,37 @@ print(json.dumps(payload, separators=(",", ":")))
         finally:
             client.close()
 
+    def test_actual_worker_no_session_protocol_does_not_import_native_provider(self) -> None:
+        from pyocd_debug_mcp.adapters.swd_process import _WorkerClient
+        from pyocd_debug_mcp.target_errors import TargetConnectionError
+
+        # Refuse only the unneeded native import; use the actual worker loop and
+        # parent protocol, keeping stdin open for both replies and normal close.
+        script = """
+import builtins
+from pyocd_debug_mcp.adapters import provider_worker
+original = builtins.__import__
+def importing(name, *args, **kwargs):
+    if name == "pyocd" or name.startswith("pyocd.") or name == "pyocd_debug_mcp.adapters.swd_pyocd":
+        raise AssertionError("no-session protocol imported the native provider")
+    return original(name, *args, **kwargs)
+builtins.__import__ = importing
+provider_worker.main()
+"""
+        client = _WorkerClient(
+            worker_argv=[sys.executable, "-B", "-c", script],
+            deadline=time.monotonic() + 10,
+        )
+        try:
+            for _ in range(2):
+                with self.assertRaisesRegex(TargetConnectionError, "no live target session"):
+                    client.call("get_state", {}, timeout=1)
+        finally:
+            client.close()
+        self.assertTrue(client._cleanup_confirmed)
+        self.assertIsNotNone(client._process.returncode)
+        self.assertIsNone(client._marker)
+
     def test_faulted_worker_does_not_interrupt_a_healthy_worker(self) -> None:
         from pyocd_debug_mcp.target_errors import TargetConnectionError
 
@@ -1048,7 +1079,7 @@ print(json.dumps(payload, separators=(",", ":")))
         )
         handle = TargetSessionHandle(session, None, None, "route", None)
         with patch(
-            "pyocd_debug_mcp.adapters.provider_worker_runtime.probe_family_from_pyocd_probe",
+            "pyocd_debug_mcp.probe_inventory.probe_family_from_pyocd_probe",
             return_value="jlink",
         ):
             metadata = _metadata(handle)
@@ -1146,7 +1177,7 @@ print(json.dumps(payload, separators=(",", ":")))
             "frequency_hz": 1_000_000,
         }
         with patch(
-            "pyocd_debug_mcp.adapters.provider_worker_runtime.probe_family_from_pyocd_probe",
+            "pyocd_debug_mcp.probe_inventory.probe_family_from_pyocd_probe",
             return_value="fake",
         ):
             for operation in ("open", "connect_under_reset"):

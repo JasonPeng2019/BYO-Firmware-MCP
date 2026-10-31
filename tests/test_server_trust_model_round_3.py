@@ -17,6 +17,7 @@ from pyocd_debug_mcp import server
 from pyocd_debug_mcp.adapters.swd_interface import TargetSessionHandle
 from pyocd_debug_mcp.artifact_collector import ArtifactRole, collect_artifacts
 from pyocd_debug_mcp.firmstore.store import FirmStore
+from pyocd_debug_mcp.hardware_inventory import EMPTY_INVENTORY_SNAPSHOT
 from pyocd_debug_mcp.kernel.finalizers import FinalizerValidationError, parse_finalizer
 from pyocd_debug_mcp.kernel.hygiene import cleanup_stale_owned_processes, require_clean_startup
 from pyocd_debug_mcp.kernel.processes import ProcessIdentityUnavailable, ProcessMarker
@@ -241,6 +242,11 @@ class RoundThreeRegressionTests(unittest.TestCase):
         }
         with (
             patch.object(server, "_profile_repository", SimpleNamespace(load_all=lambda: ())),
+            patch.object(
+                server,
+                "_hardware_inventory",
+                SimpleNamespace(snapshot=lambda: EMPTY_INVENTORY_SNAPSHOT),
+            ),
             patch.object(server, "_validation_inventory", return_value=inventory),
             patch.object(server, "_replace_setup_assignments"),
         ):

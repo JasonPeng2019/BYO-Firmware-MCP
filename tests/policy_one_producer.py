@@ -1,6 +1,7 @@
 """Produce a genuine old map from the complete, unmodified policy-1 source.
 
-Actions only. The child reads the registered pack/profile/datasheet from the
+Nonbuilding source control for local execution and Actions. The child reads the
+registered pack/profile/datasheet from the
 test's private project. An empty separate compatibility-map repository prevents
 the current map from becoming an input to the historical producer. No device is
 opened and no current product module may satisfy an old-source import.
@@ -18,8 +19,6 @@ import zipfile
 
 
 def main():
-    if os.environ.get("GITHUB_ACTIONS") != "true":
-        raise SystemExit("Historical producer executes only in GitHub Actions")
     parser = argparse.ArgumentParser()
     parser.add_argument("--project", type=Path, required=True)
     parser.add_argument("--profile", type=Path, required=True)

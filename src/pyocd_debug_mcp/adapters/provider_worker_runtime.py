@@ -7,14 +7,10 @@ import math
 import sys
 from dataclasses import fields
 from pathlib import Path
-from typing import Any, BinaryIO, cast
+from typing import TYPE_CHECKING, Any, BinaryIO, cast
 
 from pyocd_debug_mcp.adapters.swd_interface import TargetSessionHandle
-from pyocd_debug_mcp.adapters.swd_pyocd import (
-    PyOCDSWDInterface,
-)
 from pyocd_debug_mcp.board_config import BoardConfig
-from pyocd_debug_mcp.probe_inventory import probe_family_from_pyocd_probe
 from pyocd_debug_mcp.target_errors import (
     LockedTargetError,
     ProbeNotFoundError,
@@ -25,6 +21,9 @@ from pyocd_debug_mcp.target_errors import (
     UnsupportedArtifactError,
 )
 from pyocd_debug_mcp.timeouts import ServerTimeoutConfig
+
+if TYPE_CHECKING:
+    from pyocd_debug_mcp.adapters.swd_pyocd import PyOCDSWDInterface
 
 _VERSION = 1
 _BOARD_FIELDS = {field.name for field in fields(BoardConfig)}
@@ -238,6 +237,8 @@ def _timeouts(raw: object) -> ServerTimeoutConfig:
 
 
 def _metadata(handle: TargetSessionHandle) -> dict[str, Any]:
+    from pyocd_debug_mcp.probe_inventory import probe_family_from_pyocd_probe
+
     session = handle.session
     probe = getattr(session, "probe", None)
     board = getattr(session, "board", None)
@@ -361,7 +362,7 @@ def _dispatch(
 
 
 def main(protocol: BinaryIO) -> None:
-    adapter = PyOCDSWDInterface()
+    adapter: PyOCDSWDInterface | None = None
     handle: TargetSessionHandle | None = None
     last_request_id = 0
     _send(protocol, {"version": _VERSION, "ready": True})
@@ -398,8 +399,14 @@ def main(protocol: BinaryIO) -> None:
                     raise ValueError("invalid worker request schema")
                 _validate_arguments(operation, arguments)
                 last_request_id = request_id
+                # Readiness and no-session replies need no native provider. Load
+                # pyOCD only for an actual open, within that request's deadline.
+                if adapter is None and operation in {"open", "connect_under_reset"}:
+                    from pyocd_debug_mcp.adapters.swd_pyocd import PyOCDSWDInterface
+
+                    adapter = PyOCDSWDInterface()
                 handle, result, exit_after = _dispatch(
-                    adapter,
+                    cast("PyOCDSWDInterface", adapter),
                     handle,
                     operation,
                     arguments,

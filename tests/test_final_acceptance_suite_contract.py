@@ -944,7 +944,6 @@ class OrdinaryFinalization(unittest.TestCase):
 
 class OrdinaryInterpreterExitContracts(unittest.TestCase):
     def setUp(self):
-        self.assertEqual(os.environ.get("GITHUB_ACTIONS"), "true", "Actions-only controls")
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
         self.root = Path(temporary.name)

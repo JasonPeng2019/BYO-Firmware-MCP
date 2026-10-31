@@ -41,6 +41,7 @@ from pyocd_debug_mcp.tools.plans import forbid_unknown_tool_arguments
 
 from test_clangd_adapter_unit import PEER, fake_factory, make_project
 from test_code_analysis_managed_runtime_unit import staged_runtime
+from tests.code_analysis_support import permitted_analysis_write
 
 
 def record_regression(name, value):
@@ -1615,8 +1616,7 @@ class RealClangdTests(unittest.TestCase):
                 and path not in cache_directories
                 and not (
                     path.is_file()
-                    and path.parent == native_cache
-                    and (path.name == ".gitignore" or path.suffix == ".idx")
+                    and permitted_analysis_write(path.relative_to(self.root).as_posix(), "build")
                 )
             }
 

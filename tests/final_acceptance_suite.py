@@ -1,4 +1,4 @@
-"""Finite Actions-only complete source pass with per-method/subtest accounting.
+"""Complete Actions source pass and nonbuilding local workers with method accounting.
 
 No test module is imported by the parent. The real-agent module is enumerated
 from AST and blocked before import. Each other module runs once in a fresh
@@ -1283,8 +1283,10 @@ def main():
     parser.add_argument("--acquire-official-pack", type=Path)
     parser.add_argument("--module-timeout", type=int, default=900)
     args = parser.parse_args()
-    if os.environ.get("GITHUB_ACTIONS") != "true":
-        raise SystemExit("Final source execution is Actions-only after ROOT freeze")
+    if os.environ.get("GITHUB_ACTIONS") != "true" and not args.worker:
+        raise SystemExit(
+            "Complete final orchestration requires Actions; local source checks use --worker"
+        )
     if args.acquire_official_pack:
         return acquire_official_pack(args.acquire_official_pack, args.evidence)
     if args.worker:

@@ -489,11 +489,12 @@ class AnalysisProject:
 # service's own reports/metadata live under ``.firm/code-analysis/``, and stock
 # clangd may keep its background index in
 # ``<selected-database-directory>/.cache/clangd/index/`` as a generated
-# ``.gitignore`` plus ``<basename>.<16 hex>.idx`` shards.  Nothing else may be
+# ``.gitignore`` plus ``<basename>.<16 hex>.idx`` shards and their native
+# ``.temp-stream-<6 hex>`` atomic-write intermediates. Nothing else may be
 # created, removed or changed.  The earlier strict "only .firm" oracle was an
 # overbroad expectation and stays recorded as a failed execution, not a pass.
 SERVICE_WRITE_ROOT = ".firm/code-analysis"
-_NATIVE_SHARD = re.compile(r"[^/]+\.[0-9A-Fa-f]{16}\.idx")
+_NATIVE_SHARD = re.compile(r"[^/]+\.[0-9A-Fa-f]{16}\.idx(?:\.temp-stream-[0-9A-Fa-f]{6})?")
 
 
 def permitted_analysis_write(relative: str, database_directory: str) -> bool:

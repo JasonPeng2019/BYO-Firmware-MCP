@@ -396,6 +396,7 @@ class AnalysisWriteBoundaryOracle(unittest.TestCase):
             ".firm/code-analysis/reports/run-1/report.json",
             "build/.cache/clangd/index/.gitignore",
             f"build/.cache/clangd/index/{self.SHARD}",
+            f"build/.cache/clangd/index/{self.SHARD}.temp-stream-ed91fb",
         ):
             self.project.write_text(relative, "analysis data\n")
         self.assertEqual(self.changes(), [])
@@ -415,6 +416,13 @@ class AnalysisWriteBoundaryOracle(unittest.TestCase):
             ),
             f"created: build/.cache/clangd/index/{self.SHARD}.tmp": lambda: write(
                 f"build/.cache/clangd/index/{self.SHARD}.tmp", "not a shard"
+            ),
+            f"created: build/.cache/clangd/index/{self.SHARD}.temp-stream-nothex": lambda: write(
+                f"build/.cache/clangd/index/{self.SHARD}.temp-stream-nothex",
+                "not a native temporary shard",
+            ),
+            f"created: .cache/clangd/index/{self.SHARD}.temp-stream-ed91fb": lambda: write(
+                f".cache/clangd/index/{self.SHARD}.temp-stream-ed91fb", "wrong database directory"
             ),
             f"created: build/.cache/clangd/{self.SHARD}": lambda: write(
                 f"build/.cache/clangd/{self.SHARD}", "outside the index directory"

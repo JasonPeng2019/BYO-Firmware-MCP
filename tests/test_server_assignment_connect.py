@@ -16,6 +16,7 @@ from pyocd_debug_mcp.adapters.swd_interface import (
 )
 from pyocd_debug_mcp.board_config import BoardConfig
 from pyocd_debug_mcp.firmstore.profiles import ProfileError
+from pyocd_debug_mcp.hardware_inventory import EMPTY_INVENTORY_SNAPSHOT
 from pyocd_debug_mcp.probe_inventory import registered_provider_ids
 from pyocd_debug_mcp.services.connections import ConnectionManager, probe_connection_id
 from pyocd_debug_mcp.setup_flow.setup import RunAssignmentStore
@@ -438,6 +439,12 @@ class AssignmentAwareConnectTests(unittest.TestCase):
         )
         with (
             patch.object(server._profile_repository, "load_all", return_value=[]),
+            # No real probe scan: the overview's one snapshot is deterministic.
+            patch.object(
+                server,
+                "_hardware_inventory",
+                SimpleNamespace(snapshot=lambda: EMPTY_INVENTORY_SNAPSHOT),
+            ),
             patch.object(
                 server,
                 "_validation_inventory",

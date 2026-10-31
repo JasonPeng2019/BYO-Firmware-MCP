@@ -34,9 +34,64 @@ from tests.code_analysis_managed_support import (
     native_start_token,
     production,
     tree_hashes,
+    windows_retained_birth,
     write_json,
 )
 from tests.code_analysis_support import AnalysisProject, permitted_analysis_write
+
+
+@unittest.skipUnless(os.name == "nt", "Windows retained process handles")
+class OwnedSpawnObserverTests(unittest.TestCase):
+    def test_retained_birth_distinguishes_live_and_terminal_child(self) -> None:
+        processes = production("kernel.processes")
+        base = EVIDENCE / "h" / uuid.uuid4().hex[:6]
+        store = processes.ProcessMarkerStore(base / "markers")
+        child, marker = processes.popen_owned(
+            [sys.executable, "-B", "-c", "import sys; sys.stdin.buffer.read(1)"],
+            marker_store=store,
+            stdin=subprocess.PIPE,
+        )
+        try:
+            birth, code = windows_retained_birth(child)
+            self.assertEqual(code, 259)
+            self.assertEqual(native_start_token(child.pid), birth)
+            self.assertEqual(json.loads(marker.read_bytes())["start_token"], birth)
+            child.communicate(input=b"x", timeout=15)
+            self.assertEqual(child.returncode, 0)
+            self.assertIsNone(native_start_token(child.pid))
+            self.assertEqual(windows_retained_birth(child), (birth, 0))
+        finally:
+            cleaned = processes.terminate_process_group(child)
+            if cleaned:
+                store.remove(marker)
+            self.assertTrue(cleaned)
+        self.assertFalse(marker.exists())
+
+    def test_terminal_observation_keeps_marker_cleanup_assertion(self) -> None:
+        base = EVIDENCE / "h" / uuid.uuid4().hex[:6]
+        observed = OwnedSpawns(base)
+        original = observed.original
+
+        def terminal_spawn(argv: list[str], **kwargs: Any) -> Any:
+            child, marker = original(argv, **kwargs)
+            child.wait(timeout=15)
+            return child, marker
+
+        observed.original = terminal_spawn
+        with observed:
+            child, marker = observed.spawn([sys.executable, "-B", "-c", "pass"])
+            record = observed.children[0][2]
+            self.assertTrue(record["terminal_at_observation"])
+            self.assertEqual(record["native_creation"], record["marker"]["start_token"])
+            with self.assertRaises(AssertionError):
+                observed.check_cleanup()
+            self.assertTrue(observed.processes.terminate_process_group(child))
+            observed.store.remove(marker)
+            observed.check_cleanup()
+
+    def test_invalid_retained_handle_cannot_supply_a_birth(self) -> None:
+        with self.assertRaises(OSError):
+            windows_retained_birth(SimpleNamespace(_handle=0))
 
 
 class NativeCase(unittest.TestCase):
@@ -522,7 +577,9 @@ class NativeManagedBinding(NativeCase):
         entries = []
         original_db = json.loads((arm_root / "build/compile_commands.json").read_bytes())
         for entry in original_db:
-            relative = Path(entry["file"]).relative_to(source_root).as_posix()
+            # The immutable DB records its original build root; join through it.
+            relative = Path(entry["file"]).relative_to(entry["directory"]).as_posix()
+            self.assertIn(relative, copied)
             args = [
                 "clang++" if relative.endswith(".cpp") else "clang",
                 "--target=arm-none-eabi",

@@ -1919,6 +1919,7 @@ os._exit(0)
                 with ExitStack() as faults:
 
                     def fail_after_registration(pid):
+                        nonlocal before
                         if not captured and observed.children:
                             process, marker, record = observed.children[0]
                             self.assertEqual(process.pid, pid)
@@ -1944,6 +1945,10 @@ os._exit(0)
                                         ),
                                     )
                                 )
+                            # Bound retirement after the injected observer error;
+                            # fixture process startup/exit staging is a separate phase.
+                            before = time.monotonic()
+                            record["observer_failure_at"] = before
                             raise OSError("independent observer failed after registration")
                         return actual_token(pid)
 
@@ -1983,6 +1988,7 @@ os._exit(0)
                 self.assertTrue(process._stop_observer.is_set())
                 self.assertFalse(process._observer.is_alive())
                 receipt = process.cleanup_receipt
+                self.assertLess(receipt["elapsed_seconds"], receipt["budget_seconds"])
                 if case == "healthy":
                     self.assert_scoped_receipt(receipt)
                     self.assertEqual(receipt["leader_exit"], 0)

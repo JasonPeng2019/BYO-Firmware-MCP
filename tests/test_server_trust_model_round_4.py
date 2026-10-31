@@ -21,6 +21,7 @@ from pyocd_debug_mcp.artifact_collector import (
     _validate_destination,
     collect_artifacts,
 )
+from pyocd_debug_mcp.hardware_inventory import EMPTY_INVENTORY_SNAPSHOT
 from pyocd_debug_mcp.kernel.finalizers import FinalizerValidationError, parse_finalizer
 from pyocd_debug_mcp.kernel.hygiene import cleanup_stale_owned_processes, require_clean_startup
 from pyocd_debug_mcp.kernel.operations import operation_timeout_seconds
@@ -270,6 +271,11 @@ class RoundFourRegressionTests(unittest.TestCase):
         inventory = SimpleNamespace(probes=probes, serial_ports=())
         with (
             patch.object(server._profile_repository, "load_all", return_value=[]),
+            patch.object(
+                server,
+                "_hardware_inventory",
+                SimpleNamespace(snapshot=lambda: EMPTY_INVENTORY_SNAPSHOT),
+            ),
             patch("pyocd_debug_mcp.server._validation_inventory", return_value=inventory),
             patch("pyocd_debug_mcp.server._replace_setup_assignments"),
         ):

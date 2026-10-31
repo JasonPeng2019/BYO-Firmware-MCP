@@ -1,4 +1,4 @@
-"""Actions-native ordinary fork/wait workload, with explicit identity receipts."""
+"""Nonbuilding POSIX fork/wait workload, with explicit identity receipts."""
 
 from __future__ import annotations
 
@@ -38,8 +38,8 @@ def wait_file(path: Path) -> None:
 
 
 def main() -> None:
-    if os.environ.get("GITHUB_ACTIONS") != "true" or os.name != "posix":
-        raise SystemExit("native POSIX fixtures execute in Actions only")
+    if os.name != "posix":
+        raise SystemExit("native POSIX fixtures require a POSIX host")
     root = Path(sys.argv[2])
     role, mode = sys.argv[1], sys.argv[3]
     receipt(root, role)
