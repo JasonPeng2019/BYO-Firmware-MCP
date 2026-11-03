@@ -7,12 +7,14 @@ nothing ever left the machine.
 
 from __future__ import annotations
 
+import inspect
 import json
 import threading
 import time
 import unittest
+from unittest import mock
 
-from pyocd_debug_mcp.monitor.delivery import DeliveryService
+from pyocd_debug_mcp.monitor.delivery import CLIENT_KILL_GRACE_SECONDS, DeliveryService
 from pyocd_debug_mcp.monitor.ledger import SegmentLedger, file_identity
 from pyocd_debug_mcp.monitor.paths import resolve_store_root
 from pyocd_debug_mcp.monitor.transport import (
@@ -809,6 +811,11 @@ class ClosingOut(MonitorTestCase):
         keeps that fixed overhead small relative to the gap, so the test
         distinguishes one shared deadline from two stacked ones instead of
         measuring scheduler noise.
+
+        That tolerance also means this real-thread test only catches the passed
+        budget being spent twice. A step falling back to its own default (the
+        default or a mixed composition) adds at most another 0.4s, inside the
+        tolerance; the virtual-clock test below catches those deterministically.
         """
 
         store = resolve_store_root()
@@ -853,6 +860,77 @@ class ClosingOut(MonitorTestCase):
             "budget -- looks like drain and stop are spending independent "
             "budgets again",
         )
+
+    def test_close_for_shutdown_waits_fit_one_budget_at_default_and_passed(self) -> None:
+        """Regression test for C-3 that does not depend on thread timing.
+
+        Each step is replaced by a recorder that resolves the wait it was
+        allowed, defaults included, and charges all of it to a virtual clock --
+        exactly what a wedged transport would cost. The waits must sum to no
+        more than the budget, and at the default (what ``IssueMonitor.closeout``
+        uses) to no more than ``CLIENT_KILL_GRACE_SECONDS``. Any step spending
+        its own budget, passed or default, overshoots on at least one case here.
+        """
+
+        store = resolve_store_root()
+        ledger = SegmentLedger(store, "ws", "run-1")
+        add_snapshot(ledger)
+        sealed = ledger.seal()
+        assert sealed is not None
+
+        clock = [0.0]
+
+        class VirtualTime:
+            # ``close_for_shutdown`` is the delivery module's only clock reader.
+            @staticmethod
+            def monotonic() -> float:
+                return clock[0]
+
+        default_budget = (
+            inspect.signature(DeliveryService.close_for_shutdown).parameters["budget"].default
+        )
+        for budget in (None, 0.1, 1.0):
+            with self.subTest(budget=budget):
+                service = DeliveryService(store, "ws", "run-1", NullTransport(), None)
+                waits: list[tuple[str, float]] = []
+
+                def drain(*args, **kwargs):  # type: ignore[no-untyped-def]
+                    bound = inspect.signature(DeliveryService.drain_for_closeout).bind(
+                        service, *args, **kwargs
+                    )
+                    bound.apply_defaults()
+                    self.assertEqual(list(bound.arguments["segments"]), [sealed])
+                    waits.append(("drain", bound.arguments["budget"]))
+                    clock[0] += bound.arguments["budget"]
+
+                def stop(*args, **kwargs):  # type: ignore[no-untyped-def]
+                    bound = inspect.signature(DeliveryService.stop).bind(service, *args, **kwargs)
+                    bound.apply_defaults()
+                    waits.append(("stop", bound.arguments["timeout"]))
+                    clock[0] += bound.arguments["timeout"]
+
+                started = clock[0]
+                with (
+                    mock.patch("pyocd_debug_mcp.monitor.delivery.time", VirtualTime),
+                    mock.patch.object(service, "drain_for_closeout", drain),
+                    mock.patch.object(service, "stop", stop),
+                ):
+                    if budget is None:
+                        service.close_for_shutdown([sealed])
+                    else:
+                        service.close_for_shutdown([sealed], budget=budget)
+                spent = clock[0] - started
+                allowed = default_budget if budget is None else budget
+
+                self.assertEqual([name for name, _ in waits], ["drain", "stop"])
+                self.assertLessEqual(
+                    spent,
+                    allowed + 1e-9,
+                    f"drain and stop may wait {waits}, {spent:.3f}s in total, "
+                    f"against one {allowed}s budget",
+                )
+                if budget is None:
+                    self.assertLessEqual(spent, CLIENT_KILL_GRACE_SECONDS)
 
     def test_report_produces_a_real_sentry_envelope(self) -> None:
         """A dead SDK path would otherwise hide behind the JSON copy."""

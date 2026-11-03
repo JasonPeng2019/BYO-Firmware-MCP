@@ -203,6 +203,7 @@ class MonitorToolSurface(MonitorTestCase):
         self.monitor.bind_workspace(None)
         payload = json.loads(self.tools[REPORT_TOOL_NAME](**issue_form()))
         self.assertEqual(payload["status"], "report_recorded")
+        self.settle()
         self.assertTrue(self.report_files())
 
     def test_malformed_report_is_rejected_not_recorded(self) -> None:
@@ -226,6 +227,7 @@ class MonitorToolSurface(MonitorTestCase):
         payload = json.loads(self.tools[CHECKIN_TOOL_NAME](**checkin_form()))
         self.assertEqual(payload["status"], "checkin_recorded")
         self.assertIn("summary_id", payload)
+        self.settle()
         self.assertFalse(self.report_files())
 
     def test_monitor_tool_names_cover_the_surface(self) -> None:
@@ -262,6 +264,7 @@ class ProfessionalBuild(MonitorTestCase):
     def test_refused_report_stores_no_narrative(self) -> None:
         self.monitor.bind_workspace(None)
         self.tools[REPORT_TOOL_NAME](**issue_form())
+        self.settle()
         self.assertFalse(self.report_files())
         self.assertNotIn("closed-loop speed control", self.all_store_text())
 

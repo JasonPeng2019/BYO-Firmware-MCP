@@ -159,6 +159,7 @@ class MechanicalReportPrivacy(MonitorTestCase):
         monitor.bind_workspace(None)
         error = RuntimeError("cannot open /clients/acme-secret/build/app.elf for probe-SECRET-ID")
         monitor.begin("read_memory", {}, None).failed(error)
+        self.settle()
         files = self.report_files()
         self.assertEqual(len(files), 1)
         report = json.loads(files[0].read_text(encoding="utf-8"))

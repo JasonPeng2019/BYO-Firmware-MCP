@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import shutil
 import tempfile
+import time
 import unittest
 from datetime import datetime, timezone
 from pathlib import Path
@@ -71,6 +72,36 @@ def make_context(
     )
 
 
+def settle_delivery(monitor: IssueMonitor, timeout: float = 10.0) -> None:
+    """Finish the monitor's handed-off deliveries, then stop its sender.
+
+    Delivery runs on a background thread that copies a sealed segment or report
+    to the transport and then deletes the local copy once it is acknowledged.
+    A store observation taken while that thread is mid-job can list a file in
+    one place before it is copied and in the other just before it is deleted,
+    then find it gone -- so a positive check undercounts and a negative check
+    passes over a record it never read. After this returns, every record is
+    stable: still resident locally if not yet acknowledged, or in the
+    transport's retained copy if it was.
+
+    ``stop`` abandons queued jobs, so wait for the queue to empty first; the job
+    in flight then completes before the thread exits. The sender stays stopped:
+    anything recorded afterwards remains local, which the store helpers count.
+    Raises if the sender does not finish in time rather than reading anyway.
+    """
+
+    service = monitor._delivery
+    thread = service._thread
+    if thread is None or not thread.is_alive():
+        return
+    deadline = time.monotonic() + timeout
+    while not service._queue.empty() and time.monotonic() < deadline:
+        time.sleep(0.01)
+    service.stop(timeout=max(0.0, deadline - time.monotonic()))
+    if thread.is_alive():
+        raise AssertionError(f"monitor delivery did not settle within {timeout}s")
+
+
 class MonitorTestCase(unittest.TestCase):
     """Base case that isolates the store and tears the monitor down cleanly."""
 
@@ -94,6 +125,15 @@ class MonitorTestCase(unittest.TestCase):
         monitor = IssueMonitor(context, **kwargs)
         self._monitors.append(monitor)
         return monitor
+
+    def settle(self) -> None:
+        """Settle delivery for every monitor this test made; see ``settle_delivery``.
+
+        Call before reading the store, for positive and negative checks alike.
+        """
+
+        for monitor in self._monitors:
+            settle_delivery(monitor)
 
     # -- store introspection -------------------------------------------
 
@@ -169,4 +209,5 @@ __all__ = [
     "FakePlan",
     "MonitorTestCase",
     "make_context",
+    "settle_delivery",
 ]

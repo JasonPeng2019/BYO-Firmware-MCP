@@ -19,7 +19,9 @@ from pathlib import Path
 
 from pyocd_debug_mcp.monitor import paths
 from pyocd_debug_mcp.monitor.counters import CHECKIN_CADENCE, USAGE_SNAPSHOT_CADENCE
+from pyocd_debug_mcp.monitor.monitor import IssueMonitor
 from pyocd_debug_mcp.monitor.transport import TestTransport
+from tests.monitor_support import settle_delivery
 
 
 def _fresh_server(store: Path):
@@ -53,6 +55,18 @@ class ServerIntegrationCase(unittest.TestCase):
 
     def health(self) -> dict:
         return json.loads(self.call("server_health_check")[0].text)
+
+    def settle(self) -> None:
+        """Settle the server monitor's background delivery before reading the store.
+
+        Once a workspace is bound, acknowledged records move from ``server_data``
+        to the simulated remote; see ``settle_delivery``. A ``NullMonitor`` has
+        no sender, so there is nothing to settle.
+        """
+
+        monitor = self.server._monitor
+        if isinstance(monitor, IssueMonitor):
+            settle_delivery(monitor)
 
 
 class CorrectRefusalsProduceNoDefects(ServerIntegrationCase):
@@ -475,6 +489,7 @@ class WorkspaceBinding(ServerIntegrationCase):
         self.assertEqual(stray, [], f"monitor wrote into the project dir: {stray}")
 
     def test_store_carries_no_plaintext_project_path(self) -> None:
+        self.settle()
         blob = "\n".join(
             path.read_text(encoding="utf-8", errors="replace")
             for path in self.store.rglob("*")
@@ -496,6 +511,7 @@ class ErrorsAreReported(ServerIntegrationCase):
         assert observation is not None
         observation.failed(RuntimeError("kaboom in the handler"))
 
+        self.settle()
         reports = [
             json.loads(path.read_text(encoding="utf-8")) for path in self.store.rglob("rpt-*.json")
         ]
@@ -517,6 +533,7 @@ class ErrorsAreReported(ServerIntegrationCase):
         assert beta is not None
         beta.failed(RuntimeError("beta blew up"))
 
+        self.settle()
         reports = [
             json.loads(path.read_text(encoding="utf-8")) for path in self.store.rglob("rpt-*.json")
         ]

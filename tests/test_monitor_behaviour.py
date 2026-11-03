@@ -176,9 +176,11 @@ class _TickingMonitor(MonitorTestCase):
             observation.completed("ok")
 
     def kinds(self) -> list[str]:
+        self.settle()
         return [record["kind"] for record in self.ledger_records()]
 
     def snapshots(self) -> list[dict]:
+        self.settle()
         return [r for r in self.ledger_records() if r["kind"] == "usage_snapshot"]
 
 
@@ -281,6 +283,7 @@ class UsageSnapshotTick(_TickingMonitor):
             self.monitor._ledger.sealed_segments(),
             "the first snapshot tick did not seal a segment",
         )
+        self.settle()
         segments_after_first = {r.get("segment") for r in self.ledger_records()}
 
         self.tick(self.SNAPSHOT_EVERY)
@@ -289,6 +292,7 @@ class UsageSnapshotTick(_TickingMonitor):
             3,
             "the second snapshot tick did not roll again",
         )
+        self.settle()
         segments_after_second = {r.get("segment") for r in self.ledger_records()}
         self.assertGreater(
             len(segments_after_second),
@@ -298,6 +302,7 @@ class UsageSnapshotTick(_TickingMonitor):
 
     def test_snapshot_is_not_an_issue(self) -> None:
         self.tick(self.SNAPSHOT_EVERY)
+        self.settle()
         self.assertEqual(self.report_files(), [])
 
 
@@ -311,17 +316,12 @@ class OneCadenceMovesEverythingItGoverns(MonitorTestCase):
     """
 
     def _run_at_cadence(self, cadence: int, calls: int) -> dict:
-        # fail_always=True: nothing is ever ACKed, so the background delivery
-        # thread never unlinks a segment's file out from under this count.
-        # Rolling happens synchronously and locally regardless of delivery
-        # outcome (it is not gated on a successful send), so this changes
-        # nothing about what is being measured -- it only removes a race
-        # against that thread. With a real-acking transport, a segment could
-        # be delivered and deleted between the tick loop finishing and
-        # ledger_records() reading it, silently undercounting "segments" and
-        # making this comparison flaky rather than deterministic.
+        # Workspace binding replaces the constructor transport with the local
+        # simulated remote, which ACKs and deletes delivered segments. Settle
+        # delivery before counting so every record is read exactly once, either
+        # still resident or in the retained copy, never lost between the two.
         monitor = self.make_monitor(
-            transport=TestTransport(fail_always=True),
+            transport=TestTransport(),
             usage_snapshot_every=cadence,
             checkin_every=cadence * 5,
         )
@@ -330,6 +330,7 @@ class OneCadenceMovesEverythingItGoverns(MonitorTestCase):
             observation = monitor.begin(f"tool{index}", {}, None)
             assert observation is not None
             observation.completed("ok")
+        self.settle()
         records = self.ledger_records()
         snapshots = [r for r in records if r.get("kind") == "usage_snapshot"]
         return {
@@ -445,6 +446,7 @@ class GracefulDegradation(MonitorTestCase):
         observation = monitor.begin("t", {"board_id": "b"}, "b")
         assert observation is not None
         observation.completed("ok")
+        self.settle()
         self.assertEqual(self.report_files(), [])
 
 
@@ -559,11 +561,16 @@ class RecordingWithNoTransport(MonitorTestCase):
         """Boot, usage snapshot, and close records appear even without transport."""
         from pyocd_debug_mcp.monitor.transport import NullTransport
 
+        transport = NullTransport()
         monitor = self.make_monitor(
-            transport=NullTransport(),
+            transport=transport,
             usage_snapshot_every=2,
             checkin_every=99,
         )
+        # Pin the bind-time factory too: workspace binding otherwise replaces the
+        # constructor transport with the acknowledging local simulated remote,
+        # and this occasion is specifically the one with no transport at all.
+        monitor._default_transport = lambda workspace=None: transport
         monitor.bind_workspace(None)
         monitor.boot()
 
@@ -666,6 +673,7 @@ class CounterSurvivesBindWorkspace(MonitorTestCase):
         count_after_bind = monitor._counters.snapshot().total
         self.assertEqual(count_after_bind, 3, "Counter reset after bind_workspace()")
         # Verify cadence is still measured from run start (call 3 triggers snapshot)
+        self.settle()
         snapshots = [r for r in self.ledger_records() if r.get("kind") == "usage_snapshot"]
         self.assertTrue(
             snapshots,
@@ -707,7 +715,7 @@ class VerifierDoesNotFlagAckedDeletion(MonitorTestCase):
 
         # Settle delivery so the gap this test is about has actually happened,
         # rather than asserting against a race with the background sender.
-        monitor._delivery.stop(timeout=1.0)
+        self.settle()
         health = monitor.health()
         self.assertLess(
             health["ledger"]["resident_files"],
