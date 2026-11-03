@@ -63,9 +63,13 @@ class TieredAcceptanceMonitorIsolationTests(unittest.TestCase):
             root.mkdir()
             segment = root / "denied.jsonl"
             segment.write_text("sealed\n", encoding="utf-8")
-            with patch("os.unlink", side_effect=PermissionError("controlled denial")):
-                with self.assertRaisesRegex(PermissionError, "controlled denial"):
+            denial = PermissionError("controlled denial")
+            with patch("os.unlink", side_effect=denial):
+                with self.assertRaises(PermissionError) as raised:
                     _remove_monitor_root(root)
+            # POSIX Python3.12 rmtree stamps the path onto the propagated error,
+            # which rewrites its message; the exact denial object must surface.
+            self.assertIs(raised.exception, denial)
             self.assertTrue(segment.is_file())
 
     def test_fixture_closes_active_ledger_and_delivery_before_removing_data(self) -> None:

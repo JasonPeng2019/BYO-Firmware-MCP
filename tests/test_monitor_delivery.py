@@ -803,11 +803,12 @@ class ClosingOut(MonitorTestCase):
         deadline ever regressed back to two independent waits, this would
         take about twice as long as the budget passed in.
 
-        The budget used here is deliberately much smaller than the real
-        ``CLOSEOUT_BUDGET_SECONDS``/``CLIENT_KILL_GRACE_SECONDS`` constants, so
-        the pass/fail gap (roughly budget vs. roughly 2x budget) is wide
-        relative to scheduler noise on a loaded machine, while still proving
-        the property those constants depend on.
+        The pass/fail gap is roughly budget vs. roughly 2x budget, while thread
+        join/scheduling overhead is a roughly fixed amount on top of the budget
+        (about 0.15s observed on a loaded macOS runner). A one-second budget
+        keeps that fixed overhead small relative to the gap, so the test
+        distinguishes one shared deadline from two stacked ones instead of
+        measuring scheduler noise.
         """
 
         store = resolve_store_root()
@@ -837,14 +838,14 @@ class ClosingOut(MonitorTestCase):
                 break
             time.sleep(0.01)
 
-        budget = 0.2
+        budget = 1.0
         started = time.monotonic()
         service.close_for_shutdown([sealed], budget=budget)
         elapsed = time.monotonic() - started
 
-        # Comfortably above the ~budget this should actually take, comfortably
-        # below what two independent budgets stacked would take (~2x), and far
-        # below CLIENT_KILL_GRACE_SECONDS regardless of the budget chosen here.
+        # Comfortably above the ~budget plus fixed overhead this should take,
+        # and comfortably below what two independent budgets stacked would
+        # take (~2x).
         self.assertLess(
             elapsed,
             budget * 1.75,

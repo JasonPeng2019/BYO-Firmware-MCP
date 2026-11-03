@@ -382,7 +382,16 @@ class ManagedRuntimeTests(unittest.TestCase):
         first = self.resolve()
         header = self.root / "analysis/clangd/lib/clang/23/include/stddef.h"
         original = header.read_bytes()
-        header.write_bytes(b"x" * len(original))
+        before = header.stat()
+
+        def rewrite(content: bytes, later_ns: int) -> None:
+            # A same-size rewrite inside one filesystem timestamp tick leaves the
+            # whole metadata identity unchanged (observed on Windows CI). Move the
+            # mtime explicitly so each write is a real metadata change.
+            header.write_bytes(content)
+            os.utime(header, ns=(before.st_atime_ns, before.st_mtime_ns + later_ns))
+
+        rewrite(b"x" * len(original), 2_000_000_000)
         with patch.object(self.manifest, "hash_file", wraps=self.manifest.hash_file) as hashing:
             changed = self.resolve()
             self.assertTrue(changed.problems)
@@ -390,7 +399,7 @@ class ManagedRuntimeTests(unittest.TestCase):
             self.assertTrue(changed.observed_identity)
             hashing.assert_not_called()
             self.assertFalse(runtime._probe_cache)
-        header.write_bytes(original)
+        rewrite(original, 4_000_000_000)
         restored = self.resolve()
         self.assertFalse(restored.problems)
         self.assertNotEqual(first.identity, restored.identity)
