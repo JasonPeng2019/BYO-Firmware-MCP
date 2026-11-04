@@ -217,6 +217,18 @@ def built_native_inputs(bundle, installer):
 
 
 ARM_CORPUS = ROOT / "tests/code_analysis_fixtures/arm_firmware"
+# Native selectors are published only by this pass's own admitted inputs; an
+# ambient value must never satisfy a native test.
+NATIVE_INPUT_SELECTORS = (
+    "BYO_MCP_TEST_CLANGD_EXECUTABLE",
+    "BYO_TEST_CLANGD",
+    "BYO_MCP_TEST_ARM_GNU_ROOT",
+    "BYO_TEST_ARM_FIXTURE",
+    "BYO_MCP_OFFICIAL_U5_PACK",
+    "BYO_MANAGED_TEST_INPUT_RECORD",
+    "BYO_MANAGED_TEST_INPUT_RECORD_SHA256",
+    "VI01A_FULL_PROJECT",
+)
 
 
 def build_arm_corpus(gnu, destination, facts):
@@ -431,6 +443,9 @@ def prepare_native_inputs(args, evidence, environment):
                 Path(environment["BYO_MCP_TEST_ARM_GNU_ROOT"]), corpus, facts["arm_build"]
             )
             arm_inputs = {str(p.resolve()): digest(p) for p in corpus.rglob("*") if p.is_file()}
+            # The real-clangd selector copies and relocates this exact built
+            # corpus; only a fully built and frozen corpus is ever published.
+            environment["BYO_TEST_ARM_FIXTURE"] = facts["arm_build"]["corpus"]
         except Exception:
             facts["arm_build"]["error"] = traceback.format_exc()
             errors.append("arm_build")
@@ -1079,15 +1094,7 @@ def parent(args):
     )
     if args.installer_source:
         environment["BYO_FINAL_INSTALLER_SOURCE"] = str(args.installer_source.resolve())
-    for name in (
-        "BYO_MCP_TEST_CLANGD_EXECUTABLE",
-        "BYO_TEST_CLANGD",
-        "BYO_MCP_TEST_ARM_GNU_ROOT",
-        "BYO_MCP_OFFICIAL_U5_PACK",
-        "BYO_MANAGED_TEST_INPUT_RECORD",
-        "BYO_MANAGED_TEST_INPUT_RECORD_SHA256",
-        "VI01A_FULL_PROJECT",
-    ):
+    for name in NATIVE_INPUT_SELECTORS:
         environment.pop(name, None)
     native_input_error = None
     native_inputs = {"protected_inputs": {}}

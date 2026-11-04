@@ -194,6 +194,119 @@ class FinalAcceptanceLedgerContracts(unittest.TestCase):
         self.assertNotIn("BYO_TEST_CLANGD", environment)
         self.assertNotIn("BYO_MCP_TEST_CLANGD_EXECUTABLE", environment)
         self.assertNotIn("BYO_MCP_OFFICIAL_U5_PACK", environment)
+        self.assertNotIn("BYO_TEST_ARM_FIXTURE", environment)
+        self.assertEqual(facts["arm_build"]["outcome"], "NOT_RUN" if os.name != "nt" else "BLOCKED")
+
+    def prepare_with_admitted_arm_receipt(self, root, build):
+        """Run the real admission with a receipt-consistent toolchain layout.
+
+        The "compiler" here is a labelled wiring placeholder that never runs:
+        ``build_arm_corpus`` is replaced, so this checks only which selector the
+        pass publishes from a built (or failed) corpus. Real compilation and the
+        real query stay with the Actions native pass.
+        """
+        system = {"Windows": "windows", "Darwin": "macos", "Linux": "linux"}[platform.system()]
+        arch = {"amd64": "x86_64", "x86_64": "x86_64", "arm64": "aarch64", "aarch64": "aarch64"}[
+            platform.machine().casefold()
+        ]
+        compiler_name = "bin/arm-none-eabi-g++" + (".exe" if os.name == "nt" else "")
+        gnu = root / "acquired/extracted/gnu"
+        (gnu / "bin").mkdir(parents=True)
+        compiler = gnu / compiler_name
+        compiler.write_bytes(b"BC12 selector-wiring placeholder; never executed\n")
+        archive = root / "acquired/toolchain-fixture.zip"
+        archive.write_bytes(b"BC12 selector-wiring archive placeholder\n")
+        source = {
+            "version": "fixture",
+            "archive_layout": "flat",
+            "archive": archive.name,
+            "url": "https://example.invalid/toolchain-fixture.zip",
+            "sha256": acceptance.digest(archive),
+            "compiler": compiler_name,
+        }
+        installer = root / "installer"
+        (installer / "release").mkdir(parents=True)
+        (installer / "release/arm-test-toolchains.json").write_text(
+            json.dumps({"targets": {system + "-" + arch: source}}), encoding="utf-8"
+        )
+        receipt = root / "arm-receipt.json"
+        receipt.write_text(
+            json.dumps(
+                {
+                    "schema": "arm-test-toolchain-input/v1",
+                    "version": "fixture",
+                    "target": system + "-" + arch,
+                    "archive_layout": "flat",
+                    "archive": {
+                        **{name: source[name] for name in ("archive", "url", "sha256")},
+                        "size": archive.stat().st_size,
+                    },
+                    "root": str(gnu),
+                    "compiler": str(compiler),
+                    "compiler_sha256": acceptance.digest(compiler),
+                }
+            ),
+            encoding="utf-8",
+        )
+        args = argparse.Namespace(
+            native_bundle=root / "missing-bundle",
+            installer_source=installer,
+            arm_receipt=receipt,
+            official_pack_receipt=root / "missing-pack",
+        )
+        environment = {}
+        with mock.patch.object(acceptance, "build_arm_corpus", side_effect=build) as built:
+            facts = acceptance.prepare_native_inputs(args, root / "evidence", environment)
+        self.assertEqual(facts["arm"]["outcome"], "PASS", facts["arm"])
+        self.assertEqual(environment["BYO_MCP_TEST_ARM_GNU_ROOT"], str(gnu.resolve()))
+        # Every selector a pass publishes is one the parent drops from ambient input.
+        self.assertLessEqual(set(environment), set(acceptance.NATIVE_INPUT_SELECTORS))
+        return facts, environment, built
+
+    def test_built_arm_corpus_is_the_only_published_arm_fixture(self):
+        def built_corpus(gnu, destination, facts):
+            (destination / "build").mkdir(parents=True)
+            (destination / "build/firmware.elf").write_bytes(b"\x7fELF\x01\x01 placeholder")
+            facts.update(outcome="PASS", corpus=str(destination.resolve(strict=True)))
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            facts, environment, built = self.prepare_with_admitted_arm_receipt(root, built_corpus)
+            corpus = (root / "evidence/arm-built-corpus").resolve()
+            if os.name != "nt":
+                built.assert_not_called()
+                self.assertEqual(facts["arm_build"]["outcome"], "NOT_RUN")
+                self.assertNotIn("BYO_TEST_ARM_FIXTURE", environment)
+                return
+            built.assert_called_once()
+            self.assertEqual(facts["arm_build"]["outcome"], "PASS")
+            self.assertNotIn("arm_build", facts["errors"])
+            self.assertEqual(environment["BYO_TEST_ARM_FIXTURE"], facts["arm_build"]["corpus"])
+            self.assertEqual(Path(environment["BYO_TEST_ARM_FIXTURE"]), corpus)
+            self.assertIn(
+                str(corpus / "build/firmware.elf"),
+                facts["protected_inputs"],
+                facts["protected_inputs"],
+            )
+
+    def test_failed_arm_build_publishes_no_arm_fixture(self):
+        def failed_build(gnu, destination, facts):
+            (destination / "build").mkdir(parents=True)
+            (destination / "build/partial.o").write_bytes(b"partial placeholder")
+            raise RuntimeError("Arm GCC step failed: fixture")
+
+        with tempfile.TemporaryDirectory() as temporary:
+            facts, environment, built = self.prepare_with_admitted_arm_receipt(
+                Path(temporary), failed_build
+            )
+        self.assertNotIn("BYO_TEST_ARM_FIXTURE", environment)
+        if os.name != "nt":
+            built.assert_not_called()
+            self.assertEqual(facts["arm_build"]["outcome"], "NOT_RUN")
+            return
+        self.assertEqual(facts["arm_build"]["outcome"], "ERROR")
+        self.assertIn("Arm GCC step failed: fixture", facts["arm_build"]["error"])
+        self.assertIn("arm_build", facts["errors"])
 
     def test_libtest_multiple_targets_exclude_captured_output_from_method_records(self):
         observer = self.release_observer()
@@ -1311,6 +1424,7 @@ acceptance.write(evidence / "control-result.json", {
         for name in (
             "BYO_TEST_CLANGD",
             "BYO_MCP_TEST_CLANGD_EXECUTABLE",
+            "BYO_TEST_ARM_FIXTURE",
             "BYO_MANAGED_TEST_INPUT_RECORD",
             "BYO_MANAGED_TEST_INPUT_RECORD_SHA256",
         ):
