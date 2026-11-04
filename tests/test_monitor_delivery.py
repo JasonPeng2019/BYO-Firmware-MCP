@@ -16,6 +16,7 @@ from unittest import mock
 
 from pyocd_debug_mcp.monitor.delivery import CLIENT_KILL_GRACE_SECONDS, DeliveryService
 from pyocd_debug_mcp.monitor.ledger import SegmentLedger, file_identity
+from pyocd_debug_mcp.monitor.monitor import IssueMonitor
 from pyocd_debug_mcp.monitor.paths import resolve_store_root
 from pyocd_debug_mcp.monitor.transport import (
     DeliveryState,
@@ -686,36 +687,92 @@ class AStuckSenderIsInvisible(MonitorTestCase):
     unreachable endpoint making every tool call wait on a socket. The server's
     obligation ends at the local append, so a hung send may cost delivery
     latency and nothing else.
+
+    Each test proves its wedge is real before relying on it. Binding a workspace
+    builds the bound sender from ``_default_transport``, not from the transport
+    passed to the constructor, so that factory is pinned to the wedge; without
+    the pin the bound sender is the simulated remote, which acknowledges and
+    deletes records while the test reads them. A test then waits until a send
+    has actually entered the wedge and checks that nothing has got past it, so
+    every observation is taken while the only thread that could acknowledge or
+    delete a record is held.
     """
 
     def setUp(self) -> None:
         super().setUp()
         self.released = threading.Event()
+        self.entered = threading.Event()
+        # Every thread that reached the wedge, in arrival order. Only this test's
+        # monitor sends through this transport, so these are exactly the threads
+        # the test owns and must see finish.
+        self.held: list[threading.Thread] = []
+
+        def hold() -> None:
+            # Blocks until the test lets go, imitating a hung socket.
+            self.held.append(threading.current_thread())
+            self.entered.set()
+            self.released.wait(timeout=30)
 
         class WedgedTransport(TestTransport):
             name = "wedged"
 
             def send_files(inner, items):  # type: ignore[no-untyped-def]
-                # Blocks until the test lets go, imitating a hung socket.
-                self.released.wait(timeout=30)
+                hold()
                 return super().send_files(items)
 
             def send_report(inner, report):  # type: ignore[no-untyped-def]
-                self.released.wait(timeout=30)
+                hold()
                 return super().send_report(report)
 
         self.transport = WedgedTransport()
-        self.addCleanup(self.released.set)
+        # Registered after the base teardown, so it runs first: on every path,
+        # including a failed assertion, the wedge is let go and its senders have
+        # finished before the monitor is closed and the store removed.
+        self.addCleanup(self.release_the_wedge)
 
-    def test_tool_calls_keep_their_baseline_latency(self) -> None:
+    def bound_to_the_wedge(self) -> IssueMonitor:
         monitor = self.make_monitor(
             transport=self.transport, usage_snapshot_every=2, checkin_every=99
         )
+        monitor._default_transport = lambda workspace=None: self.transport  # type: ignore[method-assign]
         monitor.bind_workspace(None)
-        monitor.boot()  # queues a bootup drain that will wedge immediately
+        self.assertIs(monitor._delivery._transport, self.transport, "bound sender is not the wedge")
+        return monitor
+
+    def assert_held(self) -> None:
+        """A send has entered the wedge and nothing has been delivered past it."""
+
+        self.assertTrue(self.entered.wait(timeout=10), "no send ever reached the wedge")
+        self.assertEqual(self.transport.sent_files, [])
+        self.assertEqual(self.transport.sent_reports, [])
+
+    def release_the_wedge(self) -> None:
+        """Let the wedge go; every thread it held and every bound sender must finish."""
+
+        self.released.set()
+        senders = [monitor._delivery._thread for monitor in self._monitors]
+        for monitor in self._monitors:
+            monitor._delivery.stop(timeout=10)
+        for thread in [*self.held, *senders]:
+            if thread is not None:
+                thread.join(timeout=10)
+        stuck = [t.name for t in [*self.held, *senders] if t is not None and t.is_alive()]
+        self.assertEqual(stuck, [], "a sender did not finish after the wedge was released")
+
+    def test_tool_calls_keep_their_baseline_latency(self) -> None:
+        monitor = self.bound_to_the_wedge()
+        # Bootup recovery has nothing to resend in a fresh store, so the sender
+        # first wedges at a snapshot boundary. Reach one before timing anything.
+        monitor.boot()
+        for index in range(2):
+            observation = monitor.begin(f"warmup{index}", {}, None)
+            assert observation is not None
+            observation.completed("ok")
+        self.assert_held()
+        self.assertIs(self.held[0], monitor._delivery._thread)
 
         started = time.monotonic()
-        for index in range(12):  # crosses six snapshot boundaries
+        for index in range(12):  # crosses six more snapshot boundaries
             observation = monitor.begin(f"tool{index}", {}, None)
             assert observation is not None
             observation.completed("ok")
@@ -724,20 +781,23 @@ class AStuckSenderIsInvisible(MonitorTestCase):
         # Twelve calls against a sender stuck on a 30s wait. Anything near the
         # wait means a request waited on the send.
         self.assertLess(elapsed, 5.0, f"a wedged sender delayed tool calls: {elapsed:.2f}s")
+        # The sender stayed stuck for all twelve: none of their handoffs was sent.
+        self.assert_held()
         # The counter kept counting regardless of delivery health.
-        self.assertEqual(monitor.health()["counters"]["total"], 12)
+        self.assertEqual(monitor.health()["counters"]["total"], 14)
+        self.release_the_wedge()
 
     def test_the_records_are_on_disk_even_though_nothing_was_delivered(self) -> None:
         """The file stays put for the next boot's recovery to ship."""
 
-        monitor = self.make_monitor(
-            transport=self.transport, usage_snapshot_every=2, checkin_every=99
-        )
-        monitor.bind_workspace(None)
+        monitor = self.bound_to_the_wedge()
         for index in range(4):
             observation = monitor.begin(f"tool{index}", {}, None)
             assert observation is not None
             observation.completed("ok")
+        # The bound sender has taken its first handoff and is stuck sending it.
+        self.assert_held()
+        self.assertIs(self.held[0], monitor._delivery._thread)
 
         snapshots = [r for r in self.ledger_records() if r.get("kind") == "usage_snapshot"]
         self.assertEqual(len(snapshots), 2)
@@ -747,14 +807,14 @@ class AStuckSenderIsInvisible(MonitorTestCase):
         health = monitor.health()
         self.assertNotEqual(health["delivery"]["state"], "sent")
         self.assertFalse(health["delivery"]["durable_off_box"])
+        # Still held after every read, so no acknowledgement raced them.
+        self.assert_held()
+        self.release_the_wedge()
 
     def test_health_and_shutdown_still_work(self) -> None:
         """Read-only introspection and exit must not wait on the sender either."""
 
-        monitor = self.make_monitor(
-            transport=self.transport, usage_snapshot_every=2, checkin_every=99
-        )
-        monitor.bind_workspace(None)
+        monitor = self.bound_to_the_wedge()
         observation = monitor.begin("get_state", {}, None)
         assert observation is not None
         observation.completed("ok")
@@ -764,6 +824,10 @@ class AStuckSenderIsInvisible(MonitorTestCase):
         monitor.closeout("wedged-sender-test")
         elapsed = time.monotonic() - started
         self.assertLess(elapsed, 5.0, f"shutdown waited on the sender: {elapsed:.2f}s")
+        # Closeout's own send is the one stuck in the wedge, so the exit above
+        # returned without waiting for it.
+        self.assert_held()
+        self.release_the_wedge()
 
 
 class ClosingOut(MonitorTestCase):
