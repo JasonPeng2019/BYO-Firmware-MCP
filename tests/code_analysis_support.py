@@ -25,13 +25,14 @@ import re
 import shutil
 import stat
 import sys
-import tempfile
 import threading
 import time
 import unittest
 from collections.abc import Callable, Generator, Iterable, Mapping
 from pathlib import Path
 from typing import Any
+
+from tests.fixture_directory import fixture_directory
 
 SERVER_ROOT = Path(__file__).resolve().parents[1]
 FAKE_CLANGD = Path(__file__).resolve().with_name("fake_clangd.py")
@@ -534,11 +535,8 @@ def unpermitted_tree_changes(
 
 @contextlib.contextmanager
 def temporary_directory(prefix: str) -> Generator[Path, None, None]:
-    directory = Path(tempfile.mkdtemp(prefix=prefix)).resolve()
-    try:
+    with fixture_directory(prefix) as directory:
         yield directory
-    finally:
-        shutil.rmtree(directory, ignore_errors=True)
 
 
 C_SOURCE = (

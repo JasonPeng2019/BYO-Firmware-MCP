@@ -11,6 +11,8 @@ from pyocd_debug_mcp.services.symbols import ResolvedSymbol
 from pyocd_debug_mcp.tools import breakpoints
 from pyocd_debug_mcp.tools.breakpoints import BreakpointToolServices, build_breakpoint_handlers
 
+import pytest
+
 
 class BreakpointToolCanonicalizationTests(unittest.TestCase):
     def setUp(self) -> None:
@@ -57,6 +59,7 @@ class BreakpointToolCanonicalizationTests(unittest.TestCase):
         self.assertEqual(self.events[-1]["details"]["resolved_address"], 0x1C0)
         self.assertIn("0x000001C0", result)
 
+    @pytest.mark.mvp
     def test_thumb_symbol_is_canonical_everywhere(self) -> None:
         result = self.handlers["set_breakpoint"]("board", "main", self.elf.name)
 

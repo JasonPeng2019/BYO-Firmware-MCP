@@ -118,8 +118,10 @@ def confirmed_lite_policy(board_id: str) -> dict[str, Any]:
 def isolated_project() -> Generator[Path, None, None]:
     """Give a test a private artifact root before its server import boundary."""
 
-    with tempfile.TemporaryDirectory(prefix="tiered-acceptance-") as temporary:
-        yield Path(temporary).resolve()
+    from tests.fixture_directory import fixture_directory
+
+    with fixture_directory(prefix="byo-project-") as project:
+        yield project
 
 
 @contextlib.contextmanager

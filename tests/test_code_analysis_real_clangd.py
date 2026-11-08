@@ -38,6 +38,8 @@ from tests.code_analysis_support import (
     wait_pids_gone,
 )
 
+import pytest
+
 QUERY_TIMEOUT = 90.0
 UNICODE_ROOT = "proj café 中文 😀"
 SHUTDOWN_BOUND = 5.0 + OWNED_CLEANUP_SECONDS + SCHEDULING_SLACK_SECONDS
@@ -125,6 +127,7 @@ class RealClangdCase(unittest.TestCase):
 
 
 class ProgramIdentity(RealClangdCase):
+    @pytest.mark.mvp
     def test_version_and_status_identify_the_supplied_program(self) -> None:
         completed = subprocess.run(  # noqa: S603 - harness-supplied fixture path
             [str(self.executable), "--version"],
@@ -152,6 +155,7 @@ class HostC(RealClangdCase):
         host_database(self.project, ["src/main.c", "src/util.c"])
         self.analysis = self.service(self.project)
 
+    @pytest.mark.mvp
     def test_definition_references_and_hover(self) -> None:
         definition = assert_envelope(
             self,
@@ -195,6 +199,7 @@ class HostC(RealClangdCase):
             (data["diagnostics"], data["observed_count"], data["truncated"]), ([], 0, False)
         )
 
+    @pytest.mark.mvp
     def test_saved_file_updates_are_seen_error_then_fix(self) -> None:
         source = self.project.path("src/main.c")
         original = source.read_bytes()
@@ -674,6 +679,7 @@ class KnownHeaderFreshness(RealClangdCase):
 
 
 class RealStdioShutdown(RealClangdCase):
+    @pytest.mark.mvp
     def test_stdin_eof_terminates_owned_clangd_within_the_bound(self) -> None:
         project = copy_fixture("host_c", self.base / "host_c")
         host_database(project, ["src/main.c", "src/util.c"])

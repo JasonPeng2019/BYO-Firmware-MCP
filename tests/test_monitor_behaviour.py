@@ -17,6 +17,8 @@ from pyocd_debug_mcp.monitor.trail import TRAIL_MAX_EVENTS
 from pyocd_debug_mcp.monitor.transport import NullTransport, TestTransport
 from tests.monitor_support import MonitorTestCase, make_context
 
+import pytest
+
 
 class ReportingThroughTheMonitor(MonitorTestCase):
     def setUp(self) -> None:
@@ -33,6 +35,7 @@ class ReportingThroughTheMonitor(MonitorTestCase):
         assert observation is not None
         observation.failed(exc or RuntimeError("kaboom"))
 
+    @pytest.mark.mvp
     def test_runtime_error_files_one_server_defect(self) -> None:
         self.observe_failure()
         reports = [self.read_report(p) for p in self.report_files()]

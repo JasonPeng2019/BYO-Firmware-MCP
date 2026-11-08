@@ -17,6 +17,8 @@ from pyocd_debug_mcp.artifact_collector import ArtifactRole, _validate_destinati
 from pyocd_debug_mcp.tools.artifacts import build_artifact_handlers
 from tests.elf_symbol_fixture import ElfSymbol, elf32_symbols
 
+import pytest
+
 
 class _CollectionCase(unittest.TestCase):
     def setUp(self) -> None:
@@ -139,6 +141,7 @@ class _CollectionCase(unittest.TestCase):
 
 
 class ArtifactRuntimeDestinationTests(_CollectionCase):
+    @pytest.mark.mvp
     def test_runtime_itself_existing_child_and_missing_parents_refused_before_writes(self) -> None:
         existing = self.runtime / "empty"
         existing.mkdir()
@@ -157,6 +160,7 @@ class ArtifactRuntimeDestinationTests(_CollectionCase):
                 self._assert_refusal(destination)
         self.assertFalse((self.runtime / "new").exists())
 
+    @pytest.mark.mvp
     def test_external_project_collection_returns_matching_elf_map_paths_and_bytes(self) -> None:
         self._assert_collection("dist/bundle", self.project / "dist" / "bundle")
         self.assertFalse((self.runtime / "dist").exists())

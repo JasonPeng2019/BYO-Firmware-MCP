@@ -33,6 +33,8 @@ from tests.tiered_acceptance_support import (
     tiered_test_server,
 )
 
+import pytest
+
 
 BOARD = "lite_board"
 _PROBE_UID = "LITE-ACCEPTANCE-PROBE"
@@ -323,6 +325,7 @@ class TieredLiteEvidenceAcceptanceTests(unittest.TestCase):
             finally:
                 server.disconnect(BOARD)
 
+    @pytest.mark.mvp
     def test_public_lite_safe_memory_remains_plan_gated_while_raw_is_warned(self) -> None:
         """AT06: partial map evidence cannot silently satisfy a safe-operation prerequisite."""
 

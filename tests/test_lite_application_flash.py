@@ -36,6 +36,8 @@ from tiered_acceptance_support import (
     tiered_test_server,
 )
 
+import pytest
+
 
 def observe(test, **data):
     destination = os.environ.get("VI01A_OBSERVATIONS")
@@ -146,6 +148,7 @@ class LiteApplicationFlashTests(PublicActions, unittest.TestCase):
         )
         return resolved
 
+    @pytest.mark.mvp
     def test_public_lite_application_programs_and_binds_artifact_without_full_allocation(self):
         before = self.commit([region("application_flash", FLASH, FLASH + 0x100)])
         self.server._check_flash_safety("flash_application", self.board_id, self.artifact)
@@ -258,6 +261,13 @@ def fresh_full_project(function):
                 VI01A_FULL_PROJECT=str(project),
                 BYO_MCP_ARTIFACT_ROOT=str(project),
                 BYO_MCP_MONITOR_ROOT=str(project / "monitor-import"),
+                PYTHONPATH=os.pathsep.join(
+                    (
+                        str(Path(__file__).resolve().parents[1] / "src"),
+                        str(Path(__file__).resolve().parent),
+                        str(Path(__file__).resolve().parents[1]),
+                    )
+                ),
             )
             destination = os.environ.get("VI01A_OBSERVATIONS")
             ledger_root = os.environ.get("BYO_FINAL_CHILD_EVIDENCE")
@@ -265,21 +275,7 @@ def fresh_full_project(function):
             # product import. The real loader/result now records the inner body.
             child_evidence = Path(ledger_root or project / "child-evidence") / function.__name__
             child_evidence.mkdir(parents=True, exist_ok=False)
-            command = (
-                [
-                    sys.executable,
-                    "-B",
-                    str(Path(__file__).with_name("final_acceptance_suite.py")),
-                    "--worker",
-                    type(self).__module__.removeprefix("tests."),
-                    "--select",
-                    self.id(),
-                    "--evidence",
-                    str(child_evidence),
-                ]
-                if ledger_root
-                else [sys.executable, "-B", "-m", "unittest", "-v", self.id()]
-            )
+            command = [sys.executable, "-B", "-m", "unittest", "-v", self.id()]
             receipt = {
                 "command": command,
                 "cwd": str(project),
@@ -487,6 +483,7 @@ class FullGenericAllocationTests(PublicActions, unittest.TestCase):
         self.assertEqual(self.backend.calls, before)
 
     @fresh_full_project
+    @pytest.mark.mvp
     def test_full_prepare_rejects_changed_artifact(self):
         self.stage()
         data = self.artifact.read_bytes()

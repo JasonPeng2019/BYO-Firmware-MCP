@@ -12,6 +12,8 @@ import sys
 
 from pyocd_debug_mcp.capabilities.manual_permissions import ManualPermissionRepository
 
+import pytest
+
 
 class ManualPermissionRepositoryTests(unittest.TestCase):
     def test_protocol_lock_refuses_another_process_within_its_bounded_wait(self) -> None:
@@ -86,6 +88,7 @@ class ManualPermissionRepositoryTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "already-reserved"):
                 repository.issue_downgrade_token("controller", "grant-1", "policy-1")
 
+    @pytest.mark.mvp
     def test_startup_reset_invalidates_old_grants_and_consumption_is_single_use(self) -> None:
         """A manual grant is project-local, run-bound, and consumed before an action."""
 

@@ -12,6 +12,8 @@ from pyocd_debug_mcp.capabilities.policy import CapabilityPolicyRepository, Tier
 from pyocd_debug_mcp.capabilities.routing import TierRouteRefusal, TierRouter
 from pyocd_debug_mcp.kernel.registry import RegistryFastMCP
 
+import pytest
+
 
 class TierRouterTests(unittest.TestCase):
     @staticmethod
@@ -149,6 +151,7 @@ class TierRouterTests(unittest.TestCase):
         self.assertNotIn("raw", payload)
         self.assertNotIn("warning", payload)
 
+    @pytest.mark.mvp
     def test_capabilities_reports_every_operation_family_and_lite_prerequisites(self) -> None:
         """Discovery is per-board policy data, not a two-row memory shortcut."""
 

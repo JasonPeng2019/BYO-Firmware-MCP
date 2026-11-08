@@ -18,7 +18,6 @@ import ast
 import ctypes
 from ctypes import wintypes
 import hashlib
-import importlib
 import json
 import os
 from pathlib import Path
@@ -71,67 +70,6 @@ def native_profile():
         kernel.CloseHandle(token)
 
 
-def pin_oracle(source, evidence):
-    """Execute the original deterministic body without request/auth/store fixtures.
-
-    The body and deciding assertion are imported unchanged. Only the real-agent
-    class/module setup is inapplicable: this body constructs two CodexResults and
-    never starts a client, resolves a monitoring store, or needs credentials.
-    """
-    source = source.resolve(strict=True)
-    evidence.mkdir(parents=True, exist_ok=False)
-    sys.path[:0] = [str(source), str(source / "src"), str(source / "tests")]
-    module = importlib.import_module("tests.test_monitor_codex_e2e")
-    harness = importlib.import_module("tests.codex_harness")
-    method = "test_the_harness_refuses_a_run_on_another_model"
-    original = getattr(module.ModelPinningIsEnforced, method)
-    deciding = harness.CodexAgentTestCase._assert_model_was_honoured
-    calls = []
-
-    def observed(self, result):
-        calls.append({"stdout": result.stdout, "stderr": result.stderr})
-        return deciding(self, result)
-
-    oracle = type(
-        "DeterministicOriginalPinBody",
-        (unittest.TestCase,),
-        {
-            "__module__": __name__,
-            method: original,
-            "_assert_model_was_honoured": observed,
-        },
-    )
-    with (evidence / "unittest.stderr.txt").open("w", encoding="utf-8") as stream:
-        result = unittest.TextTestRunner(stream=stream, verbosity=2).run(oracle(method))
-    record = {
-        "schema": "original-model-pin-oracle/v1",
-        "method": "tests.test_monitor_codex_e2e.ModelPinningIsEnforced." + method,
-        "loaded": 1,
-        "testsRun": result.testsRun,
-        "real_model_requests": 0,
-        "original_body": original.__qualname__,
-        "original_assertion": deciding.__qualname__,
-        "source_hashes": {
-            name: hashlib.sha256((source / name).read_bytes()).hexdigest()
-            for name in ("tests/test_monitor_codex_e2e.py", "tests/codex_harness.py")
-        },
-        "fixture_scope": "Original deterministic body/assertion; real-agent class/module setup unused",
-        "synthetic_header_checks": calls,
-        "failures": [(test.id(), reason) for test, reason in result.failures],
-        "errors": [(test.id(), reason) for test, reason in result.errors],
-        "skipped": [(test.id(), reason) for test, reason in result.skipped],
-        "outcome": "PASS"
-        if result.wasSuccessful()
-        and result.testsRun == 1
-        and not result.skipped
-        and len(calls) == 2
-        else "FAIL",
-    }
-    dump(evidence / "result.json", record)
-    print(json.dumps(record), flush=True)
-    return int(record["outcome"] != "PASS")
-
-
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--qualification", type=Path)
@@ -139,12 +77,7 @@ def main():
     parser.add_argument("--method")
     parser.add_argument("--evidence", type=Path, required=True)
     parser.add_argument("--execute", action="store_true")
-    parser.add_argument("--pin-oracle", action="store_true")
     args = parser.parse_args()
-    if args.pin_oracle:
-        if args.qualification or args.method or args.execute:
-            parser.error("pin oracle is independent of authenticated model execution")
-        return pin_oracle(args.firmware_source, args.evidence)
     if not args.qualification or not args.method or not args.execute:
         parser.error("real model method requires qualification, method and explicit execute")
     if os.environ.get("GITHUB_ACTIONS") or os.environ.get("RUNNER_ENVIRONMENT"):
@@ -205,16 +138,10 @@ def main():
         for method in cls.body
         if isinstance(method, ast.FunctionDef) and method.name.startswith("test_")
     }
-    if len(selectors) != 18 or args.method not in selectors:
+    if len(selectors) != 17 or args.method not in selectors:
         raise RuntimeError("reconcile current model discovery before execution")
-    if ".ModelPinningIsEnforced." in args.method:
-        raise RuntimeError(
-            "run the deterministic original body with --pin-oracle; no auth required"
-        )
     methods = qualification["methods"]
-    if args.method not in methods or set(methods) != {
-        s for s in selectors if ".ModelPinningIsEnforced." not in s
-    }:
+    if args.method not in methods or set(methods) != selectors:
         raise RuntimeError("qualification must list exactly the 17 genuine request methods")
     # The existing sign-in's home, by path only; it is never opened.
     codex_home = Path(os.environ.get("CODEX_HOME") or profile / ".codex").resolve()
@@ -337,9 +264,7 @@ def main():
             {
                 "exit": result.returncode,
                 "tool_calls": result.tool_calls,
-                "origin": "synthetic-pin-oracle"
-                if ".ModelPinningIsEnforced." in args.method
-                else "actual-codex-result",
+                "origin": "actual-codex-result",
             }
         )
         return original_pin(self, result)

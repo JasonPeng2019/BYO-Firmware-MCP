@@ -29,6 +29,8 @@ from pyocd_debug_mcp.monitor.redaction import (
 )
 from tests.monitor_support import MonitorTestCase
 
+import pytest
+
 
 class Fingerprints(MonitorTestCase):
     def test_same_arguments_fingerprint_alike_within_a_deployment(self) -> None:
@@ -258,20 +260,24 @@ class PortablePathBasenames(MonitorTestCase):
 
 
 class MechanicalBar(MonitorTestCase):
+    @pytest.mark.mvp
     def test_payload_keys_are_dropped(self) -> None:
         scrubbed = scrub_mechanical({"data": "DEADBEEF" * 100, "value": 42, "contents": "secret"})
         self.assertEqual(scrubbed["data"], "<omitted>")
         self.assertEqual(scrubbed["contents"], "<omitted>")
 
+    @pytest.mark.mvp
     def test_raw_bytes_are_dropped(self) -> None:
         self.assertEqual(scrub_mechanical({"blob": b"\x00\x01\x02"})["blob"], "<omitted>")
 
+    @pytest.mark.mvp
     def test_full_host_paths_are_reduced(self) -> None:
         scrubbed = scrub_mechanical({"elf_path": r"C:\Users\jason\secret-project\app.elf"})
         self.assertNotIn("secret-project", scrubbed["elf_path"])
         self.assertNotIn("jason", scrubbed["elf_path"])
         self.assertTrue(scrubbed["elf_path"].startswith("app.elf#"))
 
+    @pytest.mark.mvp
     def test_hardware_identifiers_are_digested(self) -> None:
         scrubbed = scrub_mechanical({"probe_uid": "000682931234"})
         self.assertNotIn("000682931234", scrubbed["probe_uid"])

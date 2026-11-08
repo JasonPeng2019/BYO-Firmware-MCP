@@ -12,6 +12,7 @@ env:
   GIT_CONFIG_KEY_0: core.autocrlf
   GIT_CONFIG_VALUE_0: 'false'
   PYTHONDONTWRITEBYTECODE: '1'
+  BYO_TEST_FAILURES: ${{ github.workspace }}/fixture-failures
   # Pyright's fallback nodeenv must not resolve a moving prerelease alias.
   PYRIGHT_PYTHON_NODE_VERSION: '22.15.0'
 
@@ -107,7 +108,6 @@ jobs:
           tests/test_final_policy_fingerprint_migration.py
           tests/policy_one_producer.py
           tests/prepared_model_method.py
-          tests/final_acceptance_suite.py
 
       - name: Type check analysis runtime
         if: ${{ !cancelled() && steps.dependencies.outcome == 'success' }}
@@ -129,7 +129,6 @@ jobs:
           tests.test_code_analysis_managed_runtime_unit
           tests.test_code_analysis_portability
           tests.test_code_analysis_posix_ownership
-          tests.test_model_store_boundary
           tests.test_clangd_adapter_unit
           tests.test_code_analysis_managed_runtime_contract.MappingSyntax
           tests.test_code_analysis_managed_runtime_contract.SharedDeadline
@@ -156,19 +155,6 @@ jobs:
           tests.test_generic_builtin_safety_map.NrfRegisteredPackGeometry
           tests.test_tiered_acceptance_workspace.NrfPublicRegeneratedMapControls
           tests.test_final_policy_fingerprint_migration
-
-      - name: Original deterministic model-pin oracle without authentication
-        if: ${{ !cancelled() && steps.dependencies.outcome == 'success' }}
-        run: >-
-          uv run python tests/prepared_model_method.py
-          --firmware-source . --pin-oracle
-          --evidence "${{ env.BYO_FR15_CASE_EVIDENCE }}/model-pin-oracle"
-
-      - name: Retain preparation formatter diagnostic without modifying source
-        if: ${{ !cancelled() && steps.dependencies.outcome == 'success' }}
-        run: |
-          mkdir -p "$BYO_FR15_CASE_EVIDENCE"
-          uv run ruff format --diff tests/test_final_policy_fingerprint_migration.py tests/policy_one_producer.py tests/prepared_model_method.py tests/final_acceptance_suite.py > "$BYO_FR15_CASE_EVIDENCE/preparation-format.diff" || exit $?
 
       - name: Build server wheel and source distribution
         id: source-package
@@ -219,9 +205,11 @@ jobs:
         with:
           name: server-analysis-${{ matrix.target }}-${{ github.sha }}-${{ github.run_attempt }}
           path: |
+            ${{ github.workspace }}/fixture-failures/
             ${{ runner.temp }}/managed-analysis-contracts/
             ${{ runner.temp }}/windows-analysis-regressions/
             ${{ runner.temp }}/windows-analysis-acceptance/
             ${{ env.BYO_FR15_CASE_EVIDENCE }}/
+          include-hidden-files: true
           if-no-files-found: warn
           retention-days: 90

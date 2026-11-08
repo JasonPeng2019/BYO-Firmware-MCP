@@ -43,6 +43,8 @@ from test_clangd_adapter_unit import PEER, fake_factory, make_project
 from test_code_analysis_managed_runtime_unit import staged_runtime
 from tests.code_analysis_support import permitted_analysis_write
 
+import pytest
+
 
 def record_regression(name, value):
     destination = os.environ.get("BYO_TEST_ANALYSIS_EVIDENCE")
@@ -902,6 +904,7 @@ class ServiceTests(unittest.TestCase):
 
 
 class VersionProbeTests(unittest.TestCase):
+    @pytest.mark.mvp
     def test_public_status_own_cap_is_cached_and_changed_executable_reprobes(self):
         executable = self.root / "status-version.exe"
         shutil.copyfile(sys.executable, executable)
@@ -1188,27 +1191,44 @@ class VersionProbeTests(unittest.TestCase):
         self.assertIsNone(service._adapter)
         self.assertLess(elapsed, 5 + ARGUMENT_TIMEOUT_GRACE_SECONDS)
 
+    @pytest.mark.mvp
     def test_own_cap_cause_survives_caller_expiry_during_confirmed_cleanup(self):
+        # This case measures probe classification and cleanup, after executable
+        # resolution. Hashing the host Python first consumed the old 0.1s margin
+        # on Linux, so that fixture never established the own-cap precondition.
+        candidate = runtime.ResolvedAnalysisProgram(
+            "clangd",
+            Path(sys.executable).resolve(),
+            origin="path",
+            identity=("own-cap-fixture",),
+        )
         original_cleanup = runtime.terminate_process_group
+        cleanup_remaining = []
+        deadline = time.monotonic() + 6
 
         def delayed_cleanup(process):
-            threading.Event().wait(0.2)
+            cleanup_remaining.append(deadline - time.monotonic())
+            # Cross the real caller deadline only after the own-cap cleanup
+            # starts. Keep clocks, process communication and cleanup real.
+            threading.Event().wait(max(0, deadline - time.monotonic()) + 0.01)
             return original_cleanup(process)
 
-        deadline = time.monotonic() + 5.1
         result = None
         timeout = None
         with patch.object(runtime, "terminate_process_group", side_effect=delayed_cleanup):
             try:
-                result = resolve_analysis_program(self.context, "clangd", deadline)
+                result = runtime._probe_program(candidate, deadline, None)
             except TimeoutError as exc:
                 timeout = str(exc)
         self.observe(
             "own-cap-cleanup-overlap",
             timeout=timeout,
+            cleanup_entry_remaining=cleanup_remaining,
             caller_remaining=deadline - time.monotonic(),
             problems=[p.to_payload() for p in result.problems] if result else None,
         )
+        self.assertEqual(len(cleanup_remaining), 1)
+        self.assertGreater(cleanup_remaining[0], 0, "caller expired before own-cap cleanup")
         self.assertLess(deadline - time.monotonic(), 0)
         self.assertIsNotNone(result, "cleanup reclassified the already established own cap")
         self.assertEqual(result.problems[0].code, "analysis/executable-unavailable")
@@ -1265,11 +1285,20 @@ class VersionProbeTests(unittest.TestCase):
         self.assertFalse(result.problems)
         self.observe("admission-queue", version=result.version)
 
+    @pytest.mark.mvp
     def test_probe_queue_and_late_spawn_caller_expiry_do_not_poison_cache(self):
+        # Resolve the executable before starting the controlled probe-phase
+        # deadlines; public resolver/query expiry and recovery are tested below.
+        candidate = runtime.ResolvedAnalysisProgram(
+            "clangd",
+            Path(sys.executable).resolve(),
+            origin="path",
+            identity=("late-spawn-fixture",),
+        )
         runtime._probe_lock.acquire()
         try:
             with self.assertRaises(TimeoutError):
-                resolve_analysis_program(self.context, "clangd", time.monotonic() + 0.05)
+                runtime._probe_program(candidate, time.monotonic() + 0.05, None)
             self.assertFalse(self.children)
             self.assertEqual(runtime._probe_cache, {})
         finally:
@@ -1286,7 +1315,7 @@ class VersionProbeTests(unittest.TestCase):
         with patch.object(runtime, "popen_owned", side_effect=delayed):
             with concurrent.futures.ThreadPoolExecutor(1) as pool:
                 future = pool.submit(
-                    resolve_analysis_program, self.context, "clangd", time.monotonic() + 0.1
+                    runtime._probe_program, candidate, time.monotonic() + 0.1, None
                 )
                 self.assertTrue(entered.wait(1))
                 with self.assertRaises(TimeoutError):
@@ -1301,6 +1330,7 @@ class VersionProbeTests(unittest.TestCase):
         self.assertFalse(result.problems)
         self.observe("probe-queue-and-late-spawn", version=result.version)
 
+    @pytest.mark.mvp
     def test_public_caller_expiry_is_incomplete_then_independent_query_recovers(self):
         service = CodeAnalysisService(self.context)
         self.addCleanup(service.shutdown)

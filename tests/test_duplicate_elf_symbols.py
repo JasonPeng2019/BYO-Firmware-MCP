@@ -52,6 +52,8 @@ from tests.tiered_acceptance_support import (
     tiered_test_server,
 )
 
+import pytest
+
 
 class OriginalElfDefinitionTests(unittest.TestCase):
     def setUp(self) -> None:
@@ -310,6 +312,7 @@ class MemoryAndSharedCallerTests(unittest.TestCase):
         self.touches.append(("read", *args))
         return 0x12345678
 
+    @pytest.mark.mvp
     def test_public_find_and_ambiguous_reads_writes_refuse_without_safety_or_backend_io(
         self,
     ) -> None:
@@ -328,6 +331,7 @@ class MemoryAndSharedCallerTests(unittest.TestCase):
                     self.assertIn("0x20000004", text)
                 self.assertEqual(self.touches, [])
 
+    @pytest.mark.mvp
     def test_unique_read_write_and_explicit_address_recovery_reach_backend(self) -> None:
         result = self.handlers["read_memory_symbol"]("board", "unique")
         self.assertIn("value=0x12345678", result)

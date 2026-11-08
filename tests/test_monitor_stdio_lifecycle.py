@@ -11,10 +11,12 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import queue
 import shutil
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import unittest
 from collections.abc import Mapping
@@ -108,18 +110,52 @@ class StdioServer:
             env=environment,
         )
         self.stdout_lines: list[str] = []
+        self.stderr_lines: list[str] = []
+        self._responses = queue.Queue()
+
+        def read_stdout():
+            try:
+                for line in self.proc.stdout:
+                    self._responses.put(line)
+            finally:
+                self._responses.put(None)
+
+        def read_stderr():
+            for line in self.proc.stderr:
+                self.stderr_lines.append(line)
+
+        # Drain both pipes from spawn; stderr must never block the protocol.
+        self._readers = [
+            threading.Thread(target=read_stdout, daemon=True),
+            threading.Thread(target=read_stderr, daemon=True),
+        ]
+        for reader in self._readers:
+            reader.start()
+
+    def _diagnostics(self) -> str:
+        return (
+            f"command={self.proc.args!r}; exit={self.proc.poll()}; "
+            f"stdout={self.stdout_lines!r}; stderr={''.join(self.stderr_lines)[-16384:]}"
+        )
 
     def send(self, payload: dict) -> None:
         assert self.proc.stdin is not None
         self.proc.stdin.write(json.dumps(payload) + "\n")
         self.proc.stdin.flush()
 
-    def read(self) -> dict:
-        assert self.proc.stdout is not None
+    def read(self, timeout: float = 30.0) -> dict:
+        deadline = time.monotonic() + timeout
         while True:
-            line = self.proc.stdout.readline()
-            if not line:
-                raise AssertionError("server closed stdout unexpectedly")
+            try:
+                line = self._responses.get(timeout=max(0, deadline - time.monotonic()))
+            except queue.Empty:
+                self.kill()
+                raise AssertionError("server response timed out; " + self._diagnostics()) from None
+            if line is None:
+                self.proc.wait(timeout=5)
+                for reader in self._readers:
+                    reader.join(timeout=1)
+                raise AssertionError("server closed stdout unexpectedly; " + self._diagnostics())
             self.stdout_lines.append(line)
             stripped = line.strip()
             if stripped:
@@ -158,6 +194,10 @@ class StdioServer:
         try:
             self.proc.stdin.close()
             return self.proc.wait(timeout=timeout)
+        except subprocess.TimeoutExpired as error:
+            self.kill()
+            error.add_note(self._diagnostics())
+            raise
         finally:
             self._close_pipes()
 
@@ -178,14 +218,15 @@ class StdioServer:
             self._close_pipes()
 
     def _close_pipes(self) -> None:
+        for reader in self._readers:
+            reader.join(timeout=1)
         for stream in (self.proc.stdin, self.proc.stdout, self.proc.stderr):
             if stream is None or stream.closed:
                 continue
             stream.close()
 
     def stderr_text(self) -> str:
-        assert self.proc.stderr is not None
-        return self.proc.stderr.read() or ""
+        return "".join(self.stderr_lines)
 
 
 class LifecycleTestCase(unittest.TestCase):
@@ -255,6 +296,7 @@ class StdoutIsOnlyProtocolFraming(LifecycleTestCase):
 class CleanShutdownWritesACloseRecord(LifecycleTestCase):
     def test_stdin_eof_exits_cleanly_and_records_close(self) -> None:
         server = StdioServer()
+        self.addCleanup(server.kill)
         server.initialize()
         server.call("initialization_handshake", {"workspace_path": str(self.project)})
         started = time.monotonic()
@@ -276,6 +318,7 @@ class CleanShutdownWritesACloseRecord(LifecycleTestCase):
         """
 
         server = StdioServer()
+        self.addCleanup(server.kill)
         server.initialize()
         server.call("initialization_handshake", {"workspace_path": str(self.project)})
         server.close_stdin_and_wait()
@@ -291,6 +334,7 @@ class AbruptKillLosesNothingAlreadyAppended(LifecycleTestCase):
         """Durability came from the append, not from any shutdown path."""
 
         server = StdioServer()
+        self.addCleanup(server.kill)
         server.initialize()
         server.call("initialization_handshake", {"workspace_path": str(self.project)})
         server.call("server_health_check", {}, request_id=3)
@@ -304,6 +348,7 @@ class AbruptKillLosesNothingAlreadyAppended(LifecycleTestCase):
 
     def test_next_boot_recovers_undelivered_content(self) -> None:
         first = StdioServer()
+        self.addCleanup(first.kill)
         first.initialize()
         first.call("initialization_handshake", {"workspace_path": str(self.project)})
         first.kill()
@@ -311,6 +356,7 @@ class AbruptKillLosesNothingAlreadyAppended(LifecycleTestCase):
         self.assertTrue(resident_before, "nothing was left behind to recover")
 
         second = StdioServer()
+        self.addCleanup(second.kill)
         second.initialize()
         second.call("initialization_handshake", {"workspace_path": str(self.project)})
         # Bootup recovery drains asynchronously after readiness.
@@ -351,13 +397,8 @@ class TieredBackendRehearsalOverStdio(LifecycleTestCase):
         ) as environment:
             server = StdioServer(
                 command=[
-                    "uv",
-                    "run",
-                    "--offline",
-                    "--no-sync",
-                    "--project",
-                    str(SERVER_PROJECT),
-                    "python",
+                    sys.executable,
+                    "-B",
                     "-m",
                     "pyocd_debug_mcp.server",
                 ],
@@ -405,6 +446,7 @@ class CloseoutOrdering(LifecycleTestCase):
 
     def test_close_record_exists_before_anything_is_delivered(self) -> None:
         server = StdioServer()
+        self.addCleanup(server.kill)
         server.initialize()
         server.call("initialization_handshake", {"workspace_path": str(self.project)})
         server.close_stdin_and_wait()
@@ -426,6 +468,7 @@ class CloseoutOrdering(LifecycleTestCase):
 
     def test_final_counters_reach_the_close_record(self) -> None:
         server = StdioServer()
+        self.addCleanup(server.kill)
         server.initialize()
         server.call("initialization_handshake", {"workspace_path": str(self.project)})
         server.call("server_health_check", {}, request_id=3)

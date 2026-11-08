@@ -19,6 +19,8 @@ from pyocd_debug_mcp.setup_flow.validate import (
     ValidationProbe,
 )
 
+import pytest
+
 
 class CapabilityPolicyRepositoryTests(unittest.TestCase):
     @staticmethod
@@ -45,6 +47,7 @@ class CapabilityPolicyRepositoryTests(unittest.TestCase):
             },
         ).map_snapshot
 
+    @pytest.mark.mvp
     def test_fresh_generic_full_setup_commits_candidate_and_live_gate_together(self) -> None:
         """A fresh generic full setup validates staged authority before publishing it."""
 
@@ -141,6 +144,7 @@ class CapabilityPolicyRepositoryTests(unittest.TestCase):
                 self.assertEqual(stamp.safety_map.map_digest, document.canonical_digest)
                 self.assertEqual(stamp.live_identity.identity_capability, "compatible")
 
+    @pytest.mark.mvp
     def test_fresh_named_boards_commit_explicit_no_setup_policy_per_board(self) -> None:
         """A fresh logical board gets its own persisted raw policy, not inferred state."""
 
@@ -226,6 +230,7 @@ class CapabilityPolicyRepositoryTests(unittest.TestCase):
             self.assertEqual(repository.resolve("unknown").status, "corrupt")
             self.assertEqual(repository.resolve("contradictory").status, "corrupt")
 
+    @pytest.mark.mvp
     def test_pre_pointer_failure_retains_previous_complete_generation(self) -> None:
         """A failed replacement cannot produce a raw window or mixed protected state."""
 

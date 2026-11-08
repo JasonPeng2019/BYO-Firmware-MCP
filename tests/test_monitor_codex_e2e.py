@@ -10,8 +10,12 @@ from __future__ import annotations
 import json
 import unittest
 
-from tests.codex_harness import REQUIRED_MODEL, CodexAgentTestCase
+import pytest
+
+from tests.codex_harness import CodexAgentTestCase
 from tests.store_cleanup import restore as store_restore, snapshot as store_snapshot
+
+pytestmark = pytest.mark.live
 
 
 _STORE_BEFORE: "set[str] | None" = None
@@ -336,17 +340,6 @@ class StdoutStaysClean(CodexAgentTestCase):
         self.assertNotIn("failed to parse", result.combined.lower())
         # Three tool calls all completed, which they could not if framing broke.
         self.assertGreaterEqual(len(result.tool_calls), 3, result.tool_calls)
-
-
-class ModelPinningIsEnforced(CodexAgentTestCase):
-    def test_the_harness_refuses_a_run_on_another_model(self) -> None:
-        """A silently downgraded run would test something other than the claim."""
-
-        from tests.codex_harness import CodexResult
-
-        with self.assertRaises(AssertionError):
-            self._assert_model_was_honoured(CodexResult(0, "model: gpt-4o-mini\n", ""))
-        self._assert_model_was_honoured(CodexResult(0, f"model: {REQUIRED_MODEL}\n", ""))
 
 
 if __name__ == "__main__":

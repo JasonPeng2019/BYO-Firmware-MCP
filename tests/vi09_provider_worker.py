@@ -7,7 +7,8 @@ import os
 
 from pyocd.probe.aggregator import PROBE_CLASSES
 
-from tests.vi09_provider_fixture import CMSISDAPProbe, STLinkProbe, event
+# This entrypoint is launched by filename, so its own directory is on sys.path.
+from vi09_provider_fixture import CMSISDAPProbe, STLinkProbe, event
 
 config = json.loads(os.environ["VI09_CHILD_CONFIG"])
 STLinkProbe.devices = [STLinkProbe(uid, "ST-Link simulated endpoint") for uid in config["stlink"]]

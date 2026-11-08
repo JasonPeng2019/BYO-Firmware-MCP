@@ -18,6 +18,8 @@ from pyocd_debug_mcp.services.connections import (
     probe_connection_id,
 )
 
+import pytest
+
 
 def setUpModule() -> None:
     required = {"cmsisdap", "picoprobe"}
@@ -85,6 +87,7 @@ class _OverviewHarness:
 
 
 class SetupOverviewNoProbeTests(unittest.TestCase):
+    @pytest.mark.mvp
     def test_one_name_zero_connections_reports_missing_probe_not_naming_ambiguity(self) -> None:
         harness = _OverviewHarness((), ())
 
@@ -560,6 +563,7 @@ class CrossProviderCollisionTests(unittest.TestCase):
         self.assertIn(probe_connection_id("cmsisdap", "12345"), connection_ids)
         self.assertIn(probe_connection_id("picoprobe", "12345"), connection_ids)
 
+    @pytest.mark.mvp
     def test_each_colliding_uid_still_resolves_to_its_own_provider(self) -> None:
         cmsisdap_row = _probe(1, usb_serial="12345", probe_family="cmsisdap")
         picoprobe_row = _probe(2, usb_serial="12345", probe_family="picoprobe")

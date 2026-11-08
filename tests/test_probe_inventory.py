@@ -22,6 +22,8 @@ from pyocd_debug_mcp.probe_inventory import (
     list_connected_probes_detailed,
 )
 
+import pytest
+
 PROBE_TABLE = (
     "#   Probe/Board          Unique ID                  State\n"
     "-------------------------------------------------------\n"
@@ -53,6 +55,7 @@ class DetailedListingTests(unittest.TestCase):
 
         self.assertEqual(listing, EMPTY_NATIVE_PROBE_LISTING)
 
+    @pytest.mark.mvp
     def test_probes_found_on_the_first_configured_command(self) -> None:
         runner = _FakeRunner([(0, PROBE_TABLE, "")])
         with _with_commands(("pyocd", "list", "--probes")):
@@ -155,6 +158,7 @@ class DetailedListingTests(unittest.TestCase):
 
         self.assertNotIn("...[truncated]", listing.stdout_summary)
 
+    @pytest.mark.mvp
     def test_list_connected_probes_cli_returns_a_plain_list_with_identical_contents(self) -> None:
         with _with_commands(("cmd",)):
             probes = list_connected_probes_cli(_FakeRunner([(0, PROBE_TABLE, "")]))

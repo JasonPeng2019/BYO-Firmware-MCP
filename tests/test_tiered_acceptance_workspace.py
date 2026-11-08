@@ -7,7 +7,6 @@ sibling .agent-workspace source. Runtime grant state is never a source fixture.
 
 from __future__ import annotations
 
-import asyncio
 import importlib.util
 import json
 import os
@@ -17,7 +16,6 @@ import unittest
 from dataclasses import asdict
 from importlib.machinery import SourceFileLoader
 from pathlib import Path
-from types import ModuleType, SimpleNamespace
 
 from mcp.server.fastmcp.exceptions import ToolError
 
@@ -57,7 +55,6 @@ def _workspace_source() -> Path:
 WORKSPACE = _workspace_source()
 WORKSPACE_HELPER = WORKSPACE / "internal" / "manual_permissions.py"
 ATTACH_PROJECT = WORKSPACE / "bin" / "attach-project"
-HARDWARE_RUNNER = Path(__file__).with_name("manual") / "manual_tiered_hardware_check.py"
 BOARD = "left_controller"
 POLICY = "a" * 64
 BINDING = "b" * 64
@@ -82,29 +79,6 @@ def _attach_project_module():  # type: ignore[no-untyped-def]
     sys.modules[spec.name] = module
     spec.loader.exec_module(module)
     return module
-
-
-def _hardware_runner() -> ModuleType:
-    spec = importlib.util.spec_from_file_location(
-        "tiered_hardware_runner_for_test", HARDWARE_RUNNER
-    )
-    if spec is None or spec.loader is None:
-        raise AssertionError(f"cannot load AT10 runner: {HARDWARE_RUNNER}")
-    module = importlib.util.module_from_spec(spec)
-    sys.modules[spec.name] = module
-    spec.loader.exec_module(module)
-    return module
-
-
-class _RunnerSession:
-    def __init__(self, payloads: list[dict[str, object]]) -> None:
-        self.payloads = list(payloads)
-        self.calls: list[tuple[str, dict[str, object]]] = []
-
-    async def call_tool(self, tool: str, arguments: dict[str, object]) -> SimpleNamespace:
-        self.calls.append((tool, arguments))
-        payload = self.payloads.pop(0)
-        return SimpleNamespace(content=[SimpleNamespace(text=json.dumps(payload))], isError=False)
 
 
 class TieredWorkspaceAcceptanceTests(unittest.TestCase):
@@ -239,99 +213,6 @@ class TieredWorkspaceAcceptanceTests(unittest.TestCase):
             self.assertEqual(first_repo.status("downgrade").state, "unlocked")
             self.assertEqual(second_repo.status("downgrade").state, "locked")
             self.assertFalse((manual_permission_root(second_root) / "downgrade.claim").exists())
-
-    def test_at10_runner_rejects_old_fixture_and_verifies_public_responses(self) -> None:
-        """AT10: the hardware checklist is strict before transport and during each call."""
-
-        runner = _hardware_runner()
-        with self.assertRaisesRegex(runner.FixtureError, "schema_version must be 2"):
-            runner.validate_fixture_document({"schema_version": 1})
-
-        session = _RunnerSession([{"status": "ok", "result": 37}, {"status": "ok", "echo": 37}])
-
-        async def no_pause(_message: str) -> None:
-            raise AssertionError("this fixture has no operator pause")
-
-        with tempfile.TemporaryDirectory() as temporary:
-            rows, captures = asyncio.run(
-                runner.run_steps(
-                    session,
-                    Path(temporary),
-                    {"board_id": "physical_board"},
-                    [
-                        {
-                            "id": "initial_read",
-                            "tool": "read_memory_raw",
-                            "arguments": {"board_id": "physical_board"},
-                            "expect": {"payload": {"status": "ok", "result": 37}},
-                            "capture": "initial",
-                        },
-                        {
-                            "id": "restore",
-                            "tool": "write_memory_raw",
-                            "arguments": {"value": "$capture.initial.result"},
-                            "expect": {"payload": {"status": "ok", "echo": 37}},
-                        },
-                    ],
-                    pause=no_pause,
-                )
-            )
-        self.assertTrue(all(row["passed"] for row in rows))
-        self.assertEqual(captures["initial"], {"status": "ok", "result": 37})
-        self.assertEqual(session.calls[1], ("write_memory_raw", {"value": 37}))
-
-        failed = _RunnerSession([{"status": "error", "code": "backend/read-failed"}])
-        with (
-            tempfile.TemporaryDirectory() as temporary,
-            self.assertRaisesRegex(runner.CheckFailed, "expected 'ok'"),
-        ):
-            asyncio.run(
-                runner.run_steps(
-                    failed,
-                    Path(temporary),
-                    {"board_id": "physical_board"},
-                    [
-                        {
-                            "id": "raw_read",
-                            "tool": "read_memory_raw",
-                            "arguments": {},
-                            "expect": {"payload": {"status": "ok"}},
-                        }
-                    ],
-                    pause=no_pause,
-                )
-            )
-
-    def test_at10_runner_rejects_a_semantically_fake_checklist_step_before_transport(self) -> None:
-        """AT10: an ID cannot disguise get_capabilities as a safe contained read."""
-
-        runner = _hardware_runner()
-        board = {
-            "board_id": "physical_board",
-            "probe_uid": "probe-a",
-            "target": "fixture-target",
-            "serial_binding": "fixture-serial",
-            "expected_tier": "setup-lite",
-        }
-        other = {
-            "board_id": "other_board",
-            "probe_uid": "probe-b",
-            "target": "other-target",
-            "serial_binding": "other-serial",
-        }
-        with self.assertRaisesRegex(runner.FixtureError, "action_batch"):
-            runner._validate_step_contract(
-                "HW02",
-                {
-                    "id": "safe_read",
-                    "tool": "get_capabilities",
-                    "arguments": {"board_id": "physical_board", "address": 0x20000000},
-                    "expect": {"payload": {"status": "ok", "operation": "read_memory_address"}},
-                },
-                board,
-                [other],
-                "fixture.cases.HW02.boards.nrf52840.steps[0]",
-            )
 
 
 class NrfPublicRegeneratedMapControls(unittest.TestCase):

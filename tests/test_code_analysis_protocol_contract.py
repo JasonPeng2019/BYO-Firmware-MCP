@@ -33,6 +33,8 @@ from tests.code_analysis_support import (
     sha256_file,
 )
 
+import pytest
+
 POSITION_FIELDS = (
     "uri",
     "path",
@@ -100,6 +102,7 @@ class InitializationContract(FakeServiceCase):
         )
         self.assertLess(initialized_index, first_query)
 
+    @pytest.mark.mvp
     def test_status_never_starts_the_language_server(self) -> None:
         envelope = assert_envelope(self, self.service.status(), "status")
         self.assertEqual(envelope["data"]["session_state"], "not_started")
@@ -411,6 +414,7 @@ class TransportFailures(FakeServiceCase):
         assert_envelope(self, recovered, "definition", status="ok")
         self.assertEqual(len(self.fake.starts()), 2, "a fresh child serves the next call")
 
+    @pytest.mark.mvp
     def test_error_reply_is_not_an_empty_success(self) -> None:
         self.fake.configure(
             responses={"textDocument/definition": {"error": {"code": -32603, "message": "boom"}}}

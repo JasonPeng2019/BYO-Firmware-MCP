@@ -28,6 +28,8 @@ from pyocd_debug_mcp.tools.serial import (
     write_serial,
 )
 
+import pytest
+
 
 class _BufferedUART(UARTInterface):
     def __init__(self, incoming: bytes) -> None:
@@ -138,6 +140,7 @@ class UARTCaptureEvidenceTests(unittest.TestCase):
         self.assertEqual(result.steps[0].text, payload.decode("ascii"))
         self.assertGreater(len(result.text), 65_536)
 
+    @pytest.mark.mvp
     def test_read_serial_returns_complete_reversibly_serialized_capture(self) -> None:
         captured = 'prefix\\nliteral "quote"\r\n' + ("A" * 400) + "\x00TAIL"
         capture = UARTCaptureResult(captured, "TAIL", 0, 0.25)
@@ -150,6 +153,7 @@ class UARTCaptureEvidenceTests(unittest.TestCase):
         self.assertNotIn("excerpt=", result)
         self.assertGreater(len(serialized), 300)
 
+    @pytest.mark.mvp
     def test_serial_exchange_returns_complete_aggregate_and_per_step_text(self) -> None:
         first = 'first\\n"quoted"\r\n' + ("B" * 350)
         second = "second\x00\r\nDONE"
@@ -223,6 +227,7 @@ class UartOpenFailureTests(unittest.TestCase):
     catching by type) must keep propagating unchanged, not be relabeled as one.
     """
 
+    @pytest.mark.mvp
     def test_write_serial_reports_a_genuine_port_failure_as_uart_open_failed(self) -> None:
         # Mirrors what `write_uart_output` itself actually raises: a plain
         # RuntimeError wrapping the real serial backend error.

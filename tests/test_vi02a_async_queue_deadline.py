@@ -39,6 +39,8 @@ from test_vi02_operation_resource_ownership import (
     _until,
 )
 
+import pytest
+
 BUDGET = 0.30
 PARTIAL_BUDGET = 1.2
 OBSERVATIONS: list[dict[str, Any]] = []
@@ -358,6 +360,7 @@ class AsyncQueueDeadlineTests(_OwnershipFixture):
     def test_direct_queue_and_execution_use_one_budget(self) -> None:
         self.partial_budget(public=False)
 
+    @pytest.mark.mvp
     def test_public_batch_queue_and_execution_use_one_budget(self) -> None:
         self.partial_budget(public=True)
 
@@ -495,6 +498,7 @@ class AsyncQueueDeadlineTests(_OwnershipFixture):
         anyio.run(scenario)
         self.assertEqual(self.events, ["guard:hold_board"])
 
+    @pytest.mark.mvp
     def test_public_queued_cancellation_leaves_owner_untouched(self) -> None:
         owner = self.connect("owner")
         held, release = threading.Event(), threading.Event()

@@ -19,6 +19,8 @@ from pathlib import Path
 from pyocd_debug_mcp.kernel.operations import dispatch
 from pyocd_debug_mcp.kernel.registry import RegistryFastMCP
 
+import pytest
+
 SERVER_PROJECT = Path(__file__).resolve().parents[1]
 
 
@@ -45,6 +47,7 @@ class RecordingHappensAfterDispatchReturns(unittest.TestCase):
 
         self.watcher = Watcher()
 
+    @pytest.mark.mvp
     def test_completion_is_recorded_after_the_handler_finishes(self) -> None:
         events = self.events
 
@@ -103,10 +106,16 @@ class RecordingHappensAfterDispatchReturns(unittest.TestCase):
 class BaselineBehaviourIsUnchanged(unittest.TestCase):
     """With monitoring present, refusals and results must match the baseline."""
 
+    @pytest.mark.mvp
     def test_refusal_text_is_byte_for_byte_unchanged(self) -> None:
         script = (
             "import asyncio, json, sys;"
             "sys.path.insert(0, 'src');"
+            "import tempfile;"
+            "from pathlib import Path;"
+            "store = tempfile.TemporaryDirectory(prefix='byo-passivity-');"
+            "from pyocd_debug_mcp.monitor import paths;"
+            "paths._reset_cache(Path(store.name));"
             "import pyocd_debug_mcp.server as s;"
             "\nasync def m():\n"
             "    try:\n"

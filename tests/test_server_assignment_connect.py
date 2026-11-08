@@ -23,6 +23,8 @@ from pyocd_debug_mcp.setup_flow.setup import RunAssignmentStore
 from pyocd_debug_mcp.setup_flow.validate import ValidationInventory, ValidationProbe
 from pyocd_debug_mcp.target_errors import TargetConnectionError
 
+import pytest
+
 
 FIRST_PROBE = "683710208"
 SECOND_PROBE = "683854191"
@@ -166,6 +168,7 @@ class AssignmentAwareConnectTests(unittest.TestCase):
 
         return result, open_session, generic_resolution
 
+    @pytest.mark.mvp
     def test_normal_connect_honors_live_assignment_to_second_probe(self) -> None:
         result, open_session, generic_resolution = self._connect_with(
             board_id="lora_tester_2",
@@ -177,6 +180,7 @@ class AssignmentAwareConnectTests(unittest.TestCase):
         self.assertIn(SECOND_PROBE, result)
         generic_resolution.assert_not_called()
 
+    @pytest.mark.mvp
     def test_normal_connect_rejects_missing_assigned_probe_without_fallback(self) -> None:
         open_session = Mock()
         generic_resolution = Mock()
