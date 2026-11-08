@@ -1193,9 +1193,8 @@ class VersionProbeTests(unittest.TestCase):
 
     @pytest.mark.mvp
     def test_own_cap_cause_survives_caller_expiry_during_confirmed_cleanup(self):
-        # This case measures probe classification and cleanup, after executable
-        # resolution. Hashing the host Python first consumed the old 0.1s margin
-        # on Linux, so that fixture never established the own-cap precondition.
+        # Measure probe classification and cleanup after executable resolution;
+        # public resolver latency is covered by the adjacent public-call cases.
         candidate = runtime.ResolvedAnalysisProgram(
             "clangd",
             Path(sys.executable).resolve(),
@@ -1210,7 +1209,11 @@ class VersionProbeTests(unittest.TestCase):
             cleanup_remaining.append(deadline - time.monotonic())
             # Cross the real caller deadline only after the own-cap cleanup
             # starts. Keep clocks, process communication and cleanup real.
-            threading.Event().wait(max(0, deadline - time.monotonic()) + 0.01)
+            # A timed wait can return before the observable monotonic clock
+            # advances past the boundary. Establish actual expiry, including
+            # equality, before delegating the real cleanup.
+            while time.monotonic() <= deadline:
+                threading.Event().wait(max(0, deadline - time.monotonic()) + 0.01)
             return original_cleanup(process)
 
         result = None
