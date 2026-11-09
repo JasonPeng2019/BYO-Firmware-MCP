@@ -54,26 +54,29 @@ def retain_failed_inputs(request, monkeypatch):
         return
 
     def keep_inputs():
-        temporary = Path(tempfile.gettempdir()).resolve()
-        destination = (
-            Path(os.environ.get("BYO_TEST_FAILURES", request.config.rootpath / ".test-failures"))
-            / case.id()
-        )
-        copied = []
-        for name in ("root", "base", "project", "store_dir"):
-            value = getattr(case, name, None)
-            if not isinstance(value, (str, Path)):
-                continue
-            path = Path(value).resolve()
-            if (
-                not path.is_dir()
-                or not path.is_relative_to(temporary)
-                or path == temporary
-                or any(path.is_relative_to(p) for p in copied)
-            ):
-                continue
-            if retain_directory(path, destination / name):
-                copied.append(path)
+        try:
+            temporary = Path(tempfile.gettempdir()).resolve()
+            destination = (
+                Path(os.environ.get("BYO_TEST_FAILURES", request.config.rootpath / ".test-failures"))
+                / case.id()
+            )
+            copied = []
+            for name in ("root", "base", "project", "store_dir"):
+                value = getattr(case, name, None)
+                if not isinstance(value, (str, Path)):
+                    continue
+                path = Path(value).resolve()
+                if (
+                    not path.is_dir()
+                    or not path.is_relative_to(temporary)
+                    or path == temporary
+                    or any(path.is_relative_to(p) for p in copied)
+                ):
+                    continue
+                if retain_directory(path, destination / name):
+                    copied.append(path)
+        except Exception as error:
+            print(f"Additional fixture capture error: {error}", file=sys.stderr)
 
     def retaining(call):
         def run(*args, **kwargs):

@@ -23,7 +23,6 @@ from pyocd_debug_mcp.safety.linker import (
 from pyocd_debug_mcp.setup_flow.targets import TargetResolutionError, TargetResolver
 
 
-
 class RoundTwoTrustedCallerTests(unittest.TestCase):
     def test_long_reviewed_target_is_admitted_only_by_exact_supported_membership(self) -> None:
         candidate = "stm32u5_" + "long_target_" * 12

@@ -10,10 +10,10 @@ import tempfile
 
 def retain_directory(directory, destination):
     """Copy one owned temporary input tree without masking the test failure."""
-    directory = Path(directory).resolve()
-    destination = Path(destination).resolve()
-    temporary = Path(tempfile.gettempdir()).resolve()
     try:
+        directory = Path(directory).resolve()
+        destination = Path(destination).resolve()
+        temporary = Path(tempfile.gettempdir()).resolve()
         if directory == temporary or not directory.is_relative_to(temporary):
             raise OSError("only owned temporary fixture inputs may be captured")
         if destination.is_relative_to(directory):
