@@ -697,7 +697,6 @@ class JLinkRetryIsolationTests(unittest.TestCase):
         ):
             self.assertNotIn(forbidden, source, f"{forbidden} reached the J-Link retry")
 
-
     def test_a_hook_discovered_matching_probe_row_does_not_change_the_retry_verdict(
         self,
     ) -> None:

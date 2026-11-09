@@ -1081,9 +1081,7 @@ class FakeServiceCase(unittest.TestCase):
 
 
 # --------------------------------------------------------- fixture projects
-def copy_fixture(
-    name: str, destination: Path, *, units: Iterable[str] = ()
-) -> AnalysisProject:
+def copy_fixture(name: str, destination: Path, *, units: Iterable[str] = ()) -> AnalysisProject:
     source = FIXTURE_ROOT / name
     if not source.is_dir():
         raise AssertionError(f"missing fixture {source}")

@@ -63,7 +63,6 @@ DAMAGES = {
 
 
 class ManagedCacheRefusal(ManagedUartCase):
-
     def observe(self, name, **facts):
         OBSERVATIONS[self.id() + ":" + name] = facts
 

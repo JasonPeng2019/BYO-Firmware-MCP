@@ -11,7 +11,7 @@ from pyocd_debug_mcp.board_config import BoardConfig
 from pyocd_debug_mcp.capabilities.policy import Tier
 from pyocd_debug_mcp.firmstore.cache import ProbeIdentity, SerialEndpoint
 from pyocd_debug_mcp.services import uart_capture
-from tests.inventory_fixture import _snapshot, _uart_row
+from tests.inventory_fixture import _snapshot
 from tests.tiered_acceptance_support import (
     confirmed_lite_policy,
     isolated_project,

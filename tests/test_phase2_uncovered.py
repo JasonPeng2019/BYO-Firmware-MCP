@@ -22,8 +22,6 @@ from pyocd_debug_mcp.discovery_hooks import (
 from pyocd_debug_mcp.tools.discovery import RetryContext
 
 
-
-
 class DecodeHookStdoutTests(unittest.TestCase):
     """Edge cases for hook stdout parsing (UTF-8, JSON, schema validation)."""
 

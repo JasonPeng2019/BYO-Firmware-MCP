@@ -314,7 +314,6 @@ class GateAndAuthorityTests(unittest.TestCase):
         ):
             self.assertNotIn(forbidden, source, f"{forbidden} is reachable from a hook tool")
 
-
     def test_retry_tickets_are_not_stored_on_the_server_run(self) -> None:
         """clear_authority() would wipe them, and they are not authority."""
 

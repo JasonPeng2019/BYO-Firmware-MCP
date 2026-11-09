@@ -189,7 +189,6 @@ class ReportDeleteOnACK(MonitorTestCase):
         super().setUp()
         self.store = resolve_store_root()
 
-
     def test_report_file_is_deleted_from_disk_once_acked(self) -> None:
         """Report file is deleted from disk once ACKed by the transport."""
 
@@ -261,7 +260,6 @@ class DeliveryStatePruning(MonitorTestCase):
         super().setUp()
         self.store = resolve_store_root()
 
-
     def test_segment_acked_entry_is_pruned_when_file_is_gone(self) -> None:
         """A segment _acked entry is pruned once its file is confirmed absent.
 
@@ -306,7 +304,6 @@ class DeliveryStatePruning(MonitorTestCase):
             state["acked"],
             "Segment entry should be pruned when file is confirmed absent",
         )
-
 
     def test_acked_entry_is_never_pruned_if_file_still_exists(self) -> None:
         """An _acked entry is never pruned while its backing file exists (crash-window protection).
@@ -353,7 +350,6 @@ class DeliveryStatePruning(MonitorTestCase):
             state["acked"],
             "Entry should never be pruned while file exists (crash-window protection)",
         )
-
 
     def test_report_identity_is_checked_across_all_workspace_directories(self) -> None:
         """A report identity is only pruned if absent from ALL workspace directories.

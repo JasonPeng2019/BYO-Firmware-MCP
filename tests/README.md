@@ -142,6 +142,5 @@ teardown and cleanup failures before destructive cleanup. Monitor closeout
 errors are reported separately and keep their store. Successful fixtures clean
 up normally. The fixture-only Actions path names its affected modules explicitly,
 uses pinned real clangd/ARM query-driver inputs and excludes product bundles,
-installed checks, clients/models and hardware. New cleanup verification is
-PENDING until its exact candidate passes; previous results do not verify these
-changes.
+installed checks, clients/models and hardware. Use the fixture-only Actions result bound to the exact source candidate;
+previous results do not verify later changes.

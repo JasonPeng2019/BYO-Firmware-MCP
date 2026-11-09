@@ -1879,12 +1879,23 @@ class RealClangdTests(unittest.TestCase):
         code = "// é中😀é\r\nint add(int x) { return x + 1; }\r\nfloat add(float x) { return x + 2; }\r\ntemplate<class T> T twice(T x) { return x+x; }\r\nint main() { /*é中😀é*/ return add(twice(2)); }\r\n"
         project = AnalysisProject(self.root)
         source = project.write_text("main.cpp", code)
-        project.write_database([
-            project.entry("main.cpp", arguments=[
-                "clang++", "--target=arm-none-eabi", "-mcpu=cortex-m4", "-mthumb",
-                "-ffreestanding", "-std=c++17", "-c", str(source),
-            ])
-        ])
+        project.write_database(
+            [
+                project.entry(
+                    "main.cpp",
+                    arguments=[
+                        "clang++",
+                        "--target=arm-none-eabi",
+                        "-mcpu=cortex-m4",
+                        "-mthumb",
+                        "-ffreestanding",
+                        "-std=c++17",
+                        "-c",
+                        str(source),
+                    ],
+                )
+            ]
+        )
         self.service = CodeAnalysisService(AnalysisRuntimeContext(self.root))
         status = self.service.status()
         self.assertEqual(status["status"], "ok", status)

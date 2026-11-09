@@ -19,10 +19,7 @@ from tests.tiered_acceptance_support import public_text
 OBSERVATIONS = {}
 
 
-
-
 class ManagedUartProvenance(ManagedUartCase):
-
     def observe(self, name, **facts):
         OBSERVATIONS[self.id() + ":" + name] = facts
 

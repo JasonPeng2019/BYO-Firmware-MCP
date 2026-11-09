@@ -52,6 +52,7 @@ def retain_failed_inputs(request, monkeypatch):
     case = request.instance
     if not isinstance(case, unittest.TestCase):
         return
+
     def keep_inputs():
         temporary = Path(tempfile.gettempdir()).resolve()
         destination = (

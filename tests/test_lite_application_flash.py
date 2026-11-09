@@ -163,8 +163,6 @@ class LiteApplicationFlashTests(PublicActions, unittest.TestCase):
 
 
 class FullGenericAllocationTests(FullGenericAllocationCase):
-
-
     @fresh_full_project
     def test_public_full_allocation_publishes_proof_before_programming(self):
         response = self.invoke("flash_application", {"artifact": str(self.artifact)})

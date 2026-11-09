@@ -11,7 +11,7 @@ import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Mapping, Sequence, cast
+from typing import Any, Mapping, Sequence, cast
 from unittest.mock import patch
 
 from pyocd_debug_mcp import discovery_hooks, server
@@ -406,7 +406,6 @@ class BudgetTests(unittest.TestCase):
                     discovery_hooks.MAX_HOOK_TIMEOUT_SECONDS,
                     "one hook could exceed the whole operation budget",
                 )
-
 
     def test_read_serial_with_a_uart_finalizer_reserves_both_hook_budgets(self) -> None:
         """The action and the on_exit finalizer can each execute a hook."""

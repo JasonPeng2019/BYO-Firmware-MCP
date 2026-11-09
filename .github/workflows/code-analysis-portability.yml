@@ -196,6 +196,9 @@ jobs:
             ${{ runner.temp }}/windows-analysis-regressions/
             ${{ runner.temp }}/windows-analysis-acceptance/
             ${{ env.BYO_FR15_CASE_EVIDENCE }}/
+            ${{ runner.temp }}/analysis-contracts.xml
+            ${{ runner.temp }}/swd-isolation.xml
+            ${{ runner.temp }}/protection-contracts.xml
           include-hidden-files: true
           if-no-files-found: warn
           retention-days: 90

@@ -148,7 +148,9 @@ class ProgramIdentity(RealClangdCase):
 class HostC(RealClangdCase):
     def setUp(self) -> None:
         super().setUp()
-        self.project = copy_fixture("host_c", self.base / "host_c", units=("src/main.c", "src/util.c"))
+        self.project = copy_fixture(
+            "host_c", self.base / "host_c", units=("src/main.c", "src/util.c")
+        )
         self.analysis = self.service(self.project)
 
     @pytest.mark.mvp

@@ -13,8 +13,6 @@ from pyocd_debug_mcp.services.session_runtime import PolicyRefusal
 from pyocd_debug_mcp.setup_flow.preflight import SetupUserInput
 from pyocd_debug_mcp.setup_flow.setup import SetupWorkflow
 from pyocd_debug_mcp.tools.setup import SetupToolLoadState, build_setup_handlers
-from pyocd_debug_mcp.guardrails.plan_engine import PlanEngine, _PlanState
-from pyocd_debug_mcp.tools.setup import SetupToolLoadState
 
 
 class _Registry:
@@ -260,8 +258,6 @@ class StaleSetupAllowanceSpecTests(unittest.TestCase):
             "board_setup", "board", "repair ended with setup_completed", expected_plan_id="P2"
         )
         services.clear_setup_continuation.assert_called_once_with("board", "P2")
-
-
 
 
 def _active_state(plan_id: str) -> _PlanState:

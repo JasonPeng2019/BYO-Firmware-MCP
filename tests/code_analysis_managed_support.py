@@ -578,7 +578,6 @@ class OwnedSpawns:
             assert record["identity_matches_after"] is False, record
             assert record["marker_exists_after"] is False, record
             if os.name == "posix":
-
                 assert isinstance(receipt, dict), record
                 assert receipt.get("coverage") == "retained_group_and_captured_descendants", record
                 assert receipt.get("scope_confirmed") is True, record

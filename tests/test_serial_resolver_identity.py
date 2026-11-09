@@ -617,27 +617,27 @@ class ManagedVendorIdentityTests(unittest.TestCase):
             )
 
 
-
 class PortNameNormalizationTests(unittest.TestCase):
     def test_port_case_whitespace_and_exact_windows_prefix(self) -> None:
         for supplied, expected in (
-            ('COM1', 'com1'),
-            ('COM12', 'com12'),
-            ('TTYUSB0', 'ttyusb0'),
-            ('\\\\.\\COM1', 'com1'),
-            ('\\\\.\\COM99', 'com99'),
-            ('\\\\.\\TTYUSB0', 'ttyusb0'),
-            ('  COM1  ', 'com1'),
-            ('\tCOM5\n', 'com5'),
-            ('  \\\\.\\COM1  ', 'com1'),
-            ('', ''),
-            ('   ', ''),
-            ('Cu_MotherBoard_2', 'cu_motherboard_2'),
-            ('TTYUSBFAKE', 'ttyusbfake'),
-            ('\\.COM1', '\\.com1'),
+            ("COM1", "com1"),
+            ("COM12", "com12"),
+            ("TTYUSB0", "ttyusb0"),
+            ("\\\\.\\COM1", "com1"),
+            ("\\\\.\\COM99", "com99"),
+            ("\\\\.\\TTYUSB0", "ttyusb0"),
+            ("  COM1  ", "com1"),
+            ("\tCOM5\n", "com5"),
+            ("  \\\\.\\COM1  ", "com1"),
+            ("", ""),
+            ("   ", ""),
+            ("Cu_MotherBoard_2", "cu_motherboard_2"),
+            ("TTYUSBFAKE", "ttyusbfake"),
+            ("\\.COM1", "\\.com1"),
         ):
             with self.subTest(supplied=supplied):
                 self.assertEqual(resolver.normalize_port_name(supplied), expected)
+
 
 if __name__ == "__main__":
     unittest.main()

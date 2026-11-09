@@ -12,6 +12,7 @@ tests assert both the detection it does provide and the limit it does not exceed
 from __future__ import annotations
 from tests.monitor_support import add_snapshot
 
+import inspect
 import json
 import sys
 import unittest

@@ -18,7 +18,6 @@ from pyocd_debug_mcp.adapters.swd_interface import TargetSessionHandle
 from pyocd_debug_mcp.artifact_collector import ArtifactRole, collect_artifacts
 from pyocd_debug_mcp.firmstore.store import FirmStore
 from pyocd_debug_mcp.hardware_inventory import EMPTY_INVENTORY_SNAPSHOT
-from pyocd_debug_mcp.kernel.finalizers import FinalizerValidationError, parse_finalizer
 from pyocd_debug_mcp.kernel.hygiene import cleanup_stale_owned_processes, require_clean_startup
 from pyocd_debug_mcp.kernel.processes import ProcessIdentityUnavailable, ProcessMarker
 from pyocd_debug_mcp.kernel.registry import ToolRegistry
@@ -29,11 +28,8 @@ from pyocd_debug_mcp.pack_provision import (
     VerifiedPack,
     sha256_bytes,
 )
-from pyocd_debug_mcp.services import symbols
 from pyocd_debug_mcp.services.connections import probe_connection_id
 from pyocd_debug_mcp.services.session_runtime import ActionContext, PolicyRefusal
-from pyocd_debug_mcp.services.symbols import ResolvedSymbol
-from pyocd_debug_mcp.services.uart_exchange_schema import validate_serial_exchange_parameters
 from pyocd_debug_mcp.safety.map_build import GenericSafetyMapDocument
 from pyocd_debug_mcp.setup_flow.device_support import (
     DeviceSupportResolver,
@@ -47,14 +43,6 @@ from pyocd_debug_mcp.setup_flow.packs import (
 from pyocd_debug_mcp.tools.batch import BatchChild, BatchValidationError, build_batch_handlers
 from pyocd_debug_mcp.tools.flash import FlashToolServices, build_flash_handlers
 from pyocd_debug_mcp.tools.handshake import build_initialization_guidance
-from pyocd_debug_mcp.tools.memory import MemoryToolServices, build_memory_handlers
-from pyocd_debug_mcp.tools.serial import SerialToolServices, write_serial
-
-
-
-
-
-
 
 
 def _pdsc(leading: str = "") -> str:
@@ -74,8 +62,6 @@ def _pack_bytes(pdsc: str) -> bytes:
 
 
 class RoundThreeRegressionTests(unittest.TestCase):
-
-
     def test_r3_03_long_producer_and_batch_tool_are_accepted_while_correctness_refusals_remain(
         self,
     ) -> None:

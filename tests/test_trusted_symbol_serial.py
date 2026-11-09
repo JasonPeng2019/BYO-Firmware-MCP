@@ -1,54 +1,21 @@
 """Symbol service/public replies and finite serial/finalizer contracts."""
 
 from __future__ import annotations
-import json
-import os
-import tempfile
-import unittest
-from pathlib import Path
-from elftools.common.exceptions import ELFError
-from pyocd_debug_mcp.kernel.operations import operation_timeout_seconds
-from pyocd_debug_mcp.native_build import _validate_declared_artifacts, _validate_paths
-from pyocd_debug_mcp.probe_families import ProbeFamilyRegistryError, load_probe_family_registry, provider_qualified_family
-from pyocd_debug_mcp.safety.linker import BuildArtifactSelection, BuildRole, LinkerEvidenceError
-from pyocd_debug_mcp.services.symbols import SymbolLookupError, find_symbols
-from pyocd_debug_mcp.setup_flow.targets import TargetResolutionError, TargetResolver
-from tests.elf_symbol_fixture import FUNC, TEXT, ElfSymbol, elf32_symbols
-from __future__ import annotations
-import asyncio
-import io
-import json
+
 import math
-import os
-import subprocess
 import tempfile
 import unittest
-import zipfile
 from pathlib import Path
-from types import SimpleNamespace
-from unittest.mock import Mock, patch
-from pyocd_debug_mcp.artifact_collector import ArtifactRole, MANIFEST_NAME, _validate_destination, collect_artifacts
-from pyocd_debug_mcp.hardware_inventory import EMPTY_INVENTORY_SNAPSHOT
+
+from elftools.common.exceptions import ELFError
+
 from pyocd_debug_mcp.kernel.finalizers import FinalizerValidationError, parse_finalizer
-from pyocd_debug_mcp.kernel.hygiene import cleanup_stale_owned_processes, require_clean_startup
 from pyocd_debug_mcp.kernel.operations import operation_timeout_seconds
-from pyocd_debug_mcp.kernel.processes import ProcessIdentityUnavailable
-from pyocd_debug_mcp.kernel.registry import ToolRegistry
-from pyocd_debug_mcp.pack_provision import DeviceBinding, PackProvisionError, PackSpec, VerifiedPack, sha256_bytes
-from pyocd_debug_mcp.services.connections import probe_connection_id
-from pyocd_debug_mcp.services.symbols import ResolvedSymbol, find_symbols
-from pyocd_debug_mcp.services.session_runtime import ActionContext
+from pyocd_debug_mcp.services.symbols import ResolvedSymbol, SymbolLookupError, find_symbols
 from pyocd_debug_mcp.services.uart_exchange_schema import validate_serial_exchange_parameters
-from pyocd_debug_mcp.setup_flow.device_support import DeviceSupportResolver
-from pyocd_debug_mcp.setup_flow.packs import PackCandidate, PackCandidateError, PackCandidatePipeline
-from pyocd_debug_mcp.safety.enforce import LoadedSafetyMap, SafetyPolicy, SafetyPolicyError
-from pyocd_debug_mcp.safety.map_build import GenericMapGeometry, GenericSafetyMapDocument
-from pyocd_debug_mcp.safety.regions import AddressRange
-from pyocd_debug_mcp.tools.batch import BatchChild, BatchValidationError, build_batch_handlers
-from pyocd_debug_mcp.tools.flash import FlashToolServices, build_flash_handlers
-from pyocd_debug_mcp.tools.handshake import build_initialization_guidance
 from pyocd_debug_mcp.tools.memory import MemoryToolServices, build_memory_handlers
 from pyocd_debug_mcp.tools.serial import SerialToolServices, read_serial, write_serial
+from tests.elf_symbol_fixture import FUNC, TEXT, ElfSymbol, elf32_symbols
 
 
 def _memory_services(artifact: Path, finder: object) -> MemoryToolServices:

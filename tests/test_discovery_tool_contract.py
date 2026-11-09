@@ -313,7 +313,6 @@ class SchemaDriftTests(unittest.TestCase):
 class LiveServerContractTests(unittest.TestCase):
     """The same guarantees, through the real registered server tools."""
 
-
     def test_probe_contract_providers_come_from_pyocd_probe_classes(self) -> None:
         monitor_store = getattr(server._monitor, "_store", None)
 

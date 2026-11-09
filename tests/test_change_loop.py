@@ -309,11 +309,8 @@ class ChangeLoopSpecTests(unittest.TestCase):
         self,
     ) -> None:
         from pyocd_debug_mcp.services.session_runtime import (
-            ActionContext,
             SessionRecord,
-            ToolOutcome,
         )
-        from pyocd_debug_mcp.tools.flash import FlashToolServices, build_flash_handlers
 
         root = Path("test-run")
         runtime = SessionRecord(

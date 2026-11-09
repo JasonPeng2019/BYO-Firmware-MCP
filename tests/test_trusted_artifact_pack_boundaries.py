@@ -5,7 +5,6 @@ from __future__ import annotations
 import asyncio
 import io
 import json
-import math
 import os
 import subprocess
 import tempfile
@@ -22,9 +21,7 @@ from pyocd_debug_mcp.artifact_collector import (
     collect_artifacts,
 )
 from pyocd_debug_mcp.hardware_inventory import EMPTY_INVENTORY_SNAPSHOT
-from pyocd_debug_mcp.kernel.finalizers import FinalizerValidationError, parse_finalizer
 from pyocd_debug_mcp.kernel.hygiene import cleanup_stale_owned_processes, require_clean_startup
-from pyocd_debug_mcp.kernel.operations import operation_timeout_seconds
 from pyocd_debug_mcp.kernel.processes import ProcessIdentityUnavailable
 from pyocd_debug_mcp.kernel.registry import ToolRegistry
 from pyocd_debug_mcp.pack_provision import (
@@ -35,9 +32,7 @@ from pyocd_debug_mcp.pack_provision import (
     sha256_bytes,
 )
 from pyocd_debug_mcp.services.connections import probe_connection_id
-from pyocd_debug_mcp.services.symbols import ResolvedSymbol, find_symbols
 from pyocd_debug_mcp.services.session_runtime import ActionContext
-from pyocd_debug_mcp.services.uart_exchange_schema import validate_serial_exchange_parameters
 from pyocd_debug_mcp.setup_flow.device_support import DeviceSupportResolver
 from pyocd_debug_mcp.setup_flow.packs import (
     PackCandidate,
@@ -50,14 +45,6 @@ from pyocd_debug_mcp.safety.regions import AddressRange
 from pyocd_debug_mcp.tools.batch import BatchChild, BatchValidationError, build_batch_handlers
 from pyocd_debug_mcp.tools.flash import FlashToolServices, build_flash_handlers
 from pyocd_debug_mcp.tools.handshake import build_initialization_guidance
-from pyocd_debug_mcp.tools.memory import MemoryToolServices, build_memory_handlers
-from pyocd_debug_mcp.tools.serial import SerialToolServices, read_serial, write_serial
-
-
-
-
-
-
 
 
 def _pack_bytes(pdsc: bytes) -> bytes:
@@ -68,8 +55,6 @@ def _pack_bytes(pdsc: bytes) -> bytes:
 
 
 class RoundFourRegressionTests(unittest.TestCase):
-
-
     def test_long_batch_names_and_artifact_producer_are_preserved(self) -> None:
         known = "known_" + "x" * 130
         dispatched: list[str] = []

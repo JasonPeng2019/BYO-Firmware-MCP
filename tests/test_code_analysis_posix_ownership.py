@@ -28,8 +28,6 @@ import psutil
 from tests.code_analysis_managed_support import posix_process_identity, production
 
 
-
-
 def native_group_members(group: int) -> set[int]:
     """Original-group oracle independent of production psutil enumeration."""
     if sys.platform.startswith("linux"):

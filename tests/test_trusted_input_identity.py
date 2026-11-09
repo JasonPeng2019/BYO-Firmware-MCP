@@ -8,9 +8,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from elftools.common.exceptions import ELFError
 
-from pyocd_debug_mcp.kernel.operations import operation_timeout_seconds
 from pyocd_debug_mcp.native_build import _validate_declared_artifacts, _validate_paths
 from pyocd_debug_mcp.probe_families import (
     ProbeFamilyRegistryError,
@@ -22,16 +20,11 @@ from pyocd_debug_mcp.safety.linker import (
     BuildRole,
     LinkerEvidenceError,
 )
-from pyocd_debug_mcp.services.symbols import SymbolLookupError, find_symbols
 from pyocd_debug_mcp.setup_flow.targets import TargetResolutionError, TargetResolver
 
-from tests.elf_symbol_fixture import FUNC, TEXT, ElfSymbol, elf32_symbols
 
 
 class RoundTwoTrustedCallerTests(unittest.TestCase):
-
-
-
     def test_long_reviewed_target_is_admitted_only_by_exact_supported_membership(self) -> None:
         candidate = "stm32u5_" + "long_target_" * 12
         self.assertGreater(len(candidate), 128)

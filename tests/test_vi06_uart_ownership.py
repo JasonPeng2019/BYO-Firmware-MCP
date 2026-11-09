@@ -22,12 +22,10 @@ OBSERVATIONS = {}
 
 
 class ManagedUartOwnership(ManagedUartCase):
-
     def confirm_b(self):
         self.cache.confirm("board_b", ProbeIdentity("jlink", "probe_b"), self.cable_b)
         # Reload from actual disk, so no fixture can smuggle in in-memory ownership.
         self.server._attachment_cache = AttachmentCache(FirmStore(self.root))
-
 
     def observe(self, name, **facts):
         OBSERVATIONS[self.id() + ":" + name] = facts
@@ -45,7 +43,6 @@ class ManagedUartOwnership(ManagedUartCase):
         self.assertIn("plan", message)
         self.assertEqual(self.transport.mock_calls, [], "refusal must precede serial open/write")
         self.observe("refusal", message=message, serial_calls=[])
-
 
     def test_public_planned_actions_refuse_automatic_owned_choice(self):
         self.confirm_b()

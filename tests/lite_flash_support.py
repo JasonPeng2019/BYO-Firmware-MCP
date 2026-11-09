@@ -179,8 +179,16 @@ def fresh_full_project(function):
             module, case, method = self.id().rsplit(".", 2)
             selector = str(Path(__file__).with_name(module.split(".")[-1] + ".py"))
             command = [
-                sys.executable, "-B", "-m", "pytest", "-o", "addopts=",
-                "--strict-markers", "-m", "not live", "-v",
+                sys.executable,
+                "-B",
+                "-m",
+                "pytest",
+                "-o",
+                "addopts=",
+                "--strict-markers",
+                "-m",
+                "not live",
+                "-v",
                 selector + "::" + case + "::" + method,
                 "--junitxml=" + str(child_evidence / "result.xml"),
             ]
@@ -235,7 +243,6 @@ def fresh_full_project(function):
             self.assertTrue(cases, "Selected child collected no product case")
             if all(case.find("skipped") is not None for case in cases):
                 self.skipTest("Actual selected child skipped; see " + str(child_evidence))
-
 
     return execute
 
