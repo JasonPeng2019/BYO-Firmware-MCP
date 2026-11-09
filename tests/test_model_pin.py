@@ -31,9 +31,6 @@ class ModelPinningIsEnforced(unittest.TestCase):
         correct = harness.CodexResult(
             returncode=0,
             stdout="",
-            stderr=(
-                f"model: {harness.REQUIRED_MODEL}\n"
-                f"reasoning effort: {harness.REQUIRED_EFFORT}\n"
-            ),
+            stderr=f"model: {harness.REQUIRED_MODEL}\nreasoning effort: {harness.REQUIRED_EFFORT}\n",
         )
         assert_pin(self, correct)

@@ -1,5 +1,11 @@
 # Product tests
 
+**Latest maintained suite:** the standalone second-pass cleanup in
+`MCP_Server_Dev/development/fixture-second-pass/source`, branch
+`cleanup/fixtures-second-pass`. Adopt its uncommitted source changes before
+preparing the next product candidate; the retained w23c checkout is historical
+product evidence, not the newest test suite. The product campaign stays paused.
+
 Run maintained source, regression and quality checks in GitHub Actions for this
 campaign, after the independent prebuild review gate. Required execution is
 ACTIONS_PENDING until those matching-source checks actually run. The commands
@@ -26,7 +32,7 @@ changing that deadline.
 Real client checks are marked `live` and run separately with `-m live` only when
 local client/model execution is explicitly authorized.
 
-The paired Installer build matrix additionally selects the retained protection,
+The paired Installer's explicit native dispatch additionally selects the retained protection,
 ownership, recovery, UART, symbol-event and full-record privacy regressions with
 the default MVP filter disabled. These use the locked companion helper, real
 policy/store/dispatch code and simulated physical effects. They retain JUnit,
@@ -39,6 +45,21 @@ after the manual-permission reset, after monitor traffic and across clean EOF.
 It keeps the compiled capsule and attributes the exact permission startup files
 separately. This compiled check does not rewrite the historical false only-README
 oracle or substitute for actual native-client passivity.
+
+The second pass preserves fourteen direct process-ownership checks from the
+old bc01-ci controls in `test_process_callers.py` and
+`test_process_release_identity.py`, with only their two needed child fixtures.
+They run through ordinary pytest in the four-host native regression step;
+failure inputs/streams use `BYO_TEST_FAILURES`. The observer/recorder self-tests
+and their unused framework have been removed, not parked in an optional suite.
+
+Push/PR now runs preparation; one explicit bundle dispatch retains the full
+native/installed scope. Cheap source, full fixture-format and risk checks
+precede packaging. Linux regression commands use an explicit shell and quoted
+directory change. The compiled passivity driver now checks the plain-text
+handshake as text, including the actual server run ID, while retaining its
+baseline, monitoring, privacy and EOF assertions. Previous failing evidence
+keeps its original attribution; these source changes are not an execution PASS.
 
 Keep tests of necessary product behavior, ordinary mistakes and serious harm.
 Keep only their needed helpers. Do not add tests of runners, observers, evidence
@@ -65,8 +86,8 @@ per target. The noncompiling Installer release checks use the existing group in 
 `python release/scripts/final_acceptance_checks.py --group release-tests --evidence <new-directory>`.
 Installed drivers require a genuine built bundle and their documented inputs.
 Future CI publication must refresh the paired source exports/locks and existing
-CI input index for the changed candidate. The retained BC13 index describes the
-before source; this local cleanup does not publish or rebind remote commits.
+CI input index for the changed candidate. Those retained records describe the
+previous exported candidate; this cleanup does not publish or rebind remote commits.
 The ARM builder in `tests/arm_corpus.py` is consumed only by the installed CI
 driver; it is never a prerequisite of this source suite. Real clients and boards
 need separate local authority; this cleanup runs neither.
@@ -85,7 +106,7 @@ need separate local authority; this cleanup runs neither.
 | M10 complete UART read/write/exchange, missing port, cancellation | `test_uart_capture_evidence`, `test_vi06_uart_ownership` | Controlled serial bytes and errors; live benign protocol requires hardware setup |
 | M11 five semantic tools, saved error/fix, EOF cleanup | `ProgramIdentity`, `HostC`, `RealStdioShutdown`; installed semantic queries | Real native clangd; ARM/C++ and other hosts require respective explicit inputs |
 | M12 target-aware installed static analysis/refusal | Rust `cppcheck_acceptance`; installed portable/compiled clients and ARM gates | Genuine Cppcheck/ARM/native bundle required; all original Rust tests preserved, current compiled PASS not claimed |
-| M13 timeout/cancel/recovery, exact owned-child cleanup | `VersionProbeTests`, `test_vi02a_async_queue_deadline`, `test_process_cleanup`, `test_swd_process_isolation`, attachment transaction tests | Real processes and async dispatch; two Linux probe fixtures now establish their intended phase and pass on both hosts; public expiry/retry assertions retained |
+| M13 timeout/cancel/recovery, exact owned-child cleanup | `VersionProbeTests`, `test_vi02a_async_queue_deadline`, `test_process_cleanup`, `test_swd_process_isolation`, `test_process_callers`, `test_process_release_identity`, attachment transaction tests | Real processes and async dispatch; historical Linux probe fixture correction retained; new process-module location needs Actions execution; public expiry/retry assertions retained |
 | M14 passive monitoring, unchanged results, secret redaction | `test_monitor_behaviour`, `test_monitor_passivity`, `test_monitor_redaction` | Real monitor; refusal fixture now isolates its store from developer history |
 | M15 project/runtime isolation, moved/copied projects | `test_artifact_runtime_destination`, Rust copy/lease tests, installed relocation and forwarding | Real file destinations/source repositories; moved installed package requires actual build |
 | M16 utilities/configuration and bundled tool choice | artifact collector tests, native-build/pack/remote product checks, managed runtime tests | Source validation preserved; native/installed behavior requires actual tool input |
