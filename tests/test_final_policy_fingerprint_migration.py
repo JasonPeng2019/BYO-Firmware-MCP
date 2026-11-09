@@ -23,7 +23,7 @@ from pyocd_debug_mcp.safety.map_build import (
     SafetyMapError,
     SafetyMapRepository,
 )
-from tests.test_generic_builtin_safety_map import nrf_registered_pack_fixture, observe_nrf_control
+from tests.nrf_fixture_support import nrf_registered_pack_fixture, observe_nrf_control
 from tests.tiered_acceptance_support import public_text
 
 

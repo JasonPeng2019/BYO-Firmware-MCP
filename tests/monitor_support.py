@@ -7,6 +7,8 @@ while that directory is usable.
 """
 
 from __future__ import annotations
+from pyocd_debug_mcp.monitor.counters import USAGE_SNAPSHOT_CADENCE
+from pyocd_debug_mcp.monitor.ledger import SegmentLedger
 
 import shutil
 import tempfile
@@ -112,13 +114,18 @@ class MonitorTestCase(unittest.TestCase):
         self._monitors: list[IssueMonitor] = []
 
     def _teardown_store(self) -> None:
+        failures = []
         for monitor in self._monitors:
             try:
                 monitor.closeout("test-teardown")
-            except Exception:
-                pass
+            except Exception as error:
+                failures.append(error)
         paths._reset_cache(None)
-        shutil.rmtree(self.store_dir, ignore_errors=True)
+        if failures:
+            # unittest reports cleanup errors separately from the original
+            # assertion; retain the store for the ordinary failure hook.
+            raise RuntimeError(f"monitor fixture closeout failed: {failures!r}") from failures[0]
+        shutil.rmtree(self.store_dir)
 
     def make_monitor(self, **kwargs: Any) -> IssueMonitor:
         context = kwargs.pop("context", None) or make_context()
@@ -211,3 +218,16 @@ __all__ = [
     "make_context",
     "settle_delivery",
 ]
+
+
+def add_snapshot(ledger: SegmentLedger, total: int = USAGE_SNAPSHOT_CADENCE, **extra) -> bool:
+    """Append one usage-snapshot record, the ledger's most common occasion.
+
+    There is no per-call form to append instead: the counts a snapshot carries are
+    what answer "how much was used", so a test that wants a record in the file
+    writes one of these.
+    """
+
+    detail = {"cumulative": True, "total_calls": total}
+    detail.update(extra)
+    return ledger.append("usage_snapshot", detail=detail)

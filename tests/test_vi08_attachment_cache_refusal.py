@@ -7,7 +7,6 @@ simulated. FirmStore, AttachmentCache, planning, dispatch and finalizers are rea
 from __future__ import annotations
 
 import json
-import unittest
 from dataclasses import replace
 from pathlib import Path
 from unittest.mock import patch
@@ -23,8 +22,9 @@ from pyocd_debug_mcp.setup_flow.preflight import (
     SerialCandidate,
     SetupUserInput,
 )
-from tests import test_vi06_uart_ownership as vi06
-from tests.test_probe_selection_records import _snapshot, _uart_row
+from tests.uart_fixture_support import ManagedUartCase
+from pyocd_debug_mcp.firmstore.cache import ProbeIdentity
+from tests.inventory_fixture import _snapshot, _uart_row
 from tests.tiered_acceptance_support import public_text
 
 OBSERVATIONS = {}
@@ -62,10 +62,7 @@ DAMAGES = {
 }
 
 
-class ManagedCacheRefusal(unittest.TestCase):
-    setUp = vi06.ManagedUartOwnership.setUp
-    action = vi06.ManagedUartOwnership.action
-    public_plan = vi06.ManagedUartOwnership.public_plan
+class ManagedCacheRefusal(ManagedUartCase):
 
     def observe(self, name, **facts):
         OBSERVATIONS[self.id() + ":" + name] = facts
@@ -216,7 +213,7 @@ class ManagedCacheRefusal(unittest.TestCase):
         self.refused(lambda: self.public_action("read_serial"), ToolError)
 
     def test_valid_other_board_records_remain_unchanged(self):
-        self.cache.confirm("board_b", vi06.ProbeIdentity("jlink", "probe_b"), self.cable_b)
+        self.cache.confirm("board_b", ProbeIdentity("jlink", "probe_b"), self.cable_b)
         self.cache.confirm("board_a", self.probe, SerialEndpoint("COM8", "cable_a", 1, 2))
         self.snapshot = _snapshot(
             uarts=(self.row_b, _uart_row("COM99", scope="stable", serial="cable_a"))

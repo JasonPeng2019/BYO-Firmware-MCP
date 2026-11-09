@@ -30,7 +30,7 @@ from pyocd_debug_mcp.setup_flow.device_support import (
 )
 from pyocd_debug_mcp.safety.regions import ActionCategory, AddressRange, Allowed, Refusal
 from pyocd_debug_mcp.safety.map_build import SafetyMapError, require_reconciled_authority
-from tests.test_probe_selection_records import _snapshot, _uart_row
+from tests.inventory_fixture import _snapshot, _uart_row
 from tests.tiered_acceptance_support import isolated_project, tiered_test_server
 
 

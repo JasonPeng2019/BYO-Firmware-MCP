@@ -16,7 +16,7 @@ from typing import Any, cast
 from unittest.mock import Mock, patch
 
 from pyocd_debug_mcp.timeouts import DEFAULT_EXTERNAL_COMMAND_TIMEOUT_SECONDS
-from tests.test_process_cleanup import _NativePosixCase
+from tests.process_fixture_support import _NativePosixCase
 
 
 class ProcessIsolationContractTests(unittest.TestCase):

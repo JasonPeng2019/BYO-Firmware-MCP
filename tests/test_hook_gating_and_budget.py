@@ -11,7 +11,7 @@ import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any, Mapping, Sequence, cast
+from typing import Mapping, Sequence, cast
 from unittest.mock import patch
 
 from pyocd_debug_mcp import discovery_hooks, server
@@ -23,10 +23,7 @@ from pyocd_debug_mcp.discovery_hooks import (
     HookSnapshotStore,
     execute_eligible_hooks,
 )
-from pyocd_debug_mcp.hardware_inventory import (
-    ActiveConnectionRow,
-    HardwareInventoryService,
-)
+from pyocd_debug_mcp.hardware_inventory import ActiveConnectionRow, HardwareInventoryService
 from pyocd_debug_mcp.kernel import operations as ops
 from pyocd_debug_mcp.probe_inventory import (
     EMPTY_NATIVE_PROBE_LISTING,
@@ -410,31 +407,18 @@ class BudgetTests(unittest.TestCase):
                     "one hook could exceed the whole operation budget",
                 )
 
-    def test_the_read_serial_finalizer_fixture_parses_as_a_well_formed_uart_write(
-        self,
-    ) -> None:
-        """D23: this exact `on_exit` shape is reused by the two tests below and by the
-        vendor-budget regression test. Both a well-formed `UARTWriteFinalizer` and a
-        malformed dict that falls through the defensive except-branch in
-        `operation_timeout_seconds` land on the same `finalizer_timeout` /
-        `finalizer_reaches_uart` values, so those tests would pass either way and
-        cannot be trusted to prove which branch ran. Demonstrate it directly instead:
-        the fixture must parse without error into a `UARTWriteFinalizer`, not merely
-        produce the same numbers by falling back."""
 
+    def test_read_serial_with_a_uart_finalizer_reserves_both_hook_budgets(self) -> None:
+        """The action and the on_exit finalizer can each execute a hook."""
         from pyocd_debug_mcp.kernel.finalizers import UARTWriteFinalizer, parse_finalizer
 
         finalizer = parse_finalizer(
             "read_serial", {"action": "uart_write", "text": "q", "timeout_seconds": 2}
         )
-
         self.assertIsInstance(finalizer, UARTWriteFinalizer)
-        assert isinstance(finalizer, UARTWriteFinalizer)  # narrow for the type checker
         self.assertEqual(finalizer.text, "q")
         self.assertEqual(finalizer.timeout_seconds, 2.0)
 
-    def test_read_serial_with_a_uart_finalizer_reserves_both_hook_budgets(self) -> None:
-        """The action and the on_exit finalizer can each execute a hook."""
 
         arguments = {
             "read_seconds": 3,

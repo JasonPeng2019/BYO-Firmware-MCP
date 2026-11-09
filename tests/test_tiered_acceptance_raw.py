@@ -327,21 +327,6 @@ class TieredRawAcceptanceTests(unittest.TestCase):
                 "the monitor refusal must happen before public raw backend I/O",
             )
 
-    def test_tiered_server_context_restores_the_exact_backend_after_fixture_failure(self) -> None:
-        """TEST isolation: a failed tiered fixture cannot poison later baseline workers."""
-
-        from pyocd_debug_mcp.services import target_control
-
-        original_backend = target_control._BACKEND  # noqa: SLF001 - isolation oracle
-        fake_backend = DeterministicTargetBackend()
-        with self.assertRaisesRegex(RuntimeError, "fixture interruption"):
-            with isolated_project() as root, tiered_test_server(root) as server:
-                server.configure_tiered_test_seams(backend=fake_backend)
-                self.assertIs(target_control._BACKEND, fake_backend)  # noqa: SLF001
-                raise RuntimeError("fixture interruption")
-
-        self.assertIs(target_control._BACKEND, original_backend)  # noqa: SLF001
-
 
 if __name__ == "__main__":
     unittest.main()

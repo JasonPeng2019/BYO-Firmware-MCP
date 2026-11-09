@@ -32,7 +32,7 @@ from pyocd_debug_mcp.setup_flow.preflight import (
     SerialCandidate,
     SetupUserInput,
 )
-from tests.test_probe_selection_records import _snapshot, _uart_row
+from tests.inventory_fixture import _snapshot, _uart_row
 from tests.tiered_acceptance_support import tiered_test_server
 
 OBSERVATIONS = {}

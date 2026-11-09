@@ -120,41 +120,27 @@ jobs:
           src/pyocd_debug_mcp/adapters/clangd.py
           src/pyocd_debug_mcp/kernel/processes.py
 
-      - name: Focused portability and cleanup regression gate
+      - name: Analysis and process contracts selected once through pytest
         if: ${{ !cancelled() && steps.dependencies.outcome == 'success' }}
-        env:
-          PYTHONPATH: tests
         run: >-
-          uv run python -m unittest -v
-          tests.test_code_analysis_managed_runtime_unit
-          tests.test_code_analysis_portability
-          tests.test_code_analysis_posix_ownership
-          tests.test_clangd_adapter_unit
-          tests.test_code_analysis_managed_runtime_contract.MappingSyntax
-          tests.test_code_analysis_managed_runtime_contract.SharedDeadline
-          tests.test_code_analysis_service_unit.ServiceTests.test_concurrent_same_file_versions_and_source_change
-
-      - name: All analysis unit, protocol and native lifecycle contracts
-        if: ${{ !cancelled() && steps.dependencies.outcome == 'success' }}
-        run: uv run python -m unittest discover -s tests -p "test_code_analysis*.py" -v
-
-      - name: Clangd adapter and process cleanup regressions
-        if: ${{ !cancelled() && steps.dependencies.outcome == 'success' }}
-        run: uv run python -m unittest -v tests.test_clangd_adapter_unit tests.test_process_cleanup
+          uv run --no-sync python -m pytest -o addopts= --strict-markers -m "not live" -v
+          tests/test_code_analysis*.py tests/test_clangd_adapter_unit.py tests/test_process_cleanup.py
+          --junitxml="$RUNNER_TEMP/analysis-contracts.xml"
 
       - name: Windows hardware process isolation regression
         if: ${{ !cancelled() && runner.os == 'Windows' && steps.dependencies.outcome == 'success' }}
-        run: uv run python -m unittest -v tests.test_swd_process_isolation
+        run: uv run --no-sync python -m pytest -o addopts= --strict-markers -m "not live" -v tests/test_swd_process_isolation.py --junitxml="$RUNNER_TEMP/swd-isolation.xml"
 
       - name: FR15 genuine nRF registered-pack public protection controls
         if: ${{ !cancelled() && steps.dependencies.outcome == 'success' }}
         env:
           BYO_FINAL_CASE_EVIDENCE: ${{ env.BYO_FR15_CASE_EVIDENCE }}
         run: >-
-          uv run python -m unittest -v
-          tests.test_generic_builtin_safety_map.NrfRegisteredPackGeometry
-          tests.test_tiered_acceptance_workspace.NrfPublicRegeneratedMapControls
-          tests.test_final_policy_fingerprint_migration
+          uv run --no-sync python -m pytest -o addopts= --strict-markers -m "not live" -v
+          tests/test_generic_builtin_safety_map.py::NrfRegisteredPackGeometry
+          tests/test_tiered_acceptance_workspace.py::NrfPublicRegeneratedMapControls
+          tests/test_final_policy_fingerprint_migration.py
+          --junitxml="$RUNNER_TEMP/protection-contracts.xml"
 
       - name: Build server wheel and source distribution
         id: source-package

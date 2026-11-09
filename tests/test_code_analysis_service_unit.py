@@ -39,9 +39,9 @@ from pyocd_debug_mcp.tools.code_analysis import (
 )
 from pyocd_debug_mcp.tools.plans import forbid_unknown_tool_arguments
 
-from test_clangd_adapter_unit import PEER, fake_factory, make_project
-from test_code_analysis_managed_runtime_unit import staged_runtime
-from tests.code_analysis_support import permitted_analysis_write
+from tests.code_analysis_peer_support import PEER, fake_factory, make_project
+from tests.code_analysis_managed_support import staged_runtime
+from tests.code_analysis_support import AnalysisProject, permitted_analysis_write
 
 import pytest
 
@@ -1877,30 +1877,14 @@ class RealClangdTests(unittest.TestCase):
 
     def test_semantics_unicode_saved_diagnostics_and_cleanup(self):
         code = "// é中😀é\r\nint add(int x) { return x + 1; }\r\nfloat add(float x) { return x + 2; }\r\ntemplate<class T> T twice(T x) { return x+x; }\r\nint main() { /*é中😀é*/ return add(twice(2)); }\r\n"
-        source = self.root / "main.cpp"
-        source.write_bytes(code.encode())
-        (self.root / "compile_commands.json").write_text(
-            json.dumps(
-                [
-                    {
-                        "directory": str(self.root),
-                        "file": str(source),
-                        "arguments": [
-                            "clang++",
-                            "--target=arm-none-eabi",
-                            "-mcpu=cortex-m4",
-                            "-mthumb",
-                            "-ffreestanding",
-                            "-std=c++17",
-                            "-c",
-                            str(source),
-                        ],
-                    }
-                ],
-                ensure_ascii=False,
-            ),
-            encoding="utf-8",
-        )
+        project = AnalysisProject(self.root)
+        source = project.write_text("main.cpp", code)
+        project.write_database([
+            project.entry("main.cpp", arguments=[
+                "clang++", "--target=arm-none-eabi", "-mcpu=cortex-m4", "-mthumb",
+                "-ffreestanding", "-std=c++17", "-c", str(source),
+            ])
+        ])
         self.service = CodeAnalysisService(AnalysisRuntimeContext(self.root))
         status = self.service.status()
         self.assertEqual(status["status"], "ok", status)

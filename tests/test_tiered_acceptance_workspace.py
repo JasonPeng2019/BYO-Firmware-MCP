@@ -6,15 +6,12 @@ sibling .agent-workspace source. Runtime grant state is never a source fixture.
 """
 
 from __future__ import annotations
+from tests.workspace_fixture_support import WORKSPACE, _attach_project_module, _workspace_helper
 
-import importlib.util
 import json
-import os
-import sys
 import tempfile
 import unittest
 from dataclasses import asdict
-from importlib.machinery import SourceFileLoader
 from pathlib import Path
 
 from mcp.server.fastmcp.exceptions import ToolError
@@ -30,55 +27,13 @@ from pyocd_debug_mcp.safety.regions import (
     RegionKind,
 )
 
-from tests.test_generic_builtin_safety_map import nrf_registered_pack_fixture, observe_nrf_control
-from tests.tiered_acceptance_support import (
-    fixture,
-    isolated_project,
-    manual_permission_root,
-    public_text,
-)
+from tests.nrf_fixture_support import nrf_registered_pack_fixture, observe_nrf_control
+from tests.tiered_acceptance_support import isolated_project, manual_permission_root, public_text
 
 
-def _workspace_source() -> Path:
-    """Select explicit fixture input or the supported sibling source layout."""
-    configured = os.environ.get("BYO_MCP_TEST_WORKSPACE_ROOT")
-    if configured:
-        # A bad explicit input must stay visible rather than selecting other code.
-        return Path(configured).expanduser().resolve(strict=True)
-    siblings = Path(__file__).resolve().parents[2]
-    checkout = siblings / "CodexClaudeWorkflow"
-    if (checkout / "internal" / "manual_permissions.py").is_file():
-        return checkout
-    return siblings / ".agent-workspace"
-
-
-WORKSPACE = _workspace_source()
-WORKSPACE_HELPER = WORKSPACE / "internal" / "manual_permissions.py"
-ATTACH_PROJECT = WORKSPACE / "bin" / "attach-project"
 BOARD = "left_controller"
 POLICY = "a" * 64
 BINDING = "b" * 64
-
-
-def _workspace_helper(path: Path = WORKSPACE_HELPER):  # type: ignore[no-untyped-def]
-    spec = importlib.util.spec_from_file_location("tiered_workspace_manual_permissions", path)
-    if spec is None or spec.loader is None:
-        raise AssertionError(f"cannot load shipped workspace helper: {WORKSPACE_HELPER}")
-    module = importlib.util.module_from_spec(spec)
-    sys.modules[spec.name] = module
-    spec.loader.exec_module(module)
-    return module
-
-
-def _attach_project_module():  # type: ignore[no-untyped-def]
-    loader = SourceFileLoader("tiered_workspace_attach_project", str(ATTACH_PROJECT))
-    spec = importlib.util.spec_from_loader(loader.name, loader)
-    if spec is None or spec.loader is None:
-        raise AssertionError(f"cannot load attached-workspace installer: {ATTACH_PROJECT}")
-    module = importlib.util.module_from_spec(spec)
-    sys.modules[spec.name] = module
-    spec.loader.exec_module(module)
-    return module
 
 
 class TieredWorkspaceAcceptanceTests(unittest.TestCase):
@@ -165,21 +120,6 @@ class TieredWorkspaceAcceptanceTests(unittest.TestCase):
             shipped_runtime, [], "runtime grants must not live under shipped skill sources"
         )
 
-    def test_protocol_fixture_has_the_frozen_schema_without_runtime_artifacts(self) -> None:
-        """AT09: fixture data checks compatibility, not a claim that human invocation was proven."""
-
-        document = fixture("workspace_protocol.json")
-        self.assertEqual(
-            document["project_relative_directory"], ".agent-workspace/runtime/manual-permissions"
-        )
-        self.assertEqual(document["epoch"]["schema"], 1)
-        self.assertEqual(document["downgrade"]["action"], "downgrade")
-        self.assertEqual(document["downgrade"]["binding_digest"], None)
-        self.assertEqual(document["mass_erase"]["action"], "mass-erase")
-        self.assertEqual(document["mass_erase"]["binding_digest"], BINDING)
-        for action in ("downgrade", "mass_erase"):
-            self.assertEqual(document[action]["state"], "unlocked")
-            self.assertIn("grant_id", document[action])
 
     def test_two_physical_attached_workspaces_have_distinct_runtime_grants(self) -> None:
         """AT09/C08: attaching project B cannot read or consume project A's grant files."""

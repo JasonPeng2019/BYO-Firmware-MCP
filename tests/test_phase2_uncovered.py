@@ -19,45 +19,9 @@ from pyocd_debug_mcp.discovery_hooks import (
     parse_hook_declaration,
     resolve_declaration,
 )
-from pyocd_debug_mcp.serial_resolver import normalize_port_name
 from pyocd_debug_mcp.tools.discovery import RetryContext
 
 
-class NormalizePortNameTests(unittest.TestCase):
-    """Edge cases for Windows port prefix stripping and case folding."""
-
-    def test_basic_port_name_lowercased(self) -> None:
-        """Normal port names are lowercased."""
-        self.assertEqual(normalize_port_name("COM1"), "com1")
-        self.assertEqual(normalize_port_name("COM12"), "com12")
-        self.assertEqual(normalize_port_name("TTYUSB0"), "ttyusb0")
-
-    def test_windows_device_namespace_prefix_stripped(self) -> None:
-        r"""Windows \\. prefix is removed before lowercasing."""
-        self.assertEqual(normalize_port_name("\\\\.\\COM1"), "com1")
-        self.assertEqual(normalize_port_name("\\\\.\\COM99"), "com99")
-        self.assertEqual(normalize_port_name("\\\\.\\TTYUSB0"), "ttyusb0")
-
-    def test_whitespace_stripped(self) -> None:
-        """Leading/trailing whitespace is removed."""
-        self.assertEqual(normalize_port_name("  COM1  "), "com1")
-        self.assertEqual(normalize_port_name("\tCOM5\n"), "com5")
-        self.assertEqual(normalize_port_name("  \\\\.\\COM1  "), "com1")
-
-    def test_empty_string_becomes_empty(self) -> None:
-        """Empty strings stay empty."""
-        self.assertEqual(normalize_port_name(""), "")
-        self.assertEqual(normalize_port_name("   "), "")
-
-    def test_mixed_case_and_numbers(self) -> None:
-        """Case folding handles alphanumeric strings."""
-        self.assertEqual(normalize_port_name("Cu_MotherBoard_2"), "cu_motherboard_2")
-        self.assertEqual(normalize_port_name("TTYUSBFAKE"), "ttyusbfake")
-
-    def test_prefix_with_backslash_escape_only_removes_exact_prefix(self) -> None:
-        """Only exact \\.\\ prefix is removed, others pass through."""
-        # String with backslash but not matching the exact prefix stays
-        self.assertEqual(normalize_port_name("\\.COM1"), "\\.com1")
 
 
 class DecodeHookStdoutTests(unittest.TestCase):

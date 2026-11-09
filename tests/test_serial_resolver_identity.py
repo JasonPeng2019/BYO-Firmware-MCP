@@ -343,7 +343,7 @@ class ManagedVendorIdentityTests(unittest.TestCase):
         from pyocd_debug_mcp.firmstore.cache import ProbeIdentity, SerialEndpoint
         from pyocd_debug_mcp.services import uart_capture
         from pyocd_debug_mcp.services.connections import probe_connection_id
-        from tests.test_probe_selection_records import _probe_row, _snapshot, _uart_row
+        from tests.inventory_fixture import _probe_row, _snapshot, _uart_row
         from tests.tiered_acceptance_support import isolated_project, tiered_test_server
 
         provider, default_uid, spec, executable = _vendor_fixture(vendor)
@@ -616,6 +616,28 @@ class ManagedVendorIdentityTests(unittest.TestCase):
                 should_refuse=True,
             )
 
+
+
+class PortNameNormalizationTests(unittest.TestCase):
+    def test_port_case_whitespace_and_exact_windows_prefix(self) -> None:
+        for supplied, expected in (
+            ('COM1', 'com1'),
+            ('COM12', 'com12'),
+            ('TTYUSB0', 'ttyusb0'),
+            ('\\\\.\\COM1', 'com1'),
+            ('\\\\.\\COM99', 'com99'),
+            ('\\\\.\\TTYUSB0', 'ttyusb0'),
+            ('  COM1  ', 'com1'),
+            ('\tCOM5\n', 'com5'),
+            ('  \\\\.\\COM1  ', 'com1'),
+            ('', ''),
+            ('   ', ''),
+            ('Cu_MotherBoard_2', 'cu_motherboard_2'),
+            ('TTYUSBFAKE', 'ttyusbfake'),
+            ('\\.COM1', '\\.com1'),
+        ):
+            with self.subTest(supplied=supplied):
+                self.assertEqual(resolver.normalize_port_name(supplied), expected)
 
 if __name__ == "__main__":
     unittest.main()

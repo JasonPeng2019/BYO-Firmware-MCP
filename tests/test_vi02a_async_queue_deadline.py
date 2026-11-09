@@ -31,7 +31,7 @@ from pyocd_debug_mcp.kernel.operations import (
 from pyocd_debug_mcp.kernel.registry import RegistryFastMCP, ToolRegistry
 from pyocd_debug_mcp.kernel.run_state import ServerRun
 from pyocd_debug_mcp.tools.batch import build_batch_handlers
-from test_vi02_operation_resource_ownership import (
+from tests.operation_fixture_support import (
     BOARD,
     HANG_GUARD_SECONDS,
     OTHER_BOARD,

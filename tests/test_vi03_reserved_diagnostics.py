@@ -20,9 +20,9 @@ from pyocd_debug_mcp.capabilities.manual_permissions import (
     ManualPermissionRepository,
 )
 from pyocd_debug_mcp.guardrails.plan_engine import PlanRefusal
-from tests.test_tiered_acceptance_recovery import BOARD, _configure_public_native_lite
-from tests.test_tiered_acceptance_workspace import WORKSPACE
-from tests.test_vi03_fresh_recovery_grant import (
+from tests.recovery_fixture_support import BOARD, _configure_public_native_lite
+from tests.workspace_fixture_support import WORKSPACE
+from tests.recovery_fixture_support import (
     UNLOCK,
     _disclose,
     _grant_and_reserve,
@@ -31,7 +31,7 @@ from tests.test_vi03_fresh_recovery_grant import (
     _recover_calls,
     _release,
 )
-from tests.test_vi03_unlock_diagnostics import _mcp_response, _ObservedBackend
+from tests.recovery_fixture_support import _mcp_response, _ObservedBackend
 from tests.tiered_acceptance_support import isolated_project, tiered_test_server
 
 OBSERVATIONS: dict[str, Any] = {}

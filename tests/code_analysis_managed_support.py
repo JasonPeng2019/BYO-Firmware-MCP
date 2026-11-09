@@ -8,6 +8,7 @@ redirect only an already selected executable's spawn to the existing fake peer.
 
 from __future__ import annotations
 
+
 import contextlib
 import ctypes
 import hashlib
@@ -19,7 +20,6 @@ import struct
 import sys
 import threading
 import time
-import traceback
 import unittest
 import uuid
 from pathlib import Path
@@ -578,7 +578,6 @@ class OwnedSpawns:
             assert record["identity_matches_after"] is False, record
             assert record["marker_exists_after"] is False, record
             if os.name == "posix":
-                from tests.test_code_analysis_posix_ownership import native_retained_exit
 
                 assert isinstance(receipt, dict), record
                 assert receipt.get("coverage") == "retained_group_and_captured_descendants", record
@@ -633,9 +632,6 @@ class OwnedSpawns:
                                     getattr(process, "cleanup_receipt", None)
                                 ):
                                     continue
-                                from tests.test_code_analysis_posix_ownership import (
-                                    native_retained_exit,
-                                )
 
                                 try:
                                     native_retained_exit(process.pid)
@@ -771,82 +767,42 @@ class ManagedCase(unittest.TestCase):
         return service
 
 
-def run_named_suite(modules: list[str], output: Path) -> int:
-    """unittest result capture, including every subcase and required skip."""
-    records: list[dict[str, Any]] = []
-
-    class Results(unittest.TextTestResult):
-        def __init__(self, stream: Any, descriptions: bool, verbosity: int) -> None:
-            super().__init__(stream, descriptions, verbosity)
-
-        def startTest(self, test: Any) -> None:
-            self.started = time.monotonic()
-            super().startTest(test)
-
-        def addSuccess(self, test: Any) -> None:
-            records.append(
-                {"case": test.id(), "outcome": "PASS", "elapsed": time.monotonic() - self.started}
-            )
-            super().addSuccess(test)
-
-        def addFailure(self, test: Any, err: Any) -> None:
-            records.append(
-                {
-                    "case": test.id(),
-                    "outcome": "FAIL",
-                    "detail": "".join(traceback.format_exception(*err)),
-                }
-            )
-            super().addFailure(test, err)
-
-        def addError(self, test: Any, err: Any) -> None:
-            records.append(
-                {
-                    "case": test.id(),
-                    "outcome": "ERROR",
-                    "detail": "".join(traceback.format_exception(*err)),
-                }
-            )
-            super().addError(test, err)
-
-        def addSkip(self, test: Any, reason: str) -> None:
-            records.append({"case": test.id(), "outcome": "SKIP", "reason": reason})
-            super().addSkip(test, reason)
-
-        def addSubTest(self, test: Any, subtest: Any, err: Any) -> None:
-            records.append(
-                {
-                    "case": subtest.id(),
-                    "outcome": "PASS" if err is None else "FAIL",
-                    "detail": None if err is None else "".join(traceback.format_exception(*err)),
-                }
-            )
-            super().addSubTest(test, subtest, err)
-
-    suite = unittest.TestLoader().loadTestsFromNames(modules)
-    result = unittest.TextTestRunner(verbosity=2, resultclass=Results).run(suite)
-    assert_import_roots()
-    write_json(
-        output,
-        {
-            "scope": "Windows staged source validation; not installed release proof",
-            "argv": sys.argv,
-            "cwd": str(Path.cwd()),
-            "python": sys.executable,
-            "cases": records,
-            "tests_run": result.testsRun,
-            "failures": len(result.failures),
-            "errors": len(result.errors),
-            "skips": len(result.skipped),
-            "imports": {
-                n: m.__file__
-                for n, m in sys.modules.items()
-                if n.startswith("pyocd_debug_mcp") and getattr(m, "__file__", None)
-            },
-        },
-    )
-    return 0 if result.wasSuccessful() and not result.skipped else 1
+def staged_runtime(root: Path) -> dict:
+    return RuntimeFixture(root).mapping
 
 
-if __name__ == "__main__":
-    raise SystemExit(run_named_suite(sys.argv[2:], Path(sys.argv[1])))
+def native_retained_exit(pid: int) -> tuple[int, int, int] | None:
+    """Independent WNOWAIT oracle: exact direct child, event kind, exit status.
+
+    Never call the production exit decoder or Popen.poll here. Repeating this
+    native observation proves that the child has not been reaped in between.
+    """
+    if sys.platform == "darwin":
+        # Public Darwin siginfo_t/waitid ABI; Python need not expose os.waitid.
+        class Siginfo(ctypes.Structure):
+            _fields_ = [
+                ("signo", ctypes.c_int),
+                ("error", ctypes.c_int),
+                ("code", ctypes.c_int),
+                ("pid", ctypes.c_int),
+                ("uid", ctypes.c_uint),
+                ("status", ctypes.c_int),
+                ("address", ctypes.c_void_p),
+                ("value", ctypes.c_void_p),
+                ("band", ctypes.c_long),
+                ("padding", ctypes.c_ulong * 7),
+            ]
+
+        waitid = ctypes.CDLL(None, use_errno=True).waitid
+        waitid.argtypes = (ctypes.c_int, ctypes.c_uint, ctypes.POINTER(Siginfo), ctypes.c_int)
+        waitid.restype = ctypes.c_int
+        result = Siginfo()
+        # Darwin P_PID=1, WEXITED=4, WNOHANG=1, WNOWAIT=32.
+        if waitid(1, pid, ctypes.byref(result), 4 | 1 | 32) != 0:
+            error = ctypes.get_errno()
+            raise OSError(error, os.strerror(error))
+        return (result.pid, result.code, result.status) if result.pid else None
+    if sys.platform.startswith("linux"):
+        result = os.waitid(os.P_PID, pid, os.WEXITED | os.WNOHANG | os.WNOWAIT)
+        return (result.si_pid, result.si_code, result.si_status) if result else None
+    raise AssertionError("Retained-exit oracle requires a matching Linux/macOS Actions host")

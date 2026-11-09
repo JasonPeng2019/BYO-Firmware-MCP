@@ -386,7 +386,7 @@ class BlockDiagnostics(MonitorTestCase):
         monitor = self.make_monitor(transport=transport)
         anchor = Anchor(self.now - timedelta(days=30), "simulated_remote", "filler")
         monitor._block.inject(anchor)
-        from tests.test_monitor_ledger import add_snapshot
+        from tests.monitor_support import add_snapshot
 
         add_snapshot(monitor._ledger)
         sealed = monitor._ledger.seal()

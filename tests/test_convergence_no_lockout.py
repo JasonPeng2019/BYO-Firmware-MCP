@@ -1,4 +1,4 @@
-"""Round-five regressions for removal of convergence retry lockouts."""
+"""Convergence no lockout contracts."""
 
 from __future__ import annotations
 

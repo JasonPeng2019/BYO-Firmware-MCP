@@ -313,13 +313,13 @@ class SchemaDriftTests(unittest.TestCase):
 class LiveServerContractTests(unittest.TestCase):
     """The same guarantees, through the real registered server tools."""
 
-    def test_live_server_monitor_uses_the_modules_disposable_root(self) -> None:
+
+    def test_probe_contract_providers_come_from_pyocd_probe_classes(self) -> None:
         monitor_store = getattr(server._monitor, "_store", None)
 
         self.assertEqual(getattr(monitor_store, "root", None), monitor_root())
         self.assertIs(server.mcp._monitor, server._monitor)
 
-    def test_probe_contract_providers_come_from_pyocd_probe_classes(self) -> None:
         from pyocd_debug_mcp.probe_inventory import registered_provider_ids
 
         payload = _call(CONTRACT_TOOL, {"kind": "probe"})

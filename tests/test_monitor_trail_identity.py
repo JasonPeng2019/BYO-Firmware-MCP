@@ -219,7 +219,6 @@ class SuccessfulDeliveryInvalidatesSpoolPaths(MonitorTestCase):
         self.assertEqual(json.loads(delivered.read_text(encoding="utf-8")), before)
         # Reproduce the original readers' failure deterministically, after the
         # real sender has acknowledged and removed a once-valid spool path.
-        from tests.test_monitor_behaviour import ReportingThroughTheMonitor
 
         with self.assertRaises(FileNotFoundError):
-            ReportingThroughTheMonitor.read_report(self, path)
+            json.loads(path.read_text(encoding="utf-8"))

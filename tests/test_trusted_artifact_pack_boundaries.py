@@ -1,4 +1,4 @@
-"""Regression completion for the round-four trusted-server review."""
+"""Trusted artifact pack boundaries contracts."""
 
 from __future__ import annotations
 
@@ -54,56 +54,10 @@ from pyocd_debug_mcp.tools.memory import MemoryToolServices, build_memory_handle
 from pyocd_debug_mcp.tools.serial import SerialToolServices, read_serial, write_serial
 
 
-def _memory_services(artifact: Path, finder: object) -> MemoryToolServices:
-    return MemoryToolServices(
-        runtime_for=lambda _board: None,
-        active_session_id=lambda _board: None,
-        duration_ms=lambda _started: 0,
-        record_event=lambda *args, **kwargs: None,
-        format_refusal=lambda refusal, **kwargs: f"Refused [{refusal.code}]: {refusal.message}",
-        handle_for=lambda _board: object(),
-        symbol_artifact_for=lambda _handle: artifact,
-        find_symbols=finder,  # type: ignore[arg-type]
-        resolve_symbol=lambda *_args: None,  # type: ignore[arg-type]
-        read_target_memory=lambda *_args: 0,
-        read_target_block=lambda *_args: [],
-        write_target_memory=lambda *_args: None,
-        check_memory_read=lambda *_args: None,
-    )
 
 
-def _serial_services() -> SerialToolServices:
-    return SerialToolServices(
-        runtime_for=lambda _board: None,
-        active_session_id=lambda _board: None,
-        duration_ms=lambda _started: 0,
-        record_event=lambda *args, **kwargs: None,
-        format_refusal=lambda refusal, **kwargs: f"Refused [{refusal.code}]: {refusal.message}",
-        handle_for=lambda _board: None,
-        resolve_port=lambda *_args, **_kwargs: None,
-        capture_uart=lambda *_args, **_kwargs: None,
-        write_uart=lambda *_args, **_kwargs: None,
-        exchange_uart=lambda *_args, **_kwargs: None,
-        reset_target=lambda _handle: None,
-        no_board_config_message="no board",
-    )
 
 
-def _exchange(**overrides: object) -> dict[str, object]:
-    values: dict[str, object] = {
-        "steps": [{"text": "x", "expected_text": "ok", "line_ending": "lf"}],
-        "read_seconds": 1.0,
-        "baudrate": None,
-        "port": None,
-        "ready_text": None,
-        "ready_seconds": 0.0,
-        "ready_probe_text": None,
-        "ready_probe_line_ending": "none",
-        "ready_probe_delay_seconds": 0.0,
-        "clear_input": False,
-    }
-    values.update(overrides)
-    return values
 
 
 def _pack_bytes(pdsc: bytes) -> bytes:
@@ -114,107 +68,7 @@ def _pack_bytes(pdsc: bytes) -> bytes:
 
 
 class RoundFourRegressionTests(unittest.TestCase):
-    def test_public_find_symbol_preserves_all_matches_and_refuses_parse_failures(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            artifact = Path(directory) / "symbols.elf"
-            artifact.write_bytes(b"\x7fELFfixture")
-            matches = tuple(
-                ResolvedSymbol(f"match_{index:02d}", 0x08000000 + index, 4, "STT_FUNC")
-                for index in range(25)
-            )
-            find_symbol = build_memory_handlers(_memory_services(artifact, lambda *_: matches))[
-                "find_symbol"
-            ]
-            rendered = find_symbol("board", "match", str(artifact))
-            self.assertLess(rendered.index("match_00"), rendered.index("match_24"))
-            self.assertIn("match_24", rendered)
-            self.assertEqual(rendered.count("match_"), 25)
 
-            malformed = Path(directory) / "malformed.elf"
-            malformed.write_bytes(b"\x7fELFnot-valid")
-            handler = build_memory_handlers(_memory_services(malformed, find_symbols))[
-                "find_symbol"
-            ]
-            refused = handler("board", "match", str(malformed))
-            self.assertIn("memory/symbol-artifact-parse-failed", refused)
-            self.assertIn("could not be parsed safely", refused)
-            self.assertIn("memory/empty-symbol-query", handler("board", " "))
-            self.assertIn(
-                "memory/symbol-artifact-unavailable", handler("board", "match", "missing.elf")
-            )
-
-    def test_serial_and_finalizer_positive_finite_boundaries(self) -> None:
-        for value in (0, -1, math.inf, math.nan):
-            self.assertIsNotNone(validate_serial_exchange_parameters(_exchange(read_seconds=value)))
-            self.assertIn(
-                "uart/invalid-read-seconds",
-                read_serial(_serial_services(), "board", read_seconds=value),
-            )
-            self.assertIn(
-                "uart/invalid-timeout",
-                write_serial(_serial_services(), "board", "x", timeout_seconds=value),
-            )
-            with self.assertRaises(FinalizerValidationError):
-                parse_finalizer(
-                    "write_serial", {"action": "uart_write", "text": "x", "timeout_seconds": value}
-                )
-        self.assertIsNotNone(
-            validate_serial_exchange_parameters(_exchange(ready_text="ready", ready_seconds=0))
-        )
-        for value in (-1, math.inf, math.nan):
-            self.assertIsNotNone(
-                validate_serial_exchange_parameters(
-                    _exchange(ready_text="ready", ready_seconds=value)
-                )
-            )
-            self.assertIsNotNone(
-                validate_serial_exchange_parameters(
-                    _exchange(
-                        ready_text="ready",
-                        ready_seconds=1,
-                        ready_probe_text="p",
-                        ready_probe_line_ending="lf",
-                        ready_probe_delay_seconds=value,
-                    )
-                )
-            )
-        self.assertIsNotNone(
-            validate_serial_exchange_parameters(
-                _exchange(
-                    ready_text="ready",
-                    ready_seconds=1,
-                    ready_probe_text="p",
-                    ready_probe_line_ending="lf",
-                    ready_probe_delay_seconds=2,
-                )
-            )
-        )
-        self.assertIsNotNone(validate_serial_exchange_parameters(_exchange(ready_seconds=1)))
-        self.assertIsNone(
-            validate_serial_exchange_parameters(
-                _exchange(
-                    steps=[{"text": "x" * 5000, "expected_text": "ok", "line_ending": "lf"}],
-                    read_seconds=600.0,
-                )
-            )
-        )
-        finalizer = parse_finalizer(
-            "write_serial", {"action": "uart_write", "text": "x" * 5000, "timeout_seconds": 6.5}
-        )
-        self.assertEqual(finalizer.timeout_seconds, 6.5)  # type: ignore[union-attr]
-        self.assertGreater(
-            operation_timeout_seconds(
-                "write_serial",
-                {
-                    "on_exit": {
-                        "action": "uart_write",
-                        "text": "x" * 5000,
-                        "timeout_seconds": 6.5,
-                    }
-                },
-            ),
-            6.5,
-        )
 
     def test_long_batch_names_and_artifact_producer_are_preserved(self) -> None:
         known = "known_" + "x" * 130

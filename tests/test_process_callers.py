@@ -6,6 +6,7 @@ No production clock, budget, Windows policy or AnalysisPopen policy is replaced.
 """
 
 from __future__ import annotations
+from tests.process_fixture_support import CLOCK, facts
 
 import ctypes
 import json
@@ -24,47 +25,8 @@ import psutil
 from pyocd_debug_mcp import discovery_hooks
 from pyocd_debug_mcp.kernel import processes
 
-CLOCK = time.monotonic  # Never consume a test-owned mocked clock sequence.
 FIXTURE = Path(__file__).with_name("process_caller_fixture.py").resolve()
 ARTIFACT = Path(os.environ.get("BYO_TEST_FAILURES", tempfile.gettempdir())) / "process-callers"
-
-
-def facts(pid: int, birth: float | None = None) -> dict:
-    record = {"pid": pid, "expected_birth": birth, "at": CLOCK()}
-    try:
-        process = psutil.Process(pid)
-        actual = process.create_time()
-        record["birth"] = actual
-        if birth is not None and actual != birth:
-            return {**record, "identity": "reused", "state": "unknown"}
-        record["identity"] = "observed"
-        for key in ("ppid", "exe", "cmdline", "status"):
-            try:
-                record[key] = getattr(process, key)()
-            except (psutil.Error, OSError, SystemError) as exc:
-                record[key] = {"unknown": repr(exc)}
-        record["state"] = (
-            "terminal"
-            if record.get("status") in (psutil.STATUS_ZOMBIE, psutil.STATUS_DEAD)
-            else "live"
-            if isinstance(record.get("status"), str)
-            else "unknown"
-        )
-        if os.name == "posix":
-            for key, query in (("pgid", os.getpgid), ("sid", os.getsid)):
-                try:
-                    record[key] = query(pid)
-                except OSError as exc:
-                    record[key] = {"unavailable": repr(exc)}
-        if psutil.Process(pid).create_time() != actual:
-            record.update(identity="changed", state="unknown")
-    except psutil.ZombieProcess as exc:
-        record.update(identity="unknown", state="unknown", error=repr(exc))
-    except psutil.NoSuchProcess:
-        record.update(identity="gone", state="gone")
-    except (psutil.Error, OSError, SystemError) as exc:
-        record.update(identity="unknown", state="unknown", error=repr(exc))
-    return record
 
 
 @unittest.skipUnless(os.name == "posix", "independent retained POSIX caller controls")

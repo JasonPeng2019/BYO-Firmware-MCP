@@ -32,7 +32,7 @@ from tests.code_analysis_support import (
     simple_project,
     temporary_directory,
 )
-from tests.test_clangd_adapter_unit import fake_factory, make_project
+from tests.code_analysis_peer_support import fake_factory, make_project
 
 
 def record(name: str, data: dict[str, Any]) -> None:

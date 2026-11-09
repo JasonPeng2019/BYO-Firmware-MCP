@@ -1,4 +1,4 @@
-"""Focused regressions for the round-1 trusted-caller policy changes."""
+"""Trusted caller limits contracts."""
 
 from __future__ import annotations
 

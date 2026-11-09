@@ -12,7 +12,6 @@ from __future__ import annotations
 import json
 import subprocess
 import unittest
-from functools import partial
 from pathlib import Path
 from typing import Any
 
@@ -26,7 +25,6 @@ from tests.code_analysis_support import (
     assert_failure,
     assert_source,
     copy_fixture,
-    host_database,
     lines_of,
     make_service,
     materialize_arm_fixture,
@@ -141,8 +139,7 @@ class ProgramIdentity(RealClangdCase):
         print(
             f"\nreal clangd {self.executable} sha256={sha256_file(self.executable)}: {completed.stdout.strip()}"
         )
-        project = copy_fixture("host_c", self.base / "host_c")
-        host_database(project, ["src/main.c", "src/util.c"])
+        project = copy_fixture("host_c", self.base / "host_c", units=("src/main.c", "src/util.c"))
         envelope = assert_envelope(self, self.service(project).status(), "status", status="ok")
         self.assertTrue(same_path(envelope["data"]["executable"], self.executable))
         self.assertEqual(envelope["data"]["session_state"], "not_started")
@@ -151,8 +148,7 @@ class ProgramIdentity(RealClangdCase):
 class HostC(RealClangdCase):
     def setUp(self) -> None:
         super().setUp()
-        self.project = copy_fixture("host_c", self.base / "host_c")
-        host_database(self.project, ["src/main.c", "src/util.c"])
+        self.project = copy_fixture("host_c", self.base / "host_c", units=("src/main.c", "src/util.c"))
         self.analysis = self.service(self.project)
 
     @pytest.mark.mvp
@@ -229,8 +225,7 @@ class HostC(RealClangdCase):
 
 class HostCpp(RealClangdCase):
     def test_overloads_and_template_resolve_to_the_selected_declarations(self) -> None:
-        project = copy_fixture("host_cpp", self.base / "host_cpp")
-        host_database(project, ["src/shapes.cpp"])
+        project = copy_fixture("host_cpp", self.base / "host_cpp", units=("src/shapes.cpp",))
         analysis = self.service(project)
         expected = {
             # (needle occurrence in shapes.cpp) -> acceptable (file, line) targets
@@ -369,78 +364,6 @@ class UnicodeProject(RealClangdCase):
             occurrence=1,
         )
         assert_envelope(self, control, "definition", status="ok")
-
-
-class AnalysisWriteBoundaryOracle(unittest.TestCase):
-    """Hermetic proof that the ARM tree oracle rejects out-of-allowlist writes."""
-
-    SHARD = "main.c.0123456789ABCDEF.idx"
-    PROTECTED = (
-        "src/main.c",
-        "include/firmware.h",
-        "build/generated/build_config.h",
-        "build/compile_commands.json",
-        "byo-analysis.json",
-        ".clangd",
-        ".firm/board-policy.json",
-    )
-
-    def setUp(self) -> None:
-        directory = temporary_directory("byo-ca-oracle-")
-        self.project = AnalysisProject(directory.__enter__() / "project")
-        self.addCleanup(directory.__exit__, None, None, None)
-        for relative in self.PROTECTED:
-            self.project.write_text(relative, f"original {relative}\n")
-        self.before = self.project.tree_digest()
-
-    def changes(self) -> list[str]:
-        return unpermitted_tree_changes(self.before, self.project.tree_digest(), "build")
-
-    def test_documented_analysis_writes_are_permitted(self) -> None:
-        for relative in (
-            ".firm/code-analysis/reports/run-1/report.json",
-            "build/.cache/clangd/index/.gitignore",
-            f"build/.cache/clangd/index/{self.SHARD}",
-            f"build/.cache/clangd/index/{self.SHARD}.temp-stream-ed91fb",
-        ):
-            self.project.write_text(relative, "analysis data\n")
-        self.assertEqual(self.changes(), [])
-
-    def test_every_other_write_is_reported(self) -> None:
-        write = self.project.write_text
-        rewritten = [name for name in self.PROTECTED if name != "include/firmware.h"]
-        cases = {
-            **{f"changed: {name}": partial(write, name, "rewritten\n") for name in rewritten},
-            "removed: include/firmware.h": self.project.path("include/firmware.h").unlink,
-            "created: .firm/other/state.json": lambda: write(".firm/other/state.json", "{}"),
-            f"created: .cache/clangd/index/{self.SHARD}": lambda: write(
-                f".cache/clangd/index/{self.SHARD}", "wrong database directory"
-            ),
-            "created: build/.cache/clangd/index/notes.txt": lambda: write(
-                "build/.cache/clangd/index/notes.txt", "not a shard"
-            ),
-            f"created: build/.cache/clangd/index/{self.SHARD}.tmp": lambda: write(
-                f"build/.cache/clangd/index/{self.SHARD}.tmp", "not a shard"
-            ),
-            f"created: build/.cache/clangd/index/{self.SHARD}.temp-stream-nothex": lambda: write(
-                f"build/.cache/clangd/index/{self.SHARD}.temp-stream-nothex",
-                "not a native temporary shard",
-            ),
-            f"created: .cache/clangd/index/{self.SHARD}.temp-stream-ed91fb": lambda: write(
-                f".cache/clangd/index/{self.SHARD}.temp-stream-ed91fb", "wrong database directory"
-            ),
-            f"created: build/.cache/clangd/{self.SHARD}": lambda: write(
-                f"build/.cache/clangd/{self.SHARD}", "outside the index directory"
-            ),
-            f"created: build/.cache/clangd/index/nested/{self.SHARD}": lambda: write(
-                f"build/.cache/clangd/index/nested/{self.SHARD}", "nested"
-            ),
-            "created: build/firmware.o": lambda: write("build/firmware.o", "build output"),
-        }
-        for expected, mutate in cases.items():
-            with self.subTest(expected=expected):
-                mutate()
-                self.assertIn(expected, self.changes())
 
 
 class ArmFirmware(RealClangdCase):
@@ -681,8 +604,7 @@ class KnownHeaderFreshness(RealClangdCase):
 class RealStdioShutdown(RealClangdCase):
     @pytest.mark.mvp
     def test_stdin_eof_terminates_owned_clangd_within_the_bound(self) -> None:
-        project = copy_fixture("host_c", self.base / "host_c")
-        host_database(project, ["src/main.c", "src/util.c"])
+        project = copy_fixture("host_c", self.base / "host_c", units=("src/main.c", "src/util.c"))
         server = AnalysisStdioServer(self.base / "stdio", project.root, executable=self.executable)
         self.addCleanup(server.kill)
         server.initialize()

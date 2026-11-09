@@ -18,7 +18,7 @@ import tempfile
 import threading
 import unittest
 from pathlib import Path
-from typing import Any, cast
+from typing import cast
 
 from pyocd_debug_mcp.discovery_hooks import (
     DiscoveryHookSnapshot,
@@ -76,9 +76,8 @@ class SnapshotAtomicityTests(unittest.TestCase):
             self.assertEqual(row.snapshot_id, snapshot.snapshot_id)
             self.assertEqual(snapshot_id_of(row.row_id), snapshot.snapshot_id)
 
-    def test_the_fixtures_really_do_change_on_every_scan(self) -> None:
-        """Without this, every other assertion in the file is vacuous."""
 
+    def test_sequential_snapshots_never_share_rows(self) -> None:
         first = self.service.snapshot()
         second = self.service.snapshot()
 
@@ -88,7 +87,6 @@ class SnapshotAtomicityTests(unittest.TestCase):
             "the counter fixtures returned identical rows; interleaving would be invisible",
         )
 
-    def test_sequential_snapshots_never_share_rows(self) -> None:
         seen_probes: list[set[str]] = []
         seen_uarts: list[set[str]] = []
 

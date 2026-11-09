@@ -7,7 +7,9 @@ preparing the next product candidate; the retained w23c checkout is historical
 product evidence, not the newest test suite. The product campaign stays paused.
 
 Run maintained source, regression and quality checks in GitHub Actions for this
-campaign, after the independent prebuild review gate. Required execution is
+campaign, for the separately resumed product campaign after its independent prebuild review gate.
+Standalone fixture cleanup uses only the cleanup Actions mode, without FR/FT or
+product builds. Required execution is
 ACTIONS_PENDING until those matching-source checks actually run. The commands
 below are CI step commands, from the Firmware MCP directory:
 
@@ -20,7 +22,7 @@ uv run --no-sync python -m pytest -q --junitxml=results.xml
 
 PowerShell uses `$env:BYO_MCP_TEST_CLANGD_EXECUTABLE = 'C:\path\clangd.exe'`.
 The default `mvp` marker selects existing necessary feature assertions and serious
-harm checks. `python -m pytest -m 'not live'` runs all retained source regressions;
+harm checks. `python -m pytest -o addopts= --strict-markers -m 'not live'` runs all retained source regressions;
 name a module after changing its fixture. A skip or zero selected tests is not
 feature evidence. Native clangd, managed runtime, ARM, workspace, OS and real
 client prerequisites are explicit; unavailable prerequisites are UNRUN. Use
@@ -127,3 +129,19 @@ using native-filesystem dependencies. The broader Windows sweep and its
 interrupted/failed stages are recorded individually in the execution report;
 they are not presented as one uninterrupted green run. Builds, native installed
 packages, macOS, real clients/models and boards were not exercised here.
+
+The necessity cleanup removes counterfactual/fixture-oracle/wording checks, the
+dormant baseline transcript runner, the ARM version-wrapper pair and the
+unqualified manual hardware example. Symbol/serial, change-loop and allowance
+cases now have behavior owners; family support modules contain shared setup.
+All source cases selected by the native analysis workflow run once through
+pytest. Fresh-project children use the same runner with ordinary JUnit.
+
+The small failure hook retains owned inputs for setup, assertion, subtest,
+teardown and cleanup failures before destructive cleanup. Monitor closeout
+errors are reported separately and keep their store. Successful fixtures clean
+up normally. The fixture-only Actions path names its affected modules explicitly,
+uses pinned real clangd/ARM query-driver inputs and excludes product bundles,
+installed checks, clients/models and hardware. New cleanup verification is
+PENDING until its exact candidate passes; previous results do not verify these
+changes.

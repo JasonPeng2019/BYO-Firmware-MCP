@@ -1,103 +1,31 @@
 """S03-01: the actual MCP error envelope must relay terminal retirement uncertainty."""
 
 from __future__ import annotations
+from tests.recovery_fixture_support import (
+    PERSISTENCE_ERROR,
+    _configured,
+    _mcp_response,
+    _retirement_write_fault,
+)
 
 import asyncio
 import unittest
-from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
-from unittest.mock import patch
 
-from mcp import types as mcp_types
 
 from pyocd_debug_mcp.capabilities.manual_permissions import ManualPermissionError
-from tests.test_tiered_acceptance_recovery import BOARD, _configure_public_native_lite
-from tests.test_vi03_fresh_recovery_grant import (
+from tests.recovery_fixture_support import BOARD
+from tests.recovery_fixture_support import (
     UNLOCK,
     _assert_closed,
-    _grant_and_reserve,
     _invoke_helper,
     _record_bytes,
     _recover_calls,
-    _release,
-)
-from tests.tiered_acceptance_support import (
-    DeterministicTargetBackend,
-    isolated_project,
-    tiered_test_server,
 )
 
 OBSERVATIONS: dict[str, Any] = {}
 BACKEND_ERROR = "diagnostic backend recovery failed"
-PERSISTENCE_ERROR = "private retirement persistence detail that must not reach the client"
-
-
-class _ObservedBackend(DeterministicTargetBackend):
-    """Record the actual durable authority and readiness at simulated backend entry."""
-
-    def recover(self, handle: Any) -> None:
-        record = self.manual.status("mass-erase")
-        assert record.state == "consumed"
-        assert record.claim_id == self.spent.claim_id
-        assert record.grant_id == self.spent.grant_id
-        assert self.server.gate_manager.snapshot(BOARD) is None
-        self.boundary.append({"state": record.state, "claim": record.claim_id})
-        super().recover(handle)
-
-
-@contextmanager
-def _configured(error: BaseException):
-    with isolated_project() as root, tiered_test_server(root) as server:
-        backend = _ObservedBackend(recovery_supported=True, recover_error=error)
-        manual = _configure_public_native_lite(server, root, backend)
-        backend.manual, backend.server, backend.boundary = manual, server, []
-        try:
-            spent = _grant_and_reserve(unittest.TestCase(), server, manual)
-            backend.spent = spent
-            connection = server.connection_manager.connection_for(BOARD)
-            server.gate_manager.stamp_validation(
-                board_id=BOARD,
-                connection_id=connection.connection_id,
-                probe_identity=connection.handle.probe_uid,
-                observed_mcu="nrf52840",
-                validation_run="diagnostic-readiness-control",
-                map_digest=server._active_snapshot_aggregate(BOARD),
-            )
-            assert server.gate_manager.snapshot(BOARD) is not None
-            yield root, server, backend, manual, spent
-        finally:
-            _release(server)
-
-
-def _mcp_response(server: Any):
-    request = mcp_types.CallToolRequest(
-        method="tools/call",
-        params=mcp_types.CallToolRequestParams(name="target_unlock", arguments=dict(UNLOCK)),
-    )
-    handler = server.mcp._mcp_server.request_handlers[mcp_types.CallToolRequest]
-    response = asyncio.run(handler(request))
-    text = "\n".join(getattr(block, "text", "") for block in response.root.content)
-    return response, text
-
-
-@contextmanager
-def _retirement_write_fault(manual: Any, *, after_commit: bool = False):
-    """Reach the real retirement protocol, faulting only its locked-record write."""
-
-    original = manual._atomic_write
-    attempts = []
-
-    def write(path: Path, document: dict[str, Any]) -> None:
-        if path == manual._action_path("mass-erase") and document["state"] == "locked":
-            attempts.append(document["state"])
-            if after_commit:
-                original(path, document)
-            raise OSError(PERSISTENCE_ERROR)
-        original(path, document)
-
-    with patch.object(manual, "_atomic_write", side_effect=write):
-        yield attempts
 
 
 class UnlockDiagnosticTests(unittest.TestCase):

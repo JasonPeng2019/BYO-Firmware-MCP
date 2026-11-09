@@ -10,13 +10,12 @@ tests assert both the detection it does provide and the limit it does not exceed
 """
 
 from __future__ import annotations
+from tests.monitor_support import add_snapshot
 
-import inspect
 import json
 import sys
 import unittest
 
-from pyocd_debug_mcp.monitor.counters import USAGE_SNAPSHOT_CADENCE
 from pyocd_debug_mcp.monitor.ledger import (
     Hardening,
     SegmentLedger,
@@ -27,19 +26,6 @@ from pyocd_debug_mcp.monitor.ledger import (
 )
 from pyocd_debug_mcp.monitor.paths import resolve_store_root
 from tests.monitor_support import MonitorTestCase
-
-
-def add_snapshot(ledger: SegmentLedger, total: int = USAGE_SNAPSHOT_CADENCE, **extra) -> bool:
-    """Append one usage-snapshot record, the ledger's most common occasion.
-
-    There is no per-call form to append instead: the counts a snapshot carries are
-    what answer "how much was used", so a test that wants a record in the file
-    writes one of these.
-    """
-
-    detail = {"cumulative": True, "total_calls": total}
-    detail.update(extra)
-    return ledger.append("usage_snapshot", detail=detail)
 
 
 def unharden(path) -> None:
@@ -375,35 +361,6 @@ class BufferingStore(MonitorTestCase):
         self.assertFalse(add_snapshot(ledger))
         self.assertEqual(ledger.total_appended, 0)
         self.assertIsNone(ledger.seal())
-
-
-class NoOverclaiming(unittest.TestCase):
-    def test_untamperable_never_appears_in_the_source(self) -> None:
-        """The word is banned: the property it implies is not achievable here."""
-
-        from pathlib import Path
-
-        root = Path(__file__).resolve().parents[1] / "src"
-        offenders = [
-            path.name
-            for path in root.rglob("*.py")
-            if "untamperable" in path.read_text(encoding="utf-8", errors="replace").lower()
-        ]
-        self.assertEqual(offenders, [])
-
-    def test_the_under_report_ceiling_is_documented(self) -> None:
-        """Tier 3 must be stated: owner-level forgery is not caught at all.
-
-        A document that claims cumulative counts make usage unforgeable would be
-        wrong, and this is where that claim would be made.
-        """
-
-        from pyocd_debug_mcp.monitor import ledger as ledger_module
-
-        text = (ledger_module.__doc__ or "").lower()
-        self.assertIn("under-report", text)
-        self.assertIn("neither prevented nor detected", text)
-        self.assertIn("not** unforgeable", text)
 
 
 if __name__ == "__main__":

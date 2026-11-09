@@ -11,15 +11,15 @@ from typing import Any
 from unittest.mock import patch
 
 from pyocd_debug_mcp.capabilities.manual_permissions import ManualPermissionError
-from tests.test_tiered_acceptance_recovery import BOARD
-from tests.test_vi03_fresh_recovery_grant import (
+from tests.recovery_fixture_support import BOARD
+from tests.recovery_fixture_support import (
     UNLOCK,
     _assert_closed,
     _invoke_helper,
     _record_bytes,
     _recover_calls,
 )
-from tests.test_vi03_unlock_diagnostics import (
+from tests.recovery_fixture_support import (
     PERSISTENCE_ERROR,
     _configured,
     _mcp_response,

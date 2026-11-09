@@ -10,9 +10,11 @@ import unittest
 
 import pytest
 
+from tests.fixture_directory import retain_directory
 
-_session_root = None
-_original_environment = {}
+
+_session_root: Path
+_original_environment: dict[str, str | None] = {}
 
 
 def pytest_sessionstart(session):
@@ -50,8 +52,6 @@ def retain_failed_inputs(request, monkeypatch):
     case = request.instance
     if not isinstance(case, unittest.TestCase):
         return
-    call = case._callTestMethod
-
     def keep_inputs():
         temporary = Path(tempfile.gettempdir()).resolve()
         destination = (
@@ -71,23 +71,25 @@ def retain_failed_inputs(request, monkeypatch):
                 or any(path.is_relative_to(p) for p in copied)
             ):
                 continue
-            try:
-                shutil.copytree(path, destination / name, dirs_exist_ok=True)
+            if retain_directory(path, destination / name):
                 copied.append(path)
-                print(f"Failed test inputs/output: {destination / name}", file=sys.stderr)
-            except OSError as error:
-                print(f"Additional fixture capture error: {error}", file=sys.stderr)
 
-    def run(method):
-        try:
-            return call(method)
-        except unittest.SkipTest:
-            raise
-        except Exception:
-            keep_inputs()
-            raise
+    def retaining(call):
+        def run(*args, **kwargs):
+            try:
+                return call(*args, **kwargs)
+            except unittest.SkipTest:
+                raise
+            except Exception:
+                keep_inputs()
+                raise
 
-    monkeypatch.setattr(case, "_callTestMethod", run)
+        return run
+
+    # unittest handles these exceptions before pytest sees them. Capture while
+    # the owned directory still exists, including partial setUp and cleanups.
+    for name in ("_callSetUp", "_callTestMethod", "_callTearDown", "_callCleanup"):
+        monkeypatch.setattr(case, name, retaining(getattr(case, name)))
     sub_test = case.subTest
 
     @contextmanager

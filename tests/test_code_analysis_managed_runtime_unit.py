@@ -5,6 +5,7 @@ version-spawn seam is replaced; all mapping, inventory and filesystem work is re
 """
 
 from __future__ import annotations
+from tests.code_analysis_managed_support import staged_runtime
 
 import hashlib
 import json
@@ -20,10 +21,6 @@ from unittest.mock import Mock, patch
 
 from pyocd_debug_mcp import code_analysis_runtime as runtime
 from tests.code_analysis_managed_support import RuntimeFixture, host_target
-
-
-def staged_runtime(root: Path) -> dict:
-    return RuntimeFixture(root).mapping
 
 
 class ManagedRuntimeTests(unittest.TestCase):

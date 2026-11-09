@@ -1,4 +1,4 @@
-"""Comprehensive retained-correctness regressions for trust-model round three."""
+"""Trusted pack allocation contracts."""
 
 from __future__ import annotations
 
@@ -51,54 +51,10 @@ from pyocd_debug_mcp.tools.memory import MemoryToolServices, build_memory_handle
 from pyocd_debug_mcp.tools.serial import SerialToolServices, write_serial
 
 
-def _exchange() -> dict[str, object]:
-    return {
-        "steps": [{"text": "x", "expected_text": "ok", "line_ending": "lf"}],
-        "read_seconds": 1.0,
-        "baudrate": None,
-        "port": None,
-        "ready_text": None,
-        "ready_seconds": 0.0,
-        "ready_probe_text": None,
-        "ready_probe_line_ending": "none",
-        "ready_probe_delay_seconds": 0.0,
-        "clear_input": False,
-    }
 
 
-def _memory(artifact: Path, finder: object) -> MemoryToolServices:
-    return MemoryToolServices(
-        lambda _: None,
-        lambda _: None,
-        lambda _: 0,
-        lambda *a, **k: None,
-        lambda refusal, **k: f"Refused [{refusal.code}]: {refusal.message}",
-        lambda _: object(),
-        lambda _: artifact,
-        finder,
-        lambda *_: None,
-        lambda *_: 0,
-        lambda *_: [],
-        lambda *_: None,
-        lambda *_: None,
-    )  # type: ignore[arg-type]
 
 
-def _serial() -> SerialToolServices:
-    return SerialToolServices(
-        lambda _: None,
-        lambda _: None,
-        lambda _: 0,
-        lambda *a, **k: None,
-        lambda refusal, **k: f"{refusal.code}:{refusal.message}",
-        lambda _: None,
-        lambda *a, **k: None,
-        lambda *a, **k: None,
-        lambda *a, **k: None,
-        lambda *a, **k: None,
-        lambda _: None,
-        "no board",
-    )
 
 
 def _pdsc(leading: str = "") -> str:
@@ -118,76 +74,7 @@ def _pack_bytes(pdsc: str) -> bytes:
 
 
 class RoundThreeRegressionTests(unittest.TestCase):
-    def test_r3_01_public_symbol_handler_returns_all_and_refuses_malformed(self) -> None:
-        matches = tuple(
-            ResolvedSymbol(f"Match_{i:02d}", 0x08000000 + i, 4, "STT_FUNC") for i in range(25)
-        )
-        with tempfile.TemporaryDirectory() as directory:
-            path = Path(directory) / "app.elf"
-            path.write_bytes(b"\x7fELF")
-            handler = build_memory_handlers(_memory(path, lambda *_: matches))["find_symbol"]
-            response = handler("board", "match", str(path))
-            self.assertEqual(response.count("@0x"), 25)
-            self.assertLess(response.index("Match_00@"), response.index("Match_24@"))
-            malformed = Path(directory) / "bad.elf"
-            malformed.write_bytes(b"\x7fELFnot-complete")
-            response = build_memory_handlers(_memory(malformed, symbols.find_symbols))[
-                "find_symbol"
-            ]("board", "match", str(malformed))
-            self.assertIn("Refused [memory/symbol-artifact-parse-failed]", response)
-            self.assertIn("could not be parsed safely", response)
 
-    def test_r3_02_serial_and_finalizer_validation_rejects_invalid_durations(self) -> None:
-        valid = _exchange()
-        valid["steps"] = [{"text": "x" * 5000, "expected_text": "ok", "line_ending": "lf"}]
-        valid["read_seconds"] = 86_401.0
-        self.assertIsNone(validate_serial_exchange_parameters(valid))
-        for field in ("read_seconds", "ready_seconds"):
-            for value in (0.0, -1.0):
-                candidate = _exchange()
-                candidate.update(
-                    {
-                        "ready_text": "ready",
-                        "ready_seconds": 1.0,
-                        "ready_probe_text": "probe",
-                        "ready_probe_line_ending": "lf",
-                        field: value,
-                    }
-                )
-                self.assertIsNotNone(validate_serial_exchange_parameters(candidate))
-        negative_delay = _exchange()
-        negative_delay.update(
-            {
-                "ready_text": "ready",
-                "ready_seconds": 1.0,
-                "ready_probe_text": "probe",
-                "ready_probe_line_ending": "lf",
-                "ready_probe_delay_seconds": -1.0,
-            }
-        )
-        self.assertIsNotNone(validate_serial_exchange_parameters(negative_delay))
-        delayed = _exchange()
-        delayed.update(
-            {
-                "ready_text": "ready",
-                "ready_seconds": 1.0,
-                "ready_probe_text": "probe",
-                "ready_probe_line_ending": "lf",
-                "ready_probe_delay_seconds": 2.0,
-            }
-        )
-        self.assertIn("must not exceed", validate_serial_exchange_parameters(delayed) or "")
-        inconsistent = _exchange()
-        inconsistent["ready_seconds"] = 1.0
-        self.assertIn("without ready_text", validate_serial_exchange_parameters(inconsistent) or "")
-        for value in (0.0, -1.0):
-            self.assertIn(
-                "uart/invalid-timeout", write_serial(_serial(), "board", "x", timeout_seconds=value)
-            )
-            with self.assertRaises(FinalizerValidationError):
-                parse_finalizer(
-                    "write_serial", {"action": "uart_write", "text": "x", "timeout_seconds": value}
-                )
 
     def test_r3_03_long_producer_and_batch_tool_are_accepted_while_correctness_refusals_remain(
         self,

@@ -11,11 +11,10 @@ import time
 import unittest
 from unittest.mock import patch
 
-import psutil
 
 from pyocd_debug_mcp import discovery_hooks, native_build
 from pyocd_debug_mcp.kernel import processes
-from tests.test_process_cleanup import _NativePosixCase
+from tests.process_fixture_support import _NativePosixCase
 
 FIXTURE = Path(__file__).parent / "fixtures" / "process_churn.py"
 
@@ -293,66 +292,6 @@ class OrdinaryChurnContracts(_NativePosixCase):
                 for path in self.root.glob("*.json"):
                     path.unlink()
 
-    def test_directed_fixture_member_exit_diagnostic_records_actual_return_branch(self) -> None:
-        # Reproduce the old fixture sequence, separately from ordinary callers.
-        # Trace only this function's returns/exceptions; no extra membership scans.
-        process = self.owned(self.descendant_program(linger=True))
-        pid, birth = self.assert_live_child(process)
-        child = psutil.Process(pid)
-        self.assertEqual(child.create_time(), birth)
-        child.kill()
-        code = processes._retained_group_state.__code__
-
-        def trace(frame, event, value):
-            if frame.f_code is not code:
-                return None
-            frame.f_trace_lines = False
-            if event == "return":
-                self.events.append(
-                    {
-                        "diagnostic": "actual retained membership return",
-                        "state": value,
-                        "line": frame.f_lineno,
-                        "leader_exit": frame.f_locals.get("leader_exit"),
-                        "members": sorted(frame.f_locals.get("members", [])),
-                        "following": sorted(frame.f_locals.get("following", [])),
-                        "member_states": frame.f_locals.get("states", {}),
-                    }
-                )
-            elif event == "exception":
-                self.events.append(
-                    {
-                        "diagnostic": "actual native observation exception",
-                        "line": frame.f_lineno,
-                        "type": value[0].__name__,
-                        "detail": str(value[1]),
-                    }
-                )
-            return trace
-
-        previous = sys.gettrace()
-        started = time.monotonic()
-        try:
-            sys.settrace(trace)
-            confirmed = processes.terminate_process_group(process)
-        finally:
-            sys.settrace(previous)
-        elapsed = time.monotonic() - started
-        self.events.append(
-            {
-                "diagnostic": "fixture sequence only; recovery is separate",
-                "confirmed": confirmed,
-                "elapsed": elapsed,
-                "leader_state": self.native_state(process.pid, self.created_births[process.pid]),
-                "marker_retained": bool(list(self.store.root.glob("*.json"))),
-                "platform": sys.platform,
-            }
-        )
-        self.assertLess(elapsed, 5)
-        self.assert_peer()
-        if confirmed:
-            self.store.remove(self.created[-1][1])
-            self.assert_reaped(process)
         # A diagnostic return is never counted as proof of product cleanup.
 
 

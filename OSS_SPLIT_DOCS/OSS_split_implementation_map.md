@@ -437,13 +437,10 @@ not leave a cross-product test importing both package internals.
 
 | Current path | Destination |
 |---|---|
-| `tests/baseline_capture.py` | CLOSED: commercial baseline/compatibility capture. |
-| `tests/baseline_transcript.json` | CLOSED: commercial baseline fixture. |
 | `tests/codex_harness.py` | CLOSED: current full commercial-agent harness. Add a separate open smoke client for the static HAL tools. |
 | `tests/discovery_hook_fixtures.py` | OSS: open hook contract fixtures; remove FirmStore ownership assumptions. |
 | `tests/fake_discovery_hook.py` | OSS. |
 | `tests/fake_provider_worker.py` | OSS. |
-| `tests/manual/manual_remote_probe_hardware_check.py` | SPLIT: explicit endpoint/connect hardware check open; registry setup private. |
 | `tests/monitor_support.py` | CLOSED. |
 | `tests/store_cleanup.py` | CLOSED. |
 
@@ -452,8 +449,8 @@ not leave a cross-product test importing both package internals.
 | Current path | Destination and exact split |
 |---|---|
 | `tests/test_breakpoint_tools.py` | SPLIT: canonicalization/direct backend tests OSS; containment, events, and policy tests closed. |
-| `tests/test_change_loop_spec.py` | OSS: physical edit/build/flash/debug loop contract. |
-| `tests/test_change_loop_stale_setup_allowance.py` | CLOSED: persisted setup allowance behavior. |
+| `tests/test_change_loop.py` | SPLIT: artifact discovery, reset/flash truth and physical recovery OSS; event, assignment, gate and revocation assertions closed. |
+| `tests/test_setup_allowance.py` | CLOSED: persisted setup allowance behavior. |
 | `tests/test_connection_promotion_transaction.py` | SPLIT: provider connection/rollback cleanup OSS; summary, gate, promotion, and assignment tests closed. |
 | `tests/test_disconnect_cleanup.py` | OSS. |
 | `tests/test_discovery_hook_process.py` | OSS. |
@@ -482,16 +479,14 @@ not leave a cross-product test importing both package internals.
 | `tests/test_probe_inventory.py` | OSS. |
 | `tests/test_probe_selection_records.py` | OSS for run-scoped records; move any durable assignment assertion closed. |
 | `tests/test_process_cleanup.py` | OSS. |
-| `tests/test_regression_change_loop.py` | SPLIT: artifact discovery, adapter reset truth, physical recovery, and direct operations OSS; event logs, assignment, gates, and revocation closed. |
-| `tests/test_regression_stale_setup_allowance.py` | CLOSED. |
 | `tests/test_remote_probe_smoke.py` | CLOSED for present registry integration; create an open explicit-endpoint smoke test. |
 | `tests/test_remote_probes.py` | SPLIT: host/port normalization, boundary ports, reachability, and explicit selector behavior OSS; load/save/upsert/remove, registry paths, tools, and persistence closed. |
 | `tests/test_server_assignment_connect.py` | CLOSED. |
-| `tests/test_server_trust_model_round_1.py` | SPLIT: unbounded serial schema, direct mapped-memory validation, wait/native build, and same-board batch OSS; research, pack promotion, setup plans/budgets, and prohibited safety ranges closed. |
-| `tests/test_server_trust_model_round_2.py` | SPLIT: symbol search, malformed ELF, long config/provider identifiers, and artifact/build path hygiene OSS; finalizer timeout and reviewed target admission closed. |
-| `tests/test_server_trust_model_round_3.py` | SPLIT: symbol/serial direct validation, batch/artifact production, collector, hygiene, PDSC parser, and explicit pack-binding primitives OSS; setup names, guarded flash wording, retention gates, and safety allocation closed. |
-| `tests/test_server_trust_model_round_4.py` | SPLIT: symbol/serial boundaries, batch/artifact production, collector, hygiene, PDSC parsing, and pack stability/parser tests OSS; setup routes, commercial diagnostics, and safety gates closed. |
-| `tests/test_server_trust_model_round_5.py` | SPLIT: proof that repeated direct flash/UART calls reach the backend OSS; event-ledger assertion for every attempt closed. |
+| `tests/test_trusted_caller_limits.py` | SPLIT: unbounded serial schema, direct mapped-memory validation, wait/native build, and same-board batch OSS; research, pack promotion, setup plans/budgets, and prohibited safety ranges closed. |
+| `tests/test_trusted_input_identity.py` | SPLIT: symbol search, malformed ELF, long config/provider identifiers, and artifact/build path hygiene OSS; finalizer timeout and reviewed target admission closed. |
+| `tests/test_trusted_pack_allocation.py` | SPLIT: symbol/serial direct validation, batch/artifact production, collector, hygiene, PDSC parser, and explicit pack-binding primitives OSS; setup names, guarded flash wording, retention gates, and safety allocation closed. |
+| `tests/test_trusted_artifact_pack_boundaries.py` | SPLIT: symbol/serial boundaries, batch/artifact production, collector, hygiene, PDSC parsing, and pack stability/parser tests OSS; setup routes, commercial diagnostics, and safety gates closed. |
+| `tests/test_convergence_no_lockout.py` | SPLIT: proof that repeated direct flash/UART calls reach the backend OSS; event-ledger assertion for every attempt closed. |
 | `tests/test_setup_overview_no_probe.py` | SPLIT: no-probe discovery/support facts OSS; managed setup-overview response closed. |
 | `tests/test_swd_process_isolation.py` | OSS. |
 | `tests/test_swd_pyocd_breakpoints.py` | OSS for adapter breakpoint behavior. |
@@ -611,3 +606,5 @@ directories are historical evidence, not live implementation inputs. Do not
 migrate them as product code. Preserve them according to the existing evidence
 retention policy and update generated path references only after the live split
 is complete.
+
+The retired baseline runner/data and unqualified manual hardware example are no longer maintained. Shared family fixture modules follow the ownership of their actual product assertions. `tests/test_trusted_symbol_serial.py` retains symbol lookup/serial validation OSS checks and the private finalizer/timeout boundary. Historical frozen evidence is unchanged.

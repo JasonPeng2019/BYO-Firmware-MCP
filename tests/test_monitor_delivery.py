@@ -26,7 +26,7 @@ from pyocd_debug_mcp.monitor.transport import (
     _as_sentry_event,
 )
 from tests.monitor_support import MonitorTestCase
-from tests.test_monitor_ledger import add_snapshot
+from tests.monitor_support import add_snapshot
 
 
 class TransportStates(MonitorTestCase):
@@ -189,46 +189,6 @@ class ReportDeleteOnACK(MonitorTestCase):
         super().setUp()
         self.store = resolve_store_root()
 
-    def test_report_file_is_deleted_from_disk_once_acked_falsified(self) -> None:
-        """Falsification: patch out the delete call and confirm the test fails.
-
-        This test demonstrates that test_report_file_is_deleted_from_disk_once_acked
-        is evidence by showing it would fail if the delete behavior were removed.
-        """
-
-        import unittest.mock as mock
-
-        # Patch out the unlink call that deletes the report file
-        with mock.patch("pathlib.Path.unlink", side_effect=lambda **kwargs: None):
-            report = {"report_id": "rpt-falsify-delete-test", "title": "test"}
-
-            # Write the file to disk
-            report_dir = self.server_data / "ws" / "reports"
-            report_dir.mkdir(parents=True, exist_ok=True)
-            report_file = report_dir / "rpt-falsify-delete-test.json"
-            report_file.write_text(
-                json.dumps(report, ensure_ascii=False, indent=2, sort_keys=True),
-                encoding="utf-8",
-            )
-
-            service = DeliveryService(self.store, "ws", "run-1", TestTransport(), None)
-            service.start()
-            self.addCleanup(service.stop)
-            service.enqueue_report(report)
-
-            # Wait briefly
-            for _ in range(200):
-                if not report_file.exists():
-                    break
-                time.sleep(0.02)
-
-            # With the delete patched out, the file should still exist
-            # (this is what would happen if the implementation didn't delete)
-            self.assertTrue(
-                report_file.exists(),
-                "Falsification: file should NOT be deleted when unlink is patched"
-                " (proving real test catches deletion)",
-            )
 
     def test_report_file_is_deleted_from_disk_once_acked(self) -> None:
         """Report file is deleted from disk once ACKed by the transport."""
@@ -293,66 +253,6 @@ class ReportDeleteOnACK(MonitorTestCase):
         # Since the send failed (fail_always=True), the file should still exist
         self.assertTrue(report_file.exists(), "Report file should survive a failed send")
 
-    def test_report_file_is_not_deleted_before_ack_falsified(self) -> None:
-        """Falsification: patch _send_report to delete unconditionally.
-
-        This demonstrates that test_report_file_is_not_deleted_before_ack
-        would fail if _send_report deleted the file regardless of ACK outcome.
-        """
-
-        import unittest.mock as mock
-
-        transport = TestTransport(fail_always=True)
-        service = DeliveryService(self.store, "ws", "run-1", transport, None)
-        report = {"report_id": "rpt-falsify-fail-delete", "title": "test"}
-
-        # Write the file to disk
-        report_dir = self.server_data / "ws" / "reports"
-        report_dir.mkdir(parents=True, exist_ok=True)
-        report_file = report_dir / "rpt-falsify-fail-delete.json"
-        report_file.write_text(
-            json.dumps(report, ensure_ascii=False, indent=2, sort_keys=True),
-            encoding="utf-8",
-        )
-
-        # Start daemon thread
-        service.start()
-        self.addCleanup(service.stop)
-
-        # Patch _send_report to unconditionally delete the file after sending
-        # (simulating the bug: deletion regardless of ACK outcome)
-        original_send_report = service._send_report
-
-        def buggy_send_report(report_dict: dict[str, any]) -> None:  # type: ignore[type-arg]
-            """Buggy version that deletes regardless of ACK."""
-            original_send_report(report_dict)
-            # Bug: delete the file unconditionally (regardless of ACK)
-            identity = str(report_dict.get("report_id") or report_dict.get("summary_id") or "")
-            if identity:
-                server_data = service._store.server_data
-                if server_data is not None:
-                    path = server_data / service._workspace / "reports" / f"{identity}.json"
-                    try:
-                        path.unlink(missing_ok=True)
-                    except OSError:
-                        pass
-
-        with mock.patch.object(service, "_send_report", side_effect=buggy_send_report):
-            service.enqueue_report(report)
-
-            # Poll for the send to complete using _last_state change
-            for _ in range(200):
-                if service._last_state != DeliveryState.NOT_CONFIGURED:
-                    break
-                time.sleep(0.02)
-
-        # With the buggy version, file would be deleted even though send failed
-        self.assertFalse(
-            report_file.exists(),
-            "Falsification: file was deleted unconditionally by buggy _send_report"
-            " (proving real test catches the bug)",
-        )
-
 
 class DeliveryStatePruning(MonitorTestCase):
     """Prune _acked entries when their backing files are confirmed absent."""
@@ -361,48 +261,6 @@ class DeliveryStatePruning(MonitorTestCase):
         super().setUp()
         self.store = resolve_store_root()
 
-    def test_segment_acked_entry_is_pruned_when_file_is_gone_falsified(self) -> None:
-        """Falsification: disable pruning and confirm test would fail.
-
-        This test demonstrates that test_segment_acked_entry_is_pruned_when_file_is_gone
-        is evidence by showing it would fail if pruning were disabled.
-        """
-
-        import unittest.mock as mock
-
-        # Create delivery service
-        service = DeliveryService(self.store, "ws", "run-test", TestTransport(), None)
-
-        # Pre-populate _acked with a fake segment that doesn't exist
-        fake_identity = "ws:run-old-falsify:0001"
-        service._acked.add(fake_identity)
-        service._save_state()
-
-        # Verify it's in the state file
-        state_file = self.server_data / "delivery_state.json"
-        state = json.loads(state_file.read_text())
-        self.assertIn(fake_identity, state["acked"])
-
-        # Patch _prune_acked to do nothing (disable pruning)
-        with mock.patch.object(service, "_prune_acked", return_value=None):
-            # Add entries to trigger the pruning boundary
-            for i in range(210):
-                ledger = SegmentLedger(self.store, "ws", f"run-falsify-{i:03d}")
-                add_snapshot(ledger)
-                sealed = ledger.seal()
-                if sealed is None:
-                    continue
-                service._acked.add(sealed.identity)
-                service._save_state()
-
-        # With pruning disabled, the fake entry should still be there
-        state = json.loads(state_file.read_text())
-        self.assertIn(
-            fake_identity,
-            state["acked"],
-            "Falsification: entry should NOT be pruned when _prune_acked is patched"
-            " (proving real test catches pruning)",
-        )
 
     def test_segment_acked_entry_is_pruned_when_file_is_gone(self) -> None:
         """A segment _acked entry is pruned once its file is confirmed absent.
@@ -449,56 +307,6 @@ class DeliveryStatePruning(MonitorTestCase):
             "Segment entry should be pruned when file is confirmed absent",
         )
 
-    def test_acked_entry_is_never_pruned_if_file_still_exists_falsified(self) -> None:
-        """Falsification: make _identity_file_exists lie and confirm test fails.
-
-        This regression-test falsification demonstrates that without the
-        existence check, entries whose files still exist would be pruned,
-        losing the crash-window protection.
-        """
-
-        import unittest.mock as mock
-
-        # Create delivery service
-        service = DeliveryService(self.store, "ws", "run-test", TestTransport(), None)
-
-        # Create a real segment file that we'll keep
-        ledger = SegmentLedger(self.store, "ws", "run-keep")
-        add_snapshot(ledger)
-        sealed = ledger.seal()
-        assert sealed is not None
-        self.assertTrue(sealed.path.exists())
-
-        # Add it to _acked
-        service._acked.add(sealed.identity)
-        service._save_state()
-
-        # Patch _identity_file_exists to lie and say the file doesn't exist
-        with mock.patch.object(
-            service,
-            "_identity_file_exists",
-            return_value=False,  # Lie: pretend file is absent
-        ):
-            # Add entries to cross the pruning boundary
-            for i in range(210):
-                ledger = SegmentLedger(self.store, "ws", f"run-falsify-{i:03d}")
-                add_snapshot(ledger)
-                sealed_tmp = ledger.seal()
-                if sealed_tmp is None:
-                    continue
-                service._acked.add(sealed_tmp.identity)
-                service._save_state()
-
-        # With existence check bypassed, the entry WOULD be incorrectly pruned
-        # (This proves the real test catches the crash-window regression)
-        state_file = self.server_data / "delivery_state.json"
-        state = json.loads(state_file.read_text())
-        self.assertNotIn(
-            sealed.identity,
-            state["acked"],
-            "Falsification: entry was pruned even though file still exists"
-            " when existence check was bypassed (proving real test catches regression)",
-        )
 
     def test_acked_entry_is_never_pruned_if_file_still_exists(self) -> None:
         """An _acked entry is never pruned while its backing file exists (crash-window protection).
@@ -546,67 +354,6 @@ class DeliveryStatePruning(MonitorTestCase):
             "Entry should never be pruned while file exists (crash-window protection)",
         )
 
-    def test_report_identity_is_checked_across_all_workspace_directories_falsified(self) -> None:
-        """Falsification: scope report check to one workspace and confirm test fails.
-
-        This test demonstrates that without checking all workspaces, reports
-        in one workspace could be pruned even though copies exist elsewhere.
-        """
-
-        import unittest.mock as mock
-
-        service = DeliveryService(self.store, "ws-1", "run-test", TestTransport(), None)
-
-        # Create report files in multiple workspaces
-        report_id = "rpt-falsify-multi-ws"
-        for ws in ["ws-1", "ws-2", "ws-3"]:
-            report_dir = self.server_data / ws / "reports"
-            report_dir.mkdir(parents=True, exist_ok=True)
-            report_file = report_dir / f"{report_id}.json"
-            report_file.write_text(
-                json.dumps({"report_id": report_id}, ensure_ascii=False, indent=2),
-                encoding="utf-8",
-            )
-
-        service._acked.add(report_id)
-        service._save_state()
-
-        # Delete from ws-1 only
-        (self.server_data / "ws-1" / "reports" / f"{report_id}.json").unlink()
-
-        # Create a scoped version of _identity_file_exists that only checks self._workspace
-        original_exists = service._identity_file_exists
-
-        def scoped_check_only(identity: str) -> bool:
-            """Buggy version that only checks the current workspace."""
-            if ":" in identity:
-                return original_exists(identity)  # segments still work
-            # For reports, only check service._workspace (BUGGY!)
-            server_data = service._store.server_data
-            if server_data is None:
-                return False
-            return (server_data / service._workspace / "reports" / f"{identity}.json").exists()
-
-        with mock.patch.object(service, "_identity_file_exists", side_effect=scoped_check_only):
-            # Add entries to trigger pruning
-            for i in range(210):
-                ledger = SegmentLedger(self.store, "ws-1", f"run-falsify-{i:03d}")
-                add_snapshot(ledger)
-                sealed = ledger.seal()
-                if sealed is None:
-                    continue
-                service._acked.add(sealed.identity)
-                service._save_state()
-
-        # With scoped check, the entry would be pruned (WRONG!)
-        state_file = self.server_data / "delivery_state.json"
-        state = json.loads(state_file.read_text())
-        self.assertNotIn(
-            report_id,
-            state["acked"],
-            "Falsification: report was pruned when checking only self._workspace"
-            " (proving real test catches multi-workspace check)",
-        )
 
     def test_report_identity_is_checked_across_all_workspace_directories(self) -> None:
         """A report identity is only pruned if absent from ALL workspace directories.

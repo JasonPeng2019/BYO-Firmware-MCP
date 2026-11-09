@@ -6,26 +6,24 @@ similarly described probe is never substituted.
 """
 
 from __future__ import annotations
+from tests.inventory_fixture import _probe_row, _snapshot, _uart_row
 
 import unittest
-from typing import Any, cast
 
 from pyocd_debug_mcp.discovery_hooks import EMPTY_SNAPSHOT
 from pyocd_debug_mcp.hardware_inventory import (
     MAX_PROBE_SELECTIONS,
     InventorySnapshot,
-    ProbeRow,
     ProbeSelection,
     ProbeSelectionStore,
     SelectionDisappeared,
     SelectionNotRecorded,
     SessionUartSelection,
     SessionUartSelectionStore,
-    UartRow,
     derive_selection_from_token,
     find_selected_row,
 )
-from pyocd_debug_mcp.probe_inventory import EMPTY_NATIVE_PROBE_LISTING, registered_provider_ids
+from pyocd_debug_mcp.probe_inventory import registered_provider_ids
 from pyocd_debug_mcp.services.connections import probe_connection_id
 
 SHA_A = "a" * 64
@@ -37,55 +35,6 @@ def setUpModule() -> None:
     actual = set(registered_provider_ids())
     if not required <= actual:
         raise RuntimeError(f"Real pyOCD registry lacks fixture prerequisites: {required - actual}")
-
-
-def _probe_row(
-    provider: str,
-    uid: str | None,
-    *,
-    probe_id: str | None = None,
-    provenance: tuple[str, ...] = ("native",),
-    sha: str | None = None,
-    scope: str = "stable",
-) -> ProbeRow:
-    identity = probe_id if probe_id is not None else (uid or "")
-    return ProbeRow(
-        provider=provider,
-        probe_id=identity,
-        unique_id=uid,
-        row_id=f"row-{provider}-{identity}",
-        description=f"{provider} {identity}",
-        stable_identity=uid,
-        provenance=provenance,
-        hook_source_sha256=sha,
-        identity_scope=cast(Any, scope),
-        snapshot_id="snap",
-    )
-
-
-def _uart_row(path: str, *, scope: str = "session", serial: str | None = None) -> UartRow:
-    return UartRow(
-        port_path=path,
-        description=f"UART {path}",
-        usb_serial=serial,
-        vid=1 if scope == "stable" else None,
-        pid=2 if scope == "stable" else None,
-        provenance=("hook:h",),
-        identity_scope=cast(Any, scope),
-        row_id=f"row-{path}",
-        snapshot_id="snap",
-    )
-
-
-def _snapshot(*rows: ProbeRow, uarts: tuple[UartRow, ...] = ()) -> InventorySnapshot:
-    return InventorySnapshot(
-        snapshot_id="snap",
-        probes=rows,
-        uarts=uarts,
-        native_probe_diagnostics=EMPTY_NATIVE_PROBE_LISTING,
-        native_uart_available=True,
-        hook_diagnostics=(),
-    )
 
 
 class ResolutionTests(unittest.TestCase):

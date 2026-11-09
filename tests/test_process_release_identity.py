@@ -21,7 +21,7 @@ from unittest.mock import patch
 import psutil
 
 from pyocd_debug_mcp.kernel import processes
-from tests.test_process_callers import facts
+from tests.process_fixture_support import facts
 
 CLOCK = time.monotonic
 FIXTURE = Path(__file__).with_name("process_release_fixture.py")

@@ -1,6 +1,7 @@
 """VI07: actual managed UART routing must reassess inferred session choices."""
 
 from __future__ import annotations
+from tests.uart_fixture_support import bridge
 
 import json
 import subprocess
@@ -10,23 +11,17 @@ from dataclasses import replace
 
 from pyocd_debug_mcp.firmstore.cache import SerialEndpoint
 from pyocd_debug_mcp.hardware_inventory import SessionUartSelection, SessionUartSelectionStore
-from tests import test_vi06_uart_ownership as vi06
-from tests.test_probe_selection_records import _snapshot, _uart_row
+from tests.uart_fixture_support import ManagedUartCase
+from pyocd_debug_mcp.firmstore.cache import ProbeIdentity
+from tests.inventory_fixture import _snapshot, _uart_row
 from tests.tiered_acceptance_support import public_text
 
 OBSERVATIONS = {}
 
 
-def bridge(path):
-    # Two indistinguishable CH340-style adapters: no USB serial, same metadata.
-    return replace(_uart_row(path), description="USB Serial CH340", vid=0x1A86, pid=0x7523)
 
 
-class ManagedUartProvenance(unittest.TestCase):
-    setUp = vi06.ManagedUartOwnership.setUp
-    resolve = vi06.ManagedUartOwnership.resolve
-    action = vi06.ManagedUartOwnership.action
-    public_plan = vi06.ManagedUartOwnership.public_plan
+class ManagedUartProvenance(ManagedUartCase):
 
     def observe(self, name, **facts):
         OBSERVATIONS[self.id() + ":" + name] = facts
@@ -161,7 +156,7 @@ class ManagedUartProvenance(unittest.TestCase):
         self.resolve()
         self.cache.confirm(
             "board_b",
-            vi06.ProbeIdentity("jlink", "probe_b"),
+            ProbeIdentity("jlink", "probe_b"),
             SerialEndpoint("COM42", "later-confirmed", row.vid, row.pid),
         )
         self.rows(row)
@@ -211,8 +206,8 @@ class ManagedUartProvenance(unittest.TestCase):
 import json, sys
 from pathlib import Path
 from unittest.mock import Mock, patch
-from tests.test_probe_selection_records import _snapshot
-from tests.test_vi07_uart_provenance import bridge
+from tests.inventory_fixture import _snapshot
+from tests.uart_fixture_support import bridge
 from tests.tiered_acceptance_support import tiered_test_server
 from pyocd_debug_mcp.adapters.swd_interface import TargetSessionHandle
 from pyocd_debug_mcp.board_config import BoardConfig

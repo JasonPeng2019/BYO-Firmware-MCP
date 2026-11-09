@@ -1,12 +1,11 @@
 """VI01: persisted lite declarations constrain the real safe action boundary."""
 
 from __future__ import annotations
+from tests.lite_flash_support import FLASH, RAM, cortex_elf, region
 
 import itertools
 import json
-import struct
 import unittest
-from pathlib import Path
 
 from mcp.server.fastmcp.exceptions import ToolError
 
@@ -25,50 +24,7 @@ from tiered_acceptance_support import (
 
 
 BOARD = "lite_overlaps"
-RAM = 0x20000000
-FLASH = 0x08000000
 PERIPHERAL = 0x40000000
-
-
-def region(kind: str, start: int, end: int, **permissions: bool) -> dict[str, object]:
-    return {
-        "name": f"confirmed {kind}",
-        "kind": kind,
-        "start": hex(start),
-        "end": hex(end),
-        "readable": True,
-        "writable": True,
-        "executable": False,
-        "source_pages": [42],
-        "source_note": "explicit operator-confirmed geometry and access permissions",
-        **permissions,
-    }
-
-
-def cortex_elf(path: Path, start: int) -> Path:
-    """Serialize a valid ARM ELF32 load image; no compiler or policy parser seam."""
-
-    ident = b"\x7fELF\x01\x01\x01" + b"\0" * 9
-    header = ident + struct.pack(
-        "<HHIIIIIHHHHHH",
-        2,
-        40,
-        1,
-        start + 9,
-        52,
-        0,
-        0x05000000,
-        52,
-        32,
-        1,
-        40,
-        0,
-        0,
-    )
-    program = struct.pack("<8I", 1, 84, start, start, 16, 16, 5, 4)
-    vector_and_code = struct.pack("<4I", RAM + 0x80, start + 9, 0xBF00BF00, 0xBF00BF00)
-    path.write_bytes(header + program + vector_and_code)
-    return path
 
 
 class LiteProtectiveOverlapTests(unittest.TestCase):

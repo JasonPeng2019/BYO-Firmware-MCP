@@ -14,14 +14,14 @@ import unittest
 
 from pyocd_debug_mcp.safety.enforce import SafetyPolicyError
 from pyocd_debug_mcp.safety.regions import ActionCategory, AddressRange, Refusal, RegionKind
-from tests import test_lite_application_flash as full_fixture
+from tests import lite_flash_support as full_fixture
 
 
 class FinalRegeneratedMap(unittest.TestCase):
     def setUp(self):
         if not os.environ.get("VI01A_FULL_PROJECT"):
             return
-        self.fixture = full_fixture.FullGenericAllocationTests()
+        self.fixture = full_fixture.FullGenericAllocationCase()
         self.addCleanup(self.fixture.doCleanups)
         self.fixture.setUp()
 

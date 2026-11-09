@@ -6,6 +6,7 @@ Windows Job/hardware contracts remain in their original modules.
 """
 
 from __future__ import annotations
+from tests.code_analysis_managed_support import native_retained_exit
 
 import ctypes
 import errno
@@ -27,41 +28,6 @@ import psutil
 from tests.code_analysis_managed_support import posix_process_identity, production
 
 
-def native_retained_exit(pid: int) -> tuple[int, int, int] | None:
-    """Independent WNOWAIT oracle: exact direct child, event kind, exit status.
-
-    Never call the production exit decoder or Popen.poll here. Repeating this
-    native observation proves that the child has not been reaped in between.
-    """
-    if sys.platform == "darwin":
-        # Public Darwin siginfo_t/waitid ABI; Python need not expose os.waitid.
-        class Siginfo(ctypes.Structure):
-            _fields_ = [
-                ("signo", ctypes.c_int),
-                ("error", ctypes.c_int),
-                ("code", ctypes.c_int),
-                ("pid", ctypes.c_int),
-                ("uid", ctypes.c_uint),
-                ("status", ctypes.c_int),
-                ("address", ctypes.c_void_p),
-                ("value", ctypes.c_void_p),
-                ("band", ctypes.c_long),
-                ("padding", ctypes.c_ulong * 7),
-            ]
-
-        waitid = ctypes.CDLL(None, use_errno=True).waitid
-        waitid.argtypes = (ctypes.c_int, ctypes.c_uint, ctypes.POINTER(Siginfo), ctypes.c_int)
-        waitid.restype = ctypes.c_int
-        result = Siginfo()
-        # Darwin P_PID=1, WEXITED=4, WNOHANG=1, WNOWAIT=32.
-        if waitid(1, pid, ctypes.byref(result), 4 | 1 | 32) != 0:
-            error = ctypes.get_errno()
-            raise OSError(error, os.strerror(error))
-        return (result.pid, result.code, result.status) if result.pid else None
-    if sys.platform.startswith("linux"):
-        result = os.waitid(os.P_PID, pid, os.WEXITED | os.WNOHANG | os.WNOWAIT)
-        return (result.si_pid, result.si_code, result.si_status) if result else None
-    raise AssertionError("Retained-exit oracle requires a matching Linux/macOS Actions host")
 
 
 def native_group_members(group: int) -> set[int]:

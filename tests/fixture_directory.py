@@ -8,6 +8,24 @@ import sys
 import tempfile
 
 
+def retain_directory(directory, destination):
+    """Copy one owned temporary input tree without masking the test failure."""
+    directory = Path(directory).resolve()
+    destination = Path(destination).resolve()
+    temporary = Path(tempfile.gettempdir()).resolve()
+    try:
+        if directory == temporary or not directory.is_relative_to(temporary):
+            raise OSError("only owned temporary fixture inputs may be captured")
+        if destination.is_relative_to(directory):
+            raise OSError("failure destination must be outside the temporary fixture")
+        shutil.copytree(directory, destination, dirs_exist_ok=True, symlinks=True)
+        print(f"Persistent failing inputs/output: {destination}", file=sys.stderr)
+        return True
+    except OSError as error:
+        print(f"Additional fixture capture error: {error}; original: {directory}", file=sys.stderr)
+        return False
+
+
 @contextmanager
 def fixture_directory(prefix):
     directory = Path(tempfile.mkdtemp(prefix=prefix)).resolve()
@@ -23,13 +41,7 @@ def fixture_directory(prefix):
             )
             / directory.name
         )
-        try:
-            if destination.resolve().is_relative_to(directory):
-                raise OSError("failure destination must be outside the temporary fixture")
-            shutil.copytree(directory, destination, dirs_exist_ok=True)
-            print(f"Persistent failing inputs/output: {destination}", file=sys.stderr)
-        except OSError as error:
-            print(f"Additional fixture capture error: {error}; original retained", file=sys.stderr)
+        retain_directory(directory, destination)
         raise
     else:
         shutil.rmtree(directory)

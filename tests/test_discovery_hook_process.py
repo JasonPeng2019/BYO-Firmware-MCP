@@ -31,7 +31,7 @@ from tests.discovery_hook_fixtures import (
     snapshot_for,
     write_manifest,
 )
-from tests.test_process_cleanup import _NativePosixCase
+from tests.process_fixture_support import _NativePosixCase
 
 
 def _module_ast() -> ast.Module:

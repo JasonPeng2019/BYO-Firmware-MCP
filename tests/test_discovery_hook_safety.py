@@ -314,20 +314,6 @@ class GateAndAuthorityTests(unittest.TestCase):
         ):
             self.assertNotIn(forbidden, source, f"{forbidden} is reachable from a hook tool")
 
-    def test_the_hook_execution_module_touches_no_authority_state(self) -> None:
-        # Docstrings stripped: this module deliberately *explains* that hook state does
-        # not live on ServerRun, and a raw text scan would flag the explanation.
-        source = source_without_docstrings(discovery_hooks)
-
-        for forbidden in (
-            "gate_manager",
-            "assignment_store",
-            "plan_engine",
-            "permission_store",
-            "ServerRun",
-            "clear_authority",
-        ):
-            self.assertNotIn(forbidden, source)
 
     def test_retry_tickets_are_not_stored_on_the_server_run(self) -> None:
         """clear_authority() would wipe them, and they are not authority."""

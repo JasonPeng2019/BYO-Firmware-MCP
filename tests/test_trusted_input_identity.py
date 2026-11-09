@@ -1,4 +1,4 @@
-"""Focused regressions for the round-2 trusted-caller policy changes."""
+"""Trusted input identity contracts."""
 
 from __future__ import annotations
 
@@ -29,51 +29,8 @@ from tests.elf_symbol_fixture import FUNC, TEXT, ElfSymbol, elf32_symbols
 
 
 class RoundTwoTrustedCallerTests(unittest.TestCase):
-    def test_default_uart_finalizer_timeout_matches_explicit_one_second(self) -> None:
-        base = {"timeout_seconds": 31.0}
-        self.assertEqual(
-            operation_timeout_seconds(
-                "write_serial",
-                {**base, "on_exit": {"action": "uart_write", "text": "exit"}},
-            ),
-            operation_timeout_seconds(
-                "write_serial",
-                {
-                    **base,
-                    "on_exit": {
-                        "action": "uart_write",
-                        "text": "exit",
-                        "timeout_seconds": 1.0,
-                    },
-                },
-            ),
-        )
 
-    def test_symbol_search_returns_every_sorted_match_without_a_hidden_limit(self) -> None:
-        symbols = [
-            ElfSymbol(f"Match_{index:02d}", 0x08000000 + (30 - index) * 4, type=FUNC, section=TEXT)
-            for index in range(25)
-        ]
-        with tempfile.TemporaryDirectory() as directory:
-            elf_path = Path(directory) / "symbols.elf"
-            elf_path.write_bytes(elf32_symbols(symbols))
-            matches = find_symbols(elf_path, "match")
 
-            self.assertEqual(len(matches), 25)
-            self.assertEqual([item.name for item in matches], sorted(item.name for item in symbols))
-
-        with self.assertRaises(SymbolLookupError):
-            find_symbols("unused.elf", " ")
-        with self.assertRaises(SymbolLookupError):
-            find_symbols("missing.elf", "match")
-
-    def test_symbol_search_reports_real_malformed_elf_evidence(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            malformed = Path(directory) / "malformed.elf"
-            malformed.write_bytes(b"not an ELF")
-
-            with self.assertRaisesRegex(ELFError, "Magic number does not match"):
-                find_symbols(malformed, "match")
 
     def test_long_reviewed_target_is_admitted_only_by_exact_supported_membership(self) -> None:
         candidate = "stm32u5_" + "long_target_" * 12

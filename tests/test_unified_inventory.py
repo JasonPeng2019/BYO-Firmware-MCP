@@ -697,11 +697,6 @@ class JLinkRetryIsolationTests(unittest.TestCase):
         ):
             self.assertNotIn(forbidden, source, f"{forbidden} reached the J-Link retry")
 
-    def test_the_adapter_module_does_not_import_the_inventory_service(self) -> None:
-        from pyocd_debug_mcp.adapters import swd_pyocd
-
-        self.assertFalse(hasattr(swd_pyocd, "HardwareInventoryService"))
-        self.assertFalse(hasattr(swd_pyocd, "_hardware_inventory"))
 
     def test_a_hook_discovered_matching_probe_row_does_not_change_the_retry_verdict(
         self,

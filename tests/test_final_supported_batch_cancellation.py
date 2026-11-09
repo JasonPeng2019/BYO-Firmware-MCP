@@ -20,7 +20,7 @@ import anyio
 from pyocd_debug_mcp.kernel.operations import current_operation, operation_manager
 from pyocd_debug_mcp.setup_flow.validate import ValidationInventory, ValidationProbe
 from tests.elf_symbol_fixture import ElfSymbol, elf32_symbols
-from tests import test_lite_application_flash as full_fixture
+from tests import lite_flash_support as full_fixture
 from tests.tiered_acceptance_support import public_text
 
 
@@ -28,7 +28,7 @@ class FinalSupportedBatchCancellation(unittest.TestCase):
     def setUp(self):
         if not os.environ.get("VI01A_FULL_PROJECT"):
             return  # Existing fresh-process decorator establishes root before imports.
-        self.fixture = full_fixture.FullGenericAllocationTests()
+        self.fixture = full_fixture.FullGenericAllocationCase()
         self.addCleanup(self.fixture.doCleanups)
         self.fixture.setUp()
 

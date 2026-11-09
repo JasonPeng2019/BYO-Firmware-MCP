@@ -1081,12 +1081,17 @@ class FakeServiceCase(unittest.TestCase):
 
 
 # --------------------------------------------------------- fixture projects
-def copy_fixture(name: str, destination: Path) -> AnalysisProject:
+def copy_fixture(
+    name: str, destination: Path, *, units: Iterable[str] = ()
+) -> AnalysisProject:
     source = FIXTURE_ROOT / name
     if not source.is_dir():
         raise AssertionError(f"missing fixture {source}")
     shutil.copytree(source, destination)
-    return AnalysisProject(destination)
+    project = AnalysisProject(destination)
+    if units:
+        host_database(project, units)
+    return project
 
 
 def host_database(project: AnalysisProject, units: Iterable[str], *, std: str = "c11") -> Path:
