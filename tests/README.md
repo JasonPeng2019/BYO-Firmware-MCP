@@ -26,6 +26,20 @@ changing that deadline.
 Real client checks are marked `live` and run separately with `-m live` only when
 local client/model execution is explicitly authorized.
 
+The paired Installer build matrix additionally selects the retained protection,
+ownership, recovery, UART, symbol-event and full-record privacy regressions with
+the default MVP filter disabled. These use the locked companion helper, real
+policy/store/dispatch code and simulated physical effects. They retain JUnit,
+failed inputs and the public-event/full-record payloads; their execution remains
+ACTIONS_PENDING until the new frozen candidate runs. `test_model_pin.py` is the
+separate M18 zero-request check of the maintained live fixture's exact model and
+effort assertion; it runs in the default MVP selection and never starts a client.
+The installed public MCP driver also measures project files before startup,
+after the manual-permission reset, after monitor traffic and across clean EOF.
+It keeps the compiled capsule and attributes the exact permission startup files
+separately. This compiled check does not rewrite the historical false only-README
+oracle or substitute for actual native-client passivity.
+
 Keep tests of necessary product behavior, ordinary mistakes and serious harm.
 Keep only their needed helpers. Do not add tests of runners, observers, evidence
 validators or fixture receipt publication. Update the table when behavior changes.

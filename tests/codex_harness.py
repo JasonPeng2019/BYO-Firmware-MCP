@@ -41,6 +41,7 @@ from pyocd_debug_mcp.monitor.counters import (
 )
 
 REQUIRED_MODEL = "gpt-5.6-luna"
+REQUIRED_EFFORT = "medium"
 SERVER_PROJECT = Path(__file__).resolve().parents[1]
 SERVER_NAME = "byo_monitor_itest"
 DEFAULT_TIMEOUT = 600
@@ -139,7 +140,7 @@ def codex_overrides() -> list[str]:
     )
     overrides = [
         f"model={_toml_literal(REQUIRED_MODEL)}",
-        "model_reasoning_effort='medium'",
+        f"model_reasoning_effort={_toml_literal(REQUIRED_EFFORT)}",
         f"{server}.command='uv'",
         f"{server}.args=[{launch}]",
         f"{server}.cwd={_toml_literal(project)}",
@@ -316,10 +317,16 @@ class CodexAgentTestCase(unittest.TestCase):
         migrated = _known_model_migration(REQUIRED_MODEL)
         if migrated:
             expected.append(migrated)
+        header_lines = {line.strip() for line in result.stderr.splitlines()}
         self.assertTrue(
-            any(f"model: {name}" in result.combined for name in expected),
+            any(f"model: {name}" in header_lines for name in expected),
             "codex did not report the pinned model "
             f"({' or its known migration '.join(expected)}); refusing to accept the run",
+        )
+        self.assertIn(
+            f"reasoning effort: {REQUIRED_EFFORT}",
+            header_lines,
+            "codex did not report the pinned reasoning effort; refusing to accept the run",
         )
 
     # -- reading what the monitor recorded --------------------------------
