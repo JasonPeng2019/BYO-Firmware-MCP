@@ -1853,10 +1853,6 @@ os._exit(0)
                         json.loads((directory / "reaped").read_text()), {"pid": member, "exit": 0}
                     )
                     self.assertIsNone(posix_process_identity(member))
-                    self.until(
-                        lambda: not self.is_owned_live(reaper, reaper_token),
-                        budget=min(0.2, max(0, proof_deadline - time.monotonic())),
-                    )
 
                 def membership_inside_one_proof(group, deadline):
                     if not armed or group != process.pid or threading.get_ident() != proof_thread:
@@ -1899,6 +1895,9 @@ os._exit(0)
                 self.assertEqual(native_group_members(process.pid), {process.pid})
                 self.assertEqual(native_retained_exit(process.pid), (process.pid, 1, 0))
                 self.assertTrue(marker.exists())
+                # The reaper has a different process group. Its exit is fixture
+                # cleanup, outside the unchanged bounded terminal-group proof.
+                self.until(lambda: not self.is_owned_live(reaper, reaper_token))
                 self.confirm_cleanup(process, marker, [process.pid, member, reaper])
                 self.assertEqual(native_group_members(process.pid), set())
                 self.assertFalse(self.is_owned_live(member, member_token))

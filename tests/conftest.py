@@ -1,5 +1,6 @@
 """Keep a unittest fixture's owned temporary files before unittest tears it down."""
 
+from contextlib import contextmanager
 from pathlib import Path
 import os
 import shutil
@@ -51,38 +52,55 @@ def retain_failed_inputs(request, monkeypatch):
         return
     call = case._callTestMethod
 
+    def keep_inputs():
+        temporary = Path(tempfile.gettempdir()).resolve()
+        destination = (
+            Path(os.environ.get("BYO_TEST_FAILURES", request.config.rootpath / ".test-failures"))
+            / case.id()
+        )
+        copied = []
+        for name in ("root", "base", "project", "store_dir"):
+            value = getattr(case, name, None)
+            if not isinstance(value, (str, Path)):
+                continue
+            path = Path(value).resolve()
+            if (
+                not path.is_dir()
+                or not path.is_relative_to(temporary)
+                or path == temporary
+                or any(path.is_relative_to(p) for p in copied)
+            ):
+                continue
+            try:
+                shutil.copytree(path, destination / name, dirs_exist_ok=True)
+                copied.append(path)
+                print(f"Failed test inputs/output: {destination / name}", file=sys.stderr)
+            except OSError as error:
+                print(f"Additional fixture capture error: {error}", file=sys.stderr)
+
     def run(method):
         try:
             return call(method)
         except unittest.SkipTest:
             raise
         except Exception:
-            temporary = Path(tempfile.gettempdir()).resolve()
-            destination = (
-                Path(
-                    os.environ.get("BYO_TEST_FAILURES", request.config.rootpath / ".test-failures")
-                )
-                / case.id()
-            )
-            copied = []
-            for name in ("root", "base", "project", "store_dir"):
-                value = getattr(case, name, None)
-                if not isinstance(value, (str, Path)):
-                    continue
-                path = Path(value).resolve()
-                if (
-                    not path.is_dir()
-                    or not path.is_relative_to(temporary)
-                    or path == temporary
-                    or any(path.is_relative_to(p) for p in copied)
-                ):
-                    continue
-                try:
-                    shutil.copytree(path, destination / name, dirs_exist_ok=True)
-                    copied.append(path)
-                    print(f"Failed test inputs/output: {destination / name}", file=sys.stderr)
-                except OSError as error:
-                    print(f"Additional fixture capture error: {error}", file=sys.stderr)
+            keep_inputs()
             raise
 
     monkeypatch.setattr(case, "_callTestMethod", run)
+    sub_test = case.subTest
+
+    @contextmanager
+    def retaining_subtest(*args, **kwargs):
+        with sub_test(*args, **kwargs):
+            try:
+                yield
+            except unittest.SkipTest:
+                raise
+            except Exception:
+                # unittest records subtest failures without raising from the
+                # method. Keep inputs before it handles the exception/teardown.
+                keep_inputs()
+                raise
+
+    monkeypatch.setattr(case, "subTest", retaining_subtest)

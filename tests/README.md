@@ -2,7 +2,7 @@
 
 **Latest maintained suite:** the standalone second-pass cleanup in
 `MCP_Server_Dev/development/fixture-second-pass/source`, branch
-`cleanup/fixtures-second-pass`. Adopt its uncommitted source changes before
+`cleanup/fixtures-second-pass`. Use its latest committed fixture source when
 preparing the next product candidate; the retained w23c checkout is historical
 product evidence, not the newest test suite. The product campaign stays paused.
 
@@ -86,8 +86,8 @@ per target. The noncompiling Installer release checks use the existing group in 
 `python release/scripts/final_acceptance_checks.py --group release-tests --evidence <new-directory>`.
 Installed drivers require a genuine built bundle and their documented inputs.
 Future CI publication must refresh the paired source exports/locks and existing
-CI input index for the changed candidate. Those retained records describe the
-previous exported candidate; this cleanup does not publish or rebind remote commits.
+CI input index for each changed candidate. Those records must match the exact
+export and checkout; a dirty tree is not the already verified frozen input.
 The ARM builder in `tests/arm_corpus.py` is consumed only by the installed CI
 driver; it is never a prerequisite of this source suite. Real clients and boards
 need separate local authority; this cleanup runs neither.
