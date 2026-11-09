@@ -56,10 +56,10 @@ def retain_failed_inputs(request, monkeypatch):
     def keep_inputs():
         try:
             temporary = Path(tempfile.gettempdir()).resolve()
-            destination = (
-                Path(os.environ.get("BYO_TEST_FAILURES", request.config.rootpath / ".test-failures"))
-                / case.id()
+            failure_root = os.environ.get("BYO_TEST_FAILURES") or str(
+                request.config.rootpath / ".test-failures"
             )
+            destination = Path(failure_root) / case.id()
             copied = []
             for name in ("root", "base", "project", "store_dir"):
                 value = getattr(case, name, None)
