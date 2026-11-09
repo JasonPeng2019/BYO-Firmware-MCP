@@ -412,18 +412,15 @@ class BudgetTests(unittest.TestCase):
         """The action and the on_exit finalizer can each execute a hook."""
         from pyocd_debug_mcp.kernel.finalizers import UARTWriteFinalizer, parse_finalizer
 
-        finalizer = parse_finalizer(
-            "read_serial", {"action": "uart_write", "text": "q", "timeout_seconds": 2}
-        )
-        self.assertIsInstance(finalizer, UARTWriteFinalizer)
-        self.assertEqual(finalizer.text, "q")
-        self.assertEqual(finalizer.timeout_seconds, 2.0)
-
-
         arguments = {
             "read_seconds": 3,
             "on_exit": {"action": "uart_write", "text": "q", "timeout_seconds": 2},
         }
+        finalizer = parse_finalizer("read_serial", arguments["on_exit"])
+        self.assertIsInstance(finalizer, UARTWriteFinalizer)
+        self.assertEqual(finalizer.text, "q")
+        self.assertEqual(finalizer.timeout_seconds, 2.0)
+
         before = ops.operation_timeout_seconds("read_serial", arguments)
         ops.set_eligible_hook_count_provider(self._counts(uart=1))
 
