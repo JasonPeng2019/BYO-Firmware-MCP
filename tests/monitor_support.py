@@ -126,7 +126,6 @@ class MonitorTestCase(unittest.TestCase):
         for monitor in self._monitors:
             settle_delivery(monitor)
 
-
     @property
     def server_data(self) -> Path:
         return self.store_dir / "server_data"
@@ -134,7 +133,6 @@ class MonitorTestCase(unittest.TestCase):
     @property
     def simulated_remote(self) -> Path:
         return self.store_dir / "simulated_remote"
-
 
     def report_files(self) -> list[Path]:
         """Return one path per distinct report.

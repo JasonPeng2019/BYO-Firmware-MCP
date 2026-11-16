@@ -14,7 +14,25 @@ import unittest
 from pathlib import Path
 from typing import Any
 
-from tests.code_analysis_support import OWNED_CLEANUP_SECONDS, SCHEDULING_SLACK_SECONDS, AnalysisProject, AnalysisStdioServer, arm_gnu_root_or_skip, assert_envelope, assert_source, copy_fixture, lines_of, make_service, materialize_arm_fixture, real_clangd_or_skip, same_path, sha256_file, temporary_directory, unpermitted_tree_changes, wait_pids_gone
+from tests.code_analysis_support import (
+    OWNED_CLEANUP_SECONDS,
+    SCHEDULING_SLACK_SECONDS,
+    AnalysisProject,
+    AnalysisStdioServer,
+    arm_gnu_root_or_skip,
+    assert_envelope,
+    assert_source,
+    copy_fixture,
+    lines_of,
+    make_service,
+    materialize_arm_fixture,
+    real_clangd_or_skip,
+    same_path,
+    sha256_file,
+    temporary_directory,
+    unpermitted_tree_changes,
+    wait_pids_gone,
+)
 
 import pytest
 
@@ -134,7 +152,6 @@ class HostC(RealClangdCase):
             status="ok",
         )
         self.assertIn("scale_value", hover["data"]["contents"]["value"])
-
 
     @pytest.mark.mvp
     def test_saved_file_updates_are_seen_error_then_fix(self) -> None:
@@ -278,7 +295,6 @@ class ArmFirmware(RealClangdCase):
             "only .firm/code-analysis/ and build/.cache/clangd/index/ shards/.gitignore "
             "may be written; every other project file must be unchanged",
         )
-
 
     def test_generic_host_driver_is_never_reported_as_clean_arm_analysis(self) -> None:
         # A host driver may produce ABI errors or incomplete target parsing.

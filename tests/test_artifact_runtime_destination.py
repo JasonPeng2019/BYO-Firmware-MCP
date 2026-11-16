@@ -130,9 +130,7 @@ class ArtifactRuntimeDestinationTests(_CollectionCase):
             with self.subTest(destination=destination):
                 self._assert_refusal(destination)
 
-
     @pytest.mark.mvp
     def test_external_project_collection_returns_matching_elf_map_paths_and_bytes(self) -> None:
         self._assert_collection("dist/bundle", self.project / "dist" / "bundle")
         self.assertFalse((self.runtime / "dist").exists())
-

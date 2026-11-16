@@ -38,8 +38,6 @@ def record_regression(name, value):
 
 
 class VersionProbeTests(unittest.TestCase):
-    @pytest.mark.mvp
-
     def test_public_status_managed_cancellation_is_transient_then_independent_retry(self):
         from pyocd_debug_mcp.kernel.operations import ManagedOperation, _current_operation
 

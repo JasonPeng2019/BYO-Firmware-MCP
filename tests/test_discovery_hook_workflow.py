@@ -24,8 +24,19 @@ from pyocd_debug_mcp.discovery_hooks import (
     execute_eligible_hooks,
     load_hook_snapshot,
 )
-from pyocd_debug_mcp.hardware_inventory import HardwareInventoryService, InventorySnapshot, VendorUartRow, ProbeSelection, ProbeSelectionStore, SessionUartSelectionStore
-from pyocd_debug_mcp.probe_inventory import EMPTY_NATIVE_PROBE_LISTING, NativeProbeListing, registered_provider_ids
+from pyocd_debug_mcp.hardware_inventory import (
+    HardwareInventoryService,
+    InventorySnapshot,
+    VendorUartRow,
+    ProbeSelection,
+    ProbeSelectionStore,
+    SessionUartSelectionStore,
+)
+from pyocd_debug_mcp.probe_inventory import (
+    EMPTY_NATIVE_PROBE_LISTING,
+    NativeProbeListing,
+    registered_provider_ids,
+)
 from pyocd_debug_mcp.services.connections import probe_connection_id
 from pyocd_debug_mcp.tools.discovery import (
     DiscoveryRetryStore,
@@ -126,7 +137,6 @@ class _WorkflowCase(unittest.TestCase):
 
 
 class ProbeDiscoveryWorkflowTests(_WorkflowCase):
-
     def test_native_uart_precedes_vendor_fallback(self) -> None:
         consulted = []
 
@@ -142,12 +152,12 @@ class ProbeDiscoveryWorkflowTests(_WorkflowCase):
             hook_snapshot=lambda: EMPTY_SNAPSHOT,
         )
         native = inventory.snapshot()
-        self.assertEqual([row.port for row in native.uarts], ["COM3"])
+        self.assertEqual([row.port_path for row in native.uarts], ["COM3"])
         self.assertEqual(consulted, [])
         ports.clear()
         fallback = inventory.snapshot()
-        self.assertEqual([row.port for row in fallback.uarts], ["COM9"])
-        self.assertEqual(fallback.uarts[0].provenance, "vendor:nrfjprog")
+        self.assertEqual([row.port_path for row in fallback.uarts], ["COM9"])
+        self.assertEqual(fallback.uarts[0].provenance, ("vendor:nrfjprog",))
         self.assertFalse(fallback.uarts[0].native)
         self.assertFalse(fallback.uarts[0].from_hook)
         self.assertTrue(consulted)
@@ -180,7 +190,6 @@ class ProbeDiscoveryWorkflowTests(_WorkflowCase):
         self.assertEqual(selection.unique_id, "066EFF505057717867163251")
         self.assertFalse(self.flow.retry_store.known(ticket.retry_id))
 
-
     def test_refreshing_again_after_an_edit_restores_service(self) -> None:
         self.flow.native_ports = [_port("COM3")]
         self.flow.install([hook_entry("probe-hook", "probe", argv=["probe"])])
@@ -200,7 +209,6 @@ class ProbeDiscoveryWorkflowTests(_WorkflowCase):
 
 
 class ProbeFailureBranchTests(_WorkflowCase):
-
     def test_a_partial_refresh_still_reports_the_hooks_that_worked(self) -> None:
         self.flow.native_ports = []
         self.flow.install(

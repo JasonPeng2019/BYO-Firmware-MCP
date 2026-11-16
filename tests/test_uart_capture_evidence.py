@@ -7,7 +7,11 @@ from typing import Any
 
 from pyocd_debug_mcp.discovery_failures import UART_OPEN_FAILED
 from pyocd_debug_mcp.kernel.operations import OperationCancelledError
-from pyocd_debug_mcp.services.uart_capture import UARTCaptureResult, UARTExchangeResult, UARTExchangeStepResult
+from pyocd_debug_mcp.services.uart_capture import (
+    UARTCaptureResult,
+    UARTExchangeResult,
+    UARTExchangeStepResult,
+)
 from pyocd_debug_mcp.tools.serial import (
     SerialToolServices,
     read_serial,
@@ -40,8 +44,6 @@ def _services(*, capture: UARTCaptureResult, exchange: UARTExchangeResult) -> Se
 
 
 class UARTCaptureEvidenceTests(unittest.TestCase):
-    @staticmethod
-
     @pytest.mark.mvp
     def test_read_serial_returns_complete_reversibly_serialized_capture(self) -> None:
         captured = 'prefix\\nliteral "quote"\r\n' + ("A" * 400) + "\x00TAIL"
@@ -148,7 +150,6 @@ class UartOpenFailureTests(unittest.TestCase):
         self.assertIn("Permission denied", message)
         self.assertIn("no other process holds the serial port open", message)
         self.assertIsInstance(ctx.exception.__cause__, RuntimeError)
-
 
     def test_a_cancelled_write_is_never_relabeled_as_an_open_failure(self) -> None:
         """Cooperative cancellation must keep its identity, not become open-failed.

@@ -175,7 +175,6 @@ class BreakpointInstallationTests(unittest.TestCase):
     def tearDown(self) -> None:
         self.quiet_patch.stop()
 
-
     def test_success_is_reported_only_after_flush_and_realization(self) -> None:
         target = FakeTarget(realized_after_flush=hardware_breakpoint())
 
@@ -191,7 +190,6 @@ class BreakpointInstallationTests(unittest.TestCase):
                 ("flush", None),
             ],
         )
-
 
     def test_manager_flush_failure_rolls_back_but_reports_uncertain_provider_state(self) -> None:
         backend_error = RuntimeError("provider failed")
@@ -220,7 +218,6 @@ class BreakpointInstallationTests(unittest.TestCase):
             ],
         )
 
-
     def test_successful_software_install_requires_raw_bkpt_instruction(self) -> None:
         target = FakeTarget(
             realized_after_flush=software_breakpoint(),
@@ -246,7 +243,6 @@ class BreakpointInstallationTests(unittest.TestCase):
 
         self.assertEqual(target.calls.count(("ap.read_memory", 0x1234)), 2)
 
-
     def test_successful_removal_canonicalizes_flushes_and_verifies_absence(self) -> None:
         target = FakeTarget(initially_realized=hardware_breakpoint())
 
@@ -264,7 +260,6 @@ class BreakpointInstallationTests(unittest.TestCase):
             ],
         )
 
-
     def test_silent_sw_removal_restore_mismatch_requires_recovery(self) -> None:
         target = FakeTarget(
             initially_realized=software_breakpoint(original_instr=0x1234),
@@ -277,7 +272,6 @@ class BreakpointInstallationTests(unittest.TestCase):
             "raw instruction is 0xBE00.*Disconnect, restore/reflash",
         ):
             PyOCDSWDInterface().remove_breakpoint(handle_for(target), 0x1234)
-
 
     def test_hw_remove_retry_cannot_hide_uncleared_comparator(self) -> None:
         primary = RuntimeError("comparator clear write failed")

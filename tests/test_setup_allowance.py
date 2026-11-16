@@ -17,6 +17,17 @@ class _PermissionProvider:
     def __init__(self, on_consume: Mock | None = None) -> None:
         self.consume = Mock(side_effect=on_consume)
 
+    def null_disclosure(self, definition: object) -> None:
+        return None
+
+    def authorize_plan(self, *args: object) -> object:
+        return object()
+
+    def validate_execution(self, *args: object) -> None:
+        pass
+
+    def consume_execution(self, *args: object) -> None:
+        self.consume(*args)
 
     def reset(self) -> None:
         pass
@@ -42,7 +53,6 @@ def _state(plan_id: str, authorization: object) -> _PlanState:
 
 
 class StaleSetupAllowanceSpecTests(unittest.TestCase):
-
     def test_cl002_cleanup_race_cannot_invalidate_plan_installed_during_consumption(self) -> None:
         run = ServerRun(run_id="run-test")
         engine: PlanEngine
@@ -61,4 +71,3 @@ class StaleSetupAllowanceSpecTests(unittest.TestCase):
         active = engine.active_plan("board_setup", "board")
         self.assertIsNotNone(active)
         self.assertEqual(active.plan_id, "P2")  # type: ignore[union-attr]
-

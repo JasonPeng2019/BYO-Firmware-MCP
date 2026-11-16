@@ -66,7 +66,6 @@ class SetupOverviewNoProbeTests(unittest.TestCase):
         self.assertIn("No debug probe is visible to the server", prompt)
         self.assertIn("not a board-naming ambiguity", prompt)
 
-
     def test_zero_names_and_zero_connections_still_reports_no_board(self) -> None:
         harness = _OverviewHarness((), ())
 

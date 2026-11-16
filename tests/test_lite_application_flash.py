@@ -13,7 +13,11 @@ from pyocd_debug_mcp.capabilities.policy import CapabilityPolicyRepository, Tier
 from pyocd_debug_mcp.capabilities.routing import TierRouter
 from pyocd_debug_mcp.safety.map_build import require_reconciled_authority
 from tests.lite_flash_support import FLASH, RAM, cortex_elf, region
-from tiered_acceptance_support import DeterministicTargetBackend, isolated_project, tiered_test_server
+from tiered_acceptance_support import (
+    DeterministicTargetBackend,
+    isolated_project,
+    tiered_test_server,
+)
 
 import pytest
 
@@ -92,7 +96,6 @@ class LiteApplicationFlashTests(PublicActions, unittest.TestCase):
         self.assertEqual(after.map_snapshot, before.map_snapshot)
         self.assertNotIn(self.board_id, self.server._pending_generic_allocations)
 
-
     def test_public_lite_prohibited_role_and_sector_refusals_precede_all_effects(self):
         app = region("application_flash", FLASH, FLASH + 0x100)
         cases = [
@@ -144,7 +147,6 @@ class FullGenericAllocationTests(FullGenericAllocationCase):
             active.canonical_digest,
         )
         self.assertNotIn(self.board_id, self.server._pending_generic_allocations)
-
 
     @fresh_full_project
     @pytest.mark.mvp

@@ -15,9 +15,7 @@ from unittest.mock import patch
 import yaml
 
 from pyocd_debug_mcp import remote_probes
-from pyocd_debug_mcp.capabilities import policy
 from pyocd_debug_mcp.capabilities.policy import CapabilityPolicyRepository, Tier
-from pyocd_debug_mcp.firmstore import cache
 from pyocd_debug_mcp.firmstore.cache import AttachmentCache, ProbeIdentity, SerialEndpoint
 from pyocd_debug_mcp.firmstore.store import FirmStore
 from pyocd_debug_mcp.kernel import file_transactions
@@ -223,7 +221,6 @@ class CrossProcessStateTransactions(unittest.TestCase):
             {"first", "second"},
         )
 
-
     def test_policy_crash_before_pointer_releases_lock_and_keeps_previous_policy(self):
         repo = CapabilityPolicyRepository(self.root)
         initial = repo.resolve("controller")
@@ -237,7 +234,6 @@ class CrossProcessStateTransactions(unittest.TestCase):
         self.assertIn(
             initial.generation_id, repo.downgrade_to_no_setup("controller").retained_generations
         )
-
 
     def test_failed_pack_publication_rolls_back_only_owned_bytes(self):
         from pyocd_debug_mcp.setup_flow.packs import PackCandidatePipeline
@@ -274,7 +270,6 @@ class CrossProcessStateTransactions(unittest.TestCase):
                 third.promote(three, board_id="third")
         self.assertEqual(final.read_bytes(), source.read_bytes())
         self.assertEqual(firm.layout.pack_manifest.read_bytes(), before)
-
 
     def test_public_downgrade_consumes_digest_and_publishes_in_one_transaction(self):
         from tests.tiered_acceptance_support import tiered_test_server

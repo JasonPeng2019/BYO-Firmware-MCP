@@ -126,5 +126,3 @@ def restore(before: set[str] | None) -> None:
             failures.append(f"{relative}: {exc}")
     if failures:
         raise RuntimeError("store was not restored exactly: " + "; ".join(failures))
-
-

@@ -270,7 +270,6 @@ class FakeClangd:
                     raise
                 time.sleep(0.01)
 
-
     def events(self, kind: str | None = None) -> list[dict[str, Any]]:
         records = [
             json.loads(line)
@@ -285,7 +284,6 @@ class FakeClangd:
             for record in self.events("received")
             if method is None or record["message"].get("method") == method
         ]
-
 
     def starts(self) -> list[dict[str, Any]]:
         return self.events("start")

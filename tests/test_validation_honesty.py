@@ -10,12 +10,18 @@ from unittest.mock import Mock, patch
 from pyocd_debug_mcp.board_config import BoardConfig
 from pyocd_debug_mcp.firmstore.reports import ReportPaths
 from pyocd_debug_mcp.services.connections import ConnectionManager
-from pyocd_debug_mcp.setup_flow.validate import BoardValidator, SafetyMapSnapshot, ValidationBackend, ValidationHooks, ValidationInventory, ValidationProbe, ValidationRequest
+from pyocd_debug_mcp.setup_flow.validate import (
+    BoardValidator,
+    SafetyMapSnapshot,
+    ValidationBackend,
+    ValidationHooks,
+    ValidationInventory,
+    ValidationProbe,
+    ValidationRequest,
+)
 
 
 class ValidationHonestyTests(unittest.TestCase):
-    @staticmethod
-
     def test_candidate_validation_uses_staged_profile_and_map_before_policy_commit(self) -> None:
         """Fresh setup validates its exact staged bytes without an active policy pointer."""
 
@@ -82,7 +88,6 @@ class ValidationHonestyTests(unittest.TestCase):
         self.assertEqual(result.status, "validation_passed")
         profiles.load.assert_not_called()
         self.assertEqual(stamp.call_args.args[-1], candidate)
-
 
     def test_validation_report_failure_rolls_back_while_board_lock_is_held(self) -> None:
         manager = ConnectionManager()

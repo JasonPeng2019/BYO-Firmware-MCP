@@ -197,7 +197,6 @@ class RegisteredMcpSymbolTests(unittest.TestCase):
         self.assertIn("0x20000004", refused)
         self.assertIn("explicit address", refused)
 
-
     def test_registered_unique_read_without_a_plan_and_post_io_cleanup(self) -> None:
         connection = self.server.connection_manager.maybe_connection(self.board)
         self.assertIsNotNone(connection)
@@ -224,7 +223,6 @@ class RegisteredMcpSymbolTests(unittest.TestCase):
         self.assertTrue(
             any(call[0] == "write_memory" and call[2] == 0x20000008 for call in self.backend.calls)
         )
-
 
     def test_registered_mutation_during_preflight_or_handler_refuses_without_reset_release(
         self,
@@ -279,7 +277,6 @@ class RegisteredMcpSymbolTests(unittest.TestCase):
                     self.assertEqual(events[0]["normalized_args"]["symbol"], "unique")
                     self.assertEqual(self.backend.calls, [])
 
-
     def test_registered_execution_and_register_bindings(self) -> None:
         # Exercise registration, schema conversion, guards and real composition
         # services. Calling the worker dispatcher alone misses these bindings.
@@ -303,10 +300,18 @@ class RegisteredMcpSymbolTests(unittest.TestCase):
                 if name.startswith("read_"):
                     self.assertEqual(calls[-1][2], parameters["name"].lower())
         for name, parameters, permission, expected in (
-            ("write_cpu_register", {"name": "R0", "value": "0x1234"}, None,
-             ("write_core_register", "vi10-simulated", "r0", 0x1234)),
-            ("set_execution_state", {"name": "PC", "value": "0x08000009"}, "one-time",
-             ("write_core_register", "vi10-simulated", "pc", 0x08000009)),
+            (
+                "write_cpu_register",
+                {"name": "R0", "value": "0x1234"},
+                None,
+                ("write_core_register", "vi10-simulated", "r0", 0x1234),
+            ),
+            (
+                "set_execution_state",
+                {"name": "PC", "value": "0x08000009"},
+                "one-time",
+                ("write_core_register", "vi10-simulated", "pc", 0x08000009),
+            ),
             ("reset_and_halt", {}, None, ("reset_and_halt", "vi10-simulated")),
         ):
             with self.subTest(tool=name):
@@ -314,21 +319,31 @@ class RegisteredMcpSymbolTests(unittest.TestCase):
                 result = self.invoke(name, parameters, permission=permission)
                 self.assertNotIn("Refused", result)
                 self.assertIn(expected, self.backend.calls, result)
-        for name, register in (("read_cpu_register", "pc"),
-                               ("read_execution_state", "r0"),
-                               ("read_cpu_register", "not_a_register")):
+        for name, register in (
+            ("read_cpu_register", "pc"),
+            ("read_execution_state", "r0"),
+            ("read_cpu_register", "not_a_register"),
+        ):
             with self.subTest(refused=name, register=register):
                 self.backend.calls.clear()
                 result = public_text(self.server, name, {"board_id": self.board, "name": register})
                 self.assertIn("Refused", result)
-                self.assertFalse(any(call[0] == "read_core_register" for call in self.backend.calls))
+                self.assertFalse(
+                    any(call[0] == "read_core_register" for call in self.backend.calls)
+                )
 
     def test_registered_connection_and_disconnect_bindings(self) -> None:
         board = "public_connection"
         self.backend.calls.clear()
-        result = public_text(self.server, "connect", {
-            "board_id": board, "probe_uid": "public-probe", "target": "nrf52840",
-        })
+        result = public_text(
+            self.server,
+            "connect",
+            {
+                "board_id": board,
+                "probe_uid": "public-probe",
+                "target": "nrf52840",
+            },
+        )
         self.assertNotIn("Refused", result)
         self.addCleanup(self.server.disconnect, board)
         opened = [call for call in self.backend.calls if call[0] == "open"]

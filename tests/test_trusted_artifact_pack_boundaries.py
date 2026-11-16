@@ -36,7 +36,6 @@ def _pack_bytes(pdsc: bytes) -> bytes:
 
 
 class RoundFourRegressionTests(unittest.TestCase):
-
     def test_pack_stability_parser_and_exact_binding_gates(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

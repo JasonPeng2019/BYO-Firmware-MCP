@@ -39,13 +39,11 @@ class Thrashing(unittest.TestCase):
         fired = [self.observe() for _ in range(8)]
         self.assertEqual(fired.count(True), 1)
 
-
     def test_changing_outcome_is_progress_not_a_loop(self) -> None:
         self.observe()
         self.observe()
         self.observe()
         self.assertFalse(self.observe(outcome="success", error_class=None))
-
 
     def test_polling_loops_never_fire(self) -> None:
         for tool in ("get_state", "read_execution_state", "get_setup_status", "wait"):
@@ -80,7 +78,6 @@ class BlockDiagnostics(MonitorTestCase):
         )
         transport_clock.now.return_value = self.now
 
-
     def _deliver_sealed_segment(self, transport):
         monitor = self.make_monitor(transport=transport)
         anchor = Anchor(self.now - timedelta(days=30), "simulated_remote", "filler")
@@ -92,7 +89,6 @@ class BlockDiagnostics(MonitorTestCase):
         assert sealed is not None
         monitor._delivery.drain_for_closeout([sealed], budget=2.0)
         return monitor, anchor, sealed
-
 
     def test_actual_failed_delivery_leaves_the_old_anchor_and_gate(self) -> None:
         monitor, anchor, sealed = self._deliver_sealed_segment(TestTransport(fail_always=True))

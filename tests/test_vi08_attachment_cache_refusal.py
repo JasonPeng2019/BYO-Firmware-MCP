@@ -13,8 +13,6 @@ from unittest.mock import patch
 
 from mcp.server.fastmcp.exceptions import ToolError
 
-from pyocd_debug_mcp.firmstore.cache import AttachmentCacheError
-from pyocd_debug_mcp.firmstore.store import PersistedAuthorityError
 from pyocd_debug_mcp.kernel.operations import ManagedOperation
 from pyocd_debug_mcp.setup_flow.preflight import (
     PreflightDecision,
@@ -136,7 +134,6 @@ class ManagedCacheRefusal(ManagedUartCase):
         self.assertEqual(len(errors), 1, errors)
         self.assert_diagnostic(errors[0])
         self.observe("finalizer", cleanup_errors=errors)
-
 
     def test_removal_alone_does_not_create_a_pairing_then_setup_reconfirmation_restores(self):
         self.damage("malformed_json")

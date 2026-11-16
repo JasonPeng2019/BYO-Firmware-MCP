@@ -6,7 +6,17 @@ recovery finalizer.  Only the recovery backend is simulated; nothing touches har
 """
 
 from __future__ import annotations
-from tests.recovery_fixture_support import Attempt, OBSERVATIONS, UNLOCK, _assert_closed, _assert_no_replay, _grant_and_reserve, _invoke_helper, _recover_calls, _release
+from tests.recovery_fixture_support import (
+    Attempt,
+    OBSERVATIONS,
+    UNLOCK,
+    _assert_closed,
+    _assert_no_replay,
+    _grant_and_reserve,
+    _invoke_helper,
+    _recover_calls,
+    _release,
+)
 
 import asyncio
 import json
@@ -105,7 +115,6 @@ def _run_together(*actions: Any) -> None:
 
 
 class PublicRecoveryGrantLifecycleTests(unittest.TestCase):
-
     def test_failed_recovery_closes_g1_and_fresh_human_g2_recovers_in_the_same_run(self) -> None:
         with isolated_project() as root, tiered_test_server(root) as server:
             backend = DeterministicTargetBackend(
@@ -144,7 +153,6 @@ class PublicRecoveryGrantLifecycleTests(unittest.TestCase):
                 )
             finally:
                 _release(server)
-
 
     def test_real_anyio_cancellation_shields_terminal_cleanup_and_blocks_early_g2(self) -> None:
         with isolated_project() as root, tiered_test_server(root) as server:
@@ -215,7 +223,6 @@ class PublicRecoveryGrantLifecycleTests(unittest.TestCase):
 
 
 class RetirementProtocolTests(unittest.TestCase):
-
     def test_stale_retire_racing_a_fresh_human_grant_never_overwrites_it(self) -> None:
         orders: Counter[str] = Counter()
         with isolated_project() as root:

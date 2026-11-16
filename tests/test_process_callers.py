@@ -134,7 +134,6 @@ class IndependentOwnership(unittest.TestCase):
         self.peer_preserved()
         return real_cleanup(process)
 
-
     def test_normal_discovery_public_caller_preserves_output_status_and_peer(
         self,
     ) -> None:
@@ -198,7 +197,6 @@ class IndependentOwnership(unittest.TestCase):
         self.assertFalse(list(self.store.root.glob("*.json")))
         self.peer_preserved()
         self.assertFalse(self.gate_errors, self.gate_errors)
-
 
     def rescue(self) -> None:
         # Never a positive oracle. Preserve natural assertions and identities

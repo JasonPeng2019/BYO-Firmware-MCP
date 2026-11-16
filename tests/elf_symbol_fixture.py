@@ -137,5 +137,3 @@ def elf32_symbols(
         "<8I", 1, data_offset, 0x20000000, 0x20000000, len(data), len(data) + 64, 6, 4
     )
     return bytes(image)
-
-

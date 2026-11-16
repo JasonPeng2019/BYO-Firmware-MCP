@@ -130,4 +130,3 @@ class CompleteTrailRecords(MonitorTestCase):
             for path in self.simulated_remote.rglob("rpt-*.json")
         ]
         self.assertEqual(report_ids, [report["report_id"]])
-

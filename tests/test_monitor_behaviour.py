@@ -43,7 +43,6 @@ class ReportingThroughTheMonitor(MonitorTestCase):
         self.assertEqual(defects[0]["signal_type"], "S-1")
         self.assertEqual(defects[0]["origin"], "server-auto")
 
-
     def read_report(self, path: Path) -> dict:
         import json
 
@@ -74,7 +73,6 @@ class NullMonitorSurface(unittest.TestCase):
 
     def setUp(self) -> None:
         self.monitor = NullMonitor("store unavailable")
-
 
     def test_health_declares_itself_unavailable_not_healthy(self) -> None:
         health = self.monitor.health()

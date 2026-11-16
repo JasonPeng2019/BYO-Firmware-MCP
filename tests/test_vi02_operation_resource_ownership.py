@@ -20,7 +20,11 @@ from functools import partial
 
 import anyio
 
-from pyocd_debug_mcp.kernel.operations import BoardBusyError, OperationTimeoutError, current_operation
+from pyocd_debug_mcp.kernel.operations import (
+    BoardBusyError,
+    OperationTimeoutError,
+    current_operation,
+)
 from pyocd_debug_mcp.services import target_control
 from pyocd_debug_mcp.services.connections import ManagedConnection
 

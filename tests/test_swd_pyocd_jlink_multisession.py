@@ -71,7 +71,6 @@ class FakeSession:
 
 
 class JLinkOneSessionWorkerTests(unittest.TestCase):
-
     def test_open_uses_pyocd_selected_provider_without_temporary_dll_replacement(self) -> None:
         session = FakeSession()
         original_link = session.probe._link
@@ -93,7 +92,6 @@ class JLinkOneSessionWorkerTests(unittest.TestCase):
         self.assertEqual(session.open_calls, 1)
         interface.close(handle)
         self.assertEqual(session.close_calls, 1)
-
 
     def test_connect_under_reset_and_release_reset_use_the_selected_probe(self) -> None:
         session = FakeSession()

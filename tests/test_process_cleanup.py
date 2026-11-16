@@ -18,7 +18,6 @@ from pyocd_debug_mcp.kernel import processes
 
 
 class WindowsProcessCleanupTests(unittest.TestCase):
-
     @unittest.skipUnless(os.name == "nt", "Windows suspended-process behavior")
     def test_real_job_creation_failure_reaps_suspended_leader_without_marker(self) -> None:
         created: list[subprocess.Popen[Any]] = []
@@ -59,6 +58,7 @@ class WindowsProcessCleanupTests(unittest.TestCase):
                 any(issubclass(item.category, ResourceWarning) for item in seen),
                 seen,
             )
+
 
 @unittest.skipUnless(os.name == "posix", "real POSIX retained group ownership")
 class PosixProcessCleanupTests(_NativePosixCase):
@@ -122,7 +122,6 @@ class PosixProcessCleanupTests(_NativePosixCase):
                 self.assert_reaped(self.created[-1][0], status)
                 self.assertEqual(list(self.store.root.glob("*.json")), [])
 
-
     def test_timeout_and_baseexception_clear_live_group_preserving_original_error(self) -> None:
         class Cancelled(BaseException):
             pass
@@ -164,7 +163,6 @@ class PosixProcessCleanupTests(_NativePosixCase):
                 self.assert_child_terminal(self.child_identity())
                 self.assert_reaped(self.created[-1][0])
                 self.assertEqual(list(self.store.root.glob("*.json")), [])
-
 
     def test_unknown_incomplete_foreign_and_reused_members_never_authorize_signals(self) -> None:
         from pyocd_debug_mcp.kernel import _analysis_posix

@@ -286,5 +286,3 @@ def _assert_closed(
     testcase.assertIsNone(record.grant_id)
     testcase.assertIsNone(record.claim_id)
     _assert_no_replay(testcase, manual, spent)
-
-

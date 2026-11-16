@@ -3,6 +3,7 @@
 Normal analysis uses real clangd. This peer supplies only deterministic protocol
 responses which a native analyzer cannot reliably be made to emit on demand.
 """
+
 from __future__ import annotations
 
 import json
@@ -43,7 +44,9 @@ def expand(value, request):
 
 
 def main():
-    scenario = json.loads(Path(sys.argv[sys.argv.index("--scenario") + 1]).read_text(encoding="utf-8"))
+    scenario = json.loads(
+        Path(sys.argv[sys.argv.index("--scenario") + 1]).read_text(encoding="utf-8")
+    )
 
     def record(event, **fields):
         with Path(scenario["log"]).open("a", encoding="utf-8") as stream:
@@ -63,18 +66,28 @@ def main():
             continue
         response = {"jsonrpc": "2.0", "id": request["id"]}
         if method == "initialize":
-            response["result"] = {"capabilities": {
-                "positionEncoding": scenario.get("position_encoding") or "utf-16",
-                "textDocumentSync": 2,
-                "definitionProvider": True,
-                "referencesProvider": True,
-            }}
+            response["result"] = {
+                "capabilities": {
+                    "positionEncoding": scenario.get("position_encoding") or "utf-16",
+                    "textDocumentSync": 2,
+                    "definitionProvider": True,
+                    "referencesProvider": True,
+                }
+            }
         elif method == "shutdown":
             response["result"] = None
         else:
-            response.update(expand(scenario.get("responses", {}).get(method, {
-                "error": {"code": -32603, "message": "boom"},
-            }), request))
+            response.update(
+                expand(
+                    scenario.get("responses", {}).get(
+                        method,
+                        {
+                            "error": {"code": -32603, "message": "boom"},
+                        },
+                    ),
+                    request,
+                )
+            )
         send(response)
 
 

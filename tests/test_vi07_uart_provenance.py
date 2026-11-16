@@ -56,7 +56,6 @@ class ManagedUartProvenance(ManagedUartCase):
     def test_two_one_two_public_read(self):
         self.sequence("read_serial")
 
-
     def test_explicit_loss_refuses_repeatedly_until_reselection(self):
         self.rows(bridge("COM41"), bridge("COM42"))
         self.public_action("write_serial", port="COM41")
@@ -69,4 +68,3 @@ class ManagedUartProvenance(ManagedUartCase):
         self.assertEqual(self.server._session_uart_selections.recorded("board_a"), selected)
         self.public_action("write_serial", port="COM42")
         self.assertEqual(self.resolve().device, "COM42")
-

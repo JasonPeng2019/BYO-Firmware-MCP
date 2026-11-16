@@ -353,7 +353,6 @@ class RuntimeFixture:
     def save_manifest(self) -> None:
         write_json(self.manifest_path, self.manifest)
 
-
     def context(self, project: Path, managed: bool = True) -> Any:
         return production("code_analysis_runtime").AnalysisRuntimeContext(
             project, self.root, managed
@@ -685,7 +684,6 @@ class ManagedCase(unittest.TestCase):
         return self.runtime.resolve_analysis_program(
             context or self.context, name, time.monotonic() + budget
         )
-
 
     def observer(self) -> OwnedSpawns:
         return OwnedSpawns(self.base, protocol_redirect(self.fixture, self.fake))

@@ -10,7 +10,15 @@ from __future__ import annotations
 import unittest
 from pathlib import Path
 
-from tests.code_analysis_support import AnalysisProject, analysis_module, describe, field, problem_codes, problems_with, temporary_directory
+from tests.code_analysis_support import (
+    AnalysisProject,
+    analysis_module,
+    describe,
+    field,
+    problem_codes,
+    problems_with,
+    temporary_directory,
+)
 
 CONFIG_INVALID = "analysis/config-invalid"
 
@@ -45,7 +53,6 @@ class ConfigCase(unittest.TestCase):
 
 
 class ConfigurationFileContract(ConfigCase):
-
     def test_syntax_and_schema_errors_name_field_and_remedy(self) -> None:
         cases = {
             "malformed json": ("{", ()),

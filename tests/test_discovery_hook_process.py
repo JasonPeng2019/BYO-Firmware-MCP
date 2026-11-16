@@ -29,7 +29,6 @@ class _HookProcessCase(unittest.TestCase):
         self.addCleanup(self._markers.cleanup)
         self.marker_store = ProcessMarkerStore(Path(self._markers.name))
 
-
     def spec(
         self,
         mode: str,
@@ -45,7 +44,6 @@ class _HookProcessCase(unittest.TestCase):
 
 
 class DeadlineTests(_HookProcessCase):
-
     def test_timeout_kills_descendants_not_only_the_leader(self) -> None:
         pid_file = self.root / "descendant.pid"
 
@@ -86,7 +84,6 @@ class DeadlineTests(_HookProcessCase):
 
 
 class FailureClassTests(_HookProcessCase):
-
     def test_malformed_json_is_parse_failed_not_hook_failed(self) -> None:
         execution = self.run_hook("bad_json")
 

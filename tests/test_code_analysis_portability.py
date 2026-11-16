@@ -91,7 +91,6 @@ class ReceiptCase(unittest.TestCase):
 
 
 class PortableReceipts(ReceiptCase):
-
     def test_target_native_headers_reject_foreign_truncated_scripts_and_wrappers(self) -> None:
         for target in TARGETS:
             with self.subTest(target=target), self.host(target):
@@ -121,7 +120,6 @@ class PortableReceipts(ReceiptCase):
 
 
 class ManagedChildEnvironment(ReceiptCase):
-
     def test_probe_and_lsp_strip_loader_poison_preserve_development_and_query_driver(self) -> None:
         poison = {
             "LD_PRELOAD": "invalid.so",

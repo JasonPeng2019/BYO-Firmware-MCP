@@ -236,7 +236,6 @@ class ValidatorCallerContracts(unittest.TestCase):
         self.release(process, args[0][-1])
         return process, marker
 
-
     @unittest.skipUnless(os.name == "posix", "actual external leader reap; no simulated PID reuse")
     def test_actual_external_reap_releases_signal_authority_despite_cached_status(self) -> None:
         if sys.platform == "win32":
@@ -263,7 +262,6 @@ class ValidatorCallerContracts(unittest.TestCase):
         self.assertTrue(marker.is_file())
         self.assertEqual(self.current("leaf")["state"], "live")
         self.peer_preserved()
-
 
     def emergency(self) -> None:
         self.note("behavioral assertion boundary before separate emergency cleanup")

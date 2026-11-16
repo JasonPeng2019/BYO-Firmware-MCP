@@ -23,7 +23,6 @@ class DocumentValidationTests(_TempRoot):
             parse_manifest_document(document)
         self.assertIn(fragment, str(caught.exception))
 
-
     def test_unknown_manifest_field_is_refused(self) -> None:
         self._expect_document_refusal(
             {"schema_version": 1, "hooks": [], "executable": "evil"},

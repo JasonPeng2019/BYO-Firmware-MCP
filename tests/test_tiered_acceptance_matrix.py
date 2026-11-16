@@ -59,7 +59,6 @@ class TieredMatrixAcceptanceTests(unittest.TestCase):
             evidence={"identity": "exact"},
         )
 
-
     def test_corrupt_policy_refuses_both_raw_and_safe_before_any_other_guard(self) -> None:
         """AT05: damaged committed policy is never a fallback to raw capability."""
 
@@ -73,7 +72,6 @@ class TieredMatrixAcceptanceTests(unittest.TestCase):
             with self.subTest(operation=operation), self.assertRaises(TierRouteRefusal) as raised:
                 method(operation, "corrupt_board")
             self.assertEqual(raised.exception.code, "tier/corrupt-policy")
-
 
     def test_every_full_raw_tool_is_refused_by_the_public_mcp_dispatch_before_schema_or_io(
         self,

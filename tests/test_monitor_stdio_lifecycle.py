@@ -356,7 +356,6 @@ class ProfessionalBuildOverTheProtocol(LifecycleTestCase):
         )
         self.professional_environment = {"PYTHONPATH": str(source)}
 
-
     def test_professional_profile_reaches_graceful_protocol_eof(self) -> None:
         server = StdioServer(extra_environment=self.professional_environment)
         self.addCleanup(server.kill)

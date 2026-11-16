@@ -13,7 +13,12 @@ from pyocd_debug_mcp.capabilities.policy import CapabilityPolicyRepository, Tier
 from pyocd_debug_mcp.capabilities.routing import TierRouter
 from pyocd_debug_mcp.safety.enforce import SafetyPolicyError
 from pyocd_debug_mcp.safety.regions import ActionCategory, AddressRange
-from tiered_acceptance_support import DeterministicTargetBackend, isolated_project, public_text, tiered_test_server
+from tiered_acceptance_support import (
+    DeterministicTargetBackend,
+    isolated_project,
+    public_text,
+    tiered_test_server,
+)
 
 
 BOARD = "lite_overlaps"
@@ -108,19 +113,28 @@ class LiteProtectiveOverlapTests(unittest.TestCase):
         self.assertEqual(accepted["status"], "plan_accepted", accepted)
         return public_text(self.server, name, {"board_id": BOARD, **parameters})
 
-
     def test_public_masked_register_write_preserves_unselected_bits(self) -> None:
         self.commit([region("peripheral", PERIPHERAL, PERIPHERAL + 0x100)])
         self.backend.calls.clear()
-        result = self.action("register_write", {
-            "address": hex(PERIPHERAL), "mask": "0xff", "value": "0xab",
-        })
+        result = self.action(
+            "register_write",
+            {
+                "address": hex(PERIPHERAL),
+                "mask": "0xff",
+                "value": "0xab",
+            },
+        )
         self.assertNotIn("Refused", result)
-        effects = [call for call in self.backend.calls if call[0] in {"read_memory", "write_memory"}]
-        self.assertEqual(effects, [
-            ("read_memory", "lite-probe", PERIPHERAL, 32),
-            ("write_memory", "lite-probe", PERIPHERAL, 0x123456AB, 32),
-        ])
+        effects = [
+            call for call in self.backend.calls if call[0] in {"read_memory", "write_memory"}
+        ]
+        self.assertEqual(
+            effects,
+            [
+                ("read_memory", "lite-probe", PERIPHERAL, 32),
+                ("write_memory", "lite-probe", PERIPHERAL, 0x123456AB, 32),
+            ],
+        )
 
     def test_prohibited_intersections_and_permutations_for_every_action(self) -> None:
         for action, kind in (
@@ -152,7 +166,6 @@ class LiteProtectiveOverlapTests(unittest.TestCase):
                             )
                         self.assertEqual(caught.exception.code, "safety/lite-containment-refused")
                         self.assertEqual(self.backend.calls, before)
-
 
     def test_write_only_full_mask_writes_without_read_for_every_order(self) -> None:
         for ordered in itertools.permutations(

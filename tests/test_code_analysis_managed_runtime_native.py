@@ -22,7 +22,18 @@ from pathlib import Path
 from typing import Any
 from unittest import mock
 
-from tests.code_analysis_managed_support import EVIDENCE, NATIVE_INPUT_ENV, OwnedSpawns, RuntimeFixture, assert_import_roots, digest, native_start_token, production, tree_hashes, write_json
+from tests.code_analysis_managed_support import (
+    EVIDENCE,
+    NATIVE_INPUT_ENV,
+    OwnedSpawns,
+    RuntimeFixture,
+    assert_import_roots,
+    digest,
+    native_start_token,
+    production,
+    tree_hashes,
+    write_json,
+)
 from tests.code_analysis_support import AnalysisProject, permitted_analysis_write
 
 
@@ -187,7 +198,6 @@ class NativeCase(unittest.TestCase):
 
 
 class NativeManagedBinding(NativeCase):
-
     def test_all_five_queries_real_windows_clangd_and_msvc_size_t_control(self) -> None:
         with OwnedSpawns(self.base) as observed:
             service = self.service(observed)
@@ -347,7 +357,6 @@ class NativeManagedBinding(NativeCase):
             self.assertIn("--resource-dir=" + str(include.parent), lsp[0])
             self.assertEqual(os.environ["PATH"], str(self.base / "no-analyzers-on-path"))
             service.shutdown()
-
 
     def test_actual_managed_mcp_stdio_status_lazy_and_idle_session_eof_cleanup(self) -> None:
         for path, text in {

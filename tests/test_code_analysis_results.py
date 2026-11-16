@@ -10,7 +10,18 @@ from __future__ import annotations
 
 import unittest
 
-from tests.code_analysis_support import FakeClangd, assert_envelope, first_location, lines_of, lsp_character, make_service, mapped_range, query_params, simple_project, temporary_directory
+from tests.code_analysis_support import (
+    FakeClangd,
+    assert_envelope,
+    first_location,
+    lines_of,
+    lsp_character,
+    make_service,
+    mapped_range,
+    query_params,
+    simple_project,
+    temporary_directory,
+)
 
 
 ECHO = {"uri": "$request_uri", "range": {"start": "$request_position", "end": "$request_position"}}

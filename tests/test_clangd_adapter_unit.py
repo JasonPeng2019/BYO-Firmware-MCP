@@ -15,8 +15,6 @@ from pyocd_debug_mcp.kernel.processes import ProcessMarkerStore
 
 
 class TransportTests(unittest.TestCase):
-    @unittest.skipUnless(os.name == "posix", "POSIX receipt scope; Windows Jobs unchanged")
-
     def test_spawn_budget_and_late_child_cleanup_before_new_spawn(self):
         store = ProcessMarkerStore(self.root / "late-markers")
         original = runtime.popen_owned

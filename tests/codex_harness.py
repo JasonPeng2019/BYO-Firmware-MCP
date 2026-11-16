@@ -213,7 +213,6 @@ class CodexAgentTestCase(unittest.TestCase):
         for base in ("server_data", "simulated_remote"):
             shutil.rmtree(self.store / base / self.workspace, ignore_errors=True)
 
-
     def bind_preamble(self) -> str:
         """Instruction that binds this run's workspace.
 
@@ -313,7 +312,6 @@ class CodexAgentTestCase(unittest.TestCase):
             "codex did not report the pinned reasoning effort; refusing to accept the run",
         )
 
-
     @property
     def workspace_dir(self) -> Path:
         return self.store / "server_data" / self.workspace
@@ -410,5 +408,3 @@ class CodexAgentTestCase(unittest.TestCase):
                     except OSError:
                         continue
         return "\n".join(chunks)
-
-

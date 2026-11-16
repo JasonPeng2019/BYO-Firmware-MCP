@@ -36,7 +36,6 @@ POLICY = "a" * 64
 
 
 class TieredWorkspaceAcceptanceTests(unittest.TestCase):
-
     def test_two_physical_attached_workspaces_have_distinct_runtime_grants(self) -> None:
         """AT09/C08: attaching project B cannot read or consume project A's grant files."""
 

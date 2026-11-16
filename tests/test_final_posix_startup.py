@@ -40,7 +40,6 @@ class FinalPosixStartup(unittest.TestCase):
         self.assertEqual(os.getpgid(child.pid), child.pid)
         return child, token
 
-
     def test_actual_source_startup_removes_empty_marker_and_finishes_protocol_eof(self):
         child, token = self.child()
         child.stdin.close()

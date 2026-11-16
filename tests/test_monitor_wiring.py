@@ -66,7 +66,6 @@ class ServerIntegrationCase(unittest.TestCase):
 
 
 class ObservationIsPassive(ServerIntegrationCase):
-
     def test_monitor_failure_never_breaks_a_call(self) -> None:
         """If monitoring cannot run, tool execution proceeds unchanged."""
 
@@ -87,8 +86,32 @@ class ObservationIsPassive(ServerIntegrationCase):
 
 
 class ExactHealthCheckBoundaries(unittest.TestCase):
-    """Shipped monitor cadences through registered, hardware-free dispatch only."""
+    class _EventTransport(TestTransport):
+        """A deterministic delivery witness; it never talks to a real transport."""
 
+        def __init__(self) -> None:
+            super().__init__()
+            self._reports_ready = threading.Condition()
+
+        def send_report(self, report):  # type: ignore[no-untyped-def]
+            result = super().send_report(report)
+            with self._reports_ready:
+                self._reports_ready.notify_all()
+            return result
+
+        def wait_for_reports(self, count: int) -> None:
+            with self._reports_ready:
+                delivered = self._reports_ready.wait_for(
+                    lambda: len(self.sent_reports) >= count, timeout=5
+                )
+            if not delivered:
+                raise AssertionError(
+                    f"timed out waiting for {count} delivered summaries; "
+                    f"got {len(self.sent_reports)}"
+                )
+
+
+    """Shipped monitor cadences through registered, hardware-free dispatch only."""
 
     def setUp(self) -> None:
         self.store = Path(tempfile.mkdtemp(prefix="byo-exact-boundary-"))
@@ -191,7 +214,6 @@ class ExactHealthCheckBoundaries(unittest.TestCase):
             - first_activity["per_tool"]["server_health_check"],
             100,
         )
-
 
     def test_500th_health_check_prompts_once_and_records_routine_checkin(self) -> None:
         before_boundary_response = self._health_calls_to_total(499)

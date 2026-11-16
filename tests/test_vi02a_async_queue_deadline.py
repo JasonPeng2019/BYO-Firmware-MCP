@@ -16,7 +16,12 @@ import anyio
 from mcp.server.fastmcp.exceptions import ToolError
 
 from pyocd_debug_mcp import server
-from pyocd_debug_mcp.kernel.operations import OperationTimeoutError, current_operation, dispatch, operation_manager
+from pyocd_debug_mcp.kernel.operations import (
+    OperationTimeoutError,
+    current_operation,
+    dispatch,
+    operation_manager,
+)
 from pyocd_debug_mcp.kernel.registry import RegistryFastMCP
 from pyocd_debug_mcp.tools.batch import build_batch_handlers
 from tests.operation_fixture_support import BOARD, HANG_GUARD_SECONDS, _OwnershipFixture, _until
@@ -167,7 +172,6 @@ class AsyncQueueDeadlineTests(_OwnershipFixture):
             },
         )
 
-
     def partial_budget(self, public: bool) -> None:
         self.connect("owner")
         held, release, running = threading.Event(), threading.Event(), threading.Event()
@@ -221,11 +225,9 @@ class AsyncQueueDeadlineTests(_OwnershipFixture):
         self.assertEqual(self.events.count("handler"), 1)
         self.assertEqual(self.events.count("finalizer"), 0 if public else 1)
 
-
     @pytest.mark.mvp
     def test_public_batch_queue_and_execution_use_one_budget(self) -> None:
         self.partial_budget(public=True)
-
 
     @pytest.mark.mvp
     def test_public_queued_cancellation_leaves_owner_untouched(self) -> None:
@@ -259,4 +261,3 @@ class AsyncQueueDeadlineTests(_OwnershipFixture):
 
         anyio.run(scenario)
         self.assertEqual(self.events, [])
-

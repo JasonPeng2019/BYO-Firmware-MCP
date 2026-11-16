@@ -73,7 +73,6 @@ class SidecarRuntimeTests(unittest.TestCase):
             "project_state_schema": 1,
         }
 
-
     def test_manual_permission_command_emits_one_json_result_and_refuses_reuse(self) -> None:
         with tempfile.TemporaryDirectory() as raw_root:
             root = Path(raw_root)

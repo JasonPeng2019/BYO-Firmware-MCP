@@ -13,7 +13,6 @@ from pyocd_debug_mcp.tools.flash import FlashToolServices, build_flash_handlers
 
 
 class ChangeLoopSpecTests(unittest.TestCase):
-
     def test_cl003_flash_tool_logs_and_explains_unconfirmed_state_without_running_claim(
         self,
     ) -> None:
@@ -105,4 +104,3 @@ class RecoveryCleanupRegressionTests(unittest.TestCase):
         )
         assignments.clear_board.assert_called_once_with("board")
         plans.invalidate_board.assert_called_once_with("board", "target recovery completed")
-

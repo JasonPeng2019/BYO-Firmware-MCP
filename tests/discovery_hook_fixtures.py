@@ -95,5 +95,3 @@ def single_spec(
     )
     assert len(snapshot.hooks) == 1
     return snapshot.hooks[0]
-
-

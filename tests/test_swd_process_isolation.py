@@ -82,7 +82,6 @@ provider_worker.main()
         for marker in ("import-python", "import-fd", "idle-python", "idle-fd"):
             self.assertIn(marker, result.stderr)
 
-
     @staticmethod
     def _client(mode: str, *, deadline: float | None = None):
         from pyocd_debug_mcp.adapters.swd_process import _WorkerClient
@@ -92,7 +91,6 @@ provider_worker.main()
             worker_argv=(sys.executable, str(worker), mode),
             deadline=deadline,
         )
-
 
     def test_wrong_id_malformed_frame_crash_and_timeout_are_terminal(self) -> None:
         from pyocd_debug_mcp.target_errors import TargetConnectionError
@@ -104,7 +102,6 @@ provider_worker.main()
                     client.call("get_state", {}, timeout=0.05)
                 with self.assertRaises(TargetConnectionError):
                     client.call("get_state", {}, timeout=0.05)
-
 
     def test_actual_worker_no_session_protocol_does_not_import_native_provider(self) -> None:
         from pyocd_debug_mcp.adapters.swd_process import _WorkerClient
@@ -151,7 +148,6 @@ provider_worker.main()
         finally:
             healthy.close()
         self.assertIsNotNone(healthy._process.returncode)
-
 
     def test_child_accepts_large_trusted_values_and_dispatches_complete_surface(self) -> None:
         from pyocd_debug_mcp.adapters.provider_worker_runtime import (

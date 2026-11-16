@@ -31,7 +31,6 @@ class SelfDrainingSpool(MonitorTestCase):
         assert sealed is not None
         return sealed
 
-
     def test_recovery_does_not_resend_acked_content(self) -> None:
         import time
 
@@ -65,7 +64,6 @@ class ReportDeleteOnACK(MonitorTestCase):
     def setUp(self) -> None:
         super().setUp()
         self.store = resolve_store_root()
-
 
     def test_report_file_is_not_deleted_before_ack(self) -> None:
         """Report file is not deleted if send fails or is not yet acknowledged."""
@@ -102,7 +100,6 @@ class ReportDeleteOnACK(MonitorTestCase):
 
 
 class ClosingOut(MonitorTestCase):
-
     def test_close_for_shutdown_spends_one_shared_deadline_not_two(self) -> None:
         """Regression test for C-3: drain-then-stop must share one deadline.
 
@@ -170,7 +167,6 @@ class ClosingOut(MonitorTestCase):
             "budget -- looks like drain and stop are spending independent "
             "budgets again",
         )
-
 
     def test_report_produces_a_real_sentry_envelope(self) -> None:
         """A dead SDK path would otherwise hide behind the JSON copy."""

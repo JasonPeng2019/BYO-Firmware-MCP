@@ -9,7 +9,11 @@ from pathlib import Path
 
 from pyocd_debug_mcp.firmstore.store import FirmStore
 from pyocd_debug_mcp.pack_provision import DeviceBinding, PackSpec, pack_spec_document, sha256_file
-from pyocd_debug_mcp.setup_flow.device_support import derive_candidate_binding, resolve_device_support_geometry, resolve_project_pack_support
+from pyocd_debug_mcp.setup_flow.device_support import (
+    derive_candidate_binding,
+    resolve_device_support_geometry,
+    resolve_project_pack_support,
+)
 
 
 U5_FILENAME = "Keil.STM32U5xx_DFP.3.2.0.pack"

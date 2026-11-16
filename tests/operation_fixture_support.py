@@ -256,7 +256,6 @@ class _OwnershipFixture(unittest.TestCase):
             for snapshot in operation_manager.snapshots()
         )
 
-
     def read_current(self, board: str = BOARD) -> int:
         return target_control.read_memory(self.connections.handle_for(board), 0x20000000)
 
@@ -276,4 +275,3 @@ class _OwnershipFixture(unittest.TestCase):
             return "holder-complete"
 
         return operation
-

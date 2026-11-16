@@ -228,7 +228,6 @@ def _accepted_setup_plan(
 
 
 class TieredLiteEvidenceAcceptanceTests(unittest.TestCase):
-
     @pytest.mark.mvp
     def test_public_lite_safe_memory_remains_plan_gated_while_raw_is_warned(self) -> None:
         """AT06: partial map evidence cannot silently satisfy a safe-operation prerequisite."""
@@ -345,7 +344,6 @@ class TieredLiteEvidenceAcceptanceTests(unittest.TestCase):
                 self.assertIn("map", refused["message"])
             finally:
                 server.disconnect(BOARD)
-
 
     def test_public_lite_escalation_uses_local_confirmation_when_full_support_is_unavailable(
         self,

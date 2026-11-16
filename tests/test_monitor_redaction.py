@@ -11,7 +11,13 @@ from __future__ import annotations
 import unittest
 
 
-from pyocd_debug_mcp.monitor.redaction import NarrativeContentError, check_narrative, check_no_self_rating, digest_id, scrub_mechanical
+from pyocd_debug_mcp.monitor.redaction import (
+    NarrativeContentError,
+    check_narrative,
+    check_no_self_rating,
+    digest_id,
+    scrub_mechanical,
+)
 from tests.monitor_support import MonitorTestCase
 
 
@@ -61,7 +67,6 @@ class PortablePathBasenames(MonitorTestCase):
         "\\\\?\\UNC\\server-private\\share-private\\",
     )
 
-
     def test_nested_payload_identifier_and_scalar_rules_remain_intact(self) -> None:
         artifact = r"C:\project-private\app.elf"
         probe = r"USB\probe-private"
@@ -108,7 +113,6 @@ class PortablePathBasenames(MonitorTestCase):
 class NarrativeBar(MonitorTestCase):
     """Personal builds may describe the codebase; they may not dump payloads."""
 
-
     def test_memory_dump_is_rejected(self) -> None:
         with self.assertRaises(NarrativeContentError):
             check_narrative("Read back: " + "DE AD BE EF " * 40)
@@ -120,7 +124,6 @@ class NarrativeBar(MonitorTestCase):
     def test_full_command_line_is_rejected(self) -> None:
         with self.assertRaises(NarrativeContentError):
             check_narrative(r"ran C:\tools\arm-none-eabi-gcc.exe -O2 -mcpu=cortex-m4 -o app.elf")
-
 
     def test_observable_outcomes_are_accepted(self) -> None:
         check_no_self_rating(

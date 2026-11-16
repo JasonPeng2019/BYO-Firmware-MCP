@@ -11,7 +11,14 @@ from pyocd_debug_mcp.capabilities.manual_permissions import (
 )
 from pyocd_debug_mcp.capabilities.policy import CapabilityPolicyRepository, Tier
 
-from tests.tiered_acceptance_support import DeterministicTargetBackend, confirmed_lite_policy, fresh_server, isolated_project, public_call, tiered_test_server
+from tests.tiered_acceptance_support import (
+    DeterministicTargetBackend,
+    confirmed_lite_policy,
+    fresh_server,
+    isolated_project,
+    public_call,
+    tiered_test_server,
+)
 
 
 BOARD = "left_controller"
@@ -21,7 +28,6 @@ BINDING = "b" * 64
 
 class TieredManualPermissionAcceptanceTests(unittest.TestCase):
     """Use durable state, never a test-generated in-memory permission token."""
-
 
     def test_public_restart_relocks_a_prior_manual_grant_and_refuses_its_old_identifier(
         self,
@@ -153,7 +159,6 @@ class TieredManualPermissionAcceptanceTests(unittest.TestCase):
             self.assertEqual(repository.status("downgrade").state, "consumed")
             with self.assertRaisesRegex(ManualPermissionError, r"manual/already-consumed"):
                 repository.consume_downgrade(BOARD, successes[0], POLICY)
-
 
     def test_public_unlock_and_downgrade_consume_one_current_manual_grant_before_policy_transition(
         self,

@@ -87,7 +87,6 @@ class SelectorChain(unittest.TestCase):
         CMSISDAPProbe.devices = [chosen]
         return first, chosen
 
-
     @contextlib.contextmanager
     def chain(self, *, process=False, config=None):
         with isolated_project() as project, tiered_test_server(project) as server:
@@ -155,7 +154,6 @@ class SelectorChain(unittest.TestCase):
         self.assertEqual(server._probe_selection_store.recorded(token).provider, provider)
         return token
 
-
     def test_server_issued_choice_survives_actual_serialized_child(self):
         self.shared()
         with self.chain(process=True, config={"stlink": ["SHARED"], "cmsisdap": ["SHARED"]}) as (
@@ -216,7 +214,6 @@ class SelectorChain(unittest.TestCase):
             self.details["child_events"] = child
             self.assertFalse(any(e["kind"] in {"probe_open", "reset"} for e in child))
 
-
     def validation_probe(self, server):
         token = self.publish(server)
         probe = next(
@@ -224,7 +221,6 @@ class SelectorChain(unittest.TestCase):
         )
         self.assertEqual(server._resolved_probe_uid_for_connection(token), "cmsisdap:SHARED")
         return probe
-
 
     def setup_context(self, project, server, *, tier, target, part):
         token = self.publish(server)
@@ -258,7 +254,6 @@ class SelectorChain(unittest.TestCase):
             ),
             {},
         )
-
 
     def test_full_generic_builtin_real_callback_and_validation_keep_provider(self):
         first, chosen = self.shared()
@@ -294,7 +289,6 @@ class SelectorChain(unittest.TestCase):
             self.assertIsNotNone(type(connection.handle.session.target)._pack_device)
             self.assertEqual((first.opens, chosen.opens), (0, 2))
 
-
     def test_pack_research_pipeline_uses_resolved_server_token_and_verified_bytes(self):
         first, chosen = self.shared()
         with self.chain() as (_, server):
@@ -322,7 +316,6 @@ class SelectorChain(unittest.TestCase):
             self.assertEqual(policies, [("swd", "attach", 1_000_000)])
             self.assertEqual((first.opens, chosen.opens, chosen.closes), (0, 1, 1))
 
-
     def test_actual_uidless_session_token_reuses_only_its_exact_active_handle(self):
         CMSISDAPProbe.devices = [CMSISDAPProbe("", "CMSIS-DAP UID-less live endpoint")]
         with self.chain() as (_, server):
@@ -345,7 +338,6 @@ class SelectorChain(unittest.TestCase):
                     1.0,
                 )
             self.assertEqual(CMSISDAPProbe.devices[0].opens, 1)
-
 
     def test_qualified_jlink_retry_rejects_other_provider_even_with_same_uid(self):
         probe = JLinkProbe("123")

@@ -388,5 +388,3 @@ def assert_lite_raw_warning(testcase: Any, payload: Mapping[str, Any], operation
 
 def manual_permission_root(project_root: Path) -> Path:
     return project_root / MANUAL_PERMISSION_RELATIVE
-
-

@@ -125,7 +125,6 @@ class HeldProcess:
         if self.alive(5):
             raise AssertionError("injected crash was not confirmed")
 
-
     def alive(self, wait_seconds: float = 0) -> bool:
         result = self._k32.WaitForSingleObject(self.handle, int(wait_seconds * 1000))
         if result not in (0, 258):

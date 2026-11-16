@@ -16,7 +16,6 @@ import pytest
 
 
 class TransportFailures(FakeServiceCase):
-
     @pytest.mark.mvp
     def test_error_reply_is_not_an_empty_success(self) -> None:
         self.fake.configure(

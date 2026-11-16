@@ -11,14 +11,18 @@ from __future__ import annotations
 import unittest
 from pathlib import Path
 
-from tests.code_analysis_managed_support import ManagedCase, RuntimeFixture, default_mapping, protocol_redirect
+from tests.code_analysis_managed_support import (
+    ManagedCase,
+    RuntimeFixture,
+    default_mapping,
+    protocol_redirect,
+)
 
 RESOURCE = "analysis/clangd/lib/clang/23/include/stddef.h"
 EXECUTABLE = default_mapping()["programs"]["clangd"]["executable"]
 
 
 class PayloadIntegrity(ManagedCase):
-
     def test_missing_extra_wrong_bytes_and_wrong_inventory_are_rejected_before_spawn(self) -> None:
         with self.observer() as observed:
             for case in (

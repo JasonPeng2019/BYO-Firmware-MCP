@@ -27,7 +27,6 @@ class ManagedUartOwnership(ManagedUartCase):
     def observe(self, name, **facts):
         OBSERVATIONS[self.id() + ":" + name] = facts
 
-
     def test_public_planned_actions_refuse_automatic_owned_choice(self):
         self.confirm_b()
         for name in ("read_serial", "write_serial", "serial_exchange"):
@@ -69,4 +68,3 @@ class ManagedUartOwnership(ManagedUartCase):
         self.transport.write.assert_called_once()
         self.transport.close.assert_called_once()
         self.assertEqual(self.cache.load_records(), [])
-

@@ -57,7 +57,6 @@ class FinalPolicyFingerprintMigration(unittest.TestCase):
             source_digests=replace(current.source_digests, map_generator_schema=previous_digest),
         )
 
-
     def test_genuine_original_producer_map_refreshes_separately(self):
         fixture = self.fixture
         server = fixture.server

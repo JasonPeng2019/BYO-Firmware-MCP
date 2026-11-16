@@ -20,7 +20,6 @@ def _handle(uid: str, token: str) -> TargetSessionHandle:
 
 
 class ConnectionPromotionTransactionTests(unittest.TestCase):
-
     def test_start_session_failure_releases_real_worker_marker(self) -> None:
         worker = Path(__file__).with_name("fake_provider_worker.py")
         client = _WorkerClient(
@@ -54,7 +53,6 @@ class ConnectionPromotionTransactionTests(unittest.TestCase):
         self.assertFalse(marker.exists())
         client._process.wait(timeout=2)
         store.close_session.assert_not_called()
-
 
     def test_duplicate_physical_assignment_preserves_owner_and_releases_new_resources(self) -> None:
         manager = ConnectionManager()

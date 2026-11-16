@@ -52,6 +52,7 @@ sys.stdout.write("native-fixture-complete\n")
 sys.stdout.flush()
 """
 
+
 @unittest.skipUnless(os.name == "posix", "Actual POSIX process ownership; Windows Jobs separate")
 class NativePosixOwnership(unittest.TestCase):
     def setUp(self) -> None:
@@ -215,14 +216,12 @@ class NativePosixOwnership(unittest.TestCase):
         token = self.observe(process.pid)
         return process, token
 
-
     def assert_scoped_receipt(self, receipt) -> None:
         self.assertEqual(receipt["coverage"], "retained_group_and_captured_descendants")
         self.assertIs(receipt["scope_confirmed"], True)
         self.assertEqual(receipt["unobserved_detached_descendants"], "not_proven")
         self.assertIs(receipt["leader_reaped"], True)
         self.assertEqual(receipt["uncertainties"], [])
-
 
     def confirm_cleanup(self, process, marker, pids) -> None:
         before = time.monotonic()
@@ -274,7 +273,6 @@ class NativePosixOwnership(unittest.TestCase):
         self.assertIn(b"native-fixture-complete", output)
         self.assertEqual(errors, b"")
         self.assertTrue(self.is_owned_live(peer.pid, peer_token))
-
 
     def test_deadline_and_cancellation_of_actual_version_probe_retire_exact_owned_process(
         self,
@@ -352,7 +350,6 @@ class NativePosixOwnership(unittest.TestCase):
                 self.assertIs(process.cleanup_receipt["leader_reaped"], True)
                 self.assertFalse(self.runtime._probe_cache)
 
-
     def test_marker_exact_start_mismatch_or_unknown_identity_never_signals_peer(self) -> None:
         peer, peer_token = self.peer()
         ownership_before = dict(self.observed)
@@ -387,4 +384,3 @@ class NativePosixOwnership(unittest.TestCase):
                 self.assertEqual(marker.read_bytes(), marker_before)
                 self.assertIsNone(peer.poll())
                 self.assertTrue(self.is_owned_live(peer.pid, peer_token))
-

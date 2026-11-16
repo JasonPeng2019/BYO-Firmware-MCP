@@ -36,7 +36,6 @@ class ToolHandlerTests(_RegistryCase):
             )
         )
 
-
     def test_an_unreachable_endpoint_still_registers_and_says_so(self) -> None:
         handlers = self._handlers(check_endpoint_result=False)
 
@@ -47,7 +46,6 @@ class ToolHandlerTests(_RegistryCase):
         loaded = load_remote_probes(self.registry_path)
         self.assertEqual(len(loaded), 1, "an unreachable endpoint must still be registered")
         self.assertEqual(loaded[0].host, "bench.local")
-
 
     def test_the_row_disappears_from_the_next_snapshot_after_unregistering(self) -> None:
         handlers = self._handlers()
