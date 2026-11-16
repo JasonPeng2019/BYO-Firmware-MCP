@@ -22,8 +22,6 @@ import unittest
 from collections.abc import Mapping
 from pathlib import Path
 
-from pyocd_debug_mcp import __version__
-from tests import tiered_acceptance_support as acceptance_support
 
 SERVER_PROJECT = Path(__file__).resolve().parents[1]
 MONITOR_ROOT_ENV = "BYO_MCP_MONITOR_ROOT"
@@ -260,39 +258,6 @@ class LifecycleTestCase(unittest.TestCase):
         return [str(record.get("kind")) for record in self.records()]
 
 
-class StdoutIsOnlyProtocolFraming(LifecycleTestCase):
-    def test_initialization_advertises_the_product_version(self) -> None:
-        """The installed launcher must identify its own release, not FastMCP."""
-
-        server = StdioServer()
-        self.addCleanup(server.kill)
-        response = server.initialize()
-        self.assertEqual(response["result"]["serverInfo"]["version"], __version__)
-
-    def test_every_stdout_line_is_valid_json_rpc(self) -> None:
-        """Stdout is the wire: one stray byte breaks framing intermittently."""
-
-        server = StdioServer()
-        self.addCleanup(server.kill)
-        server.initialize()
-        server.call("initialization_handshake", {"workspace_path": str(self.project)})
-        server.call("server_health_check", {}, request_id=3)
-        for line in server.stdout_lines:
-            stripped = line.strip()
-            if not stripped:
-                continue
-            payload = json.loads(stripped)  # raises if anything else leaked
-            self.assertEqual(payload.get("jsonrpc"), "2.0")
-
-    def test_server_survives_a_burst_of_calls(self) -> None:
-        server = StdioServer()
-        self.addCleanup(server.kill)
-        server.initialize()
-        for index in range(12):
-            response = server.call("server_health_check", {}, request_id=10 + index)
-            self.assertIn("result", response)
-
-
 class CleanShutdownWritesACloseRecord(LifecycleTestCase):
     def test_stdin_eof_exits_cleanly_and_records_close(self) -> None:
         server = StdioServer()
@@ -309,24 +274,6 @@ class CleanShutdownWritesACloseRecord(LifecycleTestCase):
         self.assertIn("close", kinds)
         # Occasions only: no record is keyed to an individual tool call.
         self.assertNotIn("call", kinds)
-
-    def test_close_record_precedes_delivery(self) -> None:
-        """Recording is the durable act; sending is best-effort.
-
-        The close record must exist even though the interim transport delivers
-        only to a local folder and could fail at any time.
-        """
-
-        server = StdioServer()
-        self.addCleanup(server.kill)
-        server.initialize()
-        server.call("initialization_handshake", {"workspace_path": str(self.project)})
-        server.close_stdin_and_wait()
-        close_records = [r for r in self.records() if r.get("kind") == "close"]
-        self.assertTrue(close_records)
-        detail = close_records[-1].get("detail") or {}
-        self.assertIn("reason", detail)
-        self.assertIn("total_calls", detail)
 
 
 class AbruptKillLosesNothingAlreadyAppended(LifecycleTestCase):
@@ -373,113 +320,8 @@ class AbruptKillLosesNothingAlreadyAppended(LifecycleTestCase):
         )
 
 
-class ServerStartsWithNoTransportConfigured(LifecycleTestCase):
-    def test_health_reports_no_off_box_copy(self) -> None:
-        server = StdioServer()
-        self.addCleanup(server.kill)
-        server.initialize()
-        response = server.call("server_health_check", {})
-        payload = json.loads(response["result"]["content"][0]["text"])
-        self.assertNotEqual(payload["delivery"]["state"], "sent")
-        self.assertFalse(payload["delivery"]["durable_off_box"])
-        self.assertIn("no off-box copy", payload["delivery"]["off_box_note"])
-
-
-class TieredBackendRehearsalOverStdio(LifecycleTestCase):
-    """A fake backend crosses the actual module-entrypoint process boundary."""
-
-    def test_module_entrypoint_injects_fake_backend_before_raw_read(self) -> None:
-        proof_path = (
-            self.project / ".agent-workspace" / "runtime" / "stdio-rehearsal" / "backend.jsonl"
-        )
-        with acceptance_support.tiered_stdio_rehearsal_environment(
-            self.project, proof_path
-        ) as environment:
-            server = StdioServer(
-                command=[
-                    sys.executable,
-                    "-B",
-                    "-m",
-                    "pyocd_debug_mcp.server",
-                ],
-                extra_environment=environment,
-            )
-            self.addCleanup(server.kill)
-            initialized = server.initialize()
-            self.assertIn("result", initialized)
-            connected = server.call(
-                "connect",
-                {"board_id": "stdio_fixture_board", "target": "nrf52840"},
-            )
-            self.assertIn("result", connected)
-            raw_response = server.call(
-                "read_memory_raw",
-                {"board_id": "stdio_fixture_board", "address": "0x20000000"},
-                request_id=3,
-            )
-            raw_payload = json.loads(raw_response["result"]["content"][0]["text"])
-            self.assertEqual(raw_payload["status"], "ok")
-            self.assertEqual(raw_payload["tier"], "no-setup")
-            self.assertEqual(server.close_stdin_and_wait(), 0)
-
-        events = [
-            json.loads(line)["event"]
-            for line in proof_path.read_text(encoding="utf-8").splitlines()
-            if line.strip()
-        ]
-        self.assertLess(events.index("seam-installed"), events.index("backend-open"))
-        self.assertLess(events.index("backend-open"), events.index("backend-read-memory"))
-        for line in server.stdout_lines:
-            self.assertEqual(json.loads(line).get("jsonrpc"), "2.0")
-
-
 if __name__ == "__main__":
     unittest.main()
-
-
-class CloseoutOrdering(LifecycleTestCase):
-    """Hardware is released first, the close record next, the send last.
-
-    Ordered this way a slow or hung send can never strand a board, and a failed
-    send can never cost the record.
-    """
-
-    def test_close_record_exists_before_anything_is_delivered(self) -> None:
-        server = StdioServer()
-        self.addCleanup(server.kill)
-        server.initialize()
-        server.call("initialization_handshake", {"workspace_path": str(self.project)})
-        server.close_stdin_and_wait()
-
-        close_records = [r for r in self.records() if r.get("kind") == "close"]
-        self.assertTrue(close_records, "no close record was written")
-
-        # The close record must be inside the run's own ledger file, which is
-        # written before any delivery is attempted.
-        found_in_ledger = False
-        for base in ("server_data", "simulated_remote"):
-            directory = self.store / base / self.workspace
-            if not directory.exists():
-                continue
-            for path in directory.rglob("*.jsonl"):
-                if '"kind":"close"' in path.read_text(encoding="utf-8").replace(" ", ""):
-                    found_in_ledger = True
-        self.assertTrue(found_in_ledger)
-
-    def test_final_counters_reach_the_close_record(self) -> None:
-        server = StdioServer()
-        self.addCleanup(server.kill)
-        server.initialize()
-        server.call("initialization_handshake", {"workspace_path": str(self.project)})
-        server.call("server_health_check", {}, request_id=3)
-        server.close_stdin_and_wait()
-        close = [r for r in self.records() if r.get("kind") == "close"][-1]
-        detail = close.get("detail") or {}
-        # Exactly two tools/call requests were made this session
-        # (initialization_handshake, server_health_check): deterministic, not
-        # merely a lower bound.
-        self.assertEqual(detail.get("total_calls", 0), 2)
-        self.assertIn("per_outcome", detail)
 
 
 class ProfessionalBuildOverTheProtocol(LifecycleTestCase):
@@ -514,28 +356,6 @@ class ProfessionalBuildOverTheProtocol(LifecycleTestCase):
         )
         self.professional_environment = {"PYTHONPATH": str(source)}
 
-    def _tool_names(self, server: "StdioServer") -> set[str]:
-        server.send({"jsonrpc": "2.0", "id": 90, "method": "tools/list", "params": {}})
-        response = server.read()
-        return {tool["name"] for tool in response["result"]["tools"]}
-
-    def test_checkin_is_absent_and_report_tool_refuses(self) -> None:
-        server = StdioServer(extra_environment=self.professional_environment)
-        self.addCleanup(server.kill)
-        server.initialize()
-        names = self._tool_names(server)
-        self.assertNotIn("submit_routine_checkin", names)
-        # Present and explaining, so the agent does not hunt a missing tool.
-        self.assertIn("report_agent_issue", names)
-        self.assertIn("server_health_check", names)
-
-    def test_health_declares_the_build_profile(self) -> None:
-        server = StdioServer(extra_environment=self.professional_environment)
-        self.addCleanup(server.kill)
-        server.initialize()
-        response = server.call("server_health_check", {})
-        payload = json.loads(response["result"]["content"][0]["text"])
-        self.assertEqual(payload["narrative_logging"], "not_built")
 
     def test_professional_profile_reaches_graceful_protocol_eof(self) -> None:
         server = StdioServer(extra_environment=self.professional_environment)

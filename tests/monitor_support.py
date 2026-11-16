@@ -27,22 +27,6 @@ class FakeGate:
         self.probe_identity = probe
 
 
-class FakePlan:
-    def __init__(self, plan_id: str = "plan-1", remaining: int = 3) -> None:
-        self.plan_id = plan_id
-        self.remaining_calls = remaining
-
-
-class FakeGrantMode:
-    value = "one-time"
-
-
-class FakeGrant:
-    def __init__(self, grant_id: str = "grant-1") -> None:
-        self.grant_id = grant_id
-        self.mode = FakeGrantMode()
-
-
 def make_context(
     *,
     run_id: str = "run-test-0001",
@@ -142,7 +126,6 @@ class MonitorTestCase(unittest.TestCase):
         for monitor in self._monitors:
             settle_delivery(monitor)
 
-    # -- store introspection -------------------------------------------
 
     @property
     def server_data(self) -> Path:
@@ -152,8 +135,6 @@ class MonitorTestCase(unittest.TestCase):
     def simulated_remote(self) -> Path:
         return self.store_dir / "simulated_remote"
 
-    def ledger_files(self) -> list[Path]:
-        return sorted(self.server_data.rglob("*.jsonl"))
 
     def report_files(self) -> list[Path]:
         """Return one path per distinct report.
@@ -197,27 +178,6 @@ class MonitorTestCase(unittest.TestCase):
                 ordered.append(record)
         ordered.sort(key=lambda r: (str(r.get("run_id")), int(r.get("seq") or 0)))
         return ordered
-
-    def all_store_text(self) -> str:
-        chunks: list[str] = []
-        for path in self.store_dir.rglob("*"):
-            if not path.is_file():
-                continue
-            try:
-                chunks.append(path.read_text(encoding="utf-8", errors="replace"))
-            except OSError:
-                continue
-        return "\n".join(chunks)
-
-
-__all__ = [
-    "FakeGate",
-    "FakeGrant",
-    "FakePlan",
-    "MonitorTestCase",
-    "make_context",
-    "settle_delivery",
-]
 
 
 def add_snapshot(ledger: SegmentLedger, total: int = USAGE_SNAPSHOT_CADENCE, **extra) -> bool:

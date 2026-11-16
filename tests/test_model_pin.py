@@ -2,12 +2,8 @@
 
 import unittest
 
-import pytest
 
 from tests import codex_harness as harness
-
-
-pytestmark = pytest.mark.mvp
 
 
 class ModelPinningIsEnforced(unittest.TestCase):

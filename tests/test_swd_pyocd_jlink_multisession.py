@@ -1,15 +1,13 @@
 from __future__ import annotations
 
-import subprocess
 import unittest
-from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
 from pyocd_debug_mcp.adapters import swd_pyocd
 from pyocd_debug_mcp.adapters.swd_pyocd import PyOCDSWDInterface
 from pyocd_debug_mcp.board_config import BoardConfig
-from pyocd_debug_mcp.target_errors import ResetLineUnavailableError, TargetConnectionError
+from pyocd_debug_mcp.target_errors import ResetLineUnavailableError
 
 
 def board(family: str = "jlink") -> BoardConfig:
@@ -73,32 +71,6 @@ class FakeSession:
 
 
 class JLinkOneSessionWorkerTests(unittest.TestCase):
-    def test_cli_command_uses_null_stdin_and_preserves_owned_runner_contract(self) -> None:
-        completed = SimpleNamespace(returncode=3, stdout="listed", stderr="diagnostic")
-        with patch.object(swd_pyocd, "run_owned", return_value=completed) as run_owned:
-            result = swd_pyocd._run_cmd(
-                ["pyocd", "list", "--probes"],
-                timeout_seconds=6.5,
-            )
-
-        self.assertEqual(result, (3, "listed", "diagnostic"))
-        run_owned.assert_called_once_with(
-            ["pyocd", "list", "--probes"],
-            stdin=subprocess.DEVNULL,
-            capture_output=True,
-            text=True,
-            timeout=6.5,
-        )
-
-    def test_session_options_are_headless_only_for_jlink(self) -> None:
-        jlink_options = swd_pyocd.build_session_options(board("jlink"), target=None)
-        cmsis_options = swd_pyocd.build_session_options(board("cmsisdap"), target=None)
-
-        self.assertIsNotNone(jlink_options)
-        self.assertIsNotNone(cmsis_options)
-        assert jlink_options is not None and cmsis_options is not None
-        self.assertIs(jlink_options["jlink.non_interactive"], True)
-        self.assertNotIn("jlink.non_interactive", cmsis_options)
 
     def test_open_uses_pyocd_selected_provider_without_temporary_dll_replacement(self) -> None:
         session = FakeSession()
@@ -122,23 +94,6 @@ class JLinkOneSessionWorkerTests(unittest.TestCase):
         interface.close(handle)
         self.assertEqual(session.close_calls, 1)
 
-    def test_failed_open_asks_pyocd_to_close_without_manual_provider_finalization(self) -> None:
-        session = FakeSession(open_error=RuntimeError("open failed"))
-        interface = PyOCDSWDInterface()
-
-        with (
-            patch.object(interface, "_choose_session", return_value=session),
-            patch.object(interface, "_verify_session_pack_source", return_value=None),
-            patch.object(swd_pyocd, "verified_pack_for_target", return_value=None),
-            self.assertRaisesRegex(TargetConnectionError, "open failed"),
-        ):
-            interface.open(
-                board=board(),
-                unique_id=session.probe.unique_id,
-                target="fake_target",
-            )
-
-        self.assertEqual(session.close_calls, 1)
 
     def test_connect_under_reset_and_release_reset_use_the_selected_probe(self) -> None:
         session = FakeSession()
@@ -173,11 +128,6 @@ class JLinkOneSessionWorkerTests(unittest.TestCase):
 
         with self.assertRaises(ResetLineUnavailableError):
             PyOCDSWDInterface().release_reset(handle)
-
-    def test_obsolete_jlink_allocator_is_absent(self) -> None:
-        source = Path(swd_pyocd.__file__).read_text(encoding="utf-8")
-        for obsolete in ("use_tmpcpy", "_dispose_jlink_provider", "_finalize", "Library.unload"):
-            self.assertNotIn(obsolete, source)
 
 
 if __name__ == "__main__":

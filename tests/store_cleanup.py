@@ -128,4 +128,3 @@ def restore(before: set[str] | None) -> None:
         raise RuntimeError("store was not restored exactly: " + "; ".join(failures))
 
 
-__all__ = ["StoreSnapshot", "restore", "snapshot", "store_root"]

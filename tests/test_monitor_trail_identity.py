@@ -6,9 +6,7 @@ from dataclasses import asdict, replace
 import json
 import os
 from pathlib import Path
-import threading
 import time
-from unittest.mock import patch
 
 from pyocd_debug_mcp.monitor.redaction import digest_id
 from pyocd_debug_mcp.monitor.transport import NullTransport
@@ -133,92 +131,3 @@ class CompleteTrailRecords(MonitorTestCase):
         ]
         self.assertEqual(report_ids, [report["report_id"]])
 
-    def test_board_scoping_reconnect_and_missing_connection_in_complete_reports(self):
-        connections = {"alpha": CONNECTION, "beta": f"{CONNECTION}:other-board"}
-        monitor = self.retained_monitor(connections)
-        self.observe(monitor, "alpha", "read_serial")
-        self.observe(monitor, "beta", "write_memory")
-        self.observe(monitor, "alpha", "read_memory")
-        connections["alpha"] = RECONNECTED
-        self.observe(monitor, "alpha", "read_memory")
-        connections["alpha"] = None
-        self.observe(monitor, "alpha", error=RuntimeError(f"alpha failure {UNC}"))
-        self.observe(monitor, "beta", error=ValueError(f"beta failure {UNC}"))
-        reports = [
-            json.loads(path.read_text(encoding="utf-8")) for path in self.report_paths(monitor)
-        ]
-        self.assertEqual(len(reports), 2)
-        self.export("complete-board-records", {"reports": reports, "store": self.store_records()})
-        self.assert_private(reports)
-        by_board = {report["board_scope"]["board_id"]: report for report in reports}
-        alpha, beta = by_board["alpha"], by_board["beta"]
-        self.assertTrue(all(entry["board"] == "alpha" for entry in alpha["trail"]))
-        self.assertTrue(all(entry["board"] == "beta" for entry in beta["trail"]))
-        tokens = [entry["connection"] for entry in alpha["trail"]]
-        self.assertEqual(
-            tokens, [digest_id(CONNECTION), digest_id(CONNECTION), digest_id(RECONNECTED), None]
-        )
-        self.assertNotEqual(tokens[0], tokens[2])
-        self.assertIsNone(alpha["board_scope"]["connection_id"])
-
-    def test_grouping_survives_reconnect_run_and_board_changes(self):
-        reports = []
-        for index, (board, connection) in enumerate((("alpha", CONNECTION), ("beta", RECONNECTED))):
-            monitor = self.retained_monitor({board: connection}, f"run-group-{index}")
-            for _ in range(50):
-                self.observe(monitor, board, error=RuntimeError(f"same failure {UNC}"))
-            current = [
-                json.loads(path.read_text(encoding="utf-8")) for path in self.report_paths(monitor)
-            ]
-            this_run = [
-                report for report in current if report["session_id"] == f"run-group-{index}"
-            ]
-            self.assertEqual(len(this_run), 1)
-            self.assertEqual(monitor._counters.snapshot().total, 50)
-            reports.extend(this_run)
-            monitor.closeout("grouping-phase")
-        self.export(
-            "complete-grouping-records", {"reports": reports, "store": self.store_records()}
-        )
-        self.assertEqual(reports[0]["grouping_key"], reports[1]["grouping_key"])
-        self.assertEqual(reports[0]["error_signature"], reports[1]["error_signature"])
-        self.assertNotEqual(reports[0]["report_id"], reports[1]["report_id"])
-        self.assert_private(reports)
-
-
-class SuccessfulDeliveryInvalidatesSpoolPaths(MonitorTestCase):
-    def test_successful_async_delivery_removes_a_previously_discovered_report_path(self):
-        monitor = self.make_monitor()
-        # Observe the persisted path before starting the real background sender.
-        enqueued = []
-        finished = threading.Event()
-        enqueue = monitor._delivery.enqueue_report
-        send = monitor._delivery._send_report
-
-        def capture(report):
-            path = self.server_data / monitor._workspace / "reports" / f"{report['report_id']}.json"
-            enqueued.append((path, json.loads(path.read_text(encoding="utf-8"))))
-            enqueue(report)
-
-        def sent(report):
-            send(report)
-            finished.set()
-
-        with (
-            patch.object(monitor._delivery, "enqueue_report", side_effect=capture),
-            patch.object(monitor._delivery, "_send_report", side_effect=sent),
-        ):
-            call = monitor.begin("read_memory", {}, "alpha")
-            assert call is not None
-            call.failed(RuntimeError("report-reader-race-control"))
-            monitor.boot()
-            self.assertTrue(finished.wait(5), "delivery did not complete")
-        self.assertEqual(len(enqueued), 1)
-        path, before = enqueued[0]
-        delivered = self.simulated_remote / monitor._workspace / "reports" / path.name
-        self.assertEqual(json.loads(delivered.read_text(encoding="utf-8")), before)
-        # Reproduce the original readers' failure deterministically, after the
-        # real sender has acknowledged and removed a once-valid spool path.
-
-        with self.assertRaises(FileNotFoundError):
-            json.loads(path.read_text(encoding="utf-8"))

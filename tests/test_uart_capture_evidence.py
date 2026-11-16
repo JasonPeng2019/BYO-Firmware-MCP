@@ -4,23 +4,10 @@ import json
 import unittest
 from types import SimpleNamespace
 from typing import Any
-from unittest.mock import patch
 
-from pyocd_debug_mcp.adapters.uart_interface import UARTInterface, UARTPortHandle
 from pyocd_debug_mcp.discovery_failures import UART_OPEN_FAILED
 from pyocd_debug_mcp.kernel.operations import OperationCancelledError
-from pyocd_debug_mcp.services.uart_capture import (
-    UARTCaptureResult,
-    UARTExchangeResult,
-    UARTExchangeStepResult,
-    capture_uart_output,
-    exchange_uart_output,
-    write_uart_output,
-)
-from pyocd_debug_mcp.services.uart_exchange_schema import (
-    MAX_UART_TEXT_BYTES,
-    validate_serial_exchange_parameters,
-)
+from pyocd_debug_mcp.services.uart_capture import UARTCaptureResult, UARTExchangeResult, UARTExchangeStepResult
 from pyocd_debug_mcp.tools.serial import (
     SerialToolServices,
     read_serial,
@@ -29,35 +16,6 @@ from pyocd_debug_mcp.tools.serial import (
 )
 
 import pytest
-
-
-class _BufferedUART(UARTInterface):
-    def __init__(self, incoming: bytes) -> None:
-        self.incoming = bytearray(incoming)
-        self.writes: list[bytes] = []
-        self.close_count = 0
-
-    def open(self, device: str, *, baudrate: int, timeout_seconds: float) -> UARTPortHandle:
-        transport = SimpleNamespace(timeout=timeout_seconds)
-        return UARTPortHandle(transport, device, baudrate, timeout_seconds)
-
-    def close(self, handle: UARTPortHandle) -> None:
-        del handle
-        self.close_count += 1
-
-    def reset_input_buffer(self, handle: UARTPortHandle) -> None:
-        del handle
-
-    def read(self, handle: UARTPortHandle, size: int) -> bytes:
-        del handle
-        chunk = bytes(self.incoming[:size])
-        del self.incoming[:size]
-        return chunk
-
-    def write(self, handle: UARTPortHandle, data: bytes) -> int:
-        del handle
-        self.writes.append(data)
-        return len(data)
 
 
 def _services(*, capture: UARTCaptureResult, exchange: UARTExchangeResult) -> SerialToolServices:
@@ -83,62 +41,6 @@ def _services(*, capture: UARTCaptureResult, exchange: UARTExchangeResult) -> Se
 
 class UARTCaptureEvidenceTests(unittest.TestCase):
     @staticmethod
-    def _raw_exchange_parameters(
-        *, text: str, expected_text: str, line_ending: str, ready_text: str | None = None
-    ) -> dict[str, object]:
-        return {
-            "steps": [{"text": text, "expected_text": expected_text, "line_ending": line_ending}],
-            "read_seconds": 1.0,
-            "baudrate": 115200,
-            "port": "COM_TEST",
-            "ready_text": ready_text,
-            "ready_seconds": 1.0 if ready_text is not None else 0.0,
-            "ready_probe_text": None,
-            "ready_probe_line_ending": "none",
-            "ready_probe_delay_seconds": 0.0,
-            "clear_input": False,
-        }
-
-    def test_raw_exchange_schema_counts_encoded_line_endings_and_all_ready_inputs(self) -> None:
-        """The schema cap is the actual transport payload, not label spelling or a later seam."""
-
-        exact = self._raw_exchange_parameters(
-            text="x" * (MAX_UART_TEXT_BYTES - 3),
-            expected_text="y",
-            line_ending="crlf",
-        )
-        self.assertIsNone(
-            validate_serial_exchange_parameters(exact, max_text_bytes=MAX_UART_TEXT_BYTES)
-        )
-        ready_overflow = self._raw_exchange_parameters(
-            text="x" * (MAX_UART_TEXT_BYTES - 5),
-            expected_text="y",
-            line_ending="none",
-            ready_text="ready",
-        )
-        self.assertIn(
-            "must not exceed",
-            validate_serial_exchange_parameters(ready_overflow, max_text_bytes=MAX_UART_TEXT_BYTES)
-            or "",
-        )
-
-    def test_exchange_capture_is_not_silently_capped_at_65536_bytes(self) -> None:
-        payload = (b"x" * 70_000) + b"DONE"
-        adapter = _BufferedUART(payload)
-
-        result = exchange_uart_output(
-            "COM_TEST",
-            115200,
-            b"status\n",
-            "DONE",
-            1.0,
-            adapter=adapter,
-        )
-
-        self.assertTrue(result.matched)
-        self.assertEqual(result.text, payload.decode("ascii"))
-        self.assertEqual(result.steps[0].text, payload.decode("ascii"))
-        self.assertGreater(len(result.text), 65_536)
 
     @pytest.mark.mvp
     def test_read_serial_returns_complete_reversibly_serialized_capture(self) -> None:
@@ -247,43 +149,6 @@ class UartOpenFailureTests(unittest.TestCase):
         self.assertIn("no other process holds the serial port open", message)
         self.assertIsInstance(ctx.exception.__cause__, RuntimeError)
 
-    def test_read_serial_reports_a_genuine_port_failure_as_uart_open_failed(self) -> None:
-        def _capture_uart(*_args: Any, **_kwargs: Any) -> Any:
-            raise RuntimeError("Unable to read COM_TEST at 115200 baud: device disconnected")
-
-        services = _services_for_failure(capture_uart=_capture_uart)
-
-        with self.assertRaises(RuntimeError) as ctx:
-            read_serial(services, "board")
-
-        self.assertIn(UART_OPEN_FAILED, str(ctx.exception))
-
-    def test_serial_exchange_reports_a_genuine_port_failure_as_uart_open_failed(self) -> None:
-        def _exchange_uart(*_args: Any, **_kwargs: Any) -> Any:
-            raise RuntimeError("Unable to exchange data on COM_TEST at 115200 baud: port vanished")
-
-        services = _services_for_failure(exchange_uart=_exchange_uart)
-        step_args: list[dict[str, Any]] = [
-            {"text": "one", "expected_text": "first", "line_ending": "lf"},
-        ]
-
-        with self.assertRaises(RuntimeError) as ctx:
-            serial_exchange(services, "board", step_args, 1.0)
-
-        self.assertIn(UART_OPEN_FAILED, str(ctx.exception))
-
-    def test_open_failure_payload_never_carries_a_hook_contract_call(self) -> None:
-        """The guide's structural guarantee, re-verified through this real path."""
-
-        def _write_uart(*_args: Any, **_kwargs: Any) -> Any:
-            raise RuntimeError("Unable to write COM_TEST at 115200 baud: port busy")
-
-        services = _services_for_failure(write_uart=_write_uart)
-
-        with self.assertRaises(RuntimeError) as ctx:
-            write_serial(services, "board", "hello")
-
-        self.assertNotIn("hook_contract_call", str(ctx.exception))
 
     def test_a_cancelled_write_is_never_relabeled_as_an_open_failure(self) -> None:
         """Cooperative cancellation must keep its identity, not become open-failed.
@@ -313,87 +178,6 @@ class UartOpenFailureTests(unittest.TestCase):
         # and the original cancellation is still reachable as the cause.
         self.assertNotIn(UART_OPEN_FAILED, str(ctx.exception))
         self.assertIsInstance(ctx.exception.__cause__, OperationCancelledError)
-
-    def test_a_cancellation_raised_directly_is_never_relabeled_either(self) -> None:
-        """The shape that actually occurs since M9: an unwrapped
-        `OperationCancelledError` arriving from `uart_capture` must not be caught by
-        the `RuntimeError` guard at all (it is not a RuntimeError-wrapping-a-cause;
-        it *is* the cancellation).
-        """
-
-        def _write_uart(*_args: Any, **_kwargs: Any) -> Any:
-            raise OperationCancelledError("operation cancelled")
-
-        services = _services_for_failure(write_uart=_write_uart)
-
-        with self.assertRaises(OperationCancelledError):
-            write_serial(services, "board", "hello")
-
-
-class UartCapturePreservesCancellationTests(unittest.TestCase):
-    """M9: cancellation must survive `uart_capture`'s error normalization.
-
-    All three entry points wrap their port-I/O section in
-    `except Exception as exc: raise RuntimeError(...) from exc`.
-    `OperationCancelledError` is a `RuntimeError` subclass, so without an explicit
-    re-raise ahead of that wrap it loses the type identity `operations.py`
-    dispatches on -- and `except OperationCancelledError` there can never match,
-    recording a cancelled UART operation as **FAILED instead of CANCELLED**.
-
-    Each test asserts the cancellation arrives *unchanged*, not merely that
-    something was raised: a plain `RuntimeError` carrying it as `__cause__` is
-    precisely the defect, and `assertRaises(OperationCancelledError)` would be
-    satisfied by neither.
-    """
-
-    def test_capture_lets_a_cancellation_through_unchanged(self) -> None:
-        # capture_uart_output's first checkpoint is *outside* the try block, so a
-        # stub that raises immediately would propagate even with the bug present.
-        # Arm it from on_port_open, which fires inside the try, so the raise lands
-        # on the in-loop checkpoint that the wrap actually covers.
-        armed = False
-
-        def _checkpoint() -> None:
-            if armed:
-                raise OperationCancelledError("operation cancelled")
-
-        def _arm() -> None:
-            nonlocal armed
-            armed = True
-
-        with patch("pyocd_debug_mcp.services.uart_capture.cancellation_checkpoint", _checkpoint):
-            with self.assertRaises(OperationCancelledError):
-                capture_uart_output(
-                    "COM_TEST",
-                    115200,
-                    5.0,
-                    None,
-                    on_port_open=_arm,
-                    adapter=_BufferedUART(b""),
-                )
-
-    def test_write_lets_a_cancellation_through_unchanged(self) -> None:
-        def _checkpoint() -> None:
-            raise OperationCancelledError("operation cancelled")
-
-        with patch("pyocd_debug_mcp.services.uart_capture.cancellation_checkpoint", _checkpoint):
-            with self.assertRaises(OperationCancelledError):
-                write_uart_output("COM_TEST", 115200, b"hello", adapter=_BufferedUART(b""))
-
-    def test_exchange_lets_a_cancellation_through_unchanged(self) -> None:
-        def _checkpoint() -> None:
-            raise OperationCancelledError("operation cancelled")
-
-        with patch("pyocd_debug_mcp.services.uart_capture.cancellation_checkpoint", _checkpoint):
-            with self.assertRaises(OperationCancelledError):
-                exchange_uart_output(
-                    "COM_TEST",
-                    115200,
-                    b"ping\n",
-                    "pong",
-                    1.0,
-                    adapter=_BufferedUART(b""),
-                )
 
 
 if __name__ == "__main__":

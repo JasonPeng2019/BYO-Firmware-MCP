@@ -8,38 +8,12 @@ execution path under test.
 
 from __future__ import annotations
 
-import ast
 import json
-import os
 import shutil
 from pathlib import Path
-from types import ModuleType
 from typing import Any, Iterable, Sequence
 
 from pyocd_debug_mcp import discovery_hooks
-
-
-def source_without_docstrings(module: ModuleType) -> str:
-    """Return a module's code with every docstring removed.
-
-    Needed because these modules *explain* the things they must not do -- "run_owned
-    cannot be used", "this deliberately does not live on ServerRun". A raw text scan
-    would flag the explanation as the violation.
-    """
-
-    tree = ast.parse(Path(str(module.__file__)).read_text(encoding="utf-8"))
-    for node in ast.walk(tree):
-        body = getattr(node, "body", None)
-        if not isinstance(body, list) or not body:
-            continue
-        first = body[0]
-        if (
-            isinstance(first, ast.Expr)
-            and isinstance(first.value, ast.Constant)
-            and isinstance(first.value.value, str)
-        ):
-            body.pop(0)
-    return ast.unparse(tree)
 
 
 FAKE_HOOK = Path(__file__).resolve().parent / "fake_discovery_hook.py"
@@ -95,15 +69,6 @@ def write_manifest(
     return path
 
 
-def write_raw_manifest(root: Path, text: str, *, filename: str | None = None) -> Path:
-    root.mkdir(parents=True, exist_ok=True)
-    if not (root / "hook.py").exists():
-        shutil.copy(FAKE_HOOK, root / "hook.py")
-    path = root / (filename or discovery_hooks.MANIFEST_FILENAME)
-    path.write_text(text, encoding="utf-8")
-    return path
-
-
 def snapshot_for(
     root: Path,
     entries: Sequence[dict[str, Any]],
@@ -132,12 +97,3 @@ def single_spec(
     return snapshot.hooks[0]
 
 
-def open_handle_count() -> int:
-    """Current process descriptor/handle count, for leak assertions."""
-
-    import psutil
-
-    process = psutil.Process()
-    if os.name == "nt":
-        return int(process.num_handles())
-    return int(process.num_fds())

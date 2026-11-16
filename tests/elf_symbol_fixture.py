@@ -7,7 +7,6 @@ import struct
 
 
 UNDEF, TEXT, DATA, BSS = 0, 1, 2, 3
-ABS, COMMON = 0xFFF1, 0xFFF2
 LOCAL, GLOBAL, WEAK = 0, 1, 2
 NOTYPE, OBJECT, FUNC, SECTION, FILE = 0, 1, 2, 3, 4
 
@@ -140,5 +139,3 @@ def elf32_symbols(
     return bytes(image)
 
 
-def duplicate_counter_elf() -> bytes:
-    return elf32_symbols([ElfSymbol("counter", 0x20000000), ElfSymbol("counter", 0x20000004)])

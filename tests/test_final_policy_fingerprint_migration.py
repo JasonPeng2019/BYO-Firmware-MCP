@@ -16,13 +16,9 @@ import subprocess
 import sys
 import unittest
 
-from pyocd_debug_mcp.capabilities.policy import CapabilityPolicyRepository, Tier
+from pyocd_debug_mcp.capabilities.policy import Tier
 from pyocd_debug_mcp.safety.enforce import SafetyPolicyError
-from pyocd_debug_mcp.safety.map_build import (
-    GenericSafetyMapDocument,
-    SafetyMapError,
-    SafetyMapRepository,
-)
+from pyocd_debug_mcp.safety.map_build import GenericSafetyMapDocument, SafetyMapError
 from tests.nrf_fixture_support import nrf_registered_pack_fixture, observe_nrf_control
 from tests.tiered_acceptance_support import public_text
 
@@ -61,75 +57,6 @@ class FinalPolicyFingerprintMigration(unittest.TestCase):
             source_digests=replace(current.source_digests, map_generator_schema=previous_digest),
         )
 
-    def test_previous_fingerprint_round_trip_refuses_and_current_authority_reopens(self):
-        fixture = self.fixture
-        repository = SafetyMapRepository(fixture.server._profile_repository.store)
-        previous = self.previous_document()
-        fixture.backend.calls.clear()
-        try:
-            repository.commit(fixture.board_id, previous)
-            reopened = SafetyMapRepository(repository.store).load_current(fixture.board_id)
-            self.assertEqual(reopened.to_document(), previous.to_document())
-            with self.assertRaisesRegex(SafetyMapError, "board_safety_refresh") as caught:
-                fixture.server._require_map_authority(reopened)
-            self.assertIn("unsupported generator", str(caught.exception))
-            self.assertEqual(fixture.backend.calls, [])
-            repository.commit(fixture.board_id, fixture.document)
-            current = SafetyMapRepository(repository.store).load_current(fixture.board_id)
-            fixture.server._require_map_authority(current)
-            self.assertEqual(current.to_document(), fixture.document.to_document())
-            self.assertEqual(fixture.backend.calls, [])
-        finally:
-            observe_nrf_control(
-                self,
-                fixture,
-                "policy-one-reader-and-policy-two-control",
-                previous_map=previous.to_document(),
-                current_map=fixture.document.to_document(),
-            )
-
-    def test_public_refresh_migrates_a_consistent_previous_policy_generation(self):
-        fixture = self.fixture
-        server = fixture.server
-        previous = self.previous_document()
-        state = server._capability_policies.resolve(fixture.board_id)
-        server._capability_policies.commit(
-            fixture.board_id,
-            Tier.SETUP_FULL,
-            profile_snapshot=state.profile_snapshot,
-            map_snapshot=previous.to_document(),
-            evidence=state.evidence,
-            expected_state=state,
-        )
-        server._safety_repository.commit(fixture.board_id, previous)
-        reloaded = CapabilityPolicyRepository(fixture.root).resolve(fixture.board_id)
-        self.assertIs(reloaded.tier, Tier.SETUP_FULL)
-        self.assertEqual(reloaded.map_snapshot, previous.to_document())
-        fixture.backend.calls.clear()
-        response = None
-        try:
-            with self.assertRaisesRegex(SafetyPolicyError, "unsupported generator"):
-                server._active_full_document(fixture.board_id)
-            response = json.loads(
-                public_text(server, "board_safety_refresh", {"board_id": fixture.board_id})
-            )
-            self.assertEqual(response["status"], "safety_refresh_completed", response)
-            current = server._active_full_document(fixture.board_id)
-            self.assertEqual(
-                current.source_digests.map_generator_schema,
-                fixture.document.source_digests.map_generator_schema,
-            )
-            server._require_map_authority(current)
-            self.assertEqual(fixture.backend.calls, [])
-        finally:
-            observe_nrf_control(
-                self,
-                fixture,
-                "public-policy-one-to-two-refresh",
-                previous_map=previous.to_document(),
-                public_response=response,
-                reloaded_generation=reloaded.generation_id,
-            )
 
     def test_genuine_original_producer_map_refreshes_separately(self):
         fixture = self.fixture

@@ -46,25 +46,10 @@ SERVER_PROJECT = Path(__file__).resolve().parents[1]
 SERVER_NAME = "byo_monitor_itest"
 DEFAULT_TIMEOUT = 600
 
-# Scaled down from the shipped 100/500 so a handful of real agent calls crosses a
-# boundary. The ratio is kept -- the check-in cadence is a multiple of the snapshot
-# cadence -- so the interaction between the two is the same one production sees.
 E2E_SNAPSHOT_CADENCE = 2
 E2E_CHECKIN_CADENCE = 4
 
 
-# Model renames that codex's own `[notice.model_migrations]` mechanism is
-# known to apply: a session pinned to a retired name reports under its
-# replacement instead, with a notice, not the name that was requested.
-#
-# This is deliberately a checked-in mapping, not a live read of the user's own
-# `~/.codex/config.toml`. REQUIRED_MODEL exists specifically as a hard pin --
-# "fail loudly rather than silently testing a different model" -- and reading
-# the accepted-name set from a file that lives outside the repo, is not
-# version-controlled, and can differ machine to machine would let the same
-# commit's test outcome vary or drift over time, undermining that exact
-# guarantee. When codex renames a pinned model, update this mapping in the
-# same commit that notices it, reviewed like any other test expectation.
 _KNOWN_MODEL_MIGRATIONS: dict[str, str] = {
     "gpt-5.4-mini": "gpt-5.6-luna",
 }
@@ -228,7 +213,6 @@ class CodexAgentTestCase(unittest.TestCase):
         for base in ("server_data", "simulated_remote"):
             shutil.rmtree(self.store / base / self.workspace, ignore_errors=True)
 
-    # -- driving the agent ------------------------------------------------
 
     def bind_preamble(self) -> str:
         """Instruction that binds this run's workspace.
@@ -329,7 +313,6 @@ class CodexAgentTestCase(unittest.TestCase):
             "codex did not report the pinned reasoning effort; refusing to accept the run",
         )
 
-    # -- reading what the monitor recorded --------------------------------
 
     @property
     def workspace_dir(self) -> Path:
@@ -429,9 +412,3 @@ class CodexAgentTestCase(unittest.TestCase):
         return "\n".join(chunks)
 
 
-__all__ = [
-    "REQUIRED_MODEL",
-    "CodexAgentTestCase",
-    "CodexResult",
-    "codex_available",
-]

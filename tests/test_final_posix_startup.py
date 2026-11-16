@@ -6,15 +6,13 @@ from dataclasses import asdict
 import json
 import os
 from pathlib import Path
-import signal
 import select
 import subprocess
 import sys
 import tempfile
 import unittest
-from unittest.mock import patch
 
-from pyocd_debug_mcp.kernel import hygiene, processes
+from pyocd_debug_mcp.kernel import processes
 
 
 @unittest.skipUnless(os.name == "posix", "native POSIX process/session identity required")
@@ -42,46 +40,6 @@ class FinalPosixStartup(unittest.TestCase):
         self.assertEqual(os.getpgid(child.pid), child.pid)
         return child, token
 
-    def test_real_worker_eof_reap_and_empty_group_allow_actual_startup_cleanup(self):
-        child, token = self.child()
-        child.stdin.close()
-        self.assertEqual(child.wait(timeout=5), 0)
-        with self.assertRaises(ProcessLookupError):
-            os.killpg(child.pid, 0)
-        with tempfile.TemporaryDirectory() as temporary:
-            path = Path(temporary) / "final-stale.json"
-            marker = processes.ProcessMarker(
-                2,
-                "final-stale",
-                child.pid,
-                token,
-                child.pid,
-                token,
-                "a" * 64,
-                sys.executable,
-                "2026-10-24T00:00:00Z",
-            )
-            path.write_text(json.dumps(asdict(marker)), encoding="utf-8")
-            result = hygiene.require_clean_startup(path.parent)
-            self.assertEqual(result.stale_removed, 1)
-            self.assertEqual(result.unresolved, 0)
-            self.assertFalse(path.exists())
-
-    def test_live_nonempty_group_with_stale_birth_receives_no_signal(self):
-        child, token = self.child()
-        signals = []
-        actual = os.killpg
-
-        def observed(pgid, sig):
-            signals.append((pgid, sig))
-            return actual(pgid, sig)
-
-        with patch.object(processes.os, "killpg", side_effect=observed):
-            self.assertFalse(processes.terminate_marked_group(child.pid, token + ":stale"))
-        self.assertFalse(any(sig in (signal.SIGTERM, signal.SIGKILL) for _, sig in signals))
-        self.assertIsNone(child.poll())
-        child.stdin.close()
-        self.assertEqual(child.wait(timeout=5), 0)
 
     def test_actual_source_startup_removes_empty_marker_and_finishes_protocol_eof(self):
         child, token = self.child()

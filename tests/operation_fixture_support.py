@@ -21,7 +21,6 @@ from pyocd_debug_mcp.services.connections import (
     stable_connection_identity,
 )
 from pyocd_debug_mcp.services.session_runtime import InMemorySessionStore
-from pyocd_debug_mcp.tools.registers import validate_guarded_register_call
 
 
 HANG_GUARD_SECONDS = 10.0
@@ -257,9 +256,6 @@ class _OwnershipFixture(unittest.TestCase):
             for snapshot in operation_manager.snapshots()
         )
 
-    @staticmethod
-    def board_idle(board: str = BOARD) -> bool:
-        return not any(s.board_id == board for s in operation_manager.snapshots())
 
     def read_current(self, board: str = BOARD) -> int:
         return target_control.read_memory(self.connections.handle_for(board), 0x20000000)
@@ -281,14 +277,3 @@ class _OwnershipFixture(unittest.TestCase):
 
         return operation
 
-    @staticmethod
-    def register_guard(name: str = "r0") -> Callable[[], None]:
-        # The production write_cpu_register preflight reads the connected core's
-        # supported registers through the live board handle before the handler.
-        return partial(
-            validate_guarded_register_call,
-            server.register_services,
-            "write_cpu_register",
-            BOARD,
-            {"name": name, "value": 1},
-        )

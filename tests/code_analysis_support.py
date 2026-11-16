@@ -14,7 +14,6 @@ reach the service only through constructor injection or the server's
 
 from __future__ import annotations
 
-import asyncio
 import contextlib
 import dataclasses
 import hashlib
@@ -23,7 +22,6 @@ import json
 import os
 import re
 import shutil
-import stat
 import sys
 import threading
 import time
@@ -38,21 +36,10 @@ SERVER_ROOT = Path(__file__).resolve().parents[1]
 FAKE_CLANGD = Path(__file__).resolve().with_name("fake_clangd.py")
 FIXTURE_ROOT = Path(__file__).resolve().with_name("code_analysis_fixtures")
 
-# Explicit, test-harness-only real program selection.  Never read by product
-# code; tests that need a real clangd skip (recorded as unmet) when it is unset.
 REAL_CLANGD_ENV = "BYO_MCP_TEST_CLANGD_EXECUTABLE"
 
-TOOL_OPERATIONS: dict[str, str] = {
-    "get_code_analysis_status": "status",
-    "find_code_definition": "definition",
-    "find_code_references": "references",
-    "get_code_hover": "hover",
-    "get_code_diagnostics": "diagnostics",
-}
-ANALYSIS_TOOLS = tuple(TOOL_OPERATIONS)
 STATUS_VALUES = {"ok", "not_found", "unavailable", "not_configured", "incomplete", "error"}
 FAILURE_STATUSES = {"unavailable", "not_configured", "incomplete", "error"}
-SESSION_STATES = {"not_started", "initializing", "ready", "restarting", "failed", "closed"}
 ERROR_CODES = {
     f"analysis/{name}"
     for name in (
@@ -88,14 +75,11 @@ COMMON_FIELDS = {
     "data",
     "warnings",
 }
-# Contract: one LSP shutdown/exit attempt inside the 5 s grace plus the owned
-# group termination reserve (1.5 s).  Scheduler slack is added per assertion.
 ARGUMENT_TIMEOUT_GRACE_SECONDS = 5.0
 OWNED_CLEANUP_SECONDS = 1.5
 SCHEDULING_SLACK_SECONDS = 2.0
 
 
-# ---------------------------------------------------------------- module seams
 def analysis_module(name: str) -> Any:
     """Import a production analysis module; ImportError is an honest RED."""
 
@@ -245,7 +229,6 @@ def make_service(
     return service
 
 
-# --------------------------------------------------------------- fake program
 class FakeClangd:
     """A per-test fake clangd: live scenario file, JSONL log and launch argv."""
 
@@ -287,11 +270,6 @@ class FakeClangd:
                     raise
                 time.sleep(0.01)
 
-    def gate(self, name: str) -> Path:
-        return self.directory / f"gate-{name}"
-
-    def open_gate(self, name: str) -> None:
-        self.gate(name).write_text("open", encoding="utf-8")
 
     def events(self, kind: str | None = None) -> list[dict[str, Any]]:
         records = [
@@ -308,18 +286,6 @@ class FakeClangd:
             if method is None or record["message"].get("method") == method
         ]
 
-    def sent(self, method: str | None = None) -> list[dict[str, Any]]:
-        return [
-            record["message"]
-            for record in self.events("sent")
-            if method is None or record["message"].get("method") == method
-        ]
-
-    def client_responses(self) -> dict[Any, dict[str, Any]]:
-        return {
-            record["message"].get("id"): record["message"]
-            for record in self.events("client_response")
-        }
 
     def starts(self) -> list[dict[str, Any]]:
         return self.events("start")
@@ -328,49 +294,6 @@ class FakeClangd:
         pids = [record["pid"] for record in self.starts()]
         pids.extend(record["child_pid"] for record in self.events("grandchild"))
         return pids
-
-    def wait_for(
-        self, predicate: Callable[[], Any], *, timeout: float = 15.0, message: str = ""
-    ) -> Any:
-        deadline = time.monotonic() + timeout
-        while time.monotonic() < deadline:
-            value = predicate()
-            if value:
-                return value
-            time.sleep(0.02)
-        raise AssertionError(f"timed out waiting for fake clangd: {message}\n{self.events()}")
-
-    def wait_received(self, method: str, count: int = 1, timeout: float = 15.0) -> list[dict]:
-        return self.wait_for(
-            lambda: (found := self.received(method)) and len(found) >= count and found,
-            timeout=timeout,
-            message=f"{count} x {method}",
-        )
-
-
-def write_shim(directory: Path, name: str, scenario_path: Path) -> Path:
-    """Write an executable launcher that runs the fake through this Python.
-
-    Verified under real ``popen_owned`` on Windows (no ``shell=True``); argv is
-    forwarded with ``%*``/``"$@"``.  Fixture argv must avoid cmd metacharacters.
-    """
-
-    python = Path(sys.executable)
-    if os.name == "nt":
-        shim = Path(directory) / f"{name}.cmd"
-        shim.write_bytes(
-            (f'@echo off\r\n"{python}" "{FAKE_CLANGD}" --scenario "{scenario_path}" %*\r\n').encode(
-                "utf-8"
-            )
-        )
-    else:
-        shim = Path(directory) / name
-        shim.write_text(
-            f"#!/bin/sh\nexec '{python}' '{FAKE_CLANGD}' --scenario '{scenario_path}' \"$@\"\n",
-            encoding="utf-8",
-        )
-        shim.chmod(shim.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
-    return shim
 
 
 def pid_alive(pid: int) -> bool:
@@ -406,7 +329,6 @@ def real_clangd_or_skip(testcase: unittest.TestCase) -> Path:
     return executable.resolve()
 
 
-# ------------------------------------------------------------ project fixtures
 class AnalysisProject:
     """A temporary project root with exact-byte sources and a database."""
 
@@ -486,14 +408,6 @@ class AnalysisProject:
         return digest
 
 
-# Contract "Local analysis writes" (ROOT clarification 8d18af22/cabf1a79): the
-# service's own reports/metadata live under ``.firm/code-analysis/``, and stock
-# clangd may keep its background index in
-# ``<selected-database-directory>/.cache/clangd/index/`` as a generated
-# ``.gitignore`` plus ``<basename>.<16 hex>.idx`` shards and their native
-# ``.temp-stream-<6 hex>`` atomic-write intermediates. Nothing else may be
-# created, removed or changed.  The earlier strict "only .firm" oracle was an
-# overbroad expectation and stays recorded as a failed execution, not a pass.
 SERVICE_WRITE_ROOT = ".firm/code-analysis"
 _NATIVE_SHARD = re.compile(r"[^/]+\.[0-9A-Fa-f]{16}\.idx(?:\.temp-stream-[0-9A-Fa-f]{6})?")
 
@@ -577,7 +491,6 @@ def simple_project(root: Path, *, sources: Mapping[str, str] | None = None) -> A
     return project
 
 
-# --------------------------------------------------------- Unicode oracles
 def encoded_units(text: str, encoding: str) -> int:
     if encoding == "utf-8":
         return len(text.encode("utf-8"))
@@ -631,11 +544,6 @@ def mapped_range(start: tuple[int, int], end: tuple[int, int]) -> dict[str, Any]
     }
 
 
-def location(uri: str, start: tuple[int, int], end: tuple[int, int]) -> dict[str, Any]:
-    return {"uri": uri, "range": raw_range(start, end)}
-
-
-# --------------------------------------------------------- envelope checks
 def assert_envelope(
     testcase: unittest.TestCase,
     envelope: Any,
@@ -671,19 +579,6 @@ def assert_envelope(
     return envelope
 
 
-def assert_failure(
-    testcase: unittest.TestCase,
-    envelope: Any,
-    operation: str,
-    status: str | Iterable[str],
-    code: str | Iterable[str],
-) -> dict[str, Any]:
-    envelope = assert_envelope(testcase, envelope, operation, status=status)
-    codes = {code} if isinstance(code, str) else set(code)
-    testcase.assertIn(envelope.get("code"), codes, json.dumps(envelope, indent=2))
-    return envelope
-
-
 def assert_source(
     testcase: unittest.TestCase, envelope: Mapping[str, Any], path: Path
 ) -> dict[str, Any]:
@@ -698,112 +593,6 @@ def assert_source(
     return source
 
 
-def assert_not_clean(testcase: unittest.TestCase, envelope: Mapping[str, Any]) -> None:
-    """A stale/missing diagnostics answer must never look like a clean file."""
-
-    testcase.assertNotEqual(envelope["status"], "ok", json.dumps(envelope, indent=2))
-    testcase.assertNotEqual(envelope["status"], "not_found", envelope)
-
-
-# --------------------------------------------------------- service threading
-class Call:
-    """Run a synchronous service call on a thread and keep its outcome."""
-
-    def __init__(self, function: Callable[..., Any], **kwargs: Any) -> None:
-        self.result: Any = None
-        self.error: BaseException | None = None
-        self.started = time.monotonic()
-        self.finished: float | None = None
-        self._thread = threading.Thread(target=self._run, args=(function, kwargs), daemon=True)
-        self._thread.start()
-
-    def _run(self, function: Callable[..., Any], kwargs: dict[str, Any]) -> None:
-        try:
-            self.result = function(**kwargs)
-        except BaseException as exc:  # noqa: BLE001 - surfaced to the test
-            self.error = exc
-        finally:
-            self.finished = time.monotonic()
-
-    def join(self, timeout: float) -> Any:
-        self._thread.join(timeout)
-        if self._thread.is_alive():
-            raise AssertionError(f"service call still blocked after {timeout:.1f}s")
-        if self.error is not None:
-            raise self.error
-        return self.result
-
-    @property
-    def elapsed(self) -> float:
-        assert self.finished is not None
-        return self.finished - self.started
-
-
-# --------------------------------------------------------- MCP server helpers
-def mcp_blocks(server: Any, tool_name: str, arguments: Mapping[str, Any]) -> list[Any]:
-    result = asyncio.run(server.mcp.call_tool(tool_name, dict(arguments)))
-    if isinstance(result, tuple):
-        result = result[0]
-    return list(result)
-
-
-def mcp_envelope(server: Any, tool_name: str, arguments: Mapping[str, Any]) -> dict[str, Any]:
-    """Call through RegistryFastMCP and parse the single analysis JSON block."""
-
-    blocks = mcp_blocks(server, tool_name, arguments)
-    text_blocks = [block for block in blocks if isinstance(getattr(block, "text", None), str)]
-    if not text_blocks:
-        raise AssertionError(f"{tool_name} returned no text block: {blocks!r}")
-    try:
-        payload = json.loads(text_blocks[0].text)
-    except json.JSONDecodeError as exc:
-        raise AssertionError(
-            f"{tool_name} first block is not one intact JSON document: {text_blocks[0].text!r}"
-        ) from exc
-    if not isinstance(payload, dict):
-        raise AssertionError(f"{tool_name} payload is not an object: {payload!r}")
-    return payload
-
-
-def mcp_refusal(server: Any, tool_name: str, arguments: Mapping[str, Any]) -> str | dict:
-    """Return the SDK/schema refusal text, or the envelope if the call completed."""
-
-    try:
-        return mcp_envelope(server, tool_name, arguments)
-    except Exception as exc:  # noqa: BLE001 - FastMCP surfaces refusals as errors
-        if isinstance(exc, AssertionError):
-            raise
-        return str(exc)
-
-
-def configure_server_program(
-    server: Any,
-    *,
-    fake: FakeClangd | None = None,
-    executable: Path | None = None,
-    program_resolver: Callable[..., Any] | None = None,
-) -> Any:
-    """Install a harness program through the owner's ``BYO_MCP_TEST_SEAMS`` seam.
-
-    ``configure_code_analysis_test_seams(program_resolver=, adapter_factory=)``
-    returns the live service (also ``server._code_analysis_service``).
-    """
-
-    if program_resolver is None:
-        if fake is not None:
-            program_resolver = fixed_resolver(FAKE_CLANGD)
-        elif executable is not None:
-            program_resolver = fixed_resolver(executable, version=None)
-    adapter_factory = fake_adapter_factory(fake) if fake is not None else None
-    return server.configure_code_analysis_test_seams(
-        program_resolver=program_resolver, adapter_factory=adapter_factory
-    )
-
-
-# --------------------------------------------------------- stdio server driver
-# The bootstrap mirrors the installed ``pyocd-debug-mcp = server:main`` console
-# entry (module imported once, then ``main()``), installs the harness program
-# through the gated seam and never reaches a public tool argument.
 _STDIO_BOOTSTRAP = """\
 import json
 import sys
@@ -993,21 +782,6 @@ class AnalysisStdioServer:
         return bytes(self.stderr).decode("utf-8", "replace")
 
 
-def isolated_path_environment(directory: Path) -> dict[str, str]:
-    """PATH containing only ``directory`` (plus Windows system dir for cmd)."""
-
-    entries = [str(directory)]
-    if os.name == "nt":
-        system_root = os.environ.get("SystemRoot", r"C:\Windows")
-        entries.append(str(Path(system_root) / "System32"))
-    return {"PATH": os.pathsep.join(entries)}
-
-
-# --------------------------------------------------------- shared test bases
-def file_uri(path: Path) -> str:
-    return Path(path).resolve().as_uri()
-
-
 def query_params(fake: FakeClangd, method: str) -> list[dict[str, Any]]:
     return [message.get("params") or {} for message in fake.received(method)]
 
@@ -1080,7 +854,6 @@ class FakeServiceCase(unittest.TestCase):
         return self.service.definition(**arguments)
 
 
-# --------------------------------------------------------- fixture projects
 def copy_fixture(name: str, destination: Path, *, units: Iterable[str] = ()) -> AnalysisProject:
     source = FIXTURE_ROOT / name
     if not source.is_dir():
@@ -1170,3 +943,27 @@ def materialize_arm_fixture(
         config["clangd"]["query_driver_paths"] = []
     project.write_config(config)
     return project
+
+
+def configure_server_program(
+    server: Any,
+    *,
+    fake: FakeClangd | None = None,
+    executable: Path | None = None,
+    program_resolver: Callable[..., Any] | None = None,
+) -> Any:
+    """Install a harness program through the owner's ``BYO_MCP_TEST_SEAMS`` seam.
+
+    ``configure_code_analysis_test_seams(program_resolver=, adapter_factory=)``
+    returns the live service (also ``server._code_analysis_service``).
+    """
+
+    if program_resolver is None:
+        if fake is not None:
+            program_resolver = fixed_resolver(FAKE_CLANGD)
+        elif executable is not None:
+            program_resolver = fixed_resolver(executable, version=None)
+    adapter_factory = fake_adapter_factory(fake) if fake is not None else None
+    return server.configure_code_analysis_test_seams(
+        program_resolver=program_resolver, adapter_factory=adapter_factory
+    )

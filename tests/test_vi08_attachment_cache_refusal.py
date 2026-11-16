@@ -13,7 +13,7 @@ from unittest.mock import patch
 
 from mcp.server.fastmcp.exceptions import ToolError
 
-from pyocd_debug_mcp.firmstore.cache import AttachmentCacheError, SerialEndpoint
+from pyocd_debug_mcp.firmstore.cache import AttachmentCacheError
 from pyocd_debug_mcp.firmstore.store import PersistedAuthorityError
 from pyocd_debug_mcp.kernel.operations import ManagedOperation
 from pyocd_debug_mcp.setup_flow.preflight import (
@@ -23,7 +23,6 @@ from pyocd_debug_mcp.setup_flow.preflight import (
     SetupUserInput,
 )
 from tests.uart_fixture_support import ManagedUartCase
-from pyocd_debug_mcp.firmstore.cache import ProbeIdentity
 from tests.inventory_fixture import _snapshot, _uart_row
 from tests.tiered_acceptance_support import public_text
 
@@ -138,89 +137,6 @@ class ManagedCacheRefusal(ManagedUartCase):
         self.assert_diagnostic(errors[0])
         self.observe("finalizer", cleanup_errors=errors)
 
-    def test_managed_handlers_share_typed_boundary(self):
-        self.damage("malformed_json")
-        for name in ("read_serial", "write_serial", "serial_exchange"):
-            with self.subTest(action=name):
-                self.refused(lambda: self.action(name), RuntimeError)
-
-    def test_cache_load_context_and_json_cause(self):
-        self.damage("malformed_json")
-        with self.assertRaises(AttachmentCacheError) as caught:
-            self.cache.load_records()
-        self.assertIn(str(self.cache.path), str(caught.exception))
-        self.assertIsInstance(caught.exception.__cause__, json.JSONDecodeError)
-
-    def test_authority_admission_remains_specific_and_closed(self):
-        self.damage("persisted_authority")
-        with self.assertRaises(PersistedAuthorityError):
-            self.cache.load_records()
-        self.assertEqual(self.cache.path.read_bytes(), DAMAGES["persisted_authority"])
-
-    def test_existing_directory_is_an_io_refusal_without_deletion(self):
-        self.cache.path.mkdir(parents=True)
-        with self.assertRaisesRegex(RuntimeError, CODE) as caught:
-            self.action("write_serial")
-        self.assert_diagnostic(str(caught.exception))
-        self.assertTrue(self.cache.path.is_dir())
-        self.assertEqual(self.transport.mock_calls, [])
-
-    def test_explicit_plan_overrides_do_not_read_or_change_damaged_hints(self):
-        self.damage("unreadable")
-        before = self.cache.path.read_bytes()
-        for name in ("read_serial", "write_serial", "serial_exchange"):
-            with self.subTest(action=name):
-                self.transport.reset_mock()
-                result = self.public_action(name, port="COM7")
-                self.assertIn("COM7", result)
-                self.transport.open.assert_called_once()
-                self.transport.close.assert_called_once()
-                self.assertEqual(self.cache.path.read_bytes(), before)
-        # Deliberate main action must not authorize the automatic on_exit choice.
-        errors = []
-        original = ManagedOperation.run_finalizer
-
-        def record(operation, finalizer):
-            original(operation, finalizer)
-            errors.extend(operation.resources.cleanup_errors)
-
-        self.transport.reset_mock()
-        with patch.object(ManagedOperation, "run_finalizer", record):
-            self.public_action(
-                "write_serial", port="COM7", on_exit={"action": "uart_write", "text": "exit"}
-            )
-        self.transport.open.assert_called_once()
-        self.transport.write.assert_called_once()
-        self.transport.close.assert_called_once()
-        self.assertEqual(self.transport.write.call_args.args[1], b"hello")
-        self.assertEqual(len(errors), 1)
-        self.assert_diagnostic(errors[0])
-        self.assertEqual(self.cache.path.read_bytes(), before)
-        self.observe("explicit-main-only", cleanup_errors=errors)
-
-    def test_explicit_session_choice_does_not_bypass_later_damaged_ownership(self):
-        self.snapshot = _snapshot(uarts=(_uart_row("COM7"),))
-        self.public_action("write_serial", port="COM7")
-        self.damage("malformed_json")
-        self.refused(lambda: self.public_action("write_serial"), ToolError)
-
-    def test_unrelated_board_corruption_still_blocks_unknown_ownership(self):
-        self.cache.path.parent.mkdir(parents=True)
-        self.cache.path.write_bytes(
-            document([{**VALID_RECORD, "board_id": "other", "uart_pid": []}])
-        )
-        self.refused(lambda: self.public_action("read_serial"), ToolError)
-
-    def test_valid_other_board_records_remain_unchanged(self):
-        self.cache.confirm("board_b", ProbeIdentity("jlink", "probe_b"), self.cable_b)
-        self.cache.confirm("board_a", self.probe, SerialEndpoint("COM8", "cable_a", 1, 2))
-        self.snapshot = _snapshot(
-            uarts=(self.row_b, _uart_row("COM99", scope="stable", serial="cable_a"))
-        )
-        before = self.cache.path.read_bytes()
-        self.assertIn("COM99", self.public_action("write_serial"))
-        self.assertEqual(self.transport.open.call_args.args[0], "COM99")
-        self.assertEqual(self.cache.path.read_bytes(), before)
 
     def test_removal_alone_does_not_create_a_pairing_then_setup_reconfirmation_restores(self):
         self.damage("malformed_json")

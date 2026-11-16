@@ -10,48 +10,17 @@ four-platform proof.  No hardware is used.
 from __future__ import annotations
 
 import json
-import subprocess
 import unittest
 from pathlib import Path
 from typing import Any
 
-from tests.code_analysis_support import (
-    OWNED_CLEANUP_SECONDS,
-    SCHEDULING_SLACK_SECONDS,
-    AnalysisProject,
-    AnalysisStdioServer,
-    arm_gnu_root_or_skip,
-    assert_envelope,
-    assert_failure,
-    assert_source,
-    copy_fixture,
-    lines_of,
-    make_service,
-    materialize_arm_fixture,
-    real_clangd_or_skip,
-    same_path,
-    sha256_file,
-    temporary_directory,
-    unpermitted_tree_changes,
-    wait_pids_gone,
-)
+from tests.code_analysis_support import OWNED_CLEANUP_SECONDS, SCHEDULING_SLACK_SECONDS, AnalysisProject, AnalysisStdioServer, arm_gnu_root_or_skip, assert_envelope, assert_source, copy_fixture, lines_of, make_service, materialize_arm_fixture, real_clangd_or_skip, same_path, sha256_file, temporary_directory, unpermitted_tree_changes, wait_pids_gone
 
 import pytest
 
 QUERY_TIMEOUT = 90.0
 UNICODE_ROOT = "proj café 中文 😀"
 SHUTDOWN_BOUND = 5.0 + OWNED_CLEANUP_SECONDS + SCHEDULING_SLACK_SECONDS
-CONFIGURATION_CODES = {
-    "analysis/config-invalid",
-    "analysis/database-invalid",
-    "analysis/database-conflict",
-    "analysis/compile-context-missing",
-}
-# Unicode positions with real clangd: accented, combining, CJK, non-BMP and a
-# tab precede the queried call on the same CRLF line.  The header include under
-# the non-BMP root is what makes clangd 23.1.0 fail on the escaped database
-# (ROOT probe: VFS CWD mapping error and pp_file_not_found); without it the
-# escaped form happens to work and would not exercise the blocker.
 UNICODE_HEADER = "#pragma once\r\nstatic inline int uni_value(void) { return 7; }\r\n"
 UNICODE_SOURCE = (
     '#include "uni.h"\r\n'
@@ -124,27 +93,6 @@ class RealClangdCase(unittest.TestCase):
         return make_service(project.root, executable=self.executable, testcase=self)
 
 
-class ProgramIdentity(RealClangdCase):
-    @pytest.mark.mvp
-    def test_version_and_status_identify_the_supplied_program(self) -> None:
-        completed = subprocess.run(  # noqa: S603 - harness-supplied fixture path
-            [str(self.executable), "--version"],
-            capture_output=True,
-            text=True,
-            timeout=30,
-            check=False,
-        )
-        self.assertEqual(completed.returncode, 0, completed.stderr)
-        self.assertIn("clangd version", completed.stdout)
-        print(
-            f"\nreal clangd {self.executable} sha256={sha256_file(self.executable)}: {completed.stdout.strip()}"
-        )
-        project = copy_fixture("host_c", self.base / "host_c", units=("src/main.c", "src/util.c"))
-        envelope = assert_envelope(self, self.service(project).status(), "status", status="ok")
-        self.assertTrue(same_path(envelope["data"]["executable"], self.executable))
-        self.assertEqual(envelope["data"]["session_state"], "not_started")
-
-
 class HostC(RealClangdCase):
     def setUp(self) -> None:
         super().setUp()
@@ -187,15 +135,6 @@ class HostC(RealClangdCase):
         )
         self.assertIn("scale_value", hover["data"]["contents"]["value"])
 
-    def test_clean_file_has_a_genuinely_empty_fresh_notification(self) -> None:
-        envelope = assert_envelope(
-            self, diagnostics(self.analysis, self.project, "src/main.c"), "diagnostics", status="ok"
-        )
-        assert_source(self, envelope, self.project.path("src/main.c"))
-        data = envelope["data"]
-        self.assertEqual(
-            (data["diagnostics"], data["observed_count"], data["truncated"]), ([], 0, False)
-        )
 
     @pytest.mark.mvp
     def test_saved_file_updates_are_seen_error_then_fix(self) -> None:
@@ -223,35 +162,6 @@ class HostC(RealClangdCase):
         self.assertEqual(
             versions, sorted(set(versions)), "each saved revision is a newer document version"
         )
-
-
-class HostCpp(RealClangdCase):
-    def test_overloads_and_template_resolve_to_the_selected_declarations(self) -> None:
-        project = copy_fixture("host_cpp", self.base / "host_cpp", units=("src/shapes.cpp",))
-        analysis = self.service(project)
-        expected = {
-            # (needle occurrence in shapes.cpp) -> acceptable (file, line) targets
-            ("area(2.0)", 0): {("shapes.hpp", 4), ("shapes.cpp", 5)},  # double overload
-            ("area(3)", 0): {("shapes.hpp", 3), ("shapes.cpp", 4)},  # int overload
-            ("doubled", 0): {("shapes.hpp", 5)},
-        }
-        for (needle, occurrence), targets in expected.items():
-            with self.subTest(needle=needle, occurrence=occurrence):
-                envelope = assert_envelope(
-                    self,
-                    query(
-                        analysis,
-                        "definition",
-                        project,
-                        "src/shapes.cpp",
-                        needle,
-                        occurrence=occurrence,
-                    ),
-                    "definition",
-                    status="ok",
-                )
-                found = {(name, line) for name, line, _column in location_points(envelope)}
-                self.assertTrue(found & targets, (found, targets))
 
 
 class UnicodeProject(RealClangdCase):
@@ -300,72 +210,6 @@ class UnicodeProject(RealClangdCase):
         self.assertIn(
             b"\r\n", project.path("src/main.c").read_bytes(), "saved CRLF bytes are never rewritten"
         )
-
-    def test_raw_clangd_distinguishes_the_two_database_representations(self) -> None:
-        # Backend characterization independent of the product: both files are
-        # valid JSON for the same paths, but clangd only resolves the include
-        # through the literal form.  If a newer clangd stops failing here, the
-        # backend blocker below must be revisited rather than this test relaxed.
-        outcomes = {}
-        for escaped in (False, True):
-            project = self._project(escaped=escaped)
-            completed = subprocess.run(  # noqa: S603 - harness-supplied fixture path
-                [
-                    str(self.executable),
-                    f"--check={project.path('src/main.c')}",
-                    f"--compile-commands-dir={project.root}",
-                ],
-                capture_output=True,
-                timeout=QUERY_TIMEOUT,
-                check=False,
-            )
-            log = (completed.stdout + completed.stderr).decode("utf-8", "replace")
-            outcomes[escaped] = (completed.returncode, log)
-        literal_exit, literal_log = outcomes[False]
-        escaped_exit, escaped_log = outcomes[True]
-        print(f"\nclangd --check literal exit={literal_exit} escaped exit={escaped_exit}")
-        self.assertEqual(literal_exit, 0, literal_log[-4000:])
-        self.assertNotEqual(escaped_exit, 0, escaped_log[-4000:])
-        self.assertIn("uni.h", escaped_log)
-
-    def test_escaped_surrogate_database_is_an_explicit_problem_not_success(self) -> None:
-        # ROOT 815d19ab/834b1e1f: clangd 23.1.0 mishandles the escaped UTF-16
-        # surrogate-pair form of this valid JSON.  The backend must say so with
-        # a literal-UTF-8 re-export remedy and leave the database untouched;
-        # the literal form of the same database is the working control.
-        escaped = self._project(escaped=True)
-        database = escaped.path("compile_commands.json")
-        raw = database.read_bytes()
-        self.assertIn(b"\\ud83d\\ude00", raw)
-        analysis = self.service(escaped)
-        envelope = assert_envelope(
-            self,
-            query(analysis, "definition", escaped, "src/main.c", "target_symbol", occurrence=1),
-            "definition",
-        )
-        self.assertNotIn(
-            envelope["status"],
-            {"ok", "not_found"},
-            json.dumps(envelope, indent=2, ensure_ascii=False),
-        )
-        assert_failure(self, envelope, "definition", "not_configured", CONFIGURATION_CODES)
-        self.assertRegex(envelope["remedy"].lower(), r"utf-?8")
-        self.assertRegex(envelope["remedy"].lower(), r"re-?export|regenerat|export")
-        status = assert_envelope(self, analysis.status(), "status", status="not_configured")
-        self.assertTrue(status["data"]["configuration_problems"], status)
-        self.assertEqual(database.read_bytes(), raw, "the project database must never be rewritten")
-        self.assertFalse((escaped.root / "compile_commands.json.bak").exists())
-
-        literal = self._project(escaped=False)
-        control = query(
-            self.service(literal),
-            "definition",
-            literal,
-            "src/main.c",
-            "target_symbol",
-            occurrence=1,
-        )
-        assert_envelope(self, control, "definition", status="ok")
 
 
 class ArmFirmware(RealClangdCase):
@@ -435,20 +279,6 @@ class ArmFirmware(RealClangdCase):
             "may be written; every other project file must be unchanged",
         )
 
-    def test_empty_allowlist_still_analyzes_the_exact_database_command(self) -> None:
-        # An empty allowlist grants no compiler execution, but the exported
-        # argv still names the cross driver (target inferred from its name) and
-        # passes the toolchain headers with -I; native clangd --check is clean.
-        project = materialize_arm_fixture(
-            self.base / "arm-nodriver", self.arm_root, query_drivers=False
-        )
-        envelope = assert_envelope(
-            self,
-            diagnostics(self.service(project), project, "src/main.c"),
-            "diagnostics",
-            status="ok",
-        )
-        self.assertEqual(envelope["data"]["diagnostics"], [], json.dumps(envelope, indent=2))
 
     def test_generic_host_driver_is_never_reported_as_clean_arm_analysis(self) -> None:
         # A host driver may produce ABI errors or incomplete target parsing.

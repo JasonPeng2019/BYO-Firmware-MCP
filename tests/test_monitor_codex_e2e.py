@@ -10,12 +10,9 @@ from __future__ import annotations
 import json
 import unittest
 
-import pytest
 
 from tests.codex_harness import CodexAgentTestCase
 from tests.store_cleanup import restore as store_restore, snapshot as store_snapshot
-
-pytestmark = pytest.mark.live
 
 
 _STORE_BEFORE: "set[str] | None" = None

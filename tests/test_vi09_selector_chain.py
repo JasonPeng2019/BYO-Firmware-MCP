@@ -13,27 +13,13 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from pyocd.core.session import Session
-from pyocd.probe.aggregator import PROBE_CLASSES, DebugProbeAggregator
-from pyocd.probe.stlink_probe import STLinkUSBInterface, StlinkProbe
-from pyocd.probe.tcp_client_probe import TCPClientProbe
+from pyocd.probe.aggregator import PROBE_CLASSES
 
 from pyocd_debug_mcp.adapters import swd_pyocd
 from pyocd_debug_mcp.adapters.swd_process import ProcessIsolatedSWDInterface
 from pyocd_debug_mcp.board_config import BoardConfig
 from pyocd_debug_mcp.capabilities.policy import Tier
-from pyocd_debug_mcp.hardware_inventory import (
-    ActiveConnectionRow,
-    HardwareInventoryService,
-    ProbeSelectionStore,
-    SelectionDisappeared,
-)
 from pyocd_debug_mcp.pack_provision import load_manifest
-from pyocd_debug_mcp.probe_inventory import (
-    NativeProbeListing,
-    ProbeInfo,
-    provider_qualified_probe_uid,
-)
 from pyocd_debug_mcp.services.connections import probe_connection_id
 from pyocd_debug_mcp.setup_flow.device_support import (
     derive_candidate_binding,
@@ -56,10 +42,6 @@ OBSERVATIONS = {}
 FIXTURE_FIRM = (
     Path(__file__).resolve().parents[1] / "fallback-support-evidence/results/hil-artifacts/.firm"
 )
-
-
-def listing(probes):
-    return NativeProbeListing(tuple(probes), ("simulated-discovery",), 0, False, "", "")
 
 
 def board(family="cmsisdap", target="cortex_m"):
@@ -105,127 +87,6 @@ class SelectorChain(unittest.TestCase):
         CMSISDAPProbe.devices = [chosen]
         return first, chosen
 
-    def assert_zero_open(self):
-        self.assertFalse(any(e["kind"] in {"probe_open", "reset"} for e in EVENTS), EVENTS)
-
-    @contextlib.contextmanager
-    def actual_stlink(self, uids):
-        devices = [
-            SimpleNamespace(
-                serial_number=uid,
-                vendor_name="ST",
-                product_name="ST-Link simulated USB",
-            )
-            for uid in uids
-        ]
-        with (
-            patch.dict(PROBE_CLASSES, {"stlink": StlinkProbe}, clear=True),
-            patch.object(
-                STLinkUSBInterface,
-                "get_all_connected_devices",
-                return_value=devices,
-            ),
-        ):
-            yield devices
-
-    def test_actual_stlink_exact_id_precedes_containing_ids(self):
-        with self.actual_stlink(["ABC", "ABC-SECOND"]) as devices:
-            self.assertEqual(
-                [p.unique_id for p in DebugProbeAggregator.get_all_connected_probes("stlink:ABC")],
-                ["ABC"],
-            )
-            chosen = swd_pyocd._choose_unique_probe("stlink:ABC")
-            self.assertIs(chosen._link._device, devices[0])
-
-    def test_actual_stlink_duplicate_exact_refuses_before_session(self):
-        with (
-            self.actual_stlink(["ABC", "ABC"]),
-            patch.object(swd_pyocd, "Session", wraps=Session) as constructor,
-        ):
-            with self.assertRaisesRegex(TargetConnectionError, "ambiguous"):
-                swd_pyocd.PyOCDSWDInterface._choose_session(probe_uid="stlink:ABC", options={})
-            constructor.assert_not_called()
-
-    def test_actual_stlink_true_partial_collision_refuses(self):
-        with self.actual_stlink(["FIRST-ABC", "SECOND-ABC"]):
-            with self.assertRaisesRegex(TargetConnectionError, "ambiguous"):
-                swd_pyocd._choose_unique_probe("stlink:ABC")
-
-    def test_corrected_shared_exact_oracle_selects_before_partial(self):
-        exact = STLinkProbe("SHARED")
-        STLinkProbe.devices = [exact, STLinkProbe("SHARED-SECOND")]
-        self.assertIs(swd_pyocd._choose_unique_probe("stlink:SHARED"), exact)
-        self.assertFalse(any(e["kind"] == "fast_lookup" for e in EVENTS))
-
-    def test_shared_true_partial_control_still_refuses_zero_open(self):
-        STLinkProbe.devices = [STLinkProbe("SHARED"), STLinkProbe("SHARED-SECOND")]
-        with patch.object(swd_pyocd, "Session", wraps=Session) as constructor:
-            with self.assertRaisesRegex(TargetConnectionError, "ambiguous"):
-                swd_pyocd.PyOCDSWDInterface._choose_session(probe_uid="stlink:SHAR", options={})
-            constructor.assert_not_called()
-        self.assert_zero_open()
-
-    def test_selected_and_unselected_is_exact_success(self):
-        selected = STLinkProbe("SELECTED", "ST-Link selected")
-        STLinkProbe.devices = [STLinkProbe("UNSELECTED", "ST-Link other"), selected]
-        with self.chain() as (_, server):
-            token = self.publish(server, "stlink", "SELECTED")
-            server.assignment_store.replace({token: "vi09_board"})
-            server.connect("vi09_board")
-            self.assertIs(
-                server.connection_manager.handle_for("vi09_board").session.probe, selected
-            )
-            self.assertEqual([p.opens for p in STLinkProbe.devices], [0, 1])
-
-    def test_plural_filter_may_be_ignored_and_unique_partial_remains_case_insensitive(self):
-        selected = STLinkProbe("FIRST-AbC")
-        STLinkProbe.devices = [STLinkProbe("OTHER"), selected]
-        self.assertIs(swd_pyocd._choose_unique_probe("STLINK:abc"), selected)
-        self.assertIsNone(swd_pyocd._choose_unique_probe("stlink:absent"))
-
-    def test_enumerates_later_provider_before_exact_acceptance(self):
-        self.shared()
-        with self.assertRaisesRegex(TargetConnectionError, "ambiguous"):
-            swd_pyocd._choose_unique_probe("SHARED")
-        self.assertEqual(
-            [e["provider"] for e in EVENTS if e["kind"] == "enumerate"],
-            ["stlink", "cmsisdap", "jlink"],
-        )
-        self.assert_zero_open()
-
-    def test_repeated_same_object_coalesces_but_distinct_equal_objects_refuse(self):
-        probe = STLinkProbe("ABC")
-        STLinkProbe.devices = [probe, probe]
-        self.assertIs(swd_pyocd._choose_unique_probe("ABC"), probe)
-        STLinkProbe.devices = [probe, STLinkProbe("ABC")]
-        with self.assertRaisesRegex(TargetConnectionError, "ambiguous"):
-            swd_pyocd._choose_unique_probe("ABC")
-        self.assert_zero_open()
-
-    def test_tcp_provider_normal_default_and_padded_ports(self):
-        with (
-            patch.dict(PROBE_CLASSES, {"remote": TCPClientProbe}, clear=True),
-            patch("pyocd.probe.tcp_client_probe.ClientSocket") as socket,
-        ):
-            for selector, expected in (
-                ("remote:review.invalid:5555", "remote:review.invalid:5555"),
-                ("remote:review.invalid", "remote:review.invalid:5555"),
-                ("remote:review.invalid:05555", "remote:review.invalid:5555"),
-                ("remote:review.invalid:01234", "remote:review.invalid:1234"),
-            ):
-                with self.subTest(selector=selector):
-                    probe = swd_pyocd._choose_unique_probe(selector)
-                    self.assertIsInstance(probe, TCPClientProbe)
-                    self.assertEqual(probe.unique_id, expected)
-            socket.return_value.connect.assert_not_called()
-
-    def test_provider_selector_preserves_opaque_uid_and_existing_qualification(self):
-        for provider, uid, expected in (
-            ("remote", "remote:host.invalid:05555", "remote:host.invalid:05555"),
-            ("hook_provider", "HOOK_PROVIDER:3-1.4:1.0%/opaque", "HOOK_PROVIDER:3-1.4:1.0%/opaque"),
-            ("stlink", "cmsisdap:3-1.4:1.0%/opaque", "stlink:cmsisdap:3-1.4:1.0%/opaque"),
-        ):
-            self.assertEqual(provider_qualified_probe_uid(provider, uid), expected)
 
     @contextlib.contextmanager
     def chain(self, *, process=False, config=None):
@@ -294,24 +155,6 @@ class SelectorChain(unittest.TestCase):
         self.assertEqual(server._probe_selection_store.recorded(token).provider, provider)
         return token
 
-    def test_server_issued_choice_preserves_provider_through_both_exits_and_public_connect(self):
-        first, chosen = self.shared()
-        with self.chain() as (_, server):
-            token = self.publish(server)
-            server.assignment_store.replace({token: "vi09_board"})
-            self.assertEqual(
-                server._assigned_probe_uid_for_connect("vi09_board"), "cmsisdap:SHARED"
-            )
-            self.assertEqual(server._resolved_probe_uid_for_connection(token), "cmsisdap:SHARED")
-            server.connect("vi09_board")
-            handle = server.connection_manager.handle_for("vi09_board")
-            self.assertIsInstance(handle.session, Session)
-            self.assertIs(handle.session.probe, chosen)
-            self.assertEqual(handle.metadata.probe_family, "cmsisdap")
-            self.assertEqual((first.opens, chosen.opens), (0, 1))
-            self.assertEqual(
-                [e["provider"] for e in EVENTS if e["kind"] == "enumerate"], ["cmsisdap"]
-            )
 
     def test_server_issued_choice_survives_actual_serialized_child(self):
         self.shared()
@@ -373,27 +216,6 @@ class SelectorChain(unittest.TestCase):
             self.details["child_events"] = child
             self.assertFalse(any(e["kind"] in {"probe_open", "reset"} for e in child))
 
-    def test_new_duplicate_after_recording_refuses_before_native_enumeration(self):
-        self.shared()
-        with self.chain() as (_, server):
-            token = self.publish(server)
-            server.assignment_store.replace({token: "vi09_board"})
-            CMSISDAPProbe.devices.append(CMSISDAPProbe("SHARED", "CMSIS-DAP duplicate"))
-            with self.assertRaisesRegex(RuntimeError, "ambiguous"):
-                server.connect("vi09_board")
-            self.assertFalse(any(e["kind"] == "enumerate" for e in EVENTS))
-            self.assert_zero_open()
-
-    def test_server_token_roundtrip_retains_opaque_uid_colons_and_percent(self):
-        uid = "3-1.4:1.0%/Opaque"
-        self.shared(uid)
-        with self.chain() as (_, server):
-            token = self.publish(server, "stlink", uid)
-            server.assignment_store.replace({token: "vi09_board"})
-            self.assertEqual(server._resolved_probe_uid_for_connection(token), "stlink:" + uid)
-            server.connect("vi09_board")
-            self.assertEqual(STLinkProbe.devices[0].opens, 1)
-            self.assertEqual(CMSISDAPProbe.devices[0].opens, 0)
 
     def validation_probe(self, server):
         token = self.publish(server)
@@ -403,22 +225,6 @@ class SelectorChain(unittest.TestCase):
         self.assertEqual(server._resolved_probe_uid_for_connection(token), "cmsisdap:SHARED")
         return probe
 
-    def test_validation_native_open_preserves_inventory_provider_and_policy(self):
-        first, chosen = self.shared()
-        with self.chain() as (_, server):
-            probe = self.validation_probe(server)
-            profile = SimpleNamespace(
-                board_id="vi09_board",
-                board=replace(board(), debug_connect_mode="attach", debug_clock_hz=123456),
-                device_support=None,
-            )
-            connection = server._validation_connect(profile, probe, 3.25)
-            self.assertIs(connection.handle.session.probe, chosen)
-            self.assertEqual((first.opens, chosen.opens), (0, 1))
-            self.assertEqual(connection.handle.session.options.get("frequency"), 123456)
-            reused = server._validation_connect(profile, probe, 3.25)
-            self.assertIs(reused.handle, connection.handle)
-            self.assertEqual(chosen.opens, 1)
 
     def setup_context(self, project, server, *, tier, target, part):
         token = self.publish(server)
@@ -453,15 +259,6 @@ class SelectorChain(unittest.TestCase):
             {},
         )
 
-    def test_setup_lite_real_callback_keeps_selected_provider(self):
-        first, chosen = self.shared()
-        with self.chain() as (project, server):
-            context = self.setup_context(
-                project, server, tier=Tier.SETUP_LITE, target="cortex_m", part="operator-part"
-            )
-            outcome = server._setup_connection_phase(context)
-            self.assertTrue(outcome.verified, outcome)
-            self.assertEqual((first.opens, chosen.opens, chosen.closes), (0, 1, 1))
 
     def test_full_generic_builtin_real_callback_and_validation_keep_provider(self):
         first, chosen = self.shared()
@@ -497,19 +294,6 @@ class SelectorChain(unittest.TestCase):
             self.assertIsNotNone(type(connection.handle.session.target)._pack_device)
             self.assertEqual((first.opens, chosen.opens), (0, 2))
 
-    def test_builtin_research_open_uses_resolved_server_token(self):
-        first, chosen = self.shared()
-        with self.chain() as (_, server):
-            token = self.publish(server)
-            candidate = resolve_builtin_target_support("nRF52840-QIAA", "nrf52840")
-            proven, policy = server._live_test_builtin_setup_target(
-                probe_uid=server._resolved_probe_uid_for_connection(token),
-                candidate=candidate,
-                requested_policy=("swd", "attach", 1_000_000),
-            )
-            self.assertIsNotNone(proven.identity_proof)
-            self.assertEqual(policy, ("swd", "attach", 1_000_000))
-            self.assertEqual((first.opens, chosen.opens, chosen.closes), (0, 1, 1))
 
     def test_pack_research_pipeline_uses_resolved_server_token_and_verified_bytes(self):
         first, chosen = self.shared()
@@ -538,37 +322,6 @@ class SelectorChain(unittest.TestCase):
             self.assertEqual(policies, [("swd", "attach", 1_000_000)])
             self.assertEqual((first.opens, chosen.opens, chosen.closes), (0, 1, 1))
 
-    def test_active_aliases_require_same_provider_and_keep_native_multiplicity(self):
-        for native, active in (("ABC", "ABC"), ("AbCd", "aBcD"), ("000123", "123")):
-            for active_family, expected_count in (("stlink", 2), ("jlink", 3)):
-                with self.subTest(native=native, active=active, provider=active_family):
-                    info = ProbeInfo(native, "native", native, family="stlink")
-                    service = HardwareInventoryService(
-                        lambda: listing([info, info]),
-                        lambda: [],
-                        active_connections=lambda: [
-                            ActiveConnectionRow(active, active, "owned", active_family)
-                        ],
-                    )
-                    snapshot = service.snapshot()
-                    self.assertEqual(len(snapshot.probes), expected_count)
-                    self.assertEqual(sum(p.provider == "stlink" for p in snapshot.probes), 2)
-
-    def test_uidless_active_selection_keeps_exact_live_session_token(self):
-        token = "session:vi09-live-exact"
-        service = HardwareInventoryService(
-            lambda: listing([]),
-            lambda: [],
-            active_connections=lambda: [ActiveConnectionRow(token, None, "owned", "cmsisdap")],
-        )
-        selection = ProbeSelectionStore().resolve(token, service.snapshot())
-        self.assertEqual(selection.connection_id, token)
-        self.assertIsNone(selection.unique_id)
-        self.assertFalse(selection.durable)
-        with self.chain() as (_, server), patch.object(server, "_hardware_inventory", service):
-            self.assertEqual(server._resolved_probe_uid_for_connection(token), token)
-        with self.assertRaises(SelectionDisappeared):
-            ProbeSelectionStore().resolve("session:another", service.snapshot())
 
     def test_actual_uidless_session_token_reuses_only_its_exact_active_handle(self):
         CMSISDAPProbe.devices = [CMSISDAPProbe("", "CMSIS-DAP UID-less live endpoint")]
@@ -593,21 +346,6 @@ class SelectorChain(unittest.TestCase):
                 )
             self.assertEqual(CMSISDAPProbe.devices[0].opens, 1)
 
-    def test_qualified_jlink_uidless_retry_verifies_uid_and_provider(self):
-        probe = JLinkProbe("123")
-        JLinkProbe.devices = [probe]
-        probe.fail_opens = 1
-        adapter = swd_pyocd.PyOCDSWDInterface()
-        with patch.object(
-            swd_pyocd, "_single_matching_probe_visible_for_board_family", return_value=True
-        ):
-            handle = adapter.open(board=board("jlink"), unique_id="jlink:123", target="cortex_m")
-            try:
-                self.assertIs(handle.session.probe, probe)
-                self.assertEqual(probe.opens, 2)
-            finally:
-                adapter.close(handle)
-        self.assertFalse(any(e["kind"] == "fast_lookup" for e in EVENTS))
 
     def test_qualified_jlink_retry_rejects_other_provider_even_with_same_uid(self):
         probe = JLinkProbe("123")

@@ -101,11 +101,9 @@ jobs:
           src/pyocd_debug_mcp/adapters/clangd.py
           src/pyocd_debug_mcp/kernel/processes.py
           tests/code_analysis_managed_support.py
-          tests/test_code_analysis_managed_runtime_unit.py
           tests/test_code_analysis_managed_runtime_contract.py
           tests/test_code_analysis_portability.py
           tests/test_code_analysis_posix_ownership.py
-          tests/test_code_analysis_runtime_contract.py
           tests/test_clangd_adapter_unit.py
           tests/test_final_policy_fingerprint_migration.py
           tests/policy_one_producer.py

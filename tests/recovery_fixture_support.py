@@ -1,15 +1,7 @@
 """Shared recovery fixture support fixtures; no collected cases."""
 
 from __future__ import annotations
-import asyncio
-from contextlib import contextmanager
-from unittest.mock import patch
-from mcp import types as mcp_types
-from tests.tiered_acceptance_support import (
-    DeterministicTargetBackend,
-    isolated_project,
-    tiered_test_server,
-)
+from tests.tiered_acceptance_support import DeterministicTargetBackend
 import subprocess
 import sys
 from typing import Any, NamedTuple
@@ -139,44 +131,6 @@ def _configure_public_native_lite(
     handle = backend.open(board=None, unique_id="recovery-probe", target="nrf52840")
     server._promote_open_session(BOARD, handle, gate_reason="acceptance recovery fixture")
     return manual
-
-
-def _public_disclosure_and_reservation(
-    testcase: unittest.TestCase,
-    server: Any,
-    manual: ManualPermissionRepository,
-) -> dict[str, object]:
-    """Walk the public disclosure -> human grant -> one-time reservation protocol."""
-
-    public_text(server, "target_unlock-plan", _unlock_null_fields())
-    disclosure = _public_json_reply(server, "target_unlock-plan", _unlock_fields(permission=None))
-    testcase.assertEqual(disclosure["status"], "unlock_permission_requested", disclosure)
-    grant = disclosure.get("manual_grant")
-    testcase.assertIsInstance(grant, dict, disclosure)
-    assert isinstance(grant, dict)
-    testcase.assertEqual(grant.get("action"), "mass-erase", grant)
-    testcase.assertEqual(grant.get("state"), "locked", grant)
-    policy_digest = grant.get("policy_digest")
-    binding_digest = grant.get("binding_digest")
-    testcase.assertIsInstance(policy_digest, str, grant)
-    testcase.assertIsInstance(binding_digest, str, grant)
-    assert isinstance(policy_digest, str)
-    assert isinstance(binding_digest, str)
-    # This models the separately invoked workspace skill's persisted result;
-    # the server itself never invents a human grant.
-    manual.write_unlocked_grant(
-        action="mass-erase",
-        grant_id="recovery-grant",
-        board_id=BOARD,
-        policy_digest=policy_digest,
-        binding_digest=binding_digest,
-    )
-    approved = _public_json_reply(
-        server, "target_unlock-plan", _unlock_fields(permission="one-time")
-    )
-    testcase.assertEqual(approved["status"], "unlock_plan_approved", approved)
-    testcase.assertEqual(manual.status("mass-erase").state, "reserved")
-    return disclosure
 
 
 OBSERVATIONS: dict[str, object] = {}
@@ -334,71 +288,3 @@ def _assert_closed(
     _assert_no_replay(testcase, manual, spent)
 
 
-PERSISTENCE_ERROR = "private retirement persistence detail that must not reach the client"
-
-
-class _ObservedBackend(DeterministicTargetBackend):
-    """Record the actual durable authority and readiness at simulated backend entry."""
-
-    def recover(self, handle: Any) -> None:
-        record = self.manual.status("mass-erase")
-        assert record.state == "consumed"
-        assert record.claim_id == self.spent.claim_id
-        assert record.grant_id == self.spent.grant_id
-        assert self.server.gate_manager.snapshot(BOARD) is None
-        self.boundary.append({"state": record.state, "claim": record.claim_id})
-        super().recover(handle)
-
-
-@contextmanager
-def _configured(error: BaseException):
-    with isolated_project() as root, tiered_test_server(root) as server:
-        backend = _ObservedBackend(recovery_supported=True, recover_error=error)
-        manual = _configure_public_native_lite(server, root, backend)
-        backend.manual, backend.server, backend.boundary = manual, server, []
-        try:
-            spent = _grant_and_reserve(unittest.TestCase(), server, manual)
-            backend.spent = spent
-            connection = server.connection_manager.connection_for(BOARD)
-            server.gate_manager.stamp_validation(
-                board_id=BOARD,
-                connection_id=connection.connection_id,
-                probe_identity=connection.handle.probe_uid,
-                observed_mcu="nrf52840",
-                validation_run="diagnostic-readiness-control",
-                map_digest=server._active_snapshot_aggregate(BOARD),
-            )
-            assert server.gate_manager.snapshot(BOARD) is not None
-            yield root, server, backend, manual, spent
-        finally:
-            _release(server)
-
-
-def _mcp_response(server: Any):
-    request = mcp_types.CallToolRequest(
-        method="tools/call",
-        params=mcp_types.CallToolRequestParams(name="target_unlock", arguments=dict(UNLOCK)),
-    )
-    handler = server.mcp._mcp_server.request_handlers[mcp_types.CallToolRequest]
-    response = asyncio.run(handler(request))
-    text = "\n".join(getattr(block, "text", "") for block in response.root.content)
-    return response, text
-
-
-@contextmanager
-def _retirement_write_fault(manual: Any, *, after_commit: bool = False):
-    """Reach the real retirement protocol, faulting only its locked-record write."""
-
-    original = manual._atomic_write
-    attempts = []
-
-    def write(path: Path, document: dict[str, Any]) -> None:
-        if path == manual._action_path("mass-erase") and document["state"] == "locked":
-            attempts.append(document["state"])
-            if after_commit:
-                original(path, document)
-            raise OSError(PERSISTENCE_ERROR)
-        original(path, document)
-
-    with patch.object(manual, "_atomic_write", side_effect=write):
-        yield attempts

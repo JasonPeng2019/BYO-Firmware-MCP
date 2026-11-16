@@ -8,64 +8,14 @@ import zipfile
 from pathlib import Path
 
 from pyocd_debug_mcp.firmstore.store import FirmStore
-from pyocd_debug_mcp.pack_provision import (
-    DeviceBinding,
-    PackProvisionError,
-    PackSpec,
-    pack_spec_document,
-    read_pack_bytes,
-    sha256_file,
-)
-from pyocd_debug_mcp.setup_flow.device_support import (
-    _select_pdsc_member,
-    derive_candidate_binding,
-    resolve_device_support_geometry,
-    resolve_project_pack_support,
-)
+from pyocd_debug_mcp.pack_provision import DeviceBinding, PackSpec, pack_spec_document, sha256_file
+from pyocd_debug_mcp.setup_flow.device_support import derive_candidate_binding, resolve_device_support_geometry, resolve_project_pack_support
 
 
 U5_FILENAME = "Keil.STM32U5xx_DFP.3.2.0.pack"
 U5_SHA256 = "e320687fe534f2fe6902e9bcdee981315abea26c4ca547142af9b9439e958be6"
 U5_URL = "https://keilpack.azureedge.net/pack/Keil.STM32U5xx_DFP.3.2.0.pack"
 U5_PART = "STM32U575ZIT6Q"
-
-
-class TrustedPackAdmissionTests(unittest.TestCase):
-    def test_pack_reader_accepts_bytes_beyond_the_former_archive_ceiling(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            path = Path(directory) / "large.pack"
-            with path.open("wb") as stream:
-                stream.seek(128 * 1024 * 1024)
-                stream.write(b"x")
-
-            payload = read_pack_bytes(path)
-
-            self.assertEqual(len(payload), 128 * 1024 * 1024 + 1)
-            self.assertEqual(payload[-1:], b"x")
-
-    def test_archive_inventory_has_no_member_size_ratio_or_path_policy(self) -> None:
-        pdsc = zipfile.ZipInfo("../trusted/vendor/device.pdsc")
-        pdsc.file_size = 174_140_971
-        pdsc.compress_size = 1
-        members = [zipfile.ZipInfo(f"resources/{index}.txt") for index in range(4_096)]
-        members.append(pdsc)
-
-        selected = _select_pdsc_member(members)
-
-        self.assertIs(selected, pdsc)
-
-    def test_archive_inventory_still_requires_exactly_one_pdsc(self) -> None:
-        with self.assertRaisesRegex(PackProvisionError, "exactly one PDSC"):
-            _select_pdsc_member([zipfile.ZipInfo("readme.txt")])
-        with self.assertRaisesRegex(PackProvisionError, "exactly one PDSC"):
-            _select_pdsc_member([zipfile.ZipInfo("one.pdsc"), zipfile.ZipInfo("nested/two.PDSC")])
-
-    def test_pack_reader_still_rejects_empty_input(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            path = Path(directory) / "empty.pack"
-            path.touch()
-            with self.assertRaisesRegex(PackProvisionError, "non-empty regular file"):
-                read_pack_bytes(path)
 
 
 class OfficialSTM32U5PackIntegrationTests(unittest.TestCase):

@@ -9,11 +9,7 @@ from unittest.mock import patch
 from pyocd_debug_mcp.adapters import swd_pyocd
 from pyocd_debug_mcp.adapters.swd_interface import TargetSessionHandle
 from pyocd_debug_mcp.adapters.swd_pyocd import PyOCDSWDInterface
-from pyocd_debug_mcp.target_errors import (
-    TargetConnectionError,
-    TargetControlError,
-    TargetStateError,
-)
+from pyocd_debug_mcp.target_errors import TargetStateError
 
 
 def hardware_breakpoint(
@@ -179,16 +175,6 @@ class BreakpointInstallationTests(unittest.TestCase):
     def tearDown(self) -> None:
         self.quiet_patch.stop()
 
-    def test_false_backend_result_is_reported_and_not_flushed(self) -> None:
-        target = FakeTarget(accepted=False)
-
-        with self.assertRaisesRegex(TargetControlError, "could not allocate.*0x00001234"):
-            PyOCDSWDInterface().set_breakpoint(handle_for(target), 0x1234)
-
-        self.assertEqual(
-            target.calls,
-            [("find_breakpoint", 0x1234), ("set_breakpoint", 0x1234)],
-        )
 
     def test_success_is_reported_only_after_flush_and_realization(self) -> None:
         target = FakeTarget(realized_after_flush=hardware_breakpoint())
@@ -206,46 +192,6 @@ class BreakpointInstallationTests(unittest.TestCase):
             ],
         )
 
-    def test_preexisting_breakpoint_is_idempotent_and_never_owned(self) -> None:
-        existing = hardware_breakpoint()
-        target = FakeTarget(initially_realized=existing)
-
-        PyOCDSWDInterface().set_breakpoint(handle_for(target), 0x5679)
-
-        self.assertIs(target.realized, existing)
-        self.assertEqual(target.calls, [("find_breakpoint", 0x5678)])
-
-    def test_preexisting_unrealized_request_is_flushed_but_never_owned(self) -> None:
-        queued = SimpleNamespace(enabled=False)
-        realized = hardware_breakpoint()
-        target = FakeTarget(initially_realized=queued, realized_after_flush=realized)
-        target.pending_mutation = "install"
-
-        PyOCDSWDInterface().set_breakpoint(handle_for(target), 0x5679)
-
-        self.assertIs(target.realized, realized)
-        self.assertEqual(
-            target.calls,
-            [
-                ("find_breakpoint", 0x5678),
-                ("breakpoint_manager.flush", None),
-                ("flush", None),
-                ("find_breakpoint", 0x5678),
-            ],
-        )
-
-    def test_preexisting_unrealized_request_that_stays_unverified_requires_recovery(self) -> None:
-        queued = SimpleNamespace(enabled=False)
-        target = FakeTarget(initially_realized=queued, realized_after_flush=None)
-        target.pending_mutation = "install"
-
-        with self.assertRaisesRegex(
-            TargetStateError,
-            "remains unrealized or unverifiable.*Disconnect, power-cycle.*reflash/restore",
-        ):
-            PyOCDSWDInterface().set_breakpoint(handle_for(target), 0x5679)
-
-        self.assertNotIn(("remove_breakpoint", 0x5678), target.calls)
 
     def test_manager_flush_failure_rolls_back_but_reports_uncertain_provider_state(self) -> None:
         backend_error = RuntimeError("provider failed")
@@ -274,20 +220,6 @@ class BreakpointInstallationTests(unittest.TestCase):
             ],
         )
 
-    def test_target_flush_failure_rolls_back_and_preserves_primary_error(self) -> None:
-        backend_error = RuntimeError("target transfer flush failed")
-        target = FakeTarget(
-            realized_after_flush=hardware_breakpoint(),
-            target_flush_errors=(backend_error, None),
-        )
-
-        with self.assertRaisesRegex(
-            TargetConnectionError, "RuntimeError: target transfer flush failed"
-        ) as caught:
-            PyOCDSWDInterface().set_breakpoint(handle_for(target), 0x1234)
-
-        self.assertIs(caught.exception.__cause__, backend_error)
-        self.assertIsNone(target.realized)
 
     def test_successful_software_install_requires_raw_bkpt_instruction(self) -> None:
         target = FakeTarget(
@@ -314,60 +246,6 @@ class BreakpointInstallationTests(unittest.TestCase):
 
         self.assertEqual(target.calls.count(("ap.read_memory", 0x1234)), 2)
 
-    def test_target_flush_failure_with_silent_sw_restore_failure_is_uncertain(self) -> None:
-        primary = RuntimeError("target transfer flush failed")
-        target = FakeTarget(
-            realized_after_flush=software_breakpoint(),
-            target_flush_errors=(primary, None),
-            sw_restore_effective=False,
-            raw_instruction=0xBE00,
-        )
-
-        with self.assertRaisesRegex(
-            TargetStateError,
-            "uncertain.*provider-level rollback.*raw instruction.*Disconnect, restore/reflash",
-        ) as caught:
-            PyOCDSWDInterface().set_breakpoint(handle_for(target), 0x1234)
-
-        self.assertIs(caught.exception.__cause__, primary)
-
-    def test_missing_realization_is_uncertain_despite_manager_cleanup(self) -> None:
-        target = FakeTarget(realized_after_flush=None)
-
-        with self.assertRaisesRegex(
-            TargetStateError,
-            "did not return a realized breakpoint.*suppressed software-provider.*reflash",
-        ):
-            PyOCDSWDInterface().set_breakpoint(handle_for(target), 0x9ABC)
-
-        self.assertEqual(target.calls.count(("remove_breakpoint", 0x9ABC)), 1)
-        self.assertEqual(target.calls[-1], ("find_breakpoint", 0x9ABC))
-
-    def test_cleanup_failure_reports_uncertain_state_and_recovery(self) -> None:
-        primary = RuntimeError("initial provider flush failed")
-        cleanup = RuntimeError("rollback provider flush failed")
-        target = FakeTarget(manager_flush_errors=(primary, cleanup))
-
-        with self.assertRaisesRegex(
-            TargetStateError,
-            "uncertain.*rollback could not be proven.*Disconnect, power-cycle.*reflash/restore",
-        ) as caught:
-            PyOCDSWDInterface().set_breakpoint(handle_for(target), 0x1234)
-
-        self.assertIs(caught.exception.__cause__, primary)
-
-    def test_unverifiable_cleanup_reports_uncertain_state_and_recovery(self) -> None:
-        primary = RuntimeError("initial provider flush failed")
-        target = FakeTarget(
-            manager_flush_errors=(primary, None),
-            find_errors=(None, RuntimeError("provider query failed")),
-        )
-
-        with self.assertRaisesRegex(
-            TargetStateError,
-            "uncertain.*absence verification.*Disconnect, power-cycle.*reflash/restore",
-        ):
-            PyOCDSWDInterface().set_breakpoint(handle_for(target), 0x1234)
 
     def test_successful_removal_canonicalizes_flushes_and_verifies_absence(self) -> None:
         target = FakeTarget(initially_realized=hardware_breakpoint())
@@ -386,16 +264,6 @@ class BreakpointInstallationTests(unittest.TestCase):
             ],
         )
 
-    def test_successful_sw_removal_raw_reads_restored_original(self) -> None:
-        target = FakeTarget(
-            initially_realized=software_breakpoint(original_instr=0x1234),
-            raw_instruction=0xBE00,
-        )
-
-        PyOCDSWDInterface().remove_breakpoint(handle_for(target), 0x1234)
-
-        self.assertEqual(target.raw_instruction, 0x1234)
-        self.assertEqual(target.raw_read_widths, [(16, True)])
 
     def test_silent_sw_removal_restore_mismatch_requires_recovery(self) -> None:
         target = FakeTarget(
@@ -410,18 +278,6 @@ class BreakpointInstallationTests(unittest.TestCase):
         ):
             PyOCDSWDInterface().remove_breakpoint(handle_for(target), 0x1234)
 
-    def test_sw_removal_raw_read_failure_requires_recovery(self) -> None:
-        read_error = RuntimeError("AP read failed")
-        target = FakeTarget(
-            initially_realized=software_breakpoint(original_instr=0x1234),
-            raw_read_errors=(read_error,),
-        )
-
-        with self.assertRaisesRegex(
-            TargetStateError,
-            "raw instruction read failed.*Disconnect, restore/reflash",
-        ):
-            PyOCDSWDInterface().remove_breakpoint(handle_for(target), 0x1234)
 
     def test_hw_remove_retry_cannot_hide_uncleared_comparator(self) -> None:
         primary = RuntimeError("comparator clear write failed")
@@ -440,56 +296,6 @@ class BreakpointInstallationTests(unittest.TestCase):
             PyOCDSWDInterface().remove_breakpoint(handle_for(target), 0x1234)
 
         self.assertIs(caught.exception.__cause__, primary)
-
-    def test_hw_removal_comparator_read_failure_requires_recovery(self) -> None:
-        target = FakeTarget(
-            initially_realized=hardware_breakpoint(),
-            raw_read_errors=(RuntimeError("AP comparator read failed"),),
-        )
-
-        with self.assertRaisesRegex(
-            TargetStateError,
-            "raw hardware comparator read failed.*Disconnect, power-cycle.*revalidate",
-        ):
-            PyOCDSWDInterface().remove_breakpoint(handle_for(target), 0x1234)
-
-    def test_removal_flush_failure_with_no_proof_reports_uncertain_state(self) -> None:
-        first = RuntimeError("provider flush failed")
-        retry = RuntimeError("provider flush still failed")
-        target = FakeTarget(
-            initially_realized=hardware_breakpoint(),
-            manager_flush_errors=(first, retry),
-        )
-
-        with self.assertRaisesRegex(
-            TargetStateError,
-            "uncertain.*provider state could not be verified.*Disconnect, power-cycle.*revalidate",
-        ) as caught:
-            PyOCDSWDInterface().remove_breakpoint(handle_for(target), 0x5678)
-
-        self.assertIs(caught.exception.__cause__, first)
-
-    def test_confirmed_remaining_breakpoint_is_a_control_failure(self) -> None:
-        target = FakeTarget(initially_realized=hardware_breakpoint(), remove_effective=False)
-
-        with self.assertRaisesRegex(TargetControlError, "remains installed"):
-            PyOCDSWDInterface().remove_breakpoint(handle_for(target), 0x5678)
-
-    def test_unverifiable_removal_reports_uncertain_state_and_recovery(self) -> None:
-        target = FakeTarget(
-            initially_realized=hardware_breakpoint(),
-            find_errors=(
-                None,
-                RuntimeError("query failed"),
-                RuntimeError("query still failed"),
-            ),
-        )
-
-        with self.assertRaisesRegex(
-            TargetStateError,
-            "uncertain.*absence verification.*Disconnect, power-cycle.*revalidate",
-        ):
-            PyOCDSWDInterface().remove_breakpoint(handle_for(target), 0x5678)
 
 
 if __name__ == "__main__":

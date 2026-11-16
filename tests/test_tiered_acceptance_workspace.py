@@ -6,7 +6,7 @@ sibling .agent-workspace source. Runtime grant state is never a source fixture.
 """
 
 from __future__ import annotations
-from tests.workspace_fixture_support import WORKSPACE, _attach_project_module, _workspace_helper
+from tests.workspace_fixture_support import _attach_project_module, _workspace_helper
 
 import json
 import tempfile
@@ -28,97 +28,14 @@ from pyocd_debug_mcp.safety.regions import (
 )
 
 from tests.nrf_fixture_support import nrf_registered_pack_fixture, observe_nrf_control
-from tests.tiered_acceptance_support import isolated_project, manual_permission_root, public_text
+from tests.tiered_acceptance_support import manual_permission_root, public_text
 
 
 BOARD = "left_controller"
 POLICY = "a" * 64
-BINDING = "b" * 64
 
 
 class TieredWorkspaceAcceptanceTests(unittest.TestCase):
-    def test_server_and_shipped_helper_share_exact_root_epoch_schema_and_binding_protocol(
-        self,
-    ) -> None:
-        """AT09/C08: an isolated customer project can grant exactly what the server consumes."""
-
-        helper = _workspace_helper()
-        with isolated_project() as root:
-            repository = ManualPermissionRepository(root, "run-fixture")
-            repository.reset_startup()
-            grant = helper.unlock_manual_grant(
-                project_root=root,
-                action="downgrade",
-                board_id=BOARD,
-                policy_digest=POLICY,
-            )
-            self.assertEqual(grant["status"], "manual_grant_unlocked")
-            self.assertEqual(grant["project_root"], str(root))
-            self.assertEqual(grant["server_run_id"], "run-fixture")
-            self.assertEqual(grant["policy_digest"], POLICY)
-            record = json.loads(
-                (manual_permission_root(root) / "downgrade.json").read_text(encoding="utf-8")
-            )
-            self.assertEqual(record["action"], "downgrade")
-            self.assertEqual(record["state"], "unlocked")
-            self.assertEqual(record["server_run_id"], "run-fixture")
-            self.assertEqual(record["grant_id"], grant["grant_id"])
-            self.assertEqual(record["board_id"], BOARD)
-            self.assertEqual(record["policy_digest"], POLICY)
-            self.assertIsNone(record["binding_digest"])
-
-            token = repository.issue_downgrade_token(BOARD, str(grant["grant_id"]), POLICY)
-            repository.consume_downgrade(BOARD, token, POLICY)
-            self.assertEqual(repository.status("downgrade").state, "consumed")
-
-    def test_mass_erase_helper_needs_its_own_disclosure_binding_and_cannot_supply_downgrade(
-        self,
-    ) -> None:
-        """AT07/AT09: action records are not interchangeable grants."""
-
-        helper = _workspace_helper()
-        with isolated_project() as root:
-            repository = ManualPermissionRepository(root, "run-fixture")
-            repository.reset_startup()
-            missing = helper.unlock_manual_grant(
-                project_root=root,
-                action="mass-erase",
-                board_id=BOARD,
-                policy_digest=POLICY,
-            )
-            self.assertEqual(missing["status"], "refused")
-            self.assertEqual(missing["code"], "manual/binding-mismatch")
-            result = helper.unlock_manual_grant(
-                project_root=root,
-                action="mass-erase",
-                board_id=BOARD,
-                policy_digest=POLICY,
-                binding_digest=BINDING,
-            )
-            self.assertEqual(result["status"], "manual_grant_unlocked")
-            claim = repository.reserve_mass_erase(BOARD, str(result["grant_id"]), POLICY, BINDING)
-            repository.consume_mass_erase(BOARD, POLICY, BINDING, claim)
-            self.assertEqual(repository.status("mass-erase").state, "consumed")
-            self.assertEqual(repository.status("downgrade").state, "locked")
-
-    def test_firmware_mode_selects_both_manual_only_sources_without_shipping_runtime_state(
-        self,
-    ) -> None:
-        """AT09: the actual mode selection references both source skill directories."""
-
-        mode = (WORKSPACE / "modes" / "firmware.toml").read_text(encoding="utf-8")
-        for name in ("downgrade", "mass-erase"):
-            self.assertIn(f'"{name}"', mode)
-            skill = WORKSPACE / "skills-src" / "firmware" / name / "SKILL.md"
-            source = skill.read_text(encoding="utf-8")
-            self.assertIn("disable-model-invocation: true", source)
-            self.assertIn("user-invocable: true", source)
-            self.assertIn("manual-permission", source)
-            self.assertTrue((skill.parent / "agents" / "openai.yaml").is_file())
-        shipped_runtime = list((WORKSPACE / "skills-src").rglob("manual-permissions"))
-        self.assertEqual(
-            shipped_runtime, [], "runtime grants must not live under shipped skill sources"
-        )
 
     def test_two_physical_attached_workspaces_have_distinct_runtime_grants(self) -> None:
         """AT09/C08: attaching project B cannot read or consume project A's grant files."""

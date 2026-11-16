@@ -27,8 +27,6 @@ from typing import Any
 from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[1]
-# Deep lane roots can push the staged clangd.exe past CreateProcess MAX_PATH;
-# runners may select a shorter owned evidence root.
 EVIDENCE = Path(
     os.environ.get("BYO_MANAGED_TEST_EVIDENCE")
     or ROOT / ".agent-workspace" / "managed-R1-final-evidence"
@@ -355,22 +353,6 @@ class RuntimeFixture:
     def save_manifest(self) -> None:
         write_json(self.manifest_path, self.manifest)
 
-    def save_sbom(self) -> None:
-        write_json(self.sbom_path, self.sbom)
-        self.inventory_entry("sbom.cdx.json").update(
-            sha256=digest(self.sbom_path), size=self.sbom_path.stat().st_size
-        )
-        self.save_manifest()
-
-    def replace_mapping(self, value: Any) -> None:
-        if isinstance(value, bytes):
-            self.mapping_path.write_bytes(value)
-        else:
-            write_json(self.mapping_path, value)
-        self.inventory_entry("analysis/runtime.json").update(
-            sha256=digest(self.mapping_path), size=self.mapping_path.stat().st_size
-        )
-        self.save_manifest()
 
     def context(self, project: Path, managed: bool = True) -> Any:
         return production("code_analysis_runtime").AnalysisRuntimeContext(
@@ -704,14 +686,6 @@ class ManagedCase(unittest.TestCase):
             context or self.context, name, time.monotonic() + budget
         )
 
-    def assert_usable(self, program: Any, name: str = "clangd") -> None:
-        self.assertIsNotNone(program.executable, program)
-        self.assertFalse(program.problems, program)
-        self.assertEqual(program.origin, "managed_runtime", program)
-        self.assertEqual(
-            Path(program.executable).resolve(),
-            (self.fixture.root / self.fixture.mapping["programs"][name]["executable"]).resolve(),
-        )
 
     def observer(self) -> OwnedSpawns:
         return OwnedSpawns(self.base, protocol_redirect(self.fixture, self.fake))
@@ -764,10 +738,6 @@ class ManagedCase(unittest.TestCase):
         )
         self.addCleanup(service.shutdown)
         return service
-
-
-def staged_runtime(root: Path) -> dict:
-    return RuntimeFixture(root).mapping
 
 
 def native_retained_exit(pid: int) -> tuple[int, int, int] | None:

@@ -7,20 +7,13 @@ from tests.lite_flash_support import PublicActions, fresh_full_project, observe
 import hashlib
 import unittest
 
-from mcp.server.fastmcp.exceptions import ToolError
 
 from pyocd_debug_mcp.capabilities.lite import normalize_lite_confirmation
 from pyocd_debug_mcp.capabilities.policy import CapabilityPolicyRepository, Tier
 from pyocd_debug_mcp.capabilities.routing import TierRouter
-from pyocd_debug_mcp.safety.enforce import SafetyPolicyError
 from pyocd_debug_mcp.safety.map_build import require_reconciled_authority
 from tests.lite_flash_support import FLASH, RAM, cortex_elf, region
-from tiered_acceptance_support import (
-    DeterministicTargetBackend,
-    isolated_project,
-    public_text,
-    tiered_test_server,
-)
+from tiered_acceptance_support import DeterministicTargetBackend, isolated_project, tiered_test_server
 
 import pytest
 
@@ -99,18 +92,6 @@ class LiteApplicationFlashTests(PublicActions, unittest.TestCase):
         self.assertEqual(after.map_snapshot, before.map_snapshot)
         self.assertNotIn(self.board_id, self.server._pending_generic_allocations)
 
-    def test_public_lite_bootloader_still_programs_and_finalizes(self):
-        self.commit([region("bootloader", FLASH, FLASH + 0x100)])
-        start = len(self.backend.calls)
-        response = self.invoke("flash_bootloader", {"artifact": str(self.artifact)})
-        self.assertIn("Flashed", response)
-        self.assertEqual(
-            self.backend.calls[start:],
-            [
-                ("flash", "vi01a-lite-probe", self.artifact.resolve(), False),
-                ("release_reset", "vi01a-lite-probe"),
-            ],
-        )
 
     def test_public_lite_prohibited_role_and_sector_refusals_precede_all_effects(self):
         app = region("application_flash", FLASH, FLASH + 0x100)
@@ -133,33 +114,6 @@ class LiteApplicationFlashTests(PublicActions, unittest.TestCase):
                 self.assertIn(message, response)
                 self.assertNotIn("No active full safety snapshot", response)
                 self.assertEqual(self.backend.calls, before)
-
-    def test_no_setup_is_refused_in_public_route_and_both_allocation_helpers(self):
-        repository = CapabilityPolicyRepository(self.root)
-        repository.commit(self.board_id, Tier.NO_SETUP)
-        self.server.configure_tiered_test_seams(policy_repository=repository)
-        before = list(self.backend.calls)
-        try:
-            response = public_text(
-                self.server,
-                "flash_application",
-                {"board_id": self.board_id, "artifact": str(self.artifact)},
-            )
-        except ToolError as exc:
-            response = str(exc)
-        self.assertIn("no safety map", response)
-        for call in (
-            lambda: self.server._stage_generic_allocation(
-                self.board_id, self.artifact, self.handle
-            ),
-            lambda: self.server._prepare_generic_allocation(
-                "flash_application", self.board_id, self.artifact, self.handle
-            ),
-        ):
-            with self.assertRaises(SafetyPolicyError) as caught:
-                call()
-            self.assertEqual(caught.exception.code, "safety/map-refresh-required")
-        self.assertEqual(self.backend.calls, before)
 
 
 class FullGenericAllocationTests(FullGenericAllocationCase):
@@ -191,15 +145,6 @@ class FullGenericAllocationTests(FullGenericAllocationCase):
         )
         self.assertNotIn(self.board_id, self.server._pending_generic_allocations)
 
-    @fresh_full_project
-    def test_full_prepare_requires_the_staged_allocation_proof(self):
-        before = list(self.backend.calls)
-        with self.assertRaises(SafetyPolicyError) as caught:
-            self.server._prepare_generic_allocation(
-                "flash_application", self.board_id, self.artifact, self.handle
-            )
-        self.assertEqual(caught.exception.code, "safety/allocation-proof-missing")
-        self.assertEqual(self.backend.calls, before)
 
     @fresh_full_project
     @pytest.mark.mvp

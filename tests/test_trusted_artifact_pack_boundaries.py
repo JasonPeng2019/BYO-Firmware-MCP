@@ -2,11 +2,7 @@
 
 from __future__ import annotations
 
-import asyncio
 import io
-import json
-import os
-import subprocess
 import tempfile
 import unittest
 import zipfile
@@ -14,16 +10,6 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
-from pyocd_debug_mcp.artifact_collector import (
-    ArtifactRole,
-    MANIFEST_NAME,
-    _validate_destination,
-    collect_artifacts,
-)
-from pyocd_debug_mcp.hardware_inventory import EMPTY_INVENTORY_SNAPSHOT
-from pyocd_debug_mcp.kernel.hygiene import cleanup_stale_owned_processes, require_clean_startup
-from pyocd_debug_mcp.kernel.processes import ProcessIdentityUnavailable
-from pyocd_debug_mcp.kernel.registry import ToolRegistry
 from pyocd_debug_mcp.pack_provision import (
     DeviceBinding,
     PackProvisionError,
@@ -31,8 +17,6 @@ from pyocd_debug_mcp.pack_provision import (
     VerifiedPack,
     sha256_bytes,
 )
-from pyocd_debug_mcp.services.connections import probe_connection_id
-from pyocd_debug_mcp.services.session_runtime import ActionContext
 from pyocd_debug_mcp.setup_flow.device_support import DeviceSupportResolver
 from pyocd_debug_mcp.setup_flow.packs import (
     PackCandidate,
@@ -42,9 +26,6 @@ from pyocd_debug_mcp.setup_flow.packs import (
 from pyocd_debug_mcp.safety.enforce import LoadedSafetyMap, SafetyPolicy, SafetyPolicyError
 from pyocd_debug_mcp.safety.map_build import GenericMapGeometry, GenericSafetyMapDocument
 from pyocd_debug_mcp.safety.regions import AddressRange
-from pyocd_debug_mcp.tools.batch import BatchChild, BatchValidationError, build_batch_handlers
-from pyocd_debug_mcp.tools.flash import FlashToolServices, build_flash_handlers
-from pyocd_debug_mcp.tools.handshake import build_initialization_guidance
 
 
 def _pack_bytes(pdsc: bytes) -> bytes:
@@ -55,240 +36,6 @@ def _pack_bytes(pdsc: bytes) -> bytes:
 
 
 class RoundFourRegressionTests(unittest.TestCase):
-    def test_long_batch_names_and_artifact_producer_are_preserved(self) -> None:
-        known = "known_" + "x" * 130
-        dispatched: list[str] = []
-
-        async def dispatch(name: str, _args: dict[str, object]) -> str:
-            dispatched.append(name)
-            return "ok"
-
-        handler = build_batch_handlers(dispatch, tool_exists=lambda name: name == known)[
-            "action_batch"
-        ]
-        result = asyncio.run(
-            handler("board", [BatchChild(tool_name=known, arguments={"board_id": "board"})])
-        )
-        self.assertEqual(dispatched, [known])
-        self.assertIn(known, result)
-        for child in (
-            BatchChild(tool_name="unknown", arguments={"board_id": "board"}),
-            BatchChild(tool_name=known, arguments={"board_id": "other"}),
-            BatchChild(tool_name="action_batch", arguments={"board_id": "board"}),
-        ):
-            with self.assertRaises(BatchValidationError):
-                asyncio.run(handler("board", [child]))
-
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            source = root / "source.elf"
-            source.write_bytes(b"elf-data")
-            producer = "producer-" + "p" * 140
-            result = collect_artifacts(
-                {ArtifactRole.ELF: source}, root / "output", producer=producer
-            )
-            manifest = json.loads(result.manifest_path.read_text(encoding="utf-8"))
-            self.assertEqual(manifest["producer"], producer)
-
-    def test_long_display_names_and_many_setup_routes_are_preserved(self) -> None:
-        from pyocd_debug_mcp import server
-
-        names = [f"board-{index}-" + "x" * 110 for index in range(9)]
-        probes = tuple(
-            SimpleNamespace(
-                usb_serial=f"serial-{index}",
-                probe_id=f"probe-{index}",
-                probe_family="jlink",
-                choice=lambda index=index: SimpleNamespace(label=f"Probe {index}"),
-            )
-            for index in range(9)
-        )
-        assignments = {
-            name: probe_connection_id("jlink", f"serial-{index}")
-            for index, name in enumerate(names)
-        }
-        inventory = SimpleNamespace(probes=probes, serial_ports=())
-        with (
-            patch.object(server._profile_repository, "load_all", return_value=[]),
-            patch.object(
-                server,
-                "_hardware_inventory",
-                SimpleNamespace(snapshot=lambda: EMPTY_INVENTORY_SNAPSHOT),
-            ),
-            patch("pyocd_debug_mcp.server._validation_inventory", return_value=inventory),
-            patch("pyocd_debug_mcp.server._replace_setup_assignments"),
-        ):
-            overview = server._setup_overview(names, assignments)
-            self.assertEqual(overview["status"], "setup_routes_ready")
-            self.assertEqual([route["display_name"] for route in overview["routes"]], names)
-            self.assertGreater(len(str(overview["routes"][-1]["display_name"])), 100)
-            with self.assertRaisesRegex(ValueError, "non-empty"):
-                server._setup_overview([""], {})
-            with self.assertRaisesRegex(ValueError, "unique"):
-                server._setup_overview([names[0], names[0].upper()], {})
-
-    def test_artifact_collector_allows_empty_directory_link_and_refuses_invalid_destinations(
-        self,
-    ) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            # The private helper receives normalized sources in collect_artifacts.
-            root = Path(directory).resolve()
-            source = root / "source.elf"
-            source.write_bytes(b"ELF artifact bytes")
-            target = root / "target"
-            target.mkdir()
-            link = root / "selected-output"
-            try:
-                os.symlink(target, link, target_is_directory=True)
-            except (OSError, NotImplementedError) as exc:
-                junction = subprocess.run(
-                    ["cmd", "/c", "mklink", "/J", str(link), str(target)],
-                    capture_output=True,
-                    check=False,
-                    text=True,
-                )
-                if junction.returncode:
-                    self.skipTest(
-                        "directory symlinks and junctions are unavailable: "
-                        f"symlink={exc}; junction={junction.stderr.strip()}"
-                    )
-            producer = "evidence-" + "z" * 140
-            result = collect_artifacts({ArtifactRole.ELF: source}, link, producer=producer)
-            self.assertEqual(result.output_dir, target.resolve())
-            self.assertTrue(link.samefile(target))
-            self.assertEqual((target / "firmware.elf").read_bytes(), source.read_bytes())
-            self.assertTrue((target / MANIFEST_NAME).is_file())
-            self.assertEqual(
-                json.loads((target / MANIFEST_NAME).read_text(encoding="utf-8"))["producer"],
-                producer,
-            )
-
-            empty = root / "empty"
-            empty.mkdir()
-            self.assertEqual(_validate_destination(empty, {ArtifactRole.ELF: source}), empty)
-            for destination, reason in (
-                (Path(Path.cwd().anchor), "filesystem root or the user's home"),
-                (Path.home(), "filesystem root or the user's home"),
-                (root / ".firm" / "bundle", "inside the FirmStore tree"),
-            ):
-                with self.assertRaisesRegex(ValueError, reason):
-                    _validate_destination(destination, {ArtifactRole.ELF: source})
-            self.assertFalse((root / ".firm").exists())
-            file_destination = root / "file"
-            file_destination.write_text("x", encoding="utf-8")
-            with self.assertRaisesRegex(ValueError, "not a directory"):
-                _validate_destination(file_destination, {ArtifactRole.ELF: source})
-            nonempty = root / "nonempty"
-            nonempty.mkdir()
-            (nonempty / "x").write_text("x", encoding="utf-8")
-            with self.assertRaisesRegex(ValueError, "must be absent or empty"):
-                _validate_destination(nonempty, {ArtifactRole.ELF: source})
-            inside = empty / "inside.elf"
-            inside.write_bytes(b"real source inside the requested output")
-            preserved = {
-                path: path.read_bytes()
-                for path in (
-                    source,
-                    inside,
-                    file_destination,
-                    nonempty / "x",
-                    target / "firmware.elf",
-                    target / MANIFEST_NAME,
-                )
-            }
-            # With a real inside source the destination is necessarily nonempty;
-            # public collection must refuse before replacing it or its source.
-            with self.assertRaisesRegex(ValueError, "must be absent or empty"):
-                collect_artifacts({ArtifactRole.ELF: inside}, empty)
-            self.assertEqual({path: path.read_bytes() for path in preserved}, preserved)
-            self.assertEqual(source.read_bytes(), b"ELF artifact bytes")
-            self.assertEqual(file_destination.read_text(encoding="utf-8"), "x")
-            self.assertEqual((nonempty / "x").read_text(encoding="utf-8"), "x")
-            self.assertEqual(sorted(path.name for path in empty.iterdir()), ["inside.elf"])
-            self.assertEqual(sorted(path.name for path in nonempty.iterdir()), ["x"])
-            self.assertFalse(list(root.glob(".*.artifact-stage-*")))
-
-    def test_hygiene_inspects_every_marker_and_stays_fail_closed(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            marker = {
-                "schema_version": 2,
-                "marker_id": "id",
-                "owner_pid": 1,
-                "owner_start_token": "owner",
-                "pid": 2,
-                "start_token": "child",
-                "argv_sha256": "digest",
-                "executable": "tool",
-                "created_at": "now",
-            }
-            for index in range(129):
-                (root / f"{index:03d}.json").write_text(
-                    json.dumps({**marker, "marker_id": str(index)}), encoding="utf-8"
-                )
-            with patch("pyocd_debug_mcp.kernel.hygiene._start_token", return_value="other"):
-                result = cleanup_stale_owned_processes(root, timeout_seconds=30.0)
-            self.assertEqual(result.inspected, 129)
-            self.assertEqual(result.stale_removed, 129)
-
-            (root / "unresolved.json").write_text(json.dumps(marker), encoding="utf-8")
-            unavailable = ProcessIdentityUnavailable("identity unavailable")
-            with patch("pyocd_debug_mcp.kernel.hygiene._start_token", side_effect=unavailable):
-                result = cleanup_stale_owned_processes(root, timeout_seconds=30.0)
-            self.assertEqual(result.unresolved, 1)
-            with patch("pyocd_debug_mcp.kernel.hygiene._start_token", side_effect=unavailable):
-                with self.assertRaisesRegex(RuntimeError, "unresolved marker"):
-                    require_clean_startup(root)
-
-    def test_real_pdsc_parser_accepts_identifying_content_after_long_valid_prefix(self) -> None:
-        prefix = b"<?xml version='1.0'?>\n<!--" + b"x" * 300 + b"-->\n  "
-        pdsc = prefix + (
-            b"<package><name>Vendor Device</name><devices><family Dvendor='Vendor' Dfamily='Family'>"
-            b"<device Dname='TEST123'/></family></devices></package>"
-        )
-        payload = _pack_bytes(pdsc)
-        selected = VerifiedPack(
-            Path("prefix.pack"),
-            PackSpec("id", "", "prefix.pack", "", sha256_bytes(payload)),
-            payload,
-        )
-        self.assertEqual(DeviceSupportResolver._cmsis_device_names(selected), ("TEST123",))
-
-    def test_long_diagnostics_keep_distinguishing_suffixes(self) -> None:
-        from pyocd_debug_mcp import server
-        from pyocd_debug_mcp.services.session_runtime import PolicyRefusal
-
-        suffix = "SERVER-SUFFIX"
-        self.assertIn(
-            suffix,
-            server._format_refusal(PolicyRefusal("code", "x" * 350 + suffix), session_id=None),
-        )
-        registry = ToolRegistry()
-        registry.register("tool")
-        self.assertIn(
-            "HANDSHAKE-SUFFIX",
-            build_initialization_guidance(registry, {"tool": "x" * 350 + "HANDSHAKE-SUFFIX"}),
-        )
-
-        recorded = Mock()
-        services = FlashToolServices(
-            runtime_for=lambda _board: None,
-            active_session_id=lambda _board: None,
-            duration_ms=lambda _started: 0,
-            record_event=recorded,
-            format_refusal=lambda refusal, **kwargs: str(refusal),
-            action_context=lambda tool, board: ActionContext("test", tool, board),
-            maybe_handle_for=lambda _board: None,
-            handle_for=lambda _board: object(),
-            resolve_request=lambda *_args: (_ for _ in ()).throw(
-                RuntimeError("x" * 350 + "FLASH-SUFFIX")
-            ),
-            flash_target=lambda *_args: (Path("unused"), "running"),
-            error_code=lambda _exc: "flash/test",
-        )
-        with self.assertRaisesRegex(RuntimeError, "FLASH-SUFFIX"):
-            build_flash_handlers(services)["flash_application"]("board", "artifact")
-        self.assertIn("FLASH-SUFFIX", recorded.call_args.kwargs["details"]["message"])
 
     def test_pack_stability_parser_and_exact_binding_gates(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

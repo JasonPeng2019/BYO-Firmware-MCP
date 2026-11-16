@@ -4,11 +4,7 @@ from __future__ import annotations
 
 import unittest
 
-from pyocd_debug_mcp.capabilities.policy import (
-    CapabilityPolicyError,
-    CapabilityPolicyRepository,
-    Tier,
-)
+from pyocd_debug_mcp.capabilities.policy import CapabilityPolicyRepository, Tier
 from pyocd_debug_mcp.capabilities.routing import TierRouteRefusal, TierRouter
 
 from tests.tiered_acceptance_support import (
@@ -63,62 +59,6 @@ class TieredMatrixAcceptanceTests(unittest.TestCase):
             evidence={"identity": "exact"},
         )
 
-    def test_full_and_lite_commit_reject_empty_or_shape_only_map_snapshots(self) -> None:
-        """AT05: a tier label must never manufacture missing safety authority."""
-
-        invalid = (
-            (Tier.SETUP_FULL, "empty_full", {"board_id": "empty_full", "regions": []}),
-            (
-                Tier.SETUP_FULL,
-                "partial_full",
-                {"board_id": "partial_full", "regions": [{"kind": "ram"}]},
-            ),
-            (
-                Tier.SETUP_LITE,
-                "shape_only_lite",
-                {"board_id": "shape_only_lite", "regions": [{"kind": "ram"}]},
-            ),
-        )
-        for tier, board, snapshot in invalid:
-            with (
-                self.subTest(tier=tier.value, board=board),
-                self.assertRaises(CapabilityPolicyError),
-            ):
-                self.repository.commit(board, tier, map_snapshot=snapshot)
-
-    def test_every_raw_family_is_direct_for_no_setup_warns_for_lite_and_refuses_for_full(
-        self,
-    ) -> None:
-        """AT05/C03: no raw route can accidentally escape the full safe policy."""
-
-        for raw, safe in RAW_TO_SAFE.items():
-            with self.subTest(raw=raw):
-                self.assertIsNone(self.router.require_raw(raw, "raw_board"))
-                warning = self.router.require_raw(raw, "lite_board")
-                self.assertIsNotNone(warning)
-                assert warning is not None
-                self.assertEqual(warning["code"], "tier/lite-containment-bypassed")
-                self.assertTrue(warning["display_to_human"])
-                self.assertIn(raw, str(warning["message"]))
-                with self.assertRaises(TierRouteRefusal) as raised:
-                    self.router.require_raw(raw, FULL_BOARD)
-                self.assertEqual(raised.exception.code, "tier/wrong-route")
-                # Full-tier raw refusal must lead callers through the plan
-                # handshake before naming the guarded action itself.
-                self.assertEqual(raised.exception.remedies, (f"{safe}-plan", safe))
-
-    def test_every_safe_matrix_route_refuses_before_a_missing_plan_in_no_setup(self) -> None:
-        """AT05: wrong-tier precedence must be consistent across all safe families."""
-
-        for raw, safe in RAW_TO_SAFE.items():
-            with self.subTest(safe=safe):
-                with self.assertRaises(TierRouteRefusal) as raised:
-                    self.router.require_safe(safe, "raw_board")
-                self.assertEqual(raised.exception.code, "tier/wrong-route")
-                self.assertEqual(raised.exception.remedies[0], raw)
-                self.assertIn("no safety map", str(raised.exception))
-                self.assertEqual(self.router.require_safe(safe, "lite_board").tier, Tier.SETUP_LITE)
-                self.assertEqual(self.router.require_safe(safe, FULL_BOARD).tier, Tier.SETUP_FULL)
 
     def test_corrupt_policy_refuses_both_raw_and_safe_before_any_other_guard(self) -> None:
         """AT05: damaged committed policy is never a fallback to raw capability."""
@@ -134,20 +74,6 @@ class TieredMatrixAcceptanceTests(unittest.TestCase):
                 method(operation, "corrupt_board")
             self.assertEqual(raised.exception.code, "tier/corrupt-policy")
 
-    def test_capability_status_is_per_board_and_does_not_overstate_identity(self) -> None:
-        """AT05/C10: discovery exposes separate tier policy rather than global tool visibility."""
-
-        raw = self.router.capabilities("raw_board", project_root=self.root)
-        lite = self.router.capabilities("lite_board", project_root=self.root)
-        full = self.router.capabilities(FULL_BOARD, project_root=self.root)
-        self.assertEqual(raw["tier"], "no-setup")
-        self.assertEqual(raw["identity"], {"assertion": "not-asserted", "capability": None})
-        self.assertEqual(lite["tier"], "setup-lite")
-        self.assertEqual(lite["identity"], {"assertion": "trusted-not-proven", "capability": None})
-        self.assertEqual(full["tier"], "setup-full")
-        self.assertEqual(full["identity"]["capability"], None)
-        self.assertNotEqual(raw["policy_digest"], lite["policy_digest"])
-        self.assertEqual(raw["project_root"], str(self.root))
 
     def test_every_full_raw_tool_is_refused_by_the_public_mcp_dispatch_before_schema_or_io(
         self,

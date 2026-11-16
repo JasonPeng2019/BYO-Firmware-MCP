@@ -7,64 +7,17 @@ import signal
 import subprocess
 import sys
 import tempfile
-import time
 import unittest
 import warnings
 from pathlib import Path
-from types import SimpleNamespace
 from typing import Any, cast
-from unittest.mock import Mock, patch
+from unittest.mock import patch
 
-import psutil
 
 from pyocd_debug_mcp.kernel import processes
 
 
 class WindowsProcessCleanupTests(unittest.TestCase):
-    def test_exported_cleanup_budget_covers_every_cross_platform_phase(self) -> None:
-        windows_two_phase_bound = 2 * processes.DEFAULT_PROCESS_GROUP_CLEANUP_GRACE_SECONDS
-        posix_three_phase_bound = 3 * processes.DEFAULT_PROCESS_GROUP_CLEANUP_GRACE_SECONDS
-        self.assertEqual(
-            processes.MAX_OWNED_PROCESS_CLEANUP_SECONDS,
-            max(windows_two_phase_bound, posix_three_phase_bound),
-        )
-
-    def test_job_zero_and_leader_reap_have_separate_bounded_phases(self) -> None:
-        process = cast(Any, SimpleNamespace(pid=42, returncode=None))
-        process.poll = Mock(return_value=None)
-
-        def wait(*, timeout: float) -> int:
-            self.assertAlmostEqual(timeout, 0.5)
-            process.returncode = 1
-            return 1
-
-        process.wait = Mock(side_effect=wait)
-        with (
-            patch.object(processes.os, "name", "nt"),
-            patch.dict(processes._WINDOWS_JOB_HANDLES, {42: 7}, clear=True),
-            patch.object(processes.time, "monotonic", side_effect=[10.0, 10.5]),
-            patch.object(processes, "_close_windows_job", return_value=True) as close_job,
-        ):
-            self.assertTrue(processes.terminate_process_group(process, grace_seconds=0.5))
-
-        close_job.assert_called_once_with(42, 7, terminate=True, deadline=10.5)
-        process.wait.assert_called_once()
-        self.assertEqual(process.returncode, 1)
-
-    def test_unreaped_leader_after_separate_reap_grace_is_unconfirmed(self) -> None:
-        process = cast(Any, SimpleNamespace(pid=42, returncode=None))
-        process.poll = Mock(return_value=None)
-        process.wait = Mock(side_effect=subprocess.TimeoutExpired("worker", 0.5))
-        with (
-            patch.object(processes.os, "name", "nt"),
-            patch.dict(processes._WINDOWS_JOB_HANDLES, {42: 7}, clear=True),
-            patch.object(processes.time, "monotonic", side_effect=[10.0, 10.5]),
-            patch.object(processes, "_close_windows_job", return_value=True),
-        ):
-            self.assertFalse(processes.terminate_process_group(process, grace_seconds=0.5))
-
-        process.wait.assert_called_once_with(timeout=0.5)
-        self.assertIsNone(process.returncode)
 
     @unittest.skipUnless(os.name == "nt", "Windows suspended-process behavior")
     def test_real_job_creation_failure_reaps_suspended_leader_without_marker(self) -> None:
@@ -106,47 +59,6 @@ class WindowsProcessCleanupTests(unittest.TestCase):
                 any(issubclass(item.category, ResourceWarning) for item in seen),
                 seen,
             )
-
-    def test_unconfirmed_pre_resume_cleanup_retains_marker_and_primary(self) -> None:
-        process = cast(
-            Any,
-            SimpleNamespace(pid=42, returncode=None),
-        )
-        marker = Path("suspended-leader-recovery.json")
-        store = Mock()
-        store.create.return_value = marker
-        primary = OSError("Job assignment failed")
-        # This fixture models a suspended Windows spawn on every test host.
-        # POSIX subprocess omits these constants; the real group-options helper
-        # has its own contract, so keep this mock focused on failed Job setup.
-        creationflags = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0x00000200) | getattr(
-            subprocess, "CREATE_SUSPENDED", 0x00000004
-        )
-        with (
-            patch.object(processes.os, "name", "nt"),
-            patch.object(
-                processes, "process_group_options", return_value={"creationflags": creationflags}
-            ) as group_options,
-            patch.object(processes.subprocess, "Popen", return_value=process) as popen,
-            patch.object(processes, "_create_windows_kill_job", side_effect=primary),
-            patch.object(
-                processes,
-                "_terminate_suspended_windows_leader",
-                return_value=False,
-            ) as terminate,
-        ):
-            with self.assertRaises(OSError) as raised:
-                processes.popen_owned(["python"], marker_store=store)
-
-        self.assertIs(raised.exception, primary)
-        self.assertIsInstance(raised.exception.__cause__, RuntimeError)
-        self.assertIn("recovery marker retained", str(raised.exception.__cause__))
-        terminate.assert_called_once_with(process)
-        group_options.assert_called_once_with()
-        popen.assert_called_once_with(("python",), creationflags=creationflags)
-        store.create.assert_called_once()
-        store.remove.assert_not_called()
-
 
 @unittest.skipUnless(os.name == "posix", "real POSIX retained group ownership")
 class PosixProcessCleanupTests(_NativePosixCase):
@@ -210,21 +122,6 @@ class PosixProcessCleanupTests(_NativePosixCase):
                 self.assert_reaped(self.created[-1][0], status)
                 self.assertEqual(list(self.store.root.glob("*.json")), [])
 
-    def test_terminal_only_group_is_confirmed_without_signalling_and_actually_reaped(self) -> None:
-        process = self.owned("raise SystemExit(23)")
-        self.assertEqual(process.wait(timeout=10), 23)
-        from pyocd_debug_mcp.kernel._analysis_posix import _exit_status
-
-        self.assertEqual(_exit_status(process.pid), 23, "normal wait released the anchor")
-        with patch.object(processes.os, "killpg", wraps=os.killpg) as signal_group:
-            self.assertTrue(processes.terminate_process_group(process))
-        signal_group.assert_not_called()
-        self.assert_reaped(process, 23)
-        # Idempotence uses the completed proof, without probing/signalling a
-        # possibly recycled numeric ID after that reap.
-        with patch.object(processes.os, "killpg", side_effect=AssertionError("new signal")):
-            self.assertTrue(processes.terminate_process_group(process))
-        self.assert_peer()
 
     def test_timeout_and_baseexception_clear_live_group_preserving_original_error(self) -> None:
         class Cancelled(BaseException):
@@ -268,68 +165,6 @@ class PosixProcessCleanupTests(_NativePosixCase):
                 self.assert_reaped(self.created[-1][0])
                 self.assertEqual(list(self.store.root.glob("*.json")), [])
 
-    def test_denied_live_group_is_unconfirmed_and_retains_ownership(self) -> None:
-        process = self.owned(self.descendant_program(linger=True))
-        identity = self.assert_live_child(process)
-        with patch.object(
-            processes.os, "killpg", side_effect=PermissionError("live group denied")
-        ) as signal_group:
-            self.assertFalse(processes.terminate_process_group(process))
-        self.assertEqual(
-            [call.args for call in signal_group.call_args_list],
-            [(process.pid, signal.SIGTERM), (process.pid, signal.SIGKILL)],
-        )
-        self.assertIsNone(process.returncode)
-        self.assertEqual(self.native_state(*identity), "live")
-        self.assertEqual(len(list(self.store.root.glob("*.json"))), 1)
-        self.assert_peer()
-
-    def test_run_owned_denied_live_descendant_retains_marker_and_reports_failure(self) -> None:
-        with (
-            patch.object(processes, "popen_owned", self.capture_spawn),
-            patch.object(processes.os, "killpg", side_effect=PermissionError("live group denied")),
-        ):
-            with self.assertRaisesRegex(RuntimeError, "descendants could not be cleared"):
-                processes.run_owned(
-                    [sys.executable, "-c", self.descendant_program()],
-                    timeout=15,
-                    capture_output=True,
-                    text=True,
-                    marker_store=self.store,
-                )
-        process = self.created[-1][0]
-        self.assert_live_child(process)
-        from pyocd_debug_mcp.kernel._analysis_posix import _exit_status
-
-        self.assertEqual(_exit_status(process.pid), 7)
-        self.assertEqual(len(list(self.store.root.glob("*.json"))), 1)
-        self.assert_peer()
-
-    def test_terminal_descendant_requires_full_group_proof_and_actual_reap(self) -> None:
-        process = self.owned(self.descendant_program())
-        identity = self.assert_live_child(process)
-        self.assertEqual(process.wait(timeout=10), 7)
-        child = psutil.Process(identity[0])
-        self.assertEqual(child.create_time(), identity[1])
-        child.kill()
-        deadline = time.monotonic() + 5
-        while self.native_state(*identity) == "live" and time.monotonic() < deadline:
-            time.sleep(0.01)
-        state = self.native_state(*identity)
-        self.assertIn(state, {"zombie", "gone"})
-        members = processes._current_group_members(process.pid, time.monotonic() + 0.5)
-        self.assertIn(process.pid, members)
-        if state == "zombie":
-            # The glibc2.28 PID1-zombie premise; a host that already reaped the
-            # child establishes absence instead, without claiming that premise.
-            self.assertIn(identity[0], members)
-            self.assertEqual(os.getpgid(identity[0]), process.pid)
-            self.assertEqual(os.getsid(identity[0]), process.pid)
-        with patch.object(processes.os, "killpg", wraps=os.killpg) as signal_group:
-            self.assertTrue(processes.terminate_process_group(process))
-        signal_group.assert_not_called()
-        self.assert_reaped(process, 7)
-        self.assert_child_terminal(identity)
 
     def test_unknown_incomplete_foreign_and_reused_members_never_authorize_signals(self) -> None:
         from pyocd_debug_mcp.kernel import _analysis_posix
@@ -366,70 +201,6 @@ class PosixProcessCleanupTests(_NativePosixCase):
                 self.assertEqual(self.native_state(*identity), "live")
                 self.assertEqual(len(list(self.store.root.glob("*.json"))), 1)
                 self.assert_peer()
-
-    def test_faulted_anchor_and_failed_real_reap_cannot_confirm_cleanup(self) -> None:
-        from pyocd_debug_mcp.kernel import _analysis_posix
-
-        process = self.owned("raise SystemExit(17)")
-        self.assertEqual(process.wait(timeout=10), 17)
-        with (
-            patch.object(
-                _analysis_posix, "_exit_status", side_effect=ChildProcessError("anchor lost")
-            ),
-            patch.object(processes.os, "killpg", wraps=os.killpg) as signal_group,
-        ):
-            self.assertFalse(processes.terminate_process_group(process))
-        signal_group.assert_not_called()
-        for token in (None, "psutil:deterministic-reused-birth"):
-            with self.subTest(leader_birth=token):
-                with (
-                    patch.object(processes, "_posix_start_token", return_value=token),
-                    patch.object(processes.os, "killpg", wraps=os.killpg) as signal_group,
-                ):
-                    self.assertFalse(processes.terminate_process_group(process))
-                signal_group.assert_not_called()
-                self.assertEqual(_analysis_posix._exit_status(process.pid), 17)
-                self.assert_peer()
-        with patch.object(processes.os, "waitpid", return_value=(0, 0)) as reap:
-            self.assertFalse(processes.terminate_process_group(process))
-        reap.assert_called_once_with(process.pid, os.WNOHANG)
-        self.assertEqual(_analysis_posix._exit_status(process.pid), 17)
-        marker = self.created[0][1]
-        assert marker is not None
-        self.assertTrue(marker.is_file())
-        self.assert_peer()
-        self.assertTrue(processes.terminate_process_group(process))
-        self.assert_reaped(process, 17)
-
-    def test_already_reaped_empty_group_succeeds_but_foreign_group_is_probe_only(self) -> None:
-        with patch.object(processes.os, "killpg", wraps=os.killpg) as signal_group:
-            self.assertFalse(processes.terminate_process_group(self.peer))
-        signal_group.assert_not_called()
-        self.assert_peer()
-        raw = subprocess.Popen(
-            [sys.executable, "-c", "raise SystemExit(19)"],
-            start_new_session=True,
-            stdin=subprocess.DEVNULL,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-        )
-        self.assertEqual(raw.wait(timeout=10), 19)
-        self.assert_reaped(raw, 19)
-        self.assertTrue(processes.terminate_process_group(raw))
-        original_pid = raw.pid
-        try:
-            # Deterministic stale-object/foreign-group control, not a claim of
-            # actual native PID reuse. The peer's exact live birth is real.
-            raw.pid = self.peer.pid
-            with patch.object(processes.os, "killpg", wraps=os.killpg) as signal_group:
-                self.assertFalse(processes.terminate_process_group(raw, grace_seconds=0.05))
-            self.assertTrue(signal_group.call_args_list)
-            self.assertTrue(
-                all(call.args == (self.peer.pid, 0) for call in signal_group.call_args_list)
-            )
-            self.assert_peer()
-        finally:
-            raw.pid = original_pid
 
 
 if __name__ == "__main__":

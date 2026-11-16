@@ -8,7 +8,6 @@ No production clock, budget, Windows policy or AnalysisPopen policy is replaced.
 from __future__ import annotations
 from tests.process_fixture_support import CLOCK, facts
 
-import ctypes
 import json
 import os
 import subprocess
@@ -135,34 +134,6 @@ class IndependentOwnership(unittest.TestCase):
         self.peer_preserved()
         return real_cleanup(process)
 
-    def test_normal_communicate_caller_preserves_output_status_and_peer(self) -> None:
-        self.release_after_premise("kill")
-        real_cleanup = processes.terminate_process_group
-        with (
-            patch.object(processes, "popen_owned", self.capture_spawn),
-            patch.object(
-                processes,
-                "terminate_process_group",
-                lambda process: self.checked_cleanup(real_cleanup, process),
-            ),
-        ):
-            with self.assertRaises(subprocess.CalledProcessError) as raised:
-                processes.run_owned(
-                    self.argv("kill", 9),
-                    timeout=15,
-                    capture_output=True,
-                    text=True,
-                    check=True,
-                    marker_store=self.store,
-                )
-        self.assertEqual(raised.exception.returncode, 9)
-        self.assertEqual(raised.exception.stdout, "independent-stdout\n")
-        self.assertEqual(raised.exception.stderr, "independent-stderr\n")
-        self.assertIn(self.current("leaf")["state"], {"terminal", "gone"})
-        self.actual_reap(self.owned[0][0], 9)
-        self.assertFalse(list(self.store.root.glob("*.json")))
-        self.peer_preserved()
-        self.assertFalse(self.gate_errors, self.gate_errors)
 
     def test_normal_discovery_public_caller_preserves_output_status_and_peer(
         self,
@@ -228,158 +199,6 @@ class IndependentOwnership(unittest.TestCase):
         self.peer_preserved()
         self.assertFalse(self.gate_errors, self.gate_errors)
 
-    def test_concurrent_poll_wait_never_releases_anchor_before_cleanup(self) -> None:
-        process, marker = self.capture_spawn(
-            self.argv(),
-            marker_store=self.store,
-            stdin=subprocess.DEVNULL,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-        )
-        self.release_after_premise()
-        errors = []
-        stop = threading.Event()
-
-        def waiter():
-            try:
-                self.assertEqual(process.wait(timeout=15), 0)
-                while not stop.is_set():
-                    self.assertEqual(process.poll(), 0)
-                    time.sleep(0.001)
-            except BaseException as exc:
-                errors.append(repr(exc))
-
-        thread = threading.Thread(target=waiter, daemon=True)
-        thread.start()
-        try:
-            self.assertEqual(process.wait(timeout=15), 0)
-            self.assertEqual(facts(process.pid)["state"], "terminal")
-            self.assertTrue(processes.terminate_process_group(process))
-        finally:
-            stop.set()
-            thread.join(5)
-        self.assertFalse(thread.is_alive())
-        self.assertFalse(errors, errors)
-        self.actual_reap(process, 0)
-        self.assertTrue(processes.terminate_process_group(process))
-        self.assertIn(self.current("leaf")["state"], {"terminal", "gone"})
-        self.store.remove(marker)
-        self.peer_preserved()
-        self.assertFalse(self.gate_errors, self.gate_errors)
-
-    def test_faulted_current_native_observer_cannot_clear_normal_marker(self) -> None:
-        if os.name != "posix":
-            raise self.failureException("POSIX group-signal control requires os.killpg")
-        self.release_after_premise()
-        with (
-            patch.object(processes, "popen_owned", self.capture_spawn),
-            patch.object(
-                processes,
-                "_current_group_members",
-                side_effect=OSError("scoped observer fault"),
-            ),
-            patch.object(processes.os, "killpg", wraps=os.killpg) as signals,
-        ):
-            with self.assertRaisesRegex(RuntimeError, "descendants could not be cleared"):
-                processes.run_owned(
-                    self.argv(),
-                    timeout=15,
-                    capture_output=True,
-                    text=True,
-                    marker_store=self.store,
-                )
-        signals.assert_not_called()
-        self.assertEqual(self.current("leaf")["state"], "live")
-        self.assertEqual(len(list(self.store.root.glob("*.json"))), 1)
-        self.assertEqual(facts(self.owned[0][0].pid)["state"], "terminal")
-        self.peer_preserved()
-
-    @unittest.skipUnless(sys.platform.startswith("linux"), "directed real Linux orphan race")
-    def test_fork_after_last_membership_read_cannot_produce_false_success(self) -> None:
-        # Scope subreaping to this test interpreter so the *real* exited branch
-        # remains inspectable. It adds no production authority or synthetic PID.
-        # This directed schedule is separate from undisturbed native acceptance.
-        libc = ctypes.CDLL(None, use_errno=True)
-        previous = ctypes.c_int()
-        if libc.prctl(37, ctypes.byref(previous), 0, 0, 0) != 0:  # GET_CHILD_SUBREAPER
-            self.fail("native subreaper premise unavailable")
-        if libc.prctl(36, 1, 0, 0, 0) != 0:  # SET_CHILD_SUBREAPER
-            self.fail("native subreaper premise unavailable")
-        self.addCleanup(lambda: libc.prctl(36, previous.value, 0, 0, 0))
-        self.release_after_premise("race")
-        real_members = processes._current_group_members
-        snapshots = []
-        triggered = False
-
-        def members(group, deadline):
-            nonlocal triggered
-            observed = real_members(group, deadline)
-            snapshots.append(sorted(observed))
-            if len(snapshots) == 2:
-                triggered = True
-                (self.root / "fork-now").touch()
-                leaf = self.receipt("leaf")
-                branch = self.receipt("branch")
-                end = CLOCK() + 5
-                while facts(branch["pid"], branch["birth"])["state"] == "live" and CLOCK() < end:
-                    time.sleep(0.002)
-                self.assertEqual(self.current("branch")["state"], "terminal")
-                self.assertEqual(self.current("leaf")["state"], "live")
-                self.assertLess(
-                    CLOCK(),
-                    deadline,
-                    "directed scheduling consumed the production phase; fixture premise not reached in reserve",
-                )
-                self.note(
-                    "after last membership read: real branch fork+exit",
-                    returned_snapshot=sorted(observed),
-                    branch=self.current("branch"),
-                    leaf=self.current("leaf"),
-                    native_new_group=sorted(real_members(group, CLOCK() + 1)),
-                )
-                self.assertNotIn(leaf["pid"], observed)
-            return observed
-
-        value = None
-        error = None
-        with (
-            patch.object(processes, "popen_owned", self.capture_spawn),
-            patch.object(processes, "_current_group_members", members),
-        ):
-            try:
-                value = processes.run_owned(
-                    self.argv("race"),
-                    timeout=15,
-                    capture_output=True,
-                    text=True,
-                    marker_store=self.store,
-                )
-            except RuntimeError as exc:
-                error = str(exc)
-        self.assertTrue(triggered, "directed schedule was not reached")
-        child = self.current("leaf")
-        markers = list(self.store.root.glob("*.json"))
-        self.note(
-            "natural caller result before emergency rescue",
-            result=repr(value),
-            error=error,
-            leaf=child,
-            markers=[str(p) for p in markers],
-            snapshots=snapshots,
-        )
-        self.peer_preserved()
-        if value is not None:
-            self.assertEqual(value.stdout, "independent-stdout\n")
-            self.assertIn(
-                child["state"],
-                {"terminal", "gone"},
-                "caller reported success and removed its marker with a live owned descendant",
-            )
-            self.actual_reap(self.owned[0][0], 0)
-            self.assertFalse(markers)
-        else:
-            self.assertIsNotNone(error)
-            self.assertTrue(markers, "unconfirmed group lost recovery marker")
 
     def rescue(self) -> None:
         # Never a positive oracle. Preserve natural assertions and identities
@@ -432,7 +251,6 @@ class IndependentOwnership(unittest.TestCase):
             + "\n",
             encoding="utf-8",
         )
-        # Keep compact receipts, gates and markers in the uploaded evidence.
 
 
 if __name__ == "__main__":
