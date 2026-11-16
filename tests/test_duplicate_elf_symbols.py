@@ -286,8 +286,16 @@ class RegisteredMcpSymbolTests(unittest.TestCase):
             ("step", {}, ("step", "read_core_register")),
             ("reset_and_run", {}, ("reset",)),
             ("get_state", {}, ("get_state",)),
-            ("read_cpu_register", {"name": "R0"}, ("read_core_register",)),
-            ("read_execution_state", {"name": "PC"}, ("read_core_register",)),
+            (
+                "read_cpu_register",
+                {"name": "R0"},
+                ("supported_core_registers", "read_core_register"),
+            ),
+            (
+                "read_execution_state",
+                {"name": "PC"},
+                ("supported_core_registers", "read_core_register"),
+            ),
         )
         for name, parameters, expected in direct:
             with self.subTest(tool=name):

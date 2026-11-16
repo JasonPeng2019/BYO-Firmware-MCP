@@ -25,7 +25,6 @@ from pyocd_debug_mcp.tools.code_analysis import (
 from tests.code_analysis_support import simple_project
 
 
-
 def record_regression(name, value):
     destination = os.environ.get("BYO_TEST_ANALYSIS_EVIDENCE")
     if destination:
