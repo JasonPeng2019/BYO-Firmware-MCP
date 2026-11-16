@@ -71,6 +71,8 @@ def codex_executable() -> str | None:
 def codex_available() -> tuple[bool, str]:
     """Return whether codex is present and signed in through its existing home."""
 
+    if os.environ.get("CI") or os.environ.get("GITHUB_ACTIONS"):
+        return False, "Real model/client acceptance is LOCAL ONLY; not run in CI"
     executable = codex_executable()
     if executable is None:
         return False, "codex CLI is not on PATH"
