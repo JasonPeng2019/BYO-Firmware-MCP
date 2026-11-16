@@ -1,146 +1,41 @@
-# Product tests
+# Necessary product tests
 
-**Latest maintained suite:** the standalone second-pass cleanup in
-`MCP_Server_Dev/development/fixture-second-pass/source`, branch
-`cleanup/fixtures-second-pass`. Use its latest committed fixture source when
-preparing the next product candidate; the retained w23c checkout is historical
-product evidence, not the newest test suite. The product campaign stays paused.
+Run the maintained source suite with standard pytest in GitHub Actions. Installer
+`build-matrix.yml` has an explicit `build_kind=cleanup` route that checks the exact
+pinned Firmware and companion sources on Linux x64, Windows x64, macOS arm64 and
+macOS x64. That route does not build products or resume a campaign. The companion
+is a separate shipping implementation and retains its own workflow assertions.
 
-Run maintained source, regression and quality checks in GitHub Actions for this
-campaign, for the separately resumed product campaign after its independent prebuild review gate.
-Standalone fixture cleanup uses only the cleanup Actions mode, without FR/FT or
-product builds. Required execution is
-ACTIONS_PENDING until those matching-source checks actually run. The commands
-below are CI step commands, from the Firmware MCP directory:
+The suite keeps one useful owner per behavior. Helpers exist for retained tests;
+there are no optional legacy drivers or fixture self-test banks. The whitelist
+and full file/function audit accompany the November 16 cleanup evidence in the
+coordinating repository. Source tests do not establish genuine installed,
+client/model or connected-board acceptance.
 
-```sh
-uv sync --locked --group dev
-# Set this to an existing native clangd; no compiler or board is needed.
-export BYO_MCP_TEST_CLANGD_EXECUTABLE=/absolute/path/to/clangd
-uv run --no-sync python -m pytest -q --junitxml=results.xml
-```
+| Behavior | Main retained owners |
+| --- | --- |
+| Discovery, native/vendor fallback, hook refresh, exact provider selection | `test_discovery_hook_workflow.py`, `test_discovery_hook_registry.py`, `test_serial_resolver_identity.py`, `test_remote_probes.py`, `test_vi09_selector_chain.py` |
+| Setup and policy publication, tiers, scoped grants, refusal before effects | `test_setup_overview_no_probe.py`, `test_tiered_acceptance_*.py`, `test_connection_promotion_transaction.py`, `test_setup_allowance.py` |
+| Artifact provenance, maps and symbols | `test_artifact_runtime_destination.py`, `test_trusted_input_admission.py`, `test_trusted_artifact_pack_boundaries.py`, `test_duplicate_elf_symbols.py` |
+| Registered execution/register bindings and masked writes | `test_duplicate_elf_symbols.py`, `test_lite_protective_overlaps.py` |
+| Flash, protected ranges, recovery and rollback | `test_lite_application_flash.py`, `test_generic_builtin_safety_map.py`, `test_vi03_fresh_recovery_grant.py`, `test_validation_honesty.py` |
+| Debug worker isolation, breakpoint and replacement ownership | `test_swd_process_isolation.py`, `test_swd_pyocd_breakpoints.py`, `test_swd_pyocd_jlink_multisession.py` |
+| UART capture, exact attachments and identity | `test_uart_capture_evidence.py`, `test_vi06_uart_ownership.py`, `test_vi07_uart_provenance.py`, `test_vi08_attachment_cache_refusal.py` |
+| clangd semantics and saved-input changes | `test_code_analysis_real_clangd.py`, `test_code_analysis_managed_runtime_native.py` |
+| Protocol/error replies, Unicode positions and config recovery | `test_code_analysis_protocol_contract.py`, `test_code_analysis_results.py`, `test_code_analysis_config_contract.py` |
+| Managed native runtime and owned process cleanup | `test_code_analysis_managed_runtime_contract.py`, `test_code_analysis_portability.py`, `test_code_analysis_posix_ownership.py`, `test_code_analysis_windows_acceptance.py`, `test_process_*.py` |
+| Cancellation and queue deadlines | `test_final_supported_batch_cancellation.py`, `test_vi02_operation_resource_ownership.py`, `test_vi02a_async_queue_deadline.py` |
+| Passive, private, durable monitoring with exact public output | `test_monitor_*.py` |
+| Sidecar and local permission helper contracts | `test_sidecar_runtime.py`, `test_manual_permission_helper_runtime.py` |
 
-PowerShell uses `$env:BYO_MCP_TEST_CLANGD_EXECUTABLE = 'C:\path\clangd.exe'`.
-The default `mvp` marker selects existing necessary feature assertions and serious
-harm checks. `python -m pytest -o addopts= --strict-markers -m 'not live'` runs all retained source regressions;
-name a module after changing its fixture. A skip or zero selected tests is not
-feature evidence. Native clangd, managed runtime, ARM, workspace, OS and real
-client prerequisites are explicit; unavailable prerequisites are UNRUN. Use
-`BYO_MCP_TEST_WORKSPACE_ROOT` for the paired workspace source when testing it.
-On WSL, keep the dependency environment on the Linux filesystem; the source may
-stay on the Windows volume. Mounted-volume cold imports exceeded a provider
-startup deadline in verification; the same lock on Linux storage passed without
-changing that deadline.
-Real client checks are marked `live` and run separately with `-m live` only when
-local client/model execution is explicitly authorized.
+Real clangd owns normal language semantics. `fake_clangd.py` is a small protocol
+peer for error replies and explicit Unicode negotiation, not a second analyzer.
+Native compiler or genuine bundle prerequisites are explicit skips when absent;
+a skipped body is unverified. Existing frozen failures remain evidence.
 
-The paired Installer's explicit native dispatch additionally selects the retained protection,
-ownership, recovery, UART, symbol-event and full-record privacy regressions with
-the default MVP filter disabled. These use the locked companion helper, real
-policy/store/dispatch code and simulated physical effects. They retain JUnit,
-failed inputs and the public-event/full-record payloads; their execution remains
-ACTIONS_PENDING until the new frozen candidate runs. `test_model_pin.py` is the
-separate M18 zero-request check of the maintained live fixture's exact model and
-effort assertion; it runs in the default MVP selection and never starts a client.
-The installed public MCP driver also measures project files before startup,
-after the manual-permission reset, after monitor traffic and across clean EOF.
-It keeps the compiled capsule and attributes the exact permission startup files
-separately. This compiled check does not rewrite the historical false only-README
-oracle or substitute for actual native-client passivity.
-
-The second pass preserves fourteen direct process-ownership checks from the
-old bc01-ci controls in `test_process_callers.py` and
-`test_process_release_identity.py`, with only their two needed child fixtures.
-They run through ordinary pytest in the four-host native regression step;
-failure inputs/streams use `BYO_TEST_FAILURES`. The observer/recorder self-tests
-and their unused framework have been removed, not parked in an optional suite.
-
-Push/PR now runs preparation; one explicit bundle dispatch retains the full
-native/installed scope. Cheap source, full fixture-format and risk checks
-precede packaging. Linux regression commands use an explicit shell and quoted
-directory change. The compiled passivity driver now checks the plain-text
-handshake as text, including the actual server run ID, while retaining its
-baseline, monitoring, privacy and EOF assertions. Previous failing evidence
-keeps its original attribution; these source changes are not an execution PASS.
-
-Keep tests of necessary product behavior, ordinary mistakes and serious harm.
-Keep only their needed helpers. Do not add tests of runners, observers, evidence
-validators or fixture receipt publication. Update the table when behavior changes.
-Use actual product assertions; a fake backend cannot establish physical results.
-
-Failures use the standard traceback and JUnit report. Assertion values and child
-stderr identify the failed operation. Analysis and tiered context directories
-are retained on an exception and copied to `BYO_TEST_FAILURES` (default
-`.test-failures`) before teardown, so temporary-host shutdown cannot erase the
-inputs. Passing directories are removed. Installed checks retain failed labs, command streams,
-exit status and gate identity. CI group logs stream directly to files so timeout
-output survives; cleanup failures are additional fields, never replacements for
-the original command failure. Record the revision, dependency lock and command
-once per run. No host process-history or nested-test ledger is required.
-Pytest sets owned temporary runtime, monitor and managed-evidence roots before
-collection unless explicitly supplied. Failed session roots are printed and
-retained; passing ones are removed. `BYO_TEST_FAILURES` selects the destination
-for failing unittest inputs copied before teardown.
-
-Builds and Rust execution remain in Actions. Installer `quality.yml` owns neutral
-release Python checks; native Rust/OS behavior and real built-package smoke remain
-per target. The noncompiling Installer release checks use the existing group in Actions:
-`python release/scripts/final_acceptance_checks.py --group release-tests --evidence <new-directory>`.
-Installed drivers require a genuine built bundle and their documented inputs.
-Future CI publication must refresh the paired source exports/locks and existing
-CI input index for each changed candidate. Those records must match the exact
-export and checkout; a dirty tree is not the already verified frozen input.
-The ARM builder in `tests/arm_corpus.py` is consumed only by the installed CI
-driver; it is never a prerequisite of this source suite. Real clients and boards
-need separate local authority; this cleanup runs neither.
-
-| Required behavior | Retained tests / driver | Evidence and limitation |
-| --- | --- | --- |
-| M01 install/start/status/doctor/uninstall, preserve user files | Installer `test_installed_e2e.py`; Rust `install` / `project`; installed `doctor_gate` and project/global uninstall | Genuine built package required; Rust source unchanged; current compilation/installation UNRUN |
-| M02 project init/reinit, modes, client config preservation | Rust `project`; companion `test_attach_project`, `test_workspace_contracts`, `test_firmware_mcp_skill_suite`, `test_mode_catalog`; `test_tiered_acceptance_workspace` | Owned source projects; native integration still requires built launcher |
-| M03 advertised client startup and integration | `test_monitor_codex_e2e`; installed forwarding/public MCP drivers | Real signed-in client checks stay local; pre-existing Claude/hook activation gaps remain |
-| M04 update/failure recovery/rollback | Rust staged activation/update; installed lifecycle and update-preservation gates | Distinct real versions needed for genuine upgrade claim; current artifact UNRUN |
-| M05 MCP without a board | `InitializationContract`, `TransportFailures`, `RealStdioShutdown`; sidecar runtime; installed `mcp-no-board` | Source MCP + real clangd; compiled startup needs actual package |
-| M06 intended probe/serial, absent device, provider collision | `test_probe_inventory`, `test_server_assignment_connect`, `test_setup_overview_no_probe`, `test_serial_resolver_identity` | Controlled discovery/backend, no physical enumeration claim |
-| M07 no-setup/lite/full, grants and corrupt state refusal | `test_tiered_core_policy`, `test_tiered_core_routing`, `test_tiered_core_manual_permissions`, tiered acceptance product modules | Real repositories/router with simulated effects; single-use grant preserved |
-| M08 board debugging/ELF/symbol disambiguation | `test_breakpoint_tools`, `test_duplicate_elf_symbols`, SWD backend/process tests | Actual symbol handling, controlled board; safe live checks remain a pre-existing gap |
-| M09 intended board/artifact and permission before effects | `test_lite_application_flash`, `test_lite_protective_overlaps`, full plan/permission tests | Public dispatch to fake physical backend; changed image refused; physical flash unverified |
-| M10 complete UART read/write/exchange, missing port, cancellation | `test_uart_capture_evidence`, `test_vi06_uart_ownership` | Controlled serial bytes and errors; live benign protocol requires hardware setup |
-| M11 five semantic tools, saved error/fix, EOF cleanup | `ProgramIdentity`, `HostC`, `RealStdioShutdown`; installed semantic queries | Real native clangd; ARM/C++ and other hosts require respective explicit inputs |
-| M12 target-aware installed static analysis/refusal | Rust `cppcheck_acceptance`; installed portable/compiled clients and ARM gates | Genuine Cppcheck/ARM/native bundle required; all original Rust tests preserved, current compiled PASS not claimed |
-| M13 timeout/cancel/recovery, exact owned-child cleanup | `VersionProbeTests`, `test_vi02a_async_queue_deadline`, `test_process_cleanup`, `test_swd_process_isolation`, `test_process_callers`, `test_process_release_identity`, attachment transaction tests | Real processes and async dispatch; historical Linux probe fixture correction retained; new process-module location needs Actions execution; public expiry/retry assertions retained |
-| M14 passive monitoring, unchanged results, secret redaction | `test_monitor_behaviour`, `test_monitor_passivity`, `test_monitor_redaction` | Real monitor; refusal fixture now isolates its store from developer history |
-| M15 project/runtime isolation, moved/copied projects | `test_artifact_runtime_destination`, Rust copy/lease tests, installed relocation and forwarding | Real file destinations/source repositories; moved installed package requires actual build |
-| M16 utilities/configuration and bundled tool choice | artifact collector tests, native-build/pack/remote product checks, managed runtime tests | Source validation preserved; native/installed behavior requires actual tool input |
-
-The November 7 before snapshot is outside discovery at workspace
-`.archive/test-fixtures-before-20261107`; the comparison and actual run reports
-are in `MCP_Server_Dev/development/tce`. Frozen historical receipts are recovery
-material, never current PASS. Removed self-tests did not establish additional
-product features. Product source, all Rust tests and companion tests are preserved.
-
-November 7 verification: the default 41 checks passed on Windows (83.10s) and
-Linux (231.79s), with no skips in either selection. Installer's eight retained
-Python scripts passed before and after. Of the 33 selected companion checks, 32 passed initially; the remaining
-doctor case passed with the existing native Codex executable on PATH (offline
-parsing only). Its `.cmd`-only PATH limitation remains. All 27 selector-chain checks
-passed on Windows, and the two affected actual-child checks passed on Linux
-using native-filesystem dependencies. The broader Windows sweep and its
-interrupted/failed stages are recorded individually in the execution report;
-they are not presented as one uninterrupted green run. Builds, native installed
-packages, macOS, real clients/models and boards were not exercised here.
-
-The necessity cleanup removes counterfactual/fixture-oracle/wording checks, the
-dormant baseline transcript runner, the ARM version-wrapper pair and the
-unqualified manual hardware example. Symbol/serial, change-loop and allowance
-cases now have behavior owners; family support modules contain shared setup.
-All source cases selected by the native analysis workflow run once through
-pytest. Fresh-project children use the same runner with ordinary JUnit.
-
-The small failure hook retains owned inputs for setup, assertion, subtest,
-teardown and cleanup failures before destructive cleanup. Monitor closeout
-errors are reported separately and keep their store. Successful fixtures clean
-up normally. The fixture-only Actions path names its affected modules explicitly,
-uses pinned real clangd/ARM query-driver inputs and excludes product bundles,
-installed checks, clients/models and hardware. Use the fixture-only Actions result bound to the exact source candidate;
-previous results do not verify later changes.
+`conftest.py` and `fixture_directory.py` retain scoped failing inputs before
+teardown. JUnit and normal traceback/capture identify the failed test and step;
+small command logs keep exit status and stdout/stderr. Cleanup failures must not
+replace the original assertion, and natural EOF is checked before owned teardown.
+No real client/model or physical board is used by the cleanup route. Live tests
+remain separately qualified local acceptance under an explicit campaign resume.

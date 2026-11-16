@@ -11,12 +11,14 @@ import asyncio
 import json
 import shutil
 import tempfile
+import threading
 import unittest
 from pathlib import Path
 
 from pyocd_debug_mcp.monitor import paths
 from pyocd_debug_mcp.monitor.counters import CHECKIN_CADENCE, USAGE_SNAPSHOT_CADENCE
 from pyocd_debug_mcp.monitor.monitor import IssueMonitor
+from pyocd_debug_mcp.monitor.transport import TestTransport
 from tests.monitor_support import settle_delivery
 
 
@@ -109,7 +111,6 @@ class ExactHealthCheckBoundaries(unittest.TestCase):
                     f"timed out waiting for {count} delivered summaries; "
                     f"got {len(self.sent_reports)}"
                 )
-
 
     """Shipped monitor cadences through registered, hardware-free dispatch only."""
 
